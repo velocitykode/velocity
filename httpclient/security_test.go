@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -483,6 +484,133 @@ func TestMaxResponseBytes_DefaultApplied(t *testing.T) {
 		t.Errorf("default cap missing: body type = %T", resp.Body)
 	}
 }
+
+// TestPrivateIPDeny_DialGuardError_MatchesThroughURLError proves that a
+// blocked host caught by the dial-time guard (rather than the URL-host
+// gate) still surfaces to callers in a matchable form. On the
+// direct-dial path the gate skips DNS resolution, so a hostname that
+// resolves to a private address is refused inside the transport; the
+// stdlib wraps that refusal in *url.Error, and errors.Is / errors.As
+// must match through the wrap.
+func TestPrivateIPDeny_DialGuardError_MatchesThroughURLError(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("private backend must not be reached via hostname")
+	}))
+	defer backend.Close()
+
+	// Reach the loopback backend via "localhost" so the gate's literal-IP
+	// check does not fire and the deny comes from the dial guard's
+	// resolution (localhost resolves via the hosts file, no network DNS).
+	backendURL, _ := url.Parse(backend.URL)
+	target := "http://localhost:" + backendURL.Port() + "/"
+
+	c := New()
+	_, err := c.Get(context.Background(), target)
+	if err == nil {
+		t.Fatal("expected dial guard to block localhost by resolution")
+	}
+	var uerr *url.Error
+	if !errors.As(err, &uerr) {
+		t.Fatalf("expected *url.Error from inside the transport, got %T: %v", err, err)
+	}
+	if !errors.Is(err, errPrivateIP) {
+		t.Errorf("errors.Is must match errPrivateIP through *url.Error, got %v", err)
+	}
+}
+
+// TestDirectDial_GateSkipsDNS proves the URL-host gate performs no DNS
+// resolution on the direct-dial path: with a resolver that fails every
+// query, the gate still passes a hostname URL (resolution is owned by
+// the dial guard there), while the proxy-mode gate still resolves the
+// upstream host and therefore surfaces the resolver failure.
+func TestDirectDial_GateSkipsDNS(t *testing.T) {
+	brokenResolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return nil, errors.New("gate must not resolve on direct dial")
+		},
+	}
+	u, _ := url.Parse("http://direct-dial-check.test/")
+
+	direct := New()
+	direct.resolver = brokenResolver
+	if !direct.directDial {
+		t.Fatal("default construction must be direct-dial")
+	}
+	if err := direct.assertURLAllowed(context.Background(), u); err != nil {
+		t.Errorf("direct-dial gate must skip DNS resolution, got %v", err)
+	}
+
+	proxied := New(WithProxyAllowed())
+	proxied.resolver = brokenResolver
+	if proxied.directDial {
+		t.Fatal("proxy-allowed client must not be direct-dial")
+	}
+	if err := proxied.assertURLAllowed(context.Background(), u); err == nil {
+		t.Error("proxy-mode gate must still resolve the upstream host")
+	}
+}
+
+// TestDirectDial_Wiring pins down which constructions may skip the
+// URL-gate DNS lookup. Only the framework-built guarded transport
+// qualifies. Every WithHTTPClient construction keeps the gate's full
+// check, whatever the supplied transport looks like at construction:
+// the caller can later mutate Proxy, TLS dial hooks, or register
+// alternate protocols, all of which route around the guarded
+// DialContext.
+func TestDirectDial_Wiring(t *testing.T) {
+	if !New().directDial {
+		t.Error("default construction should be direct-dial")
+	}
+	if New(WithProxyAllowed()).directDial {
+		t.Error("WithProxyAllowed keeps the env proxy hook; not direct-dial")
+	}
+	if New(WithoutPrivateIPDeny()).directDial {
+		t.Error("without the dial guard there is no direct-dial fast path")
+	}
+
+	proxyURL, _ := url.Parse("http://proxy.test:8080")
+	withProxy := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	if New(WithHTTPClient(&http.Client{Transport: withProxy})).directDial {
+		t.Error("explicit proxy transport must not be direct-dial")
+	}
+
+	if New(WithHTTPClient(&http.Client{Transport: &http.Transport{}})).directDial {
+		t.Error("caller-owned transport is mutable after construction; not direct-dial")
+	}
+	if New(WithHTTPClient(&http.Client{})).directDial {
+		t.Error("caller-owned client can swap Transport after construction; not direct-dial")
+	}
+
+	withDialTLSCtx := &http.Transport{
+		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return nil, errors.New("unused")
+		},
+	}
+	if New(WithHTTPClient(&http.Client{Transport: withDialTLSCtx})).directDial {
+		t.Error("DialTLSContext bypasses the guarded DialContext for HTTPS; not direct-dial")
+	}
+
+	//lint:ignore SA1019 the deprecated DialTLS field still routes HTTPS around DialContext and must disable the fast path
+	withDialTLS := &http.Transport{
+		DialTLS: func(network, addr string) (net.Conn, error) {
+			return nil, errors.New("unused")
+		},
+	}
+	if New(WithHTTPClient(&http.Client{Transport: withDialTLS})).directDial {
+		t.Error("DialTLS bypasses the guarded DialContext for HTTPS; not direct-dial")
+	}
+
+	custom := roundTripperFunc(func(r *http.Request) (*http.Response, error) { return nil, errors.New("unused") })
+	if New(WithHTTPClient(&http.Client{Transport: custom})).directDial {
+		t.Error("non-*http.Transport RoundTripper has no dial guard; not direct-dial")
+	}
+}
+
+// roundTripperFunc adapts a function to http.RoundTripper for tests.
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 // TestPrivateIPDeny_ProxyModeBypassRefused_Env exercises the proxy
 // bypass path with HTTP_PROXY set via env. It uses t.Setenv to keep

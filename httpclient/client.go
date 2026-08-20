@@ -97,6 +97,17 @@ type Client struct {
 	customTransport  bool  // set when WithHTTPClient supplies its own Transport
 	maxResponseBytes int64 // <=0 disables the response body cap
 
+	// directDial records (at construction, read-only afterwards) that the
+	// transport is a guarded *http.Transport with no Proxy hook, so every
+	// new connection (initial request and redirect hops alike) passes
+	// through dialContextGuarded, which resolves, checks, and IP-pins the
+	// upstream host. On that path the URL-host gate skips its per-request
+	// DNS lookup, which would otherwise fire even on keep-alive reuse
+	// where no dial happens. Proxy mode and custom non-*http.Transport
+	// RoundTrippers keep the gate's lookup: there the dial guard never
+	// sees the upstream host (or is not installed at all).
+	directDial bool
+
 	// Granular transport timeouts. nil means "use the framework default";
 	// a non-nil pointer is honoured verbatim (including 0, which the
 	// stdlib reads as "no timeout"). Pointer indirection is the cleanest
@@ -307,6 +318,27 @@ func New(opts ...Option) *Client {
 
 	c.client.CheckRedirect = c.checkRedirect
 
+	// Direct-dial fast path: a guarded *http.Transport with no Proxy hook
+	// dials the upstream host itself, so dialContextGuarded already
+	// resolves, checks, and pins every new connection. The URL-host gate
+	// can then skip its blocking DNS lookup (cheap literal-IP and
+	// allowlist checks still run). Any Proxy hook, even a conditional one
+	// like http.ProxyFromEnvironment, keeps the lookup: the dial target
+	// may be the proxy, not the upstream. Caller-supplied transports
+	// (WithHTTPClient) always keep it, even when they currently look
+	// direct-dial: the caller retains the *http.Client and can mutate
+	// Proxy, TLS dial hooks, or RegisterProtocol alternate round
+	// trippers after construction, all of which route around the
+	// guarded DialContext while this flag would go stale. Only the
+	// framework-built transport is sealed: no caller reference escapes,
+	// no TLS dial hooks, no alt protocols, Proxy cleared unless
+	// WithProxyAllowed. The hook checks below are belt-and-braces
+	// re-assertions of that invariant.
+	if t, ok := c.client.Transport.(*http.Transport); ok && !c.customTransport {
+		c.directDial = c.denyPrivateIPs && t.Proxy == nil &&
+			t.DialTLSContext == nil && t.DialTLS == nil
+	}
+
 	return c
 }
 
@@ -400,9 +432,16 @@ type hostCheck struct {
 // the URL-host gate (so proxy-mode is covered) and by the dial-time
 // guard (so direct-dial still gets the pinned-IP TOCTOU protection).
 //
+// resolve controls whether a non-literal hostname is DNS-resolved and
+// its addresses checked. The dial-time guard always resolves (it needs
+// the pinned IP anyway); the URL-host gate skips resolution on the
+// direct-dial path, where the dial guard is known to cover every new
+// connection, and resolves in proxy / custom-RoundTripper mode where
+// the gate is the only check that sees the upstream host.
+//
 // When denyPrivateIPs is false the function returns ok with no pinned
 // IP, leaving the caller's existing dial behaviour untouched.
-func (c *Client) evaluateHost(ctx context.Context, host string) (hostCheck, error) {
+func (c *Client) evaluateHost(ctx context.Context, host string, resolve bool) (hostCheck, error) {
 	if !c.denyPrivateIPs {
 		return hostCheck{}, nil
 	}
@@ -414,6 +453,9 @@ func (c *Client) evaluateHost(ctx context.Context, host string) (hostCheck, erro
 		if neturl.IsPrivateOrInternal(ip) {
 			return hostCheck{}, fmt.Errorf("velocity/httpclient: refusing to reach %s: %w", host, errPrivateIP)
 		}
+		return hostCheck{}, nil
+	}
+	if !resolve {
 		return hostCheck{}, nil
 	}
 	addrs, err := c.resolver.LookupIPAddr(ctx, host)
@@ -436,11 +478,13 @@ func (c *Client) evaluateHost(ctx context.Context, host string) (hostCheck, erro
 // disallowed private range. The resolved IP is pinned into the dial to
 // prevent TOCTOU / DNS-rebinding between this check and the real dial.
 //
-// This is the second line of defence: the URL-host gate in [Client.Do]
-// and [Client.checkRedirect] blocks SSRF before the request even reaches
-// the transport (which matters in proxy mode, where the dial target is
-// the proxy, not the upstream). The dial guard still runs to catch
-// direct-dial cases and to pin the resolved IP against TOCTOU.
+// This is the enforcement point for every path that opens a connection:
+// on direct dials it is where hostnames are resolved and checked (the
+// URL-host gate in [Client.Do] and [Client.checkRedirect] runs only the
+// cheap non-DNS checks there), and it pins the resolved IP against
+// TOCTOU. In proxy mode the dial target is the proxy, not the upstream,
+// so the URL-host gate keeps its full resolving check as the first line
+// of defence.
 func (c *Client) dialContextGuarded(inner func(ctx context.Context, network, addr string) (net.Conn, error)) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	if inner == nil {
 		d := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
@@ -451,7 +495,7 @@ func (c *Client) dialContextGuarded(inner func(ctx context.Context, network, add
 		if err != nil {
 			return nil, fmt.Errorf("velocity/httpclient: split host/port: %w", err)
 		}
-		hc, err := c.evaluateHost(ctx, host)
+		hc, err := c.evaluateHost(ctx, host, true)
 		if err != nil {
 			return nil, err
 		}
@@ -495,6 +539,13 @@ func (c *Client) checkRedirect(req *http.Request, via []*http.Request) error {
 // pending request. Called for the initial request and for every
 // redirect hop so the check fires regardless of whether the underlying
 // transport ends up dialling the upstream directly or via a proxy.
+//
+// On the direct-dial path (see the directDial field) only the cheap
+// checks run here (allowlist, literal-IP); the blocking DNS lookup is
+// left to dialContextGuarded, which performs it exactly once per new
+// connection instead of once per request. Blocked hosts caught there
+// surface wrapped in *url.Error by net/http; errors.Is / errors.As
+// still match through the wrap.
 func (c *Client) assertURLAllowed(ctx context.Context, u *url.URL) error {
 	if !c.denyPrivateIPs || u == nil {
 		return nil
@@ -503,7 +554,7 @@ func (c *Client) assertURLAllowed(ctx context.Context, u *url.URL) error {
 	if host == "" {
 		return nil
 	}
-	if _, err := c.evaluateHost(ctx, host); err != nil {
+	if _, err := c.evaluateHost(ctx, host, !c.directDial); err != nil {
 		return err
 	}
 	return nil
@@ -533,6 +584,8 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 
 	// URL-host SSRF gate runs before the transport so the check covers
 	// proxy mode (where the dial target is the proxy, not the upstream).
+	// On the direct-dial path it runs only the cheap checks; the DNS
+	// resolution happens once per new connection in dialContextGuarded.
 	// Bypasses cleanly when denyPrivateIPs is off.
 	if err := c.assertURLAllowed(ctx, req.URL); err != nil {
 		c.dispatchRequestFailed(ctx, method, reqURL, err, time.Since(start))
