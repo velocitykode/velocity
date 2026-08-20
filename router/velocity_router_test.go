@@ -1527,7 +1527,7 @@ func TestVelocityRouterV2_ClearRoutes(t *testing.T) {
 		if router.frozen {
 			t.Error("router should not be frozen after ClearRoutes")
 		}
-		if router.committed {
+		if router.committed.Load() {
 			t.Error("router should not be committed after ClearRoutes")
 		}
 		if router.compiledRoutes.Load() != nil {
@@ -1595,7 +1595,7 @@ func TestVelocityRouterV2_ClearRoutes(t *testing.T) {
 		// Clear via group
 		group.ClearRoutes()
 
-		if router.committed {
+		if router.committed.Load() {
 			t.Error("router should not be committed after group ClearRoutes")
 		}
 	})

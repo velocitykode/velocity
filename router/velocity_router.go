@@ -50,7 +50,10 @@ type VelocityRouterV2 struct {
 	// Deferred registration support
 	rootGroup *GroupDefinition
 	resources []*resourceWrapperV2
-	committed bool
+	// committed is written under mu (set last in commitOnce, after all
+	// other commit-state writes) and read lock-free in ServeHTTP, so the
+	// steady-state hot path pays one atomic load instead of a mutex.
+	committed atomic.Bool
 	frozen    bool
 
 	// Service container injected into every Context
@@ -602,7 +605,10 @@ type requestMeta struct {
 
 // ServeHTTP implements http.Handler interface.
 func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	r.commitOnce()
+	// Lock-free fast path: once committed, skip the mutex entirely.
+	if !r.committed.Load() {
+		r.commitOnce()
+	}
 
 	meta, req := r.beginRequest(req)
 	rw := acquireResponseWriter(w)
@@ -1080,7 +1086,7 @@ func (r *VelocityRouterV2) commitOnce() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.committed {
+	if r.committed.Load() {
 		return
 	}
 
@@ -1132,8 +1138,12 @@ func (r *VelocityRouterV2) commitOnce() {
 	// Lock-free store; safe under mu.
 	r.trustedProxiesOrParse()
 
-	r.committed = true
 	r.frozen = true
+
+	// Set committed LAST: the atomic store publishes every commit-state
+	// write above, so a goroutine that observes true via the lock-free
+	// load in ServeHTTP sees fully committed state.
+	r.committed.Store(true)
 }
 
 // ClearCompiledRoutes clears the compiled route cache.
@@ -1148,6 +1158,10 @@ func (r *VelocityRouterV2) ClearCompiledRoutes() {
 func (r *VelocityRouterV2) ClearRoutes() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Clear the flag before touching any reset state so concurrent
+	// requests fall into commitOnce and block on mu until the reset
+	// finishes, instead of serving against a partially cleared router.
+	r.committed.Store(false)
 	r.tree.Store(NewTree())
 	r.namedRoutes = make(map[string]*MatchResult)
 	r.rootGroup = NewGroupDefinition("", nil)
@@ -1155,7 +1169,6 @@ func (r *VelocityRouterV2) ClearRoutes() {
 	r.compiledRoutes.Store(nil)
 	r.notFoundHandler.Store(nil)
 	r.staticHandler.Store(nil)
-	r.committed = false
 	r.frozen = false
 }
 
