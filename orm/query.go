@@ -1360,10 +1360,18 @@ func (q *Query[T]) Get(ctx context.Context) ([]T, error) {
 	}
 	defer rows.Close()
 
+	// Resolve the column-to-field scan plan once for the whole result
+	// set (lazily, so an empty result set never touches rows.Columns).
 	var results []T
+	var plan *scanPlan
 	for rows.Next() {
+		if plan == nil {
+			if plan, err = newScanPlan(rows, reflect.TypeFor[T]()); err != nil {
+				return nil, err
+			}
+		}
 		var model T
-		if err := scanIntoStruct(rows, &model); err != nil {
+		if err := plan.scanRow(rows, reflect.ValueOf(&model).Elem()); err != nil {
 			return nil, err
 		}
 		results = append(results, model)
@@ -2024,101 +2032,148 @@ func getTableName[T any]() string {
 // into legacy_x_y_z and silently broke read-back of column-tagged fields
 // (the corresponding write path honored the tag verbatim).
 //
-// Polymorphic morph fields are not registered as columns in ModelMeta
-// because they span a (type, id) pair on a single Morph value. They are
-// resolved in a small pre-pass here so a SELECT * can populate the pair.
-//
-// Columns the model doesn't declare are scanned into a throwaway slot so
-// the driver doesn't error on extra columns from joins or wildcards.
+// Convenience wrapper for single-row callers (RawQuery.First,
+// Morph.Resolve). Loops that scan many rows build the scanPlan once via
+// newScanPlan and call scanRow per row instead, so the column-to-field
+// resolution isn't redone for every row of the result set.
 func scanIntoStruct(rows *sql.Rows, dest any) error {
-	columns, err := rows.Columns()
+	destValue := reflect.ValueOf(dest).Elem()
+	plan, err := newScanPlan(rows, destValue.Type())
 	if err != nil {
 		return err
 	}
+	return plan.scanRow(rows, destValue)
+}
 
-	values := make([]any, len(columns))
-	valuePtrs := make([]any, len(columns))
+// scanPlan is the precomputed column-to-field mapping for one result set:
+// per-column reflect index paths, morph paths, and time-field flags,
+// resolved once from rows.Columns() plus the destination type's ModelMeta.
+// Per row only FieldByIndex and the actual Scan remain.
+//
+// A plan is owned by a single result-set loop and reuses its scratch
+// slices across rows; it must not be shared between goroutines.
+type scanPlan struct {
+	// paths holds the FieldByIndex path for each result column, or nil
+	// for columns the model doesn't declare (those scan into a throwaway
+	// slot so the driver doesn't error on extra columns from joins or
+	// wildcards).
+	paths [][]int
 
-	destValue := reflect.ValueOf(dest).Elem()
-	if destValue.Kind() != reflect.Struct {
-		// Non-struct destination: send everything to discard slots so
-		// the driver doesn't panic. Callers that need scalar scans use
-		// RawQuery.Scan, not scanIntoStruct, but the guard keeps the
-		// helper honest.
-		for i := range columns {
-			valuePtrs[i] = &values[i]
-		}
-		return rows.Scan(valuePtrs...)
+	// isTime flags columns whose destination field is time.Time or
+	// *time.Time, so scanned values can be rebased to UTC after Scan.
+	// Drivers surface naive timestamps in inconsistent locations (lib/pq
+	// uses FixedZone("", 0), modernc sqlite preserves whatever offset was
+	// stored), so round-trips are only stable across hosts if scanned
+	// times uniformly carry time.UTC.
+	isTime []bool
+
+	// values / valuePtrs are the per-row Scan targets. Discard slots
+	// point at values once at build time; mapped slots are re-pointed at
+	// the destination's fields on every scanRow call.
+	values    []any
+	valuePtrs []any
+
+	// timeFields is per-row scratch for the UTC rebase, reset each row.
+	timeFields []reflect.Value
+}
+
+// newScanPlan resolves the result set's columns against destType and
+// returns the plan. Polymorphic morph fields contribute two columns
+// (type, id) sourced from a single Morph struct field; ModelMeta excludes
+// them from the column set, so they are resolved through the meta's
+// morph paths, which win over a same-named regular column.
+//
+// A non-struct destType yields an all-discard plan: every column scans
+// into a throwaway slot so the driver doesn't panic. Callers that need
+// scalar scans use RawQuery.Scan, not scanIntoStruct, but the guard
+// keeps the helper honest.
+func newScanPlan(rows *sql.Rows, destType reflect.Type) (*scanPlan, error) {
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, err
 	}
 
-	meta := MetaForValue(destValue)
-
-	// Polymorphic morph fields contribute two columns (type, id) sourced
-	// from a single Morph struct field. ModelMeta excludes them, so
-	// build a small (column -> path) override map from the top-level
-	// struct fields. Morph values are conventionally declared at the
-	// outer model level, not promoted through embedded bases.
-	morphPaths := map[string][]int{}
-	destType := destValue.Type()
-	for i := 0; i < destType.NumField(); i++ {
-		field := destType.Field(i)
-		tag := field.Tag.Get("orm")
-		pv := extractPolymorphicValue(tag)
-		if pv == "" {
-			continue
-		}
-		typeCol, idCol, perr := parsePolymorphicTag(pv)
-		if perr != nil {
-			continue
-		}
-		morphType := field.Type
-		if morphType.Kind() != reflect.Struct {
-			continue
-		}
-		if tnf, ok := morphType.FieldByName("TypeName"); ok {
-			morphPaths[typeCol] = append(append([]int{}, i), tnf.Index...)
-		}
-		if idf, ok := morphType.FieldByName("ID"); ok {
-			morphPaths[idCol] = append(append([]int{}, i), idf.Index...)
-		}
+	p := &scanPlan{
+		paths:     make([][]int, len(columns)),
+		isTime:    make([]bool, len(columns)),
+		values:    make([]any, len(columns)),
+		valuePtrs: make([]any, len(columns)),
+	}
+	// Default every slot to discard; scanRow re-points mapped slots at
+	// the destination's fields each row.
+	for i := range p.values {
+		p.valuePtrs[i] = &p.values[i]
 	}
 
-	// Time-typed destinations are remembered so they can be rebased to
-	// UTC after Scan. Drivers surface naive timestamps in inconsistent
-	// locations (lib/pq uses FixedZone("", 0), modernc sqlite preserves
-	// whatever offset was stored), so round-trips are only stable across
-	// hosts if scanned times uniformly carry time.UTC.
-	var timeFields []reflect.Value
+	if destType.Kind() != reflect.Struct {
+		return p, nil
+	}
 
+	meta := MetaFor(destType)
 	for i, column := range columns {
 		var path []int
-		if mp, ok := morphPaths[column]; ok {
+		if mp, ok := meta.MorphPathByColumn(column); ok {
 			path = mp
-		} else if meta != nil {
-			if col, ok := meta.ColumnByName(column); ok {
-				path = col.IndexPath
-			}
+		} else if col, ok := meta.ColumnByName(column); ok {
+			path = col.IndexPath
 		}
 		if path == nil {
-			valuePtrs[i] = &values[i]
+			continue
+		}
+		ft, settable := fieldTypeIfSettable(destType, path)
+		if !settable {
+			continue
+		}
+		p.paths[i] = path
+		if ft == timeType || (ft.Kind() == reflect.Ptr && ft.Elem() == timeType) {
+			p.isTime[i] = true
+		}
+	}
+	return p, nil
+}
+
+// scanRow hydrates destValue from the current row of rows using the
+// precomputed plan. destValue must be an addressable struct value of the
+// type the plan was built for.
+func (p *scanPlan) scanRow(rows *sql.Rows, destValue reflect.Value) error {
+	p.timeFields = p.timeFields[:0]
+	for i, path := range p.paths {
+		if path == nil {
 			continue
 		}
 		field := destValue.FieldByIndex(path)
-		if field.CanSet() {
-			valuePtrs[i] = field.Addr().Interface()
-			if ft := field.Type(); ft == timeType || (ft.Kind() == reflect.Ptr && ft.Elem() == timeType) {
-				timeFields = append(timeFields, field)
-			}
-		} else {
-			valuePtrs[i] = &values[i]
+		p.valuePtrs[i] = field.Addr().Interface()
+		if p.isTime[i] {
+			p.timeFields = append(p.timeFields, field)
 		}
 	}
 
-	if err := rows.Scan(valuePtrs...); err != nil {
+	if err := rows.Scan(p.valuePtrs...); err != nil {
 		return err
 	}
-	rebaseScannedTimesUTC(timeFields)
+	rebaseScannedTimesUTC(p.timeFields)
 	return nil
+}
+
+// fieldTypeIfSettable walks path from t and returns the leaf field's type
+// plus whether the field is reachable through exported fields only - the
+// type-level equivalent of FieldByIndex(path).CanSet() on an addressable
+// value of t, checked once at plan build time instead of per row.
+func fieldTypeIfSettable(t reflect.Type, path []int) (reflect.Type, bool) {
+	for _, x := range path {
+		if t.Kind() == reflect.Ptr {
+			t = t.Elem()
+		}
+		if t.Kind() != reflect.Struct || x >= t.NumField() {
+			return nil, false
+		}
+		f := t.Field(x)
+		if !f.IsExported() {
+			return nil, false
+		}
+		t = f.Type
+	}
+	return t, true
 }
 
 // timeType is the reflect.Type of time.Time, used to recognize time-typed
@@ -2405,10 +2460,18 @@ func (r *RawQuery[T]) Get(ctx context.Context) ([]T, error) {
 	}
 	defer rows.Close()
 
+	// Resolve the column-to-field scan plan once for the whole result
+	// set - same reasoning as Query[T].Get above.
 	var results []T
+	var plan *scanPlan
 	for rows.Next() {
+		if plan == nil {
+			if plan, err = newScanPlan(rows, reflect.TypeFor[T]()); err != nil {
+				return nil, err
+			}
+		}
 		var model T
-		if err := scanIntoStruct(rows, &model); err != nil {
+		if err := plan.scanRow(rows, reflect.ValueOf(&model).Elem()); err != nil {
 			return nil, err
 		}
 		results = append(results, model)

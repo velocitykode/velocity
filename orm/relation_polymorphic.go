@@ -213,10 +213,19 @@ func loadByIDs(driver drivers.Driver, ctx context.Context, relatedType reflect.T
 		return nil, err
 	}
 	defer rows.Close()
+	// The scan plan is resolved once for the whole result set (lazily,
+	// so an empty result set never touches rows.Columns).
 	var out []any
+	var plan *scanPlan
 	for rows.Next() {
+		if plan == nil {
+			var perr error
+			if plan, perr = newScanPlan(rows, relatedType); perr != nil {
+				return nil, perr
+			}
+		}
 		ptr := reflect.New(relatedType)
-		if err := scanIntoStruct(rows, ptr.Interface()); err != nil {
+		if err := plan.scanRow(rows, ptr.Elem()); err != nil {
 			return nil, err
 		}
 		markIsExisting(ptr.Elem())
