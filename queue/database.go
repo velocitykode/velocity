@@ -100,7 +100,23 @@ type DatabaseDriver struct {
 	// promoted SetEventDispatcher satisfies contract.EventDispatcherAware.
 	DriverCore
 
-	mu       sync.RWMutex
+	// mu serves two roles, neither of which is "serialize all DB access":
+	//
+	//  1. Single-writer serialization of the worker paths (pop / ack /
+	//     release / fail-reserved) on backends WITHOUT row-level locking
+	//     (SQLite and unrecognised drivers), taken via lockWorkerPath. On
+	//     postgres/mysql those paths never touch mu: FOR UPDATE SKIP LOCKED
+	//     plus the (id, attempts, reserved_by) fence already give each row
+	//     single-consumer semantics, so WithConcurrency(n) workers pump in
+	//     parallel instead of queueing on one process-wide lock.
+	//  2. Mutual exclusion between Clear and PushIfNotExistsCtx on ALL
+	//     backends: Clear's jobs + job_dedupe deletes are two separate
+	//     autocommit statements, so without mu a concurrent claim+insert
+	//     transaction could commit between them and strand a dedupe-less
+	//     jobs row, breaking at-most-once (see the comments on both
+	//     methods). SKIP LOCKED does not cover this cross-statement
+	//     invariant, so the lock stays regardless of dialect.
+	mu       sync.Mutex
 	db       *sql.DB
 	workerID string
 	dbDriver string // "postgres", "mysql", "sqlite"
@@ -147,6 +163,33 @@ func (d *DatabaseDriver) retryAfter() time.Duration {
 		return DefaultRetryAfter
 	}
 	return time.Duration(v)
+}
+
+// hasRowLocks reports whether d's backend supports row-level pop
+// isolation via FOR UPDATE SKIP LOCKED (see the SELECT in popSelect).
+// On these dialects the database itself guarantees no two workers can
+// select the same row, so the worker paths run without d.mu. SQLite has
+// no row-level locking (single-writer database), and an unrecognised
+// driver gets the conservative treatment.
+func (d *DatabaseDriver) hasRowLocks() bool {
+	switch d.dbDriver {
+	case "postgres", "mysql":
+		return true
+	default:
+		return false
+	}
+}
+
+// lockWorkerPath serializes a worker-path call (pop / ack / release /
+// fail-reserved) on single-writer backends and is a no-op on dialects
+// with row-level locking (see the d.mu field comment). Returns the
+// matching unlock func; callers must defer it.
+func (d *DatabaseDriver) lockWorkerPath() (unlock func()) {
+	if d.hasRowLocks() {
+		return func() {}
+	}
+	d.mu.Lock()
+	return d.mu.Unlock
 }
 
 // PushCtx adds a job to the queue.
@@ -319,7 +362,7 @@ func (d *DatabaseDriver) PushDelayedCtx(ctx context.Context, job Job, delay time
 	return nil
 }
 
-// popMode selects how popSelectLocked finalises the popped row.
+// popMode selects how popSelect finalises the popped row.
 type popMode int
 
 const (
@@ -346,7 +389,7 @@ const (
 // a script) and to satisfy the bare [Driver] interface. Production
 // callers should switch to PopCtxReserved.
 func (d *DatabaseDriver) PopCtx(ctx context.Context, queueName string) (Job, error) {
-	job, _, _, err := d.popSelectLocked(ctx, queueName, popModeDelete)
+	job, _, _, err := d.popSelect(ctx, queueName, popModeDelete)
 	return job, err
 }
 
@@ -358,7 +401,7 @@ func (d *DatabaseDriver) PopCtx(ctx context.Context, queueName string) (Job, err
 // [TraceAwareDriver] interface and ad-hoc tooling.
 // Implements TraceAwareDriver.
 func (d *DatabaseDriver) PopCtxWithTrace(ctx context.Context, queueName string) (Job, TraceContext, error) {
-	job, _, tc, err := d.popSelectLocked(ctx, queueName, popModeDelete)
+	job, _, tc, err := d.popSelect(ctx, queueName, popModeDelete)
 	return job, tc, err
 }
 
@@ -380,21 +423,24 @@ func (d *DatabaseDriver) PopCtxWithTrace(ctx context.Context, queueName string) 
 //
 // Implements [ReservationDriver].
 func (d *DatabaseDriver) PopCtxReserved(ctx context.Context, queueName string) (Job, ReservationToken, TraceContext, error) {
-	return d.popSelectLocked(ctx, queueName, popModeReserve)
+	return d.popSelect(ctx, queueName, popModeReserve)
 }
 
-// popSelectLocked is the shared pop implementation. It opens a tx,
+// popSelect is the shared pop implementation. It opens a tx,
 // selects the next due (or reclaimable) row, verifies payload
 // integrity, rehydrates the job, then either DELETEs the row
 // (popModeDelete) or UPDATEs it into a reserved state (popModeReserve)
 // before committing. Returns a zero token when mode == popModeDelete.
-func (d *DatabaseDriver) popSelectLocked(ctx context.Context, queueName string, mode popMode) (Job, ReservationToken, TraceContext, error) {
+// Serialized under d.mu only on single-writer backends; on
+// postgres/mysql concurrent pops isolate via FOR UPDATE SKIP LOCKED
+// (see lockWorkerPath).
+func (d *DatabaseDriver) popSelect(ctx context.Context, queueName string, mode popMode) (Job, ReservationToken, TraceContext, error) {
 	var tc TraceContext
 	if err := ctx.Err(); err != nil {
 		return nil, ReservationToken{}, tc, err
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	unlock := d.lockWorkerPath()
+	defer unlock()
 
 	// Use Serializable on SQLite since it lacks FOR UPDATE SKIP LOCKED;
 	// default isolation elsewhere (the row lock provides mutual exclusion).
@@ -561,8 +607,8 @@ func (d *DatabaseDriver) AckCtx(ctx context.Context, token ReservationToken) err
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	unlock := d.lockWorkerPath()
+	defer unlock()
 
 	query := d.rewriteQuery("DELETE FROM jobs WHERE id = $1 AND attempts = $2 AND reserved_by = $3")
 	res, err := d.db.ExecContext(ctx, query, token.ID, token.Attempts, token.ReservedBy)
@@ -591,8 +637,8 @@ func (d *DatabaseDriver) ReleaseCtx(ctx context.Context, token ReservationToken,
 	if delay < 0 {
 		delay = 0
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	unlock := d.lockWorkerPath()
+	defer unlock()
 
 	now := time.Now().UTC()
 	scheduledAt := now.Add(delay)
@@ -638,8 +684,8 @@ func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationT
 		return fmt.Errorf("velocity/queue: failed to serialize job: %w", serErr)
 	}
 
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	unlock := d.lockWorkerPath()
+	defer unlock()
 
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
