@@ -342,7 +342,10 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         run: |
           VERSION=v${{ steps.version.outputs.new }}
-          git clone https://x-access-token:${{ secrets.VELOCITY_TOKEN }}@github.com/velocitykode/velocity-template-react.git
+          # Pin the branch: a bare clone follows whatever GitHub has set as
+          # the repo default, so a stray default lands the bump on a branch
+          # nobody ships from while this step still reports success.
+          git clone -b main --single-branch https://x-access-token:${{ secrets.VELOCITY_TOKEN }}@github.com/velocitykode/velocity-template-react.git
           cd velocity-template-react
 
           # Update velocity version in go.mod
@@ -362,7 +365,10 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         run: |
           VERSION=v${{ steps.version.outputs.new }}
-          git clone https://x-access-token:${{ secrets.VELOCITY_TOKEN }}@github.com/velocitykode/velocity-template-vue.git
+          # Pin the branch: a bare clone follows whatever GitHub has set as
+          # the repo default, so a stray default lands the bump on a branch
+          # nobody ships from while this step still reports success.
+          git clone -b main --single-branch https://x-access-token:${{ secrets.VELOCITY_TOKEN }}@github.com/velocitykode/velocity-template-vue.git
           cd velocity-template-vue
 
           # Update velocity version in go.mod
@@ -382,7 +388,10 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         run: |
           VERSION=v${{ steps.version.outputs.new }}
-          git clone https://x-access-token:${{ secrets.VELOCITY_TOKEN }}@github.com/velocitykode/velocity-template-api.git
+          # Pin the branch: a bare clone follows whatever GitHub has set as
+          # the repo default, so a stray default lands the bump on a branch
+          # nobody ships from while this step still reports success.
+          git clone -b main --single-branch https://x-access-token:${{ secrets.VELOCITY_TOKEN }}@github.com/velocitykode/velocity-template-api.git
           cd velocity-template-api
 
           # Update velocity version in go.mod
