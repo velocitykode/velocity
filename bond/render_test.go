@@ -436,6 +436,32 @@ func TestRender_DeferredProp_EvaluatedOnPartialReload(t *testing.T) {
 	}
 }
 
+func TestRender_DeferredProp_NotReannouncedOnPartialReload(t *testing.T) {
+	b := setupBond(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Inertia", "true")
+	r.Header.Set("X-Inertia-Partial-Data", "slow")
+	r.Header.Set("X-Inertia-Partial-Component", "Dashboard")
+
+	b.Render(w, r, "Dashboard", Props{
+		"slow": Defer(func() (any, error) {
+			return "slow data", nil
+		}),
+	})
+
+	var page Page
+	json.Unmarshal(w.Body.Bytes(), &page)
+
+	// The partial reload delivers the deferred data; re-announcing the
+	// deferred groups there would make the client schedule another partial
+	// reload, endlessly.
+	if page.DeferredProps != nil {
+		t.Errorf("deferredProps must be omitted from partial responses, got %v", page.DeferredProps)
+	}
+}
+
 func TestRender_DeferredProp_Error(t *testing.T) {
 	b := setupBond(t)
 
