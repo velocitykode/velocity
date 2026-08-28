@@ -21,8 +21,14 @@ func (b *Bond) Render(w http.ResponseWriter, r *http.Request, component string, 
 	// 2. Check if this is a partial reload
 	isPartial := b.isPartialReload(r, component)
 
-	// 3. Extract deferred prop groups (before resolution)
-	deferredGroups := b.extractDeferredGroups(mergedProps)
+	// 3. Extract deferred prop groups (before resolution). Announced only on
+	// non-partial responses: a partial reload is what delivers the deferred
+	// data, so re-announcing the groups there would make the client schedule
+	// another partial reload, endlessly.
+	var deferredGroups map[string][]string
+	if !isPartial {
+		deferredGroups = b.extractDeferredGroups(mergedProps)
+	}
 
 	// 4. Resolve props based on request type
 	resolvedProps, pageMeta, err := b.resolveProps(r, mergedProps, isPartial)
