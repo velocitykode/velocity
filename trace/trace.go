@@ -253,6 +253,59 @@ func StartTrace(ctx context.Context) (context.Context, string, string) {
 	return WithTrace(ctx, traceID, spanID), traceID, spanID
 }
 
+// LazyTrace defers trace and span ID generation until the first read.
+// The real IDs (identical format and entropy guarantees to StartTrace,
+// including the Must* fallback behavior) are computed at most once and
+// cached, so repeated reads observe the same pair and requests where
+// nothing reads the IDs never pay the entropy read or hex encode.
+type LazyTrace struct {
+	once    sync.Once
+	traceID string
+	spanID  string
+}
+
+// IDs materializes the trace and span IDs on first call and returns the
+// cached pair thereafter. Safe for concurrent use.
+func (l *LazyTrace) IDs() (traceID, spanID string) {
+	l.once.Do(func() {
+		l.traceID = MustGenerateTraceID()
+		l.spanID = MustGenerateSpanID()
+	})
+	return l.traceID, l.spanID
+}
+
+// lazyTraceContext answers the trace and span ID keys from a LazyTrace
+// holder, materializing the IDs on first read. All other keys delegate
+// to the wrapped context, so GetTraceID/GetSpanID (and any direct
+// ctx.Value consumer) observe the same string values an eager
+// StartTrace would have stored.
+type lazyTraceContext struct {
+	context.Context
+	lazy *LazyTrace
+}
+
+func (c lazyTraceContext) Value(key any) any {
+	switch key {
+	case traceIDKey:
+		traceID, _ := c.lazy.IDs()
+		return traceID
+	case spanIDKey:
+		_, spanID := c.lazy.IDs()
+		return spanID
+	}
+	return c.Context.Value(key)
+}
+
+// StartTraceLazy establishes a trace context whose trace and span IDs
+// are generated on first read instead of eagerly. Consumers see exactly
+// what StartTrace would give them; the holder is returned so callers
+// that know they need the IDs up front (e.g. to populate an event
+// payload) can force materialization via IDs().
+func StartTraceLazy(ctx context.Context) (context.Context, *LazyTrace) {
+	lazy := &LazyTrace{}
+	return lazyTraceContext{Context: ctx, lazy: lazy}, lazy
+}
+
 // ContinueTrace continues an existing trace with a new span.
 // If the context has no trace ID, creates a new trace.
 // Returns the updated context and the new span ID.
