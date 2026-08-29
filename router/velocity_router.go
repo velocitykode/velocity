@@ -672,25 +672,25 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.invokeHandler(ctx, rw, req, result, meta)
 }
 
-// beginRequest generates the request ID, trace IDs, and threads them
-// onto the request context. Returns the populated metadata and the
-// updated request.
+// beginRequest establishes the lazy request ID and trace ID holders and
+// threads them onto the request context. Returns the populated metadata
+// and the updated request.
 func (r *VelocityRouterV2) beginRequest(req *http.Request) (requestMeta, *http.Request) {
-	reqCtx, traceID, spanID := trace.StartTrace(req.Context())
+	reqCtx, lazyTrace := trace.StartTraceLazy(req.Context())
 	lazyID := &lazyRequestID{}
 	meta := requestMeta{
 		startedAt: time.Now(),
-		traceID:   traceID,
-		spanID:    spanID,
 		parentID:  trace.GetParentID(reqCtx),
 	}
-	// The dispatched request events all carry the ID, so materialize it
-	// eagerly only when an event dispatcher is wired. With no consumer,
-	// the ID stays unresolved until GetRequestID reads it (if ever).
-	// Both paths share the same holder, so the event ID and any later
-	// GetRequestID read are guaranteed identical and stable.
+	// The dispatched request events all carry the request and trace IDs,
+	// so materialize them eagerly only when an event dispatcher is
+	// wired. With no consumer, the IDs stay unresolved until a read
+	// (GetRequestID, trace.GetTraceID/GetSpanID) forces them (if ever).
+	// All paths share the same holders, so the event IDs and any later
+	// context read are guaranteed identical and stable.
 	if r.eventDispatcher != nil {
 		meta.id = lazyID.get()
+		meta.traceID, meta.spanID = lazyTrace.IDs()
 	}
 	// Wrap rather than WithValue so RequestIDKey resolves to the
 	// materialized string (preserving the exported key's value type)
