@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.76.3] - 2026-08-29
+
+Covers everything landed since 0.32.x. Full release notes:
+https://github.com/velocitykode/velocity/releases/tag/v0.76.3
+
+### Highlights - Features
+
+- **Type-keyed component registry**: string-keyed extensions replaced with a
+  type-keyed registry: `app.Register[*T]`, qualifier types for multi-instance,
+  lifecycle/event wiring by interface detection, collision-free across modules.
+- **Context-first core**: `context.Context` flows through every ORM entry
+  point and every event callback, so cancellation, deadlines, and trace
+  context reach the database and listeners.
+- **Unified driver registry**: one pluggable-driver registration surface
+  across cache, queue, storage, mail, and the ORM.
+- **First-class testing toolkit**: `FakeQueue`, `FakeMailer`, `FakeChannel`,
+  `ActingAs`/auth assertions, database-state assertions, response validation
+  assertions, and transaction-rollback test isolation with savepoint nesting.
+- **Auth, chosen in code**: the auth user model is declared through the root
+  package with an ORM-backed provider, plus JWT key rotation via
+  `PreviousSecrets`/`PreviousRSAPublicKeys`.
+
+### Highlights - Performance
+
+- **Router imports went standalone**: service interfaces relocated to the
+  `contract` leaf; importing the router no longer drags heavy drivers into
+  your binary.
+- **Lazy trace IDs**: trace/span IDs materialize on first read instead of
+  every request: `Router_StaticHit` 815ns/20 allocs -> 475ns/14 allocs.
+- **ORM scan plans built once per result set** instead of per row.
+- **Queue workers drop the driver-wide mutex** on SKIP LOCKED dialects.
+- **Hot-path sweep** across router, events, ORM, log, bond, and queue,
+  including an atomic router commit fast path and cached validation rules and
+  GCM AEAD.
+
+### Highlights - Fixes
+
+- **Login throttling on by default**: a cache-backed throttler replaces the
+  former no-op.
+- **Unset `APP_ENV` now means production**, not development.
+- **Async command dispatch actually dispatches**: `QueuePusher` reconciled
+  with `contract.QueueDriver`.
+- **WebSocket `MaxConnections` can no longer be bypassed** under concurrent
+  upgrades (atomic slot reservation).
+- **Nullable foreign keys match relations correctly**: pointer fields are
+  dereferenced in relation key matching.
+
 ### Validation rules are typed values
 
 Rules are built by constructors in the `validation` package and collected in
