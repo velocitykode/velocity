@@ -37,14 +37,17 @@ func TestLazyLoading(t *testing.T) {
 	t.Run("different patterns are cached separately", func(t *testing.T) {
 		regexCache.clear()
 
-		// Use InlineMarkdown which uses multiple regex patterns
-		result := InlineMarkdown("**bold** and *italic* text")
-		if result == "" {
-			t.Error("InlineMarkdown failed")
+		// Each separator compiles its own collapse pattern on top of the
+		// shared one, so two separators leave three patterns behind.
+		if got := Slug("Hello World", "-"); got != "hello-world" {
+			t.Errorf("Slug failed: got %q", got)
+		}
+		if got := Slug("Hello World", "_"); got != "hello_world" {
+			t.Errorf("Slug failed: got %q", got)
 		}
 
-		if patternsAfterMarkdown := regexCache.len(); patternsAfterMarkdown < 2 {
-			t.Errorf("Expected multiple patterns cached, got %d", patternsAfterMarkdown)
+		if patterns := regexCache.len(); patterns < 3 {
+			t.Errorf("Expected multiple patterns cached, got %d", patterns)
 		}
 	})
 
@@ -56,7 +59,7 @@ func TestLazyLoading(t *testing.T) {
 			go func(id int) {
 				// Each goroutine uses a function that requires regex
 				_ = Slug(fmt.Sprintf("Test String %d", id), "-")
-				_ = InlineMarkdown(fmt.Sprintf("**Test %d**", id))
+				_ = Slug(fmt.Sprintf("Test String %d", id), "_")
 				done <- true
 			}(i)
 		}
@@ -90,12 +93,6 @@ func BenchmarkLazyLoadedRegex(b *testing.B) {
 	b.Run("cached regex", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			_ = Slug("Hello World Test", "-")
-		}
-	})
-
-	b.Run("inline markdown with cache", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			_ = InlineMarkdown("**bold** *italic* `code` [link](url)")
 		}
 	})
 }

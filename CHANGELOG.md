@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.77.0] - 2026-09-05
+
+### Added - Markdown
+
+- **`markdown` package**: first-class Markdown rendering for documentation
+  sites and release notes. `markdown.New(opts...)` builds a reusable,
+  concurrency-safe `*Renderer` whose `Render(src)` returns a `*Document`
+  carrying the HTML, the decoded YAML front matter, the title (front matter
+  `title`, else the first h1), a nested heading `TOC`, a plain-text body for
+  search indexes and llms.txt, and a word count. CommonMark plus tables,
+  strikethrough, task lists, autolinks, footnotes and definition lists are on
+  by default; smart punctuation stays off. Headings get stable GitHub-style
+  ids (duplicates suffixed `-1`, `-2`, explicit `{#id}` honoured) and an anchor
+  link on h2 through h6.
+- **Safe by default**: raw HTML is stripped and links, images and autolinks
+  with `javascript:`, `vbscript:`, `file:` or non-image `data:` destinations
+  lose their destination. `markdown.AllowHTML()` lifts both for trusted input.
+- **Container directives**: `:::note`, `:::warning` (any name) render as a
+  neutral `<aside class="callout">`, `:::steps` turns its h3 headings into an
+  `<ol class="steps">`, an optional title follows the name, and outer fences
+  with more colons nest. `markdown.WithContainer(name, fn)` replaces the
+  markup per name.
+- **Code blocks**: ```` ```go title="main.go" ```` renders a `<figure>` with a
+  caption; `markdown.WithCodeBlock(fn)` replaces the markup and
+  `markdown.WithHighlighter(fn)` plugs in highlighting. The
+  `markdown/chroma` subpackage adapts Chroma (`chroma.New()`, class-based by
+  default, `chroma.WithStyle(name)` for inline styles, `chroma.Stylesheet`
+  for the CSS) so the base package carries no highlighter dependency.
+- **Hooks and options**: `markdown.WithLinkRewrite(fn)` maps link and image
+  destinations (the safety check runs before and after the rewrite),
+  `markdown.WithHeading(fn)` replaces the heading markup,
+  `markdown.TOCLevels(min, max)` picks the TOC depth, `markdown.Basic()`
+  limits the engine to CommonMark plus the GitHub extensions, and
+  `markdown.Inline()` renders inline syntax with no block wrappers.
+  `markdown.ParseFrontMatter` and `markdown.Slug` are exported on their own.
+- **`markdown.Collection`**: `markdown.LoadFS(fsys, root, r)` renders every
+  Markdown file below a directory of an `fs.FS` (an embedded docs tree) and
+  exposes `Pages()`, a weight-ordered section `Tree()`, `Find(path)`,
+  `Prev`/`Next` within a section, `SearchIndex(baseURL)`, `LLMSText(baseURL)`
+  and `LLMSFullText(baseURL)`. Pages carry `Path`, `Slug`, `Section`,
+  `Weight`, `Index`, the rendered `Document`, the front-matter-free `Source`
+  and a `URL(baseURL)` helper.
+
+### Breaking changes
+
+Pre-1.0, a breaking change ships in a minor release (RELEASES.md); this one
+lands as `feat!:` and bumps 0.76 to 0.77.
+
+- **`str.InlineMarkdown` renders instead of stripping.** It now converts
+  inline Markdown to HTML with no block wrappers: `**bold** text` gives
+  `<strong>bold</strong> text`, where it previously returned `bold text`.
+  `Stringable.InlineMarkdown` follows. **Migration:** callers that used it to
+  strip formatting to plain text render through the `markdown` package and
+  read `Plain`:
+
+  ```go
+  doc, err := markdown.New().Render([]byte(src))
+  text := doc.Plain // "bold text"
+  ```
+
+- **`str.Markdown` output is full Markdown.** The regex subset is gone;
+  rendering goes through the `markdown` package. Paragraphs are wrapped in
+  `<p>`, block output ends with a newline, raw HTML is stripped rather than
+  escaped, and an unsafe link renders as `<a>` without an `href` instead of
+  bare label text. Headings, emphasis, code spans and safe links render as
+  before. `Stringable.Markdown` follows.
+
+### Changed - `str` Markdown helpers
+
+- **`str.Markdown(s, opts...)`** renders CommonMark plus the GitHub
+  extensions (tables, strikethrough, task lists, autolinks) and accepts
+  `markdown.Option` values (`markdown.AllowHTML()`,
+  `markdown.WithLinkRewrite(fn)`, ...).
+- **`str.InlineMarkdown(s, opts...)`** renders inline syntax only; block
+  syntax such as `# ` or `- ` is literal text. Same options.
+- New dependencies: `github.com/yuin/goldmark` and `go.yaml.in/yaml/v3`,
+  linked only by binaries that import `str` or `markdown` (about 0.55 MB, 21
+  packages, and 0.4 ms of package init), and `github.com/alecthomas/chroma/v2`
+  only for `markdown/chroma`. The root package, `orm` and `console` no longer
+  import `str`: the inflection helpers they used (`Snake`, `Plural`) moved to
+  `internal/inflect`, which `str` re-exports unchanged, and a root test pins
+  that boundary.
+
 ## [0.76.3] - 2026-08-29
 
 Covers everything landed since 0.32.x. Full release notes:

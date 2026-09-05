@@ -12,6 +12,8 @@ import (
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
+
+	"github.com/velocitykode/velocity/internal/inflect"
 )
 
 var titleCaser = cases.Title(language.Und)
@@ -500,27 +502,7 @@ func PadRight(value string, length int, pad ...string) string {
 
 // Plural returns the plural form of a word.
 func Plural(value string, count ...float64) string {
-	// Simple English pluralization rules
-	if len(count) > 0 && count[0] == 1 {
-		return value
-	}
-
-	// Common patterns
-	if len(value) >= 2 && strings.HasSuffix(value, "y") && !isVowel(rune(value[len(value)-2])) {
-		return value[:len(value)-1] + "ies"
-	}
-	if strings.HasSuffix(value, "s") || strings.HasSuffix(value, "x") ||
-		strings.HasSuffix(value, "ch") || strings.HasSuffix(value, "sh") {
-		return value + "es"
-	}
-	if strings.HasSuffix(value, "f") {
-		return value[:len(value)-1] + "ves"
-	}
-	if strings.HasSuffix(value, "fe") {
-		return value[:len(value)-2] + "ves"
-	}
-
-	return value + "s"
+	return inflect.Plural(value, count...)
 }
 
 // Position finds the position of the first occurrence of a substring.
@@ -628,29 +610,7 @@ func Reverse(value string) string {
 
 // Singular returns the singular form of a word.
 func Singular(value string) string {
-	// Simple English singularization rules
-	if strings.HasSuffix(value, "ies") {
-		return value[:len(value)-3] + "y"
-	}
-	if strings.HasSuffix(value, "ves") {
-		if len(value) > 4 && value[len(value)-4] == 'l' {
-			return value[:len(value)-3] + "f"
-		}
-		return value[:len(value)-3] + "fe"
-	}
-	if strings.HasSuffix(value, "es") {
-		if strings.HasSuffix(value[:len(value)-2], "s") ||
-			strings.HasSuffix(value[:len(value)-2], "x") ||
-			strings.HasSuffix(value[:len(value)-2], "ch") ||
-			strings.HasSuffix(value[:len(value)-2], "sh") {
-			return value[:len(value)-2]
-		}
-	}
-	if strings.HasSuffix(value, "s") && !strings.HasSuffix(value, "ss") {
-		return value[:len(value)-1]
-	}
-
-	return value
+	return inflect.Singular(value)
 }
 
 // Start ensures a string starts with a given value.
@@ -945,10 +905,4 @@ func WordWrap(str string, width int, breakStr ...string) string {
 	}
 
 	return strings.Join(result, brk)
-}
-
-// Helper function to check if a rune is a vowel
-func isVowel(r rune) bool {
-	vowels := "aeiouAEIOU"
-	return strings.ContainsRune(vowels, r)
 }

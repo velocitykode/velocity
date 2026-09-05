@@ -916,44 +916,6 @@ func TestAscii(t *testing.T) {
 	}
 }
 
-func TestMarkdown(t *testing.T) {
-	result := Markdown("# Velocity")
-	if !Contains(result, "Velocity") {
-		t.Error("Markdown should contain 'Velocity'")
-	}
-}
-
-func TestMarkdownMultiLineHeaders(t *testing.T) {
-	input := "# First\nsome text\n## Second\n### Third"
-	result := Markdown(input)
-	for _, want := range []string{"<h1>First</h1>", "<h2>Second</h2>", "<h3>Third</h3>"} {
-		if !strings.Contains(result, want) {
-			t.Errorf("Markdown(%q) = %q; missing %q", input, result, want)
-		}
-	}
-}
-
-func TestInlineMarkdownMultiLineBlocks(t *testing.T) {
-	tests := []struct {
-		name       string
-		input      string
-		wantAbsent []string
-	}{
-		{"headers on later lines", "intro\n## Heading\n### Sub", []string{"#"}},
-		{"blockquotes on later lines", "intro\n> quoted\n> more", []string{">"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := InlineMarkdown(tt.input)
-			for _, marker := range tt.wantAbsent {
-				if strings.Contains(result, marker) {
-					t.Errorf("InlineMarkdown(%q) = %q; should not contain %q", tt.input, result, marker)
-				}
-			}
-		})
-	}
-}
-
 func TestSquish(t *testing.T) {
 	result := Squish("   velocity   framework   ")
 	expected := "velocity framework"
@@ -1402,13 +1364,6 @@ func TestWordCount(t *testing.T) {
 	}
 }
 
-func TestInlineMarkdown(t *testing.T) {
-	result := InlineMarkdown("**bold** text")
-	if result != "bold text" {
-		t.Errorf("InlineMarkdown = %q; want %q", result, "bold text")
-	}
-}
-
 func TestReplaceMatches(t *testing.T) {
 	result := Of("foo123bar456").ReplaceMatches("[0-9]+", "X").String()
 	if result != "fooXbarX" {
@@ -1681,13 +1636,6 @@ func TestStringableHeadline(t *testing.T) {
 	}
 }
 
-func TestStringableInlineMarkdown(t *testing.T) {
-	result := Of("**bold** text").InlineMarkdown().String()
-	if result != "bold text" {
-		t.Errorf("InlineMarkdown = %q", result)
-	}
-}
-
 func TestStringableIs(t *testing.T) {
 	if !Of("foobar").Is("foo*") {
 		t.Error("Is should return true")
@@ -1753,13 +1701,6 @@ func TestStringableLtrim(t *testing.T) {
 	result := Of("  hello").Ltrim().String()
 	if result != "hello" {
 		t.Errorf("Ltrim = %q", result)
-	}
-}
-
-func TestStringableMarkdown(t *testing.T) {
-	result := Of("# Hello").Markdown().String()
-	if !Contains(result, "Hello") {
-		t.Error("Markdown should contain 'Hello'")
 	}
 }
 
@@ -2252,223 +2193,6 @@ func TestIsSafe_ValidPatternMatches(t *testing.T) {
 	}
 	if !ok {
 		t.Error("IsSafe(foo*, foo123) = false; want true")
-	}
-}
-
-func TestMarkdown_EscapesHeaderContent(t *testing.T) {
-	got := Markdown("# <script>alert(1)</script>")
-	if strings.Contains(got, "<script>") {
-		t.Errorf("Markdown leaked raw <script> tag: %q", got)
-	}
-	if !strings.Contains(got, "&lt;script&gt;") {
-		t.Errorf("Markdown did not escape <script>: %q", got)
-	}
-}
-
-func TestMarkdown_EscapesBoldContent(t *testing.T) {
-	got := Markdown("**<img onerror=alert(1)>**")
-	if strings.Contains(got, "<img") {
-		t.Errorf("Markdown leaked raw <img>: %q", got)
-	}
-	if !strings.Contains(got, "<strong>") {
-		t.Errorf("Markdown lost <strong> wrapping: %q", got)
-	}
-}
-
-func TestMarkdown_EscapesCodeContent(t *testing.T) {
-	got := Markdown("`<b>x</b>`")
-	if strings.Contains(got, "<b>") {
-		t.Errorf("Markdown leaked raw <b> in code: %q", got)
-	}
-	if !strings.Contains(got, "<code>&lt;b&gt;") {
-		t.Errorf("Markdown code did not escape: %q", got)
-	}
-}
-
-func TestMarkdown_RejectsJavascriptLink(t *testing.T) {
-	got := Markdown("[click](javascript:alert(1))")
-	if strings.Contains(strings.ToLower(got), "javascript:") {
-		t.Errorf("Markdown leaked javascript: URI: %q", got)
-	}
-	if strings.Contains(got, "<a ") {
-		t.Errorf("Markdown rendered <a> tag for javascript: URI: %q", got)
-	}
-	// Link text must still be present (as escaped plain text).
-	if !strings.Contains(got, "click") {
-		t.Errorf("Markdown dropped link text: %q", got)
-	}
-}
-
-func TestMarkdown_RejectsDataLink(t *testing.T) {
-	got := Markdown("[x](data:text/html,<script>alert(1)</script>)")
-	if strings.Contains(strings.ToLower(got), "data:") {
-		t.Errorf("Markdown leaked data: URI: %q", got)
-	}
-	if strings.Contains(got, "<script>") {
-		t.Errorf("Markdown leaked <script>: %q", got)
-	}
-}
-
-func TestMarkdown_RejectsVbscriptLink(t *testing.T) {
-	got := Markdown("[x](vbscript:msgbox)")
-	if strings.Contains(strings.ToLower(got), "vbscript:") {
-		t.Errorf("Markdown leaked vbscript: URI: %q", got)
-	}
-}
-
-func TestMarkdown_AttributeInjectionEscaped(t *testing.T) {
-	// Attacker tries to break out of href with quote injection.
-	got := Markdown(`[x]("onclick=alert(1) ")`)
-	// The literal sequence must not become a real attribute.
-	if strings.Contains(got, "onclick=alert") {
-		t.Errorf("Markdown allowed attribute injection: %q", got)
-	}
-	// The whole URL is not in the allowlist so the link is dropped to text.
-	if strings.Contains(got, "<a ") {
-		t.Errorf("Markdown rendered <a> for unsafe URL: %q", got)
-	}
-}
-
-func TestMarkdown_AllowsHttpsLink(t *testing.T) {
-	got := Markdown("[home](https://example.com)")
-	if !strings.Contains(got, `<a href="https://example.com">home</a>`) {
-		t.Errorf("Markdown https link rendering wrong: %q", got)
-	}
-}
-
-func TestMarkdown_AllowsRelativeLink(t *testing.T) {
-	cases := []string{"/about", "#section", "./next", "../up"}
-	for _, c := range cases {
-		got := Markdown("[x](" + c + ")")
-		if !strings.Contains(got, `<a href="`+c+`">x</a>`) {
-			t.Errorf("Markdown did not render relative link %q: got %q", c, got)
-		}
-	}
-}
-
-func TestMarkdown_AllowsMailtoLink(t *testing.T) {
-	got := Markdown("[mail](mailto:a@b.com)")
-	if !strings.Contains(got, `<a href="mailto:a@b.com">mail</a>`) {
-		t.Errorf("Markdown mailto link rendering wrong: %q", got)
-	}
-}
-
-func TestMarkdown_EscapesRawImg(t *testing.T) {
-	got := Markdown("<img src=x onerror=alert(1)>")
-	if strings.Contains(got, "<img") {
-		t.Errorf("Markdown leaked raw <img>: %q", got)
-	}
-	if !strings.Contains(got, "&lt;img") {
-		t.Errorf("Markdown did not escape <img>: %q", got)
-	}
-}
-
-func TestMarkdown_EscapesRawScriptOutsideConstruct(t *testing.T) {
-	got := Markdown("hello <script>alert(1)</script> world")
-	if strings.Contains(got, "<script>") {
-		t.Errorf("Markdown leaked raw <script>: %q", got)
-	}
-	if !strings.Contains(got, "&lt;script&gt;") {
-		t.Errorf("Markdown did not escape <script>: %q", got)
-	}
-}
-
-func TestMarkdown_EscapesBareAngleAndAmp(t *testing.T) {
-	got := Markdown("a < b && b > c")
-	want := "a &lt; b &amp;&amp; b &gt; c"
-	if got != want {
-		t.Errorf("Markdown(%q) = %q; want %q", "a < b && b > c", got, want)
-	}
-}
-
-func TestMarkdown_MixesPlainTextAndMarkdown(t *testing.T) {
-	// Raw HTML must be escaped while the markdown construct still renders.
-	got := Markdown("**bold** <script>alert(1)</script>")
-	if strings.Contains(got, "<script>") {
-		t.Errorf("Markdown leaked <script> alongside markdown: %q", got)
-	}
-	if !strings.Contains(got, "<strong>bold</strong>") {
-		t.Errorf("Markdown lost <strong> rendering: %q", got)
-	}
-	if !strings.Contains(got, "&lt;script&gt;") {
-		t.Errorf("Markdown did not escape <script>: %q", got)
-	}
-}
-
-func TestMarkdown_BoldInLinkLabel(t *testing.T) {
-	got := Markdown("[**docs**](https://x)")
-	want := `<a href="https://x"><strong>docs</strong></a>`
-	if got != want {
-		t.Errorf("Markdown(%q) = %q; want %q", "[**docs**](https://x)", got, want)
-	}
-}
-
-func TestMarkdown_ItalicInLinkLabel(t *testing.T) {
-	got := Markdown("[_em_](https://x)")
-	want := `<a href="https://x"><em>em</em></a>`
-	if got != want {
-		t.Errorf("Markdown(%q) = %q; want %q", "[_em_](https://x)", got, want)
-	}
-}
-
-func TestMarkdown_CodeInLinkLabel(t *testing.T) {
-	got := Markdown("[`x`](https://x)")
-	want := `<a href="https://x"><code>x</code></a>`
-	if got != want {
-		t.Errorf("Markdown(%q) = %q; want %q", "[`x`](https://x)", got, want)
-	}
-}
-
-func TestMarkdown_LinkLabelStillEscapesRawHTML(t *testing.T) {
-	// Inline markdown rendering inside the label must not bypass escape.
-	got := Markdown("[<script>x</script>](https://x)")
-	if strings.Contains(got, "<script>") {
-		t.Errorf("Markdown leaked <script> in link label: %q", got)
-	}
-	if !strings.Contains(got, "&lt;script&gt;") {
-		t.Errorf("Markdown did not escape <script> in link label: %q", got)
-	}
-}
-
-func TestMarkdown_RejectedURLLabelKeepsInlineMarkdown(t *testing.T) {
-	// Even when the URL is rejected, the label text gets inline markdown.
-	got := Markdown("[**x**](javascript:alert(1))")
-	if strings.Contains(strings.ToLower(got), "javascript:") {
-		t.Errorf("Markdown leaked javascript: URI: %q", got)
-	}
-	if !strings.Contains(got, "<strong>x</strong>") {
-		t.Errorf("Markdown did not render inline markdown in rejected-URL label: %q", got)
-	}
-}
-
-func TestMarkdown_LinkAlongsideRawHTML(t *testing.T) {
-	got := Markdown("[home](https://example.com) <img src=x>")
-	if !strings.Contains(got, `<a href="https://example.com">home</a>`) {
-		t.Errorf("Markdown lost link rendering: %q", got)
-	}
-	if strings.Contains(got, "<img") {
-		t.Errorf("Markdown leaked <img>: %q", got)
-	}
-}
-
-func TestMarkdown_ValidSanity(t *testing.T) {
-	// Plain valid markdown round-trips into expected HTML.
-	cases := map[string]string{
-		"# Hello":           "<h1>Hello</h1>",
-		"## Heading":        "<h2>Heading</h2>",
-		"### H3":            "<h3>H3</h3>",
-		"**bold**":          "<strong>bold</strong>",
-		"__bold__":          "<strong>bold</strong>",
-		"*italic*":          "<em>italic</em>",
-		"_italic_":          "<em>italic</em>",
-		"`code`":            "<code>code</code>",
-		"[link](https://x)": `<a href="https://x">link</a>`,
-	}
-	for in, want := range cases {
-		got := Markdown(in)
-		if got != want {
-			t.Errorf("Markdown(%q) = %q; want %q", in, got, want)
-		}
 	}
 }
 

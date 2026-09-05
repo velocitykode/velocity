@@ -194,12 +194,6 @@ func (s *Stringable) Headline() *Stringable {
 	return s
 }
 
-// InlineMarkdown removes all Markdown formatting from the string.
-func (s *Stringable) InlineMarkdown() *Stringable {
-	s.value = InlineMarkdown(s.value)
-	return s
-}
-
 // Is checks if the string matches the given pattern.
 func (s *Stringable) Is(pattern string) bool {
 	return Is(pattern, s.value)
@@ -277,12 +271,6 @@ func (s *Stringable) Lower() *Stringable {
 // Ltrim trims the left side of the string.
 func (s *Stringable) Ltrim(characters ...string) *Stringable {
 	s.value = Ltrim(s.value, characters...)
-	return s
-}
-
-// Markdown converts inline Markdown to HTML.
-func (s *Stringable) Markdown() *Stringable {
-	s.value = Markdown(s.value)
 	return s
 }
 
