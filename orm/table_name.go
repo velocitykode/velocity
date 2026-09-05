@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"sync"
 
-	"github.com/velocitykode/velocity/str"
+	"github.com/velocitykode/velocity/internal/inflect"
 )
 
 // tableNameCache memoizes the resolved table name per concrete (deref'd)
@@ -27,7 +27,7 @@ type tableNameEntry struct {
 
 // deriveTableName resolves the table name for a model type. It honors a
 // TableName() string method declared on EITHER the value or the pointer
-// receiver, and otherwise falls back to str.Plural(ToSnakeCase(typeName)).
+// receiver, and otherwise falls back to inflect.Plural(ToSnakeCase(typeName)).
 //
 // This is the single canonical derivation shared by the read path
 // (getTableName), the write path (saveWithDriver) and the relation
@@ -40,7 +40,7 @@ type tableNameEntry struct {
 // produces snake_case, properly-pluralized names. A multi-word model like
 // UserProfile derives "user_profiles" (the read path previously produced
 // "userprofiles", disagreeing with the write path's "user_profiles"), and
-// irregular plurals follow str.Plural (Category -> "categories",
+// irregular plurals follow inflect.Plural (Category -> "categories",
 // Box -> "boxes"). To pin a legacy table name, override TableName():
 //
 //	func (UserProfile) TableName() string { return "userprofiles" }
@@ -83,7 +83,7 @@ func resolveTableName(t reflect.Type) string {
 	if name == "" {
 		return ""
 	}
-	return str.Plural(ToSnakeCase(name))
+	return inflect.Plural(ToSnakeCase(name))
 }
 
 // callTableName invokes a no-arg TableName() string method on recv (a value

@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/velocitykode/velocity/console/scaffold"
-	"github.com/velocitykode/velocity/str"
+	"github.com/velocitykode/velocity/internal/inflect"
 )
 
 // GenModelOptions holds flags for the gen model command.
@@ -62,5 +62,5 @@ func toModelName(name string) string {
 
 func toTableName(modelName string) string {
 	snake := toSnakeCase(modelName)
-	return str.Plural(snake)
+	return inflect.Plural(snake)
 }

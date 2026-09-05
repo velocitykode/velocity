@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"github.com/velocitykode/velocity/console/scaffold"
-	"github.com/velocitykode/velocity/str"
+	"github.com/velocitykode/velocity/internal/inflect"
 )
 
 // GenMailOptions holds flags for the gen mail command.
@@ -47,7 +47,7 @@ func toMailName(name string) string {
 	name = strings.TrimSuffix(name, "Mailable")
 	name = strings.TrimSuffix(name, "mailable")
 	name = strings.TrimSuffix(name, "Mail")
-	if snake := str.Snake(name); snake == "mail" || strings.HasSuffix(snake, "_mail") {
+	if snake := inflect.Snake(name); snake == "mail" || strings.HasSuffix(snake, "_mail") {
 		name = strings.TrimSuffix(name, "mail")
 	}
 	return toPascalCase(name)
