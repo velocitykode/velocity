@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security - Shared session store with atomic revocation
+
+- **`session.NewCacheStore`**: a cache-backed `auth.ServerSessionStore` now
+  ships in the framework, replacing the private copies consuming apps
+  carried. Every app instance sharing one Redis sees the same records, so a
+  revocation issued on one replica is enforced on all of them. Its writes
+  are atomic on the backend: the per-user index is a backend set, never
+  read-modify-written in process; `Touch` goes through `SET XX` so a
+  refresh cannot recreate a deleted record; and `DeleteAllForUser` rotates
+  a per-user generation token before touching the index, with `Get`
+  rejecting any record issued under an older token, so "sign out
+  everywhere" is authoritative even when the index is incomplete. Every
+  record carries a token from `Put` on and an unreadable token fails
+  closed. The backend must implement both capabilities below (memory and
+  redis do, file does not); `NewCacheStore` returns
+  `ErrCacheStoreUnsupported` at boot otherwise. The authtest contract suite runs against it over both
+  the memory and redis cache drivers.
+- **Cache capabilities `contract.CacheReplacer` and
+  `contract.CacheSetStore`**: optional interfaces implemented by the
+  memory and redis cache drivers. `ReplaceCtx` writes only when the key
+  exists (the complement of `AddCtx`); `SetAddCtx` / `SetRemoveCtx` /
+  `SetMembersCtx` keep a string set under one key with atomic membership
+  updates (Redis `SADD` / `SREM` / `SMEMBERS`). `SetAddCtx`'s expiry is
+  extend-only: a fresh key gets the TTL, a shorter remaining TTL is
+  extended, a longer one is kept, and `ttl <= 0` persists the key; on
+  Redis this runs as one server-side script so it is atomic on every
+  Redis version. `cachetest.RunReplacerContractTests` and
+  `cachetest.RunSetStoreContractTests` are their executable specifications.
+
 ### Security - Session revocation survives the activity refresh
 
 - **`ServerSessionStore.Touch` (breaking)**: the session scheme refreshed

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // DefaultMaxEntries is the entry cap applied to a MemoryStore when no
@@ -198,6 +199,129 @@ func (s *MemoryStore) Shutdown(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// ReplaceCtx implements contract.CacheReplacer: the value is written only
+// when a live entry already exists for key. An absent or expired entry
+// yields (false, nil) and nothing is inserted.
+func (s *MemoryStore) ReplaceCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error) {
+	_ = ctx
+	if err := s.checkValueSize(value); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prefixedKey := s.prefixedKey(key)
+	existing, exists := s.items[prefixedKey]
+	if !exists || (existing.expiration != nil && !time.Now().Before(*existing.expiration)) {
+		return false, nil
+	}
+	s.setLocked(prefixedKey, value, expirationFor(ttl))
+	return true, nil
+}
+
+// liveSetLocked returns the string set stored under prefixedKey when the
+// entry is live and holds a set; ok is false otherwise. Caller holds s.mu.
+func (s *MemoryStore) liveSetLocked(prefixedKey string) (map[string]struct{}, bool) {
+	item, exists := s.items[prefixedKey]
+	if !exists {
+		return nil, false
+	}
+	if item.expiration != nil && !time.Now().Before(*item.expiration) {
+		return nil, false
+	}
+	set, ok := item.value.(map[string]struct{})
+	return set, ok
+}
+
+// SetAddCtx implements contract.CacheSetStore. The set lives as a
+// map[string]struct{} value under the store mutex, so membership updates
+// are atomic with respect to every other operation on this store. The
+// expiry is extend-only: a live key keeps the later of its current
+// deadline and now+ttl, and a key without a deadline stays that way.
+func (s *MemoryStore) SetAddCtx(ctx context.Context, key string, ttl time.Duration, members ...string) error {
+	_ = ctx
+	if len(members) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prefixedKey := s.prefixedKey(key)
+	expiration := expirationFor(ttl)
+	set, ok := s.liveSetLocked(prefixedKey)
+	if !ok {
+		set = make(map[string]struct{}, len(members))
+	} else {
+		// Copy so a slice handed out by SetMembersCtx before this call is
+		// unaffected; the map itself is never shared with callers.
+		next := make(map[string]struct{}, len(set)+len(members))
+		for m := range set {
+			next[m] = struct{}{}
+		}
+		set = next
+		current := s.items[prefixedKey].expiration
+		switch {
+		case current == nil:
+			expiration = nil
+		case expiration != nil && current.After(*expiration):
+			expiration = current
+		}
+	}
+	for _, m := range members {
+		set[m] = struct{}{}
+	}
+	s.setLocked(prefixedKey, set, expiration)
+	return nil
+}
+
+// SetRemoveCtx implements contract.CacheSetStore. Removing the last member
+// deletes the key.
+func (s *MemoryStore) SetRemoveCtx(ctx context.Context, key string, members ...string) error {
+	_ = ctx
+	if len(members) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prefixedKey := s.prefixedKey(key)
+	set, ok := s.liveSetLocked(prefixedKey)
+	if !ok {
+		return nil
+	}
+	next := make(map[string]struct{}, len(set))
+	for m := range set {
+		next[m] = struct{}{}
+	}
+	for _, m := range members {
+		delete(next, m)
+	}
+	if len(next) == 0 {
+		delete(s.items, prefixedKey)
+		return nil
+	}
+	s.items[prefixedKey].value = next
+	return nil
+}
+
+// SetMembersCtx implements contract.CacheSetStore. Returns nil for an
+// absent or expired key.
+func (s *MemoryStore) SetMembersCtx(ctx context.Context, key string) ([]string, error) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	set, ok := s.liveSetLocked(s.prefixedKey(key))
+	if !ok {
+		return nil, nil
+	}
+	out := make([]string, 0, len(set))
+	for m := range set {
+		out = append(out, m)
+	}
+	return out, nil
 }
 
 // prefixedKey returns the key with prefix.
@@ -616,3 +740,9 @@ func (s *MemoryStore) Has(key string) bool {
 func (s *MemoryStore) GetPrefix() string {
 	return s.prefix
 }
+
+// Compile-time checks for the optional capabilities.
+var (
+	_ contract.CacheReplacer = (*MemoryStore)(nil)
+	_ contract.CacheSetStore = (*MemoryStore)(nil)
+)

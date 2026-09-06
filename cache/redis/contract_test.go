@@ -38,6 +38,36 @@ func TestRedisStore_Contract(t *testing.T) {
 	})
 }
 
+// TestRedisStore_ReplacerContract runs the CacheReplacer spec against the
+// SET XX implementation.
+func TestRedisStore_ReplacerContract(t *testing.T) {
+	var mrPtr *miniredis.Miniredis
+	cachetest.RunReplacerContractTests(t, func(t *testing.T) cachetest.ReplacerStore {
+		s, mr := newMiniredisStore(t)
+		mrPtr = mr
+		return s
+	}, func(d time.Duration) {
+		if mrPtr != nil {
+			mrPtr.FastForward(d)
+		}
+	})
+}
+
+// TestRedisStore_SetStoreContract runs the CacheSetStore spec against the
+// SADD / SREM / SMEMBERS implementation.
+func TestRedisStore_SetStoreContract(t *testing.T) {
+	var mrPtr *miniredis.Miniredis
+	cachetest.RunSetStoreContractTests(t, func(t *testing.T) cachetest.SetStore {
+		s, mr := newMiniredisStore(t)
+		mrPtr = mr
+		return s
+	}, func(d time.Duration) {
+		if mrPtr != nil {
+			mrPtr.FastForward(d)
+		}
+	})
+}
+
 // TestRedisStore_LockerContract runs the locker spec against RedisStore.
 func TestRedisStore_LockerContract(t *testing.T) {
 	cachetest.RunLockerContractTests(t, func(t *testing.T) drivers.Locker {
