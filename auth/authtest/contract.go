@@ -210,6 +210,79 @@ func RunServerSessionStoreContractTests(t *testing.T, factory ServerSessionStore
 		}
 	})
 
+	t.Run("Touch_PresentSession_UpdatesLastSeen", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		sess := makeSession("touch-1", "user-1")
+		sess.LastSeenAt = time.Now().Add(-time.Hour)
+		if err := s.Put(ctx, sess); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		stamp := time.Now().Add(10 * time.Minute).Truncate(time.Second)
+		if err := s.Touch(ctx, "touch-1", stamp); err != nil {
+			t.Fatalf("Touch: %v", err)
+		}
+		got, err := s.Get(ctx, "touch-1")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if !got.LastSeenAt.Equal(stamp) {
+			t.Fatalf("LastSeenAt = %v, want %v", got.LastSeenAt, stamp)
+		}
+		if got.UserID != "user-1" || got.Data["k"] != "v" {
+			t.Fatalf("Touch altered fields other than LastSeenAt: %+v", got)
+		}
+	})
+
+	t.Run("Touch_UnknownID_ReturnsErrSessionNotFoundAndNeverInserts", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		err := s.Touch(ctx, "never-existed", time.Now())
+		if !errors.Is(err, auth.ErrSessionNotFound) {
+			t.Fatalf("expected ErrSessionNotFound, got %v", err)
+		}
+		if _, err := s.Get(ctx, "never-existed"); !errors.Is(err, auth.ErrSessionNotFound) {
+			t.Fatalf("Touch inserted a record for an unknown id: %v", err)
+		}
+	})
+
+	t.Run("Touch_AfterDelete_DoesNotResurrect", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		_ = s.Put(ctx, makeSession("touch-del", "user-1"))
+		if err := s.Delete(ctx, "touch-del"); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		if err := s.Touch(ctx, "touch-del", time.Now()); !errors.Is(err, auth.ErrSessionNotFound) {
+			t.Fatalf("expected ErrSessionNotFound after Delete, got %v", err)
+		}
+		if _, err := s.Get(ctx, "touch-del"); !errors.Is(err, auth.ErrSessionNotFound) {
+			t.Fatalf("Touch resurrected a deleted session: %v", err)
+		}
+	})
+
+	t.Run("Touch_AfterDeleteAllForUser_DoesNotResurrect", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		_ = s.Put(ctx, makeSession("touch-bulk-A", "user-bulk"))
+		_ = s.Put(ctx, makeSession("touch-bulk-B", "user-bulk"))
+		if err := s.DeleteAllForUser(ctx, "user-bulk"); err != nil {
+			t.Fatalf("DeleteAllForUser: %v", err)
+		}
+		for _, id := range []string{"touch-bulk-A", "touch-bulk-B"} {
+			if err := s.Touch(ctx, id, time.Now()); !errors.Is(err, auth.ErrSessionNotFound) {
+				t.Fatalf("%s: expected ErrSessionNotFound after bulk revoke, got %v", id, err)
+			}
+		}
+		got, err := s.ListForUser(ctx, "user-bulk")
+		if err != nil {
+			t.Fatalf("ListForUser: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("Touch resurrected %d bulk-revoked sessions", len(got))
+		}
+	})
+
 	t.Run("Delete_UnknownID_IsIdempotent", func(t *testing.T) {
 		s := factory(t)
 		if err := s.Delete(context.Background(), "never-existed"); err != nil {
