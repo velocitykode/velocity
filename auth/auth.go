@@ -293,6 +293,12 @@ type Manager struct {
 	// keep their own default/fallback behavior.
 	loginThrottler contract.LoginThrottler
 
+	// loginChallenge is the optional interactive-challenge predicate
+	// propagated to every scheme implementing LoginChallengeReceiver.
+	// Nil means no challenge: an over-cap identifier whose admission
+	// slot is held is throttled outright.
+	loginChallenge LoginChallenge
+
 	// csrfRotator hooks the CSRF token store to the session lifecycle so
 	// Login regenerates / mints the per-session token, Logout revokes
 	// it, and the remember-cookie revival path rotates it across the
@@ -341,6 +347,7 @@ func (m *Manager) RegisterScheme(name string, scheme Scheme) {
 	store := m.serverSessions
 	proxies := m.trustedProxies
 	throttler := m.loginThrottler
+	challenge := m.loginChallenge
 	rotator := m.csrfRotator
 	m.mu.Unlock()
 
@@ -366,6 +373,11 @@ func (m *Manager) RegisterScheme(name string, scheme Scheme) {
 	if throttler != nil {
 		if r, ok := scheme.(LoginThrottlerReceiver); ok {
 			r.SetLoginThrottler(throttler)
+		}
+	}
+	if challenge != nil {
+		if r, ok := scheme.(LoginChallengeReceiver); ok {
+			r.SetLoginChallenge(challenge)
 		}
 	}
 	if rotator != nil {
@@ -739,6 +751,42 @@ type TrustedProxiesReceiver interface {
 // unimplemented; Manager silently skips them.
 type LoginThrottlerReceiver interface {
 	SetLoginThrottler(t contract.LoginThrottler)
+}
+
+// LoginChallengeReceiver is an optional capability interface implemented
+// by schemes that can let an over-cap identifier attempt bypass the
+// progressive delay and admission slot when the request passes an
+// interactive challenge. Manager.SetLoginChallenge propagates the
+// predicate to every registered scheme that satisfies it.
+type LoginChallengeReceiver interface {
+	SetLoginChallenge(fn LoginChallenge)
+}
+
+// SetLoginChallenge installs the interactive-challenge predicate used
+// by every scheme implementing LoginChallengeReceiver. Pass nil to
+// clear it. Safe for concurrent use.
+//
+// The predicate is consulted only for an attempt whose identifier
+// bucket is over cap: when it returns true the attempt skips the
+// progressive delay and the admission slot, so a legitimate account
+// holder can log in during an attack by solving the app's challenge
+// instead of waiting behind the attacker's trials. It never bypasses
+// the pair or IP caps. Schemes registered later inherit the predicate
+// at registration time (see RegisterScheme).
+func (m *Manager) SetLoginChallenge(fn LoginChallenge) {
+	m.mu.Lock()
+	m.loginChallenge = fn
+	receivers := make([]LoginChallengeReceiver, 0, len(m.schemes))
+	for _, g := range m.schemes {
+		if r, ok := g.(LoginChallengeReceiver); ok {
+			receivers = append(receivers, r)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, r := range receivers {
+		r.SetLoginChallenge(fn)
+	}
 }
 
 // SetTrustedProxies installs the parsed proxy network list used for

@@ -55,6 +55,12 @@ type JWTScheme struct {
 	// attemptFloor is the wall-clock floor for Attempt (H-09 fix).
 	// Zero falls back to auth.DefaultAttemptFloor.
 	attemptFloor time.Duration
+	// loginAdmitter is the per-process admission slot used for over-cap
+	// identifier trials when the throttler lacks contract.LoginAdmitter.
+	loginAdmitter auth.LocalLoginAdmitter
+	// loginChallenge, when set, lets an over-cap identifier attempt
+	// skip the delay and admission slot (guarded by mu).
+	loginChallenge auth.LoginChallenge
 	// hasher is consulted on the missing-user path so CPU timing
 	// matches the bcrypt-verify path; defaults to bcrypt cost 10.
 	hasher auth.Hasher
@@ -168,6 +174,21 @@ func (g *JWTScheme) SetLoginThrottler(t contract.LoginThrottler) {
 		return
 	}
 	g.throttler.Store(&throttlerHolder{t: t})
+}
+
+// SetLoginChallenge installs (or clears when nil) the interactive
+// challenge predicate consulted for over-cap identifier attempts. See
+// auth.LoginChallenge. Normally propagated by Manager.SetLoginChallenge.
+func (g *JWTScheme) SetLoginChallenge(fn auth.LoginChallenge) {
+	g.mu.Lock()
+	g.loginChallenge = fn
+	g.mu.Unlock()
+}
+
+func (g *JWTScheme) getLoginChallenge() auth.LoginChallenge {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.loginChallenge
 }
 
 // SetEventDispatcher installs the framework event dispatcher used to emit
@@ -435,7 +456,7 @@ func (g *JWTScheme) Attempt(w http.ResponseWriter, r *http.Request, credentials 
 	// a concurrent Set* call swaps one mid-call.
 	throttler := g.loadThrottler()
 	hasher := g.effectiveHasher()
-	user, keys, ok, err := attemptCredentials(r, credentials, g.loadUserStore(), hasher, throttler, g.effectiveAttemptFloor(), g.getTrustedProxies())
+	user, keys, ok, err := attemptCredentials(r, credentials, g.loadUserStore(), hasher, throttler, g.effectiveAttemptFloor(), g.getTrustedProxies(), &g.loginAdmitter, g.getLoginChallenge())
 	if !ok {
 		return false, err
 	}
@@ -452,9 +473,7 @@ func (g *JWTScheme) Attempt(w http.ResponseWriter, r *http.Request, credentials 
 	// failure must not block the already-successful login.
 	maybeEmitRehashEvent(r.Context(), g.getEventDispatcher(), hasher, user, "jwt", nil)
 
-	for _, key := range keys {
-		throttler.RecordSuccess(r, key)
-	}
+	recordAttemptSuccess(r, keys, throttler, &g.loginAdmitter)
 	return true, nil
 }
 

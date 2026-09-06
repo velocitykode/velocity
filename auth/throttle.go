@@ -4,9 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"golang.org/x/text/unicode/norm"
 
@@ -17,6 +20,25 @@ import (
 // ErrLoginThrottled is returned from scheme Attempt() methods when the
 // configured LoginThrottler rejects an attempt before credentials are checked.
 var ErrLoginThrottled = errors.New("velocity/auth: too many login attempts")
+
+// ErrLoginChallengeRequired is returned from scheme Attempt() when the
+// identifier is over cap, another credential trial for it already holds
+// the admission slot, and a LoginChallenge is configured that this
+// request did not pass. It wraps ErrLoginThrottled (errors.Is holds) so
+// existing throttle handling keeps working; handlers that render a
+// challenge (CAPTCHA, email code) match it specifically. Without a
+// configured challenge the same condition yields ErrLoginThrottled.
+var ErrLoginChallengeRequired = fmt.Errorf("%w: challenge required", ErrLoginThrottled)
+
+// LoginChallenge reports whether r carries a passed interactive
+// challenge (a verified CAPTCHA token, an out-of-band code). When one
+// is installed via Manager.SetLoginChallenge, an over-cap identifier
+// attempt that passes it skips the progressive delay and the admission
+// slot: the challenge has already proven the caller is not an automated
+// guesser. It never bypasses the pair or IP caps, which deny before the
+// credential check regardless. The function must be safe for concurrent
+// use and must not consume the request body without restoring it.
+type LoginChallenge func(r *http.Request) bool
 
 // NoopLoginThrottler is the default LoginThrottler used when no throttler
 // is explicitly configured. It allows every request and records nothing.
@@ -33,6 +55,147 @@ func (NoopLoginThrottler) RecordSuccess(*http.Request, string) {}
 
 // compile-time guarantee the no-op implements the contract.
 var _ contract.LoginThrottler = NoopLoginThrottler{}
+
+// Progressive-delay defaults for the identifier throttle dimension.
+//
+// The identifier bucket is verify-first (an over-cap bucket still runs
+// the credential check so the account holder is never locked out), so
+// once the pair and IP buckets are rotated by distributed or spoofed
+// source addresses it bounds nothing by itself. The delay is the
+// control that does: every attempt against an over-cap identifier pays
+// it, right or wrong, and it doubles with each further failure up to
+// the ceiling. A delay, unlike a lockout, degrades the account holder's
+// login by at most the ceiling while an attack is in progress.
+const (
+	// DefaultIdentifierDelay is the delay paid by the first attempt
+	// past the identifier cap, and the fixed delay applied when the
+	// installed LoginThrottler does not implement contract.LoginDelayer.
+	DefaultIdentifierDelay = 1 * time.Second
+	// DefaultIdentifierDelayMax caps the progressive delay.
+	DefaultIdentifierDelayMax = 30 * time.Second
+)
+
+// ProgressiveDelay returns the bounded exponential delay for the
+// excess-th attempt past a throttle cap: base for excess 1, doubling
+// for each further attempt, never exceeding ceiling. Returns 0 when excess
+// < 1 or base <= 0; a ceiling <= 0 falls back to DefaultIdentifierDelayMax.
+// Shared by the built-in cache throttler and available to custom
+// contract.LoginDelayer implementations.
+func ProgressiveDelay(excess int64, base, ceiling time.Duration) time.Duration {
+	if excess < 1 || base <= 0 {
+		return 0
+	}
+	if ceiling <= 0 {
+		ceiling = DefaultIdentifierDelayMax
+	}
+	if base >= ceiling {
+		return ceiling
+	}
+	// Doubling more than ~40 times overflows time.Duration; anything
+	// past the point where base<<shift exceeds the ceiling clamps to it.
+	const maxShift = 40
+	shift := excess - 1
+	if shift > maxShift {
+		return ceiling
+	}
+	d := base << uint(shift)
+	if d <= 0 || d > ceiling {
+		return ceiling
+	}
+	return d
+}
+
+// LocalLoginAdmitter is the per-process fallback contract.LoginAdmitter
+// used when the installed LoginThrottler does not implement the
+// capability. It holds one slot per key in memory, so it bounds
+// aggregate trials per app instance only; a multi-instance deployment
+// gets K slots for K instances unless the throttler provides a
+// store-backed Admit. The zero value is ready to use.
+type LocalLoginAdmitter struct {
+	mu    sync.Mutex
+	slots map[string]time.Time
+	now   func() time.Time
+}
+
+// localAdmitterSweepAt bounds the slot map: once it holds this many
+// entries every Admit first drops the expired ones. Only over-cap
+// identifiers ever get an entry and each expires after its hold, so
+// the map stays small in practice; the sweep guards the pathological
+// case of an attacker rotating identifiers past their caps.
+const localAdmitterSweepAt = 1024
+
+// Admit implements contract.LoginAdmitter for a single process.
+func (a *LocalLoginAdmitter) Admit(_ *http.Request, key string, hold time.Duration) bool {
+	if a == nil || hold <= 0 {
+		return true
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := time.Now()
+	if a.now != nil {
+		now = a.now()
+	}
+	if a.slots == nil {
+		a.slots = make(map[string]time.Time)
+	}
+	if len(a.slots) >= localAdmitterSweepAt {
+		for k, until := range a.slots {
+			if !until.After(now) {
+				delete(a.slots, k)
+			}
+		}
+	}
+	if until, held := a.slots[key]; held && until.After(now) {
+		return false
+	}
+	a.slots[key] = now.Add(hold)
+	return true
+}
+
+// Release drops the slot for key so the next Admit succeeds
+// immediately. Schemes call it after a successful login clears the
+// identifier bucket.
+func (a *LocalLoginAdmitter) Release(key string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	delete(a.slots, key)
+	a.mu.Unlock()
+}
+
+// AdmitIdentifierTrial claims the credential-trial slot for an over-cap
+// identifier key: through the throttler's own contract.LoginAdmitter
+// when it implements one (store-backed, spans instances), else through
+// fallback (per process). A nil fallback with a throttler lacking the
+// capability admits unconditionally.
+func AdmitIdentifierTrial(throttler contract.LoginThrottler, fallback *LocalLoginAdmitter, r *http.Request, key string, hold time.Duration) bool {
+	if hold <= 0 {
+		return true
+	}
+	if a, ok := throttler.(contract.LoginAdmitter); ok {
+		return a.Admit(r, key, hold)
+	}
+	return fallback.Admit(r, key, hold)
+}
+
+// IdentifierDelay returns the delay an attempt against an over-cap
+// identifier key must pay: the throttler's own contract.LoginDelayer
+// answer when it implements one, DefaultIdentifierDelay otherwise.
+// Negative answers are clamped to 0.
+func IdentifierDelay(throttler contract.LoginThrottler, r *http.Request, key string) time.Duration {
+	if throttler == nil {
+		return 0
+	}
+	if d, ok := throttler.(contract.LoginDelayer); ok {
+		delay := d.Delay(r, key)
+		if delay < 0 {
+			return 0
+		}
+		return delay
+	}
+	return DefaultIdentifierDelay
+}
 
 // maxIdentifierBytes caps the per-request identifier portion of the
 // throttle key BEFORE hashing. Without a cap an attacker can submit
