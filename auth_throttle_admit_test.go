@@ -61,8 +61,10 @@ func TestCacheLoginThrottler_Admit_ConcurrentAdmitsOne(t *testing.T) {
 func TestCacheLoginThrottler_Admit_ZeroHoldAndNilSafe(t *testing.T) {
 	th := newTestDimensionedLoginThrottler(t, 5, 20, 50)
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
-	if !th.Admit(r, "k", 0) || !th.Admit(r, "k", 0) {
-		t.Fatal("hold 0 must admit unconditionally")
+	for i := 0; i < 2; i++ {
+		if !th.Admit(r, "k", 0) {
+			t.Fatalf("hold 0 must admit unconditionally (call %d)", i+1)
+		}
 	}
 	var nilTh *cacheLoginThrottler
 	if !nilTh.Admit(r, "k", time.Second) || !(&cacheLoginThrottler{}).Admit(nil, "k", time.Second) {

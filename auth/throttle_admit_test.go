@@ -48,8 +48,10 @@ func TestLocalLoginAdmitter_ZeroHoldAndNilAdmit(t *testing.T) {
 	}
 	a.Release("k") // must not panic
 	zero := &LocalLoginAdmitter{}
-	if !zero.Admit(r, "k", 0) || !zero.Admit(r, "k", 0) {
-		t.Fatal("hold 0 must admit unconditionally")
+	for i := 0; i < 2; i++ {
+		if !zero.Admit(r, "k", 0) {
+			t.Fatalf("hold 0 must admit unconditionally (call %d)", i+1)
+		}
 	}
 	if !zero.Admit(nil, "k", time.Second) {
 		t.Fatal("nil request must be tolerated")
