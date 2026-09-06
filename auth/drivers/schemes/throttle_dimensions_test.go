@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/crypto"
@@ -17,10 +18,20 @@ import (
 // RecordFailure/RecordSuccess applied to every dimension key.
 type recordingThrottler struct {
 	mu         sync.Mutex
-	denyPrefix string // deny any key with this prefix; "" allows all
+	denyPrefix string        // deny any key with this prefix; "" allows all
+	delay      time.Duration // Delay answer for every key (contract.LoginDelayer)
 	allowCalls []string
 	failures   []string
 	successes  []string
+}
+
+// Delay implements contract.LoginDelayer so the scheme pays the fake's
+// configured delay (zero by default) instead of the 1s fallback applied
+// to throttlers without the capability.
+func (t *recordingThrottler) Delay(_ *http.Request, _ string) time.Duration {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.delay
 }
 
 func (t *recordingThrottler) Allow(_ *http.Request, key string) bool {

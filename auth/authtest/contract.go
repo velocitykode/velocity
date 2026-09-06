@@ -329,4 +329,45 @@ func RunLoginThrottlerContractTests(t *testing.T, factory LoginThrottlerFactory)
 		th.RecordFailure(nil, "no-req")
 		th.RecordSuccess(nil, "no-req")
 	})
+
+	// Optional capability: a throttler implementing contract.LoginDelayer
+	// must report no delay for a fresh key and tolerate a nil request.
+	t.Run("LoginDelayer_FreshKey_NoDelay", func(t *testing.T) {
+		th := factory(t)
+		d, ok := th.(contract.LoginDelayer)
+		if !ok {
+			t.Skip("throttler does not implement contract.LoginDelayer")
+		}
+		r := httptest.NewRequest(http.MethodPost, "/login", nil)
+		if got := d.Delay(r, "fresh-delay-key"); got != 0 {
+			t.Fatalf("Delay for fresh key = %v, want 0", got)
+		}
+		defer func() {
+			if rec := recover(); rec != nil {
+				t.Fatalf("Delay panicked on nil *http.Request: %v", rec)
+			}
+		}()
+		_ = d.Delay(nil, "no-req")
+	})
+
+	// Optional capability: a throttler implementing contract.LoginReserver
+	// admits a fresh key, counts each reservation, and clears the key on
+	// RecordSuccess.
+	t.Run("LoginReserver_FreshKey_Reserves", func(t *testing.T) {
+		th := factory(t)
+		rs, ok := th.(contract.LoginReserver)
+		if !ok {
+			t.Skip("throttler does not implement contract.LoginReserver")
+		}
+		r := httptest.NewRequest(http.MethodPost, "/login", nil)
+		if within, delay := rs.Reserve(r, "fresh-reserve-key"); !within || delay != 0 {
+			t.Fatalf("Reserve for fresh key = (%v, %v), want (true, 0)", within, delay)
+		}
+		defer func() {
+			if rec := recover(); rec != nil {
+				t.Fatalf("Reserve panicked on nil *http.Request: %v", rec)
+			}
+		}()
+		_, _ = rs.Reserve(nil, "no-req")
+	})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"time"
 )
 
 // EventDispatcherAware is the uniform interface for types that surface events
@@ -253,4 +254,66 @@ type LoginThrottler interface {
 	Allow(r *http.Request, key string) bool
 	RecordFailure(r *http.Request, key string)
 	RecordSuccess(r *http.Request, key string)
+}
+
+// LoginDelayer is an optional capability a LoginThrottler may implement.
+//
+// Delay reports the bounded progressive delay an attempt against key
+// must pay once that key's bucket is over cap; 0 means no delay. The
+// built-in schemes consult it only for the identifier dimension
+// (auth.ThrottleKeyIdentifierPrefix): that bucket is verify-first so
+// the account holder is never locked out, which also means it caps
+// nothing on its own once the pair and IP buckets are rotated by
+// spoofed or distributed source addresses. The delay is the control
+// that bounds account-level trials in that case: each over-cap attempt
+// (right or wrong) pays it before the result is returned, and it grows
+// with every further failure up to the implementation's ceiling.
+//
+// A LoginThrottler that does not implement LoginDelayer gets a fixed
+// auth.DefaultIdentifierDelay applied instead; implement Delay and
+// return 0 to opt out.
+type LoginDelayer interface {
+	Delay(r *http.Request, key string) time.Duration
+}
+
+// LoginAdmitter is an optional capability a LoginThrottler may implement.
+//
+// Admit claims the single in-flight credential trial slot for key and
+// holds it for hold; it returns false while another trial holds the
+// slot. The built-in schemes call it for an over-cap identifier before
+// running the credential check, so account-level trials are admitted
+// one at a time per delay window no matter how many connections or
+// source addresses the attacker spreads them across. A delay paid
+// inside each request bounds only that connection's rate; the slot is
+// what bounds the aggregate. Implementations backed by a shared store
+// (the cache-backed default uses an add-if-absent with TTL) make the
+// slot span every app instance; a throttler without the capability
+// falls back to a per-process slot (auth.LocalLoginAdmitter).
+type LoginAdmitter interface {
+	Admit(r *http.Request, key string, hold time.Duration) bool
+}
+
+// LoginReserver is an optional capability a LoginThrottler may implement.
+//
+// Reserve atomically counts the attempt against key BEFORE the
+// credential check and reports whether that attempt is within the
+// key's cap, plus the progressive delay an over-cap attempt must pay.
+// Allow-then-RecordFailure leaves a window in which concurrent attempts
+// all observe the same remaining capacity and are all verified;
+// reserving first closes it, including across a window reset, because
+// the count each attempt sees already includes itself. The delay is
+// derived from that same count rather than re-read afterwards, so a
+// window that expires between the reservation and the credential check
+// cannot turn an over-cap decision into a zero delay (which would also
+// skip the admission slot). It is 0 when the attempt is within cap or
+// the implementation has the delay disabled.
+//
+// When the throttler implements LoginReserver the built-in schemes use
+// Reserve in place of Allow and LoginDelayer and do not call
+// RecordFailure afterwards (the reservation is the failure record);
+// RecordSuccess still clears the key. A denied reservation stays
+// counted: it never extends the window, and the delay it can raise is
+// bounded by the implementation's ceiling.
+type LoginReserver interface {
+	Reserve(r *http.Request, key string) (within bool, delay time.Duration)
 }

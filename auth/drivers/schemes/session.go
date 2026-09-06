@@ -197,6 +197,12 @@ type SessionScheme struct {
 	// to auth.DefaultAttemptFloor. Set via SetAttemptFloor or seeded
 	// from auth.Config.AttemptFloor at boot.
 	attemptFloor time.Duration
+	// loginAdmitter is the per-process admission slot used for over-cap
+	// identifier trials when the throttler lacks contract.LoginAdmitter.
+	loginAdmitter auth.LocalLoginAdmitter
+	// loginChallenge, when set, lets an over-cap identifier attempt
+	// skip the delay and admission slot (guarded by mu).
+	loginChallenge auth.LoginChallenge
 	// csrfRotator keeps the per-session CSRF token aligned with the
 	// session lifecycle (H-02): Login rotates across Session.Regenerate,
 	// Logout revokes before Session.Invalidate, and the remember-cookie
@@ -323,6 +329,21 @@ func (g *SessionScheme) SetLoginThrottler(t contract.LoginThrottler) {
 		return
 	}
 	g.throttler.Store(&throttlerHolder{t: t})
+}
+
+// SetLoginChallenge installs (or clears when nil) the interactive
+// challenge predicate consulted for over-cap identifier attempts. See
+// auth.LoginChallenge. Normally propagated by Manager.SetLoginChallenge.
+func (g *SessionScheme) SetLoginChallenge(fn auth.LoginChallenge) {
+	g.mu.Lock()
+	g.loginChallenge = fn
+	g.mu.Unlock()
+}
+
+func (g *SessionScheme) getLoginChallenge() auth.LoginChallenge {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.loginChallenge
 }
 
 // SetServerSessionStore installs (or removes when nil) a server-side session
@@ -851,7 +872,7 @@ func (g *SessionScheme) Attempt(w http.ResponseWriter, r *http.Request, credenti
 	// a concurrent Set* call swaps one mid-call.
 	throttler := g.loadThrottler()
 	hasher := g.effectiveHasher()
-	user, keys, ok, err := attemptCredentials(r, credentials, g.loadUserStore(), hasher, throttler, g.effectiveAttemptFloor(), g.getTrustedProxies())
+	user, keys, ok, err := attemptCredentials(r, credentials, g.loadUserStore(), hasher, throttler, g.effectiveAttemptFloor(), g.getTrustedProxies(), &g.loginAdmitter, g.getLoginChallenge())
 	if !ok {
 		return false, err
 	}
@@ -871,9 +892,7 @@ func (g *SessionScheme) Attempt(w http.ResponseWriter, r *http.Request, credenti
 	// frame and is not surfaced to subscribers.
 	maybeEmitRehashEvent(r.Context(), g.getEventDispatcher(), hasher, user, "session", g.logWarn)
 
-	for _, key := range keys {
-		throttler.RecordSuccess(r, key)
-	}
+	recordAttemptSuccess(r, keys, throttler, &g.loginAdmitter)
 	return true, nil
 }
 

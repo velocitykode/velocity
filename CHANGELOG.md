@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security - Login throttling under source-address rotation
+
+- **Progressive delay on the identifier throttle dimension**: the
+  per-identifier login bucket is verify-first (an over-cap bucket still runs
+  the credential check so the account holder is never locked out), which
+  meant it bounded nothing once the pair and IP buckets were rotated by
+  distributed guessing or by forwarded headers that reached the app. Every
+  attempt against an over-cap identifier now pays a bounded exponential
+  delay inside the request, right or wrong password alike: 1s for the first
+  attempt past the cap, doubling per further failure, capped at 30s. A
+  correct password still logs in after paying it, and the success clears
+  the bucket. `AUTH_LOGIN_IDENTIFIER_DELAY` and
+  `AUTH_LOGIN_IDENTIFIER_DELAY_MAX` tune the base and ceiling (durations or
+  bare seconds; a base of `0` disables the delay).
+- **Reserve before verify**: the built-in throttler now counts an
+  attempt against every dimension atomically *before* the credential check
+  (`contract.LoginReserver`, an add-if-absent plus atomic increment on the
+  shared store) and reports whether that attempt is within the cap. The
+  previous Allow-then-RecordFailure sequence let concurrent attempts all
+  observe the same remaining capacity: with 19 of 20 identifier attempts
+  used, 64 parallel candidates were all verified. Now each attempt's count
+  includes itself, so exactly the remaining capacity is admitted, across
+  a window reset too. Schemes call `Reserve` in place of `Allow` when the
+  throttler implements it and record no further failure; a throttler
+  without the capability keeps the legacy, best-effort sequence. `Reserve`
+  also returns the progressive delay derived from that same count: a
+  window expiring between the reservation and the credential check can no
+  longer turn an over-cap decision into a zero delay, which would have
+  skipped the admission slot.
+- **No immortal throttle counters**: the failure counter is seeded with
+  the decay TTL by an add-if-absent and then incremented atomically. If
+  the window expired between those two operations every store recreated
+  the key from the increment with no expiration, leaving that pair, IP or
+  identifier bucket denied forever. A count of 1 that the add did not
+  create is now re-put under the decay TTL. This applied to
+  `RecordFailure` before this release as well.
+- **One admitted trial per delay window, in aggregate**: a delay paid
+  inside each request bounds only that connection, so an over-cap
+  identifier attempt must also claim the identifier's single admission
+  slot for the length of the delay. While it is held, every further
+  attempt for that identifier from any connection or source address is
+  denied before the credential check and records no failure. The
+  cache-backed throttler holds the slot with an add-if-absent on the shared
+  store, so it spans every app instance; a throttler without the
+  capability falls back to a per-process `auth.LocalLoginAdmitter`.
+- **Challenge hook**: `Manager.SetLoginChallenge(fn)` installs a
+  `func(*http.Request) bool` (a verified CAPTCHA token, an out-of-band
+  code). An over-cap identifier attempt that passes it skips the delay and
+  the slot, so the account holder can log in during an attack without
+  waiting behind the attacker's trials. With a challenge configured, a
+  held slot yields `auth.ErrLoginChallengeRequired` (wraps
+  `ErrLoginThrottled`) so handlers can render the challenge; without one it
+  yields `ErrLoginThrottled`. The challenge never bypasses the pair or IP
+  caps.
+- **`contract.LoginDelayer` / `contract.LoginAdmitter`**: optional
+  capabilities on a `LoginThrottler` (`Delay(r, key) time.Duration`,
+  `Admit(r, key, hold) bool`). The cache-backed default implements both;
+  `auth.ProgressiveDelay` is exported for custom throttlers. A throttler
+  without `LoginDelayer` pays a fixed `auth.DefaultIdentifierDelay` (1s);
+  implement `Delay` and return 0 to opt out.
+  `authtest.RunLoginThrottlerContractTests` covers `LoginDelayer` when
+  present.
+- **Starters no longer rewrite the request from forwarded headers**: the
+  scaffolded `TrustProxiesMiddleware` copied `X-Forwarded-For` into
+  `RemoteAddr` and `X-Forwarded-Host` into `Host` from any peer. It is
+  removed from every starter; client identity comes from the socket peer
+  and `AUTH_TRUSTED_PROXIES` (`router.TrustedProxies` + `clientip.Extract`)
+  only.
+
 ## [0.77.0] - 2026-09-05
 
 ### Added - Markdown
