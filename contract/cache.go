@@ -138,6 +138,37 @@ type CacheStore interface {
 	GetPrefix() string
 }
 
+// CacheReplacer is the optional capability a Cache implements to write a
+// key only when it already exists (the SET XX primitive, the complement of
+// AddCtx). ReplaceCtx returns (true, nil) when the value was written and
+// (false, nil) when no live entry exists for key; it never inserts. The
+// TTL contract matches PutCtx: ttl <= 0 keeps the entry forever.
+//
+// It is what lets a caller refresh a record without the create-or-replace
+// semantics of PutCtx, so a refresh racing a delete cannot resurrect the
+// deleted key.
+type CacheReplacer interface {
+	ReplaceCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error)
+}
+
+// CacheSetStore is the optional capability a Cache implements to keep an
+// unordered set of strings under one key with atomic membership updates
+// (Redis SADD / SREM / SMEMBERS). Implementations must never read-modify-
+// write the set in the caller's process: concurrent SetAddCtx and
+// SetRemoveCtx calls from different processes must not lose updates.
+//
+// SetAddCtx adds members and guarantees the key lives at least ttl from
+// now: a fresh key gets ttl, an existing key's expiry is extended when it
+// is shorter and never shortened, and ttl <= 0 removes the expiry so the
+// set is kept forever (a later positive ttl does not reinstate one).
+// SetRemoveCtx removes members; removing the last member may delete the
+// key. SetMembersCtx returns the live members, nil when the key is absent.
+type CacheSetStore interface {
+	SetAddCtx(ctx context.Context, key string, ttl time.Duration, members ...string) error
+	SetRemoveCtx(ctx context.Context, key string, members ...string) error
+	SetMembersCtx(ctx context.Context, key string) ([]string, error)
+}
+
 // CacheLock defines the interface for a cache lock.
 //
 // All methods that perform I/O or may block accept a context so callers can

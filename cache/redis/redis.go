@@ -270,6 +270,93 @@ func (s *RedisStore) Forever(key string, value interface{}) error {
 }
 
 // ForgetCtx removes a value from the cache using the provided context.
+// ReplaceCtx implements contract.CacheReplacer via SET XX: the write lands
+// only when the key exists, so it can never recreate a deleted key.
+func (s *RedisStore) ReplaceCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error) {
+	data, err := drivers.MarshalValue(value)
+	if err != nil {
+		return false, fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
+	}
+	ok, err := s.client.SetXX(ctx, s.prefixedKey(key), data, clampTTL(ttl)).Result()
+	if err != nil {
+		return false, fmt.Errorf("velocity/cache: redis setxx failed: %w", err)
+	}
+	return ok, nil
+}
+
+// setAddScript adds members and applies the extend-only expiry contract in
+// one server-side step: a fresh key gets ttl, a key without expiry keeps
+// none, a key with a shorter remaining TTL is extended, a longer one is
+// left alone, and ttl <= 0 persists the key. A script rather than
+// MULTI/EXEC because the TTL decision depends on the key's prior state,
+// and EXPIRE GT alone would leave a fresh key (no expiry) untouched.
+//
+// KEYS[1] = set key, ARGV[1] = ttl in milliseconds, ARGV[2..] = members.
+var setAddScript = redis.NewScript(`
+local existed = redis.call('EXISTS', KEYS[1])
+redis.call('SADD', KEYS[1], unpack(ARGV, 2))
+local ttl = tonumber(ARGV[1])
+if ttl <= 0 then
+  redis.call('PERSIST', KEYS[1])
+  return 1
+end
+if existed == 0 then
+  redis.call('PEXPIRE', KEYS[1], ttl)
+  return 1
+end
+local current = redis.call('PTTL', KEYS[1])
+if current >= 0 and current < ttl then
+  redis.call('PEXPIRE', KEYS[1], ttl)
+end
+return 1
+`)
+
+// SetAddCtx implements contract.CacheSetStore with SADD plus the
+// extend-only expiry rule, executed atomically by setAddScript.
+func (s *RedisStore) SetAddCtx(ctx context.Context, key string, ttl time.Duration, members ...string) error {
+	if len(members) == 0 {
+		return nil
+	}
+	args := make([]interface{}, 0, len(members)+1)
+	args = append(args, clampTTL(ttl).Milliseconds())
+	for _, m := range members {
+		args = append(args, m)
+	}
+	if err := setAddScript.Run(ctx, s.client, []string{s.prefixedKey(key)}, args...).Err(); err != nil {
+		return fmt.Errorf("velocity/cache: redis sadd failed: %w", err)
+	}
+	return nil
+}
+
+// SetRemoveCtx implements contract.CacheSetStore with SREM; Redis deletes
+// the key itself when the last member goes.
+func (s *RedisStore) SetRemoveCtx(ctx context.Context, key string, members ...string) error {
+	if len(members) == 0 {
+		return nil
+	}
+	args := make([]interface{}, len(members))
+	for i, m := range members {
+		args[i] = m
+	}
+	if err := s.client.SRem(ctx, s.prefixedKey(key), args...).Err(); err != nil {
+		return fmt.Errorf("velocity/cache: redis srem failed: %w", err)
+	}
+	return nil
+}
+
+// SetMembersCtx implements contract.CacheSetStore with SMEMBERS. An absent
+// key yields nil.
+func (s *RedisStore) SetMembersCtx(ctx context.Context, key string) ([]string, error) {
+	members, err := s.client.SMembers(ctx, s.prefixedKey(key)).Result()
+	if err != nil {
+		return nil, fmt.Errorf("velocity/cache: redis smembers failed: %w", err)
+	}
+	if len(members) == 0 {
+		return nil, nil
+	}
+	return members, nil
+}
+
 func (s *RedisStore) ForgetCtx(ctx context.Context, key string) error {
 	if err := s.client.Del(ctx, s.prefixedKey(key)).Err(); err != nil {
 		return fmt.Errorf("velocity/cache: redis del failed: %w", err)
@@ -468,3 +555,9 @@ func (s *RedisStore) RememberForever(key string, callback func() interface{}) (i
 func (s *RedisStore) GetPrefix() string {
 	return s.prefix
 }
+
+// Compile-time checks for the optional capabilities.
+var (
+	_ contract.CacheReplacer = (*RedisStore)(nil)
+	_ contract.CacheSetStore = (*RedisStore)(nil)
+)

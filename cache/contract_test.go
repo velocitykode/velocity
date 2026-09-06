@@ -30,6 +30,26 @@ func TestMemoryStore_LockerContract(t *testing.T) {
 	})
 }
 
+// TestMemoryStore_ReplacerContract runs the CacheReplacer spec against the
+// memory store.
+func TestMemoryStore_ReplacerContract(t *testing.T) {
+	cachetest.RunReplacerContractTests(t, func(t *testing.T) cachetest.ReplacerStore {
+		s := drivers.NewMemoryStore("contract-replace")
+		t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
+		return s
+	}, nil)
+}
+
+// TestMemoryStore_SetStoreContract runs the CacheSetStore spec against the
+// memory store.
+func TestMemoryStore_SetStoreContract(t *testing.T) {
+	cachetest.RunSetStoreContractTests(t, func(t *testing.T) cachetest.SetStore {
+		s := drivers.NewMemoryStore("contract-set")
+		t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
+		return s
+	}, nil)
+}
+
 // TestFileStore_Contract runs the cachetest.Store spec against the
 // filesystem-backed store rooted at t.TempDir.
 func TestFileStore_Contract(t *testing.T) {
