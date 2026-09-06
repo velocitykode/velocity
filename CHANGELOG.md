@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security - Session revocation survives the activity refresh
+
+- **`ServerSessionStore.Touch` (breaking)**: the session scheme refreshed
+  `LastSeenAt` on the server-side record through `Put`, which is
+  create-or-replace. A revocation (`RevokeSession`, `RevokeAllSessions`,
+  logout) that landed between the per-request `Get` and that debounced
+  write was undone: the stale record was written back and the cookie
+  stayed valid. The contract now carries
+  `Touch(ctx, id, lastSeen time.Time) error`, an update-if-present that
+  returns `auth.ErrSessionNotFound` when the record is gone and never
+  inserts. The scheme refreshes through `Touch` only; a not-found (or
+  expired) result is treated as revoked and the request that lost the race
+  is denied. `Put` is documented as the login-time write and must not be
+  used to record activity. `session.MemoryStore` implements `Touch` under
+  its existing mutex and `authtest.RunServerSessionStoreContractTests`
+  covers it, including the no-resurrection cases after `Delete` and
+  `DeleteAllForUser`. Every custom store must add the method.
+
 ### Security - Login throttling under source-address rotation
 
 - **Progressive delay on the identifier throttle dimension**: the

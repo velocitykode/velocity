@@ -129,19 +129,25 @@ func (s *MemoryStore) Get(ctx context.Context, id string) (*auth.StoredSession, 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	// Snapshot under the read lock: Touch mutates the stored record in
+	// place under the write lock, so the copy must not happen after RUnlock.
 	s.mu.RLock()
 	sess, ok := s.byID[id]
+	var snap *auth.StoredSession
+	if ok {
+		snap = cloneStored(sess)
+	}
 	s.mu.RUnlock()
 	if !ok {
 		return nil, auth.ErrSessionNotFound
 	}
-	if !sess.ExpiresAt.IsZero() && s.clock().After(sess.ExpiresAt) {
+	if !snap.ExpiresAt.IsZero() && s.clock().After(snap.ExpiresAt) {
 		s.mu.Lock()
 		s.removeLocked(id)
 		s.mu.Unlock()
 		return nil, auth.ErrSessionExpired
 	}
-	return cloneStored(sess), nil
+	return snap, nil
 }
 
 // Put creates or replaces a session record. ID and UserID are required;
@@ -185,6 +191,29 @@ func (s *MemoryStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 		s.byUser[stored.UserID] = set
 	}
 	set[stored.ID] = struct{}{}
+	return nil
+}
+
+// Touch sets LastSeenAt on an existing record under the store mutex. It
+// never inserts: a missing id returns auth.ErrSessionNotFound, and a record
+// past ExpiresAt is removed and reported as auth.ErrSessionExpired, so an
+// activity refresh that loses the race against Delete or DeleteAllForUser
+// cannot resurrect the revoked session.
+func (s *MemoryStore) Touch(ctx context.Context, id string, lastSeen time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.byID[id]
+	if !ok {
+		return auth.ErrSessionNotFound
+	}
+	if !sess.ExpiresAt.IsZero() && s.clock().After(sess.ExpiresAt) {
+		s.removeLocked(id)
+		return auth.ErrSessionExpired
+	}
+	sess.LastSeenAt = lastSeen
 	return nil
 }
 

@@ -98,7 +98,18 @@ type ServerSessionStore interface {
 	// Put creates or replaces a session record. Implementations must
 	// update LastSeenAt to time.Now() and reject records with empty ID
 	// or UserID.
+	//
+	// Put is the Login-time write only. It must never be used for the
+	// activity refresh: a create-or-replace issued after a concurrent
+	// Delete would resurrect a revoked session. Use Touch for that.
 	Put(ctx context.Context, session *StoredSession) error
+
+	// Touch sets LastSeenAt on an existing record. It is update-if-present:
+	// it returns ErrSessionNotFound when no record exists for id and must
+	// never insert one, so a refresh racing a revocation cannot recreate
+	// the deleted row. Implementations may return ErrSessionExpired (and
+	// remove the record) when the record has passed ExpiresAt.
+	Touch(ctx context.Context, id string, lastSeen time.Time) error
 
 	// Delete removes a single session by id. Returns nil when the
 	// record does not exist (idempotent).

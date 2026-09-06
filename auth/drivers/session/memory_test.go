@@ -93,6 +93,102 @@ func TestSessionStore_Get_NotFound(t *testing.T) {
 	}
 }
 
+func TestSessionStore_Touch(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if err := s.Put(ctx, makeSession("s1", "u1", time.Hour)); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	stamp := time.Now().Add(5 * time.Minute)
+	if err := s.Touch(ctx, "s1", stamp); err != nil {
+		t.Fatalf("Touch: %v", err)
+	}
+	got, err := s.Get(ctx, "s1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.LastSeenAt.Equal(stamp) {
+		t.Fatalf("LastSeenAt = %v, want %v", got.LastSeenAt, stamp)
+	}
+	// Secondary index untouched: the session still lists for its user.
+	list, _ := s.ListForUser(ctx, "u1")
+	if len(list) != 1 || !list[0].LastSeenAt.Equal(stamp) {
+		t.Fatalf("ListForUser after Touch = %+v", list)
+	}
+}
+
+func TestSessionStore_Touch_MissingNeverInserts(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if err := s.Touch(ctx, "ghost", time.Now()); !errors.Is(err, auth.ErrSessionNotFound) {
+		t.Fatalf("expected ErrSessionNotFound, got %v", err)
+	}
+	s.mu.RLock()
+	_, inByID := s.byID["ghost"]
+	users := len(s.byUser)
+	s.mu.RUnlock()
+	if inByID || users != 0 {
+		t.Fatalf("Touch inserted state: byID=%v byUser=%d", inByID, users)
+	}
+}
+
+func TestSessionStore_Touch_ExpiredEvicts(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	_ = s.Put(ctx, makeSession("old", "u1", time.Hour))
+	s.clock = func() time.Time { return time.Now().Add(2 * time.Hour) }
+	if err := s.Touch(ctx, "old", time.Now()); !errors.Is(err, auth.ErrSessionExpired) {
+		t.Fatalf("expected ErrSessionExpired, got %v", err)
+	}
+	if _, err := s.Get(ctx, "old"); !errors.Is(err, auth.ErrSessionNotFound) {
+		t.Fatalf("expired record should be evicted by Touch, got %v", err)
+	}
+}
+
+// TestSessionStore_Touch_ConcurrentWithGet pins the reader/writer contract:
+// Get snapshots the record under the read lock while Touch mutates it under
+// the write lock. Run with -race.
+func TestSessionStore_Touch_ConcurrentWithGet(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if err := s.Put(ctx, makeSession("s1", "u1", time.Hour)); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	const N = 200
+	var wg sync.WaitGroup
+	wg.Add(2 * N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			if err := s.Touch(ctx, "s1", time.Now()); err != nil {
+				t.Errorf("Touch: %v", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			got, err := s.Get(ctx, "s1")
+			if err != nil {
+				t.Errorf("Get: %v", err)
+				return
+			}
+			_ = got.LastSeenAt
+			if _, err := s.ListForUser(ctx, "u1"); err != nil {
+				t.Errorf("ListForUser: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestSessionStore_Touch_RespectsContext(t *testing.T) {
+	s := newTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.Touch(ctx, "s1", time.Now()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
 func TestSessionStore_Delete(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

@@ -256,13 +256,18 @@ func TestSessionScheme_LastSeenAtRefresh(t *testing.T) {
 	}
 
 	// Backdate LastSeenAt past the window, then Check should refresh.
+	// Touch, not Put: Put stamps LastSeenAt with the current time, so a
+	// Put-based backdate would silently leave the record inside the window.
+	backdated := time.Now().Add(-2 * lastSeenDebounce)
+	if err := store.Touch(context.Background(), id, backdated); err != nil {
+		t.Fatalf("Touch backdated: %v", err)
+	}
 	rec, err := store.Get(context.Background(), id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	rec.LastSeenAt = time.Now().Add(-2 * lastSeenDebounce)
-	if err := store.Put(context.Background(), rec); err != nil {
-		t.Fatalf("Put backdated: %v", err)
+	if !rec.LastSeenAt.Equal(backdated) {
+		t.Fatalf("backdate did not stick: %v", rec.LastSeenAt)
 	}
 
 	// Use a fresh request so the cached holder result does not short-circuit
@@ -274,6 +279,151 @@ func TestSessionScheme_LastSeenAtRefresh(t *testing.T) {
 	if !list[0].LastSeenAt.After(rec.LastSeenAt) {
 		t.Errorf("LastSeenAt should have advanced after debounce expired (was %v, still %v)", rec.LastSeenAt, list[0].LastSeenAt)
 	}
+}
+
+// revokeBetweenReadAndWriteStore wraps a real store and runs a hook after
+// every successful Get, before the scheme's Touch write-back. Deleting the
+// record in that hook reproduces the window where an administrative
+// revocation lands between the per-request read and the debounced
+// LastSeenAt refresh.
+type revokeBetweenReadAndWriteStore struct {
+	*session.MemoryStore
+	afterGet func(rec *auth.StoredSession)
+}
+
+func (s *revokeBetweenReadAndWriteStore) Get(ctx context.Context, id string) (*auth.StoredSession, error) {
+	rec, err := s.MemoryStore.Get(ctx, id)
+	if err == nil && s.afterGet != nil {
+		s.afterGet(rec)
+	}
+	return rec, err
+}
+
+// TestSessionScheme_RevokeBetweenReadAndRefresh_DeniesRequest covers the
+// audit finding that the activity refresh used Put (create-or-replace) and
+// so recreated a record deleted after the read. With Touch the refresh
+// cannot insert, the request that lost the race is denied, and the cookie
+// stays dead on the next request. Both single and bulk revocation paths.
+func TestSessionScheme_RevokeBetweenReadAndRefresh_DeniesRequest(t *testing.T) {
+	cases := []struct {
+		name   string
+		revoke func(ctx context.Context, store auth.ServerSessionStore, rec *auth.StoredSession)
+	}{
+		{"single", func(ctx context.Context, store auth.ServerSessionStore, rec *auth.StoredSession) {
+			_ = store.Delete(ctx, rec.ID)
+		}},
+		{"bulk", func(ctx context.Context, store auth.ServerSessionStore, rec *auth.StoredSession) {
+			_ = store.DeleteAllForUser(ctx, rec.UserID)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inner := session.NewMemoryStore()
+			defer inner.Close(context.Background())
+			store := &revokeBetweenReadAndWriteStore{MemoryStore: inner}
+
+			scheme, _ := newRevokeScheme(t, store)
+			cookie := loginAndCookie(t, scheme, "u1")
+
+			list, _ := inner.ListForUser(context.Background(), "u1")
+			if len(list) != 1 {
+				t.Fatalf("expected 1 session, got %d", len(list))
+			}
+			id := list[0].ID
+
+			// Backdate LastSeenAt past the debounce so the next Check refreshes.
+			if err := inner.Touch(context.Background(), id, time.Now().Add(-2*lastSeenDebounce)); err != nil {
+				t.Fatalf("Touch backdated: %v", err)
+			}
+
+			// Revoke in the window between the read and the refresh write.
+			var fired atomic.Bool
+			store.afterGet = func(rec *auth.StoredSession) {
+				if fired.CompareAndSwap(false, true) {
+					tc.revoke(context.Background(), inner, rec)
+				}
+			}
+
+			if scheme.Check(requestWith(cookie)) {
+				t.Fatal("Check succeeded on the request that lost the race against revocation")
+			}
+			if !fired.Load() {
+				t.Fatal("revocation hook never fired; test did not exercise the window")
+			}
+
+			// The refresh must not have recreated the record.
+			if _, err := inner.Get(context.Background(), id); !errors.Is(err, auth.ErrSessionNotFound) {
+				t.Fatalf("record resurrected by the activity refresh: %v", err)
+			}
+			if list, _ := inner.ListForUser(context.Background(), "u1"); len(list) != 0 {
+				t.Fatalf("user still lists %d sessions after revocation", len(list))
+			}
+
+			// And the cookie stays denied on the next request.
+			store.afterGet = nil
+			if scheme.Check(requestWith(cookie)) {
+				t.Fatal("revoked cookie accepted on the following request")
+			}
+		})
+	}
+}
+
+// TestSessionScheme_LastSeenAtRefresh_UsesTouchNotPut pins the contract:
+// the debounced activity write must go through Touch. A store whose Put
+// fails loudly after login proves no Put is issued on the read path.
+func TestSessionScheme_LastSeenAtRefresh_UsesTouchNotPut(t *testing.T) {
+	inner := session.NewMemoryStore()
+	defer inner.Close(context.Background())
+	store := &putTrapStore{MemoryStore: inner}
+
+	scheme, _ := newRevokeScheme(t, store)
+	cookie := loginAndCookie(t, scheme, "u1")
+	list, _ := inner.ListForUser(context.Background(), "u1")
+	if len(list) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(list))
+	}
+	backdated := time.Now().Add(-2 * lastSeenDebounce)
+	if err := inner.Touch(context.Background(), list[0].ID, backdated); err != nil {
+		t.Fatalf("Touch backdated: %v", err)
+	}
+	rec, _ := inner.Get(context.Background(), list[0].ID)
+
+	store.armed.Store(true)
+	if !scheme.Check(requestWith(cookie)) {
+		t.Fatal("Check failed")
+	}
+	if store.puts.Load() != 0 {
+		t.Fatalf("activity refresh issued %d Put call(s); must use Touch", store.puts.Load())
+	}
+	if store.touches.Load() != 1 {
+		t.Fatalf("expected exactly 1 Touch, got %d", store.touches.Load())
+	}
+	after, _ := inner.Get(context.Background(), rec.ID)
+	if !after.LastSeenAt.After(rec.LastSeenAt) {
+		t.Fatalf("LastSeenAt not refreshed via Touch: %v -> %v", rec.LastSeenAt, after.LastSeenAt)
+	}
+}
+
+// putTrapStore counts Put and Touch calls once armed (after login).
+type putTrapStore struct {
+	*session.MemoryStore
+	armed   atomic.Bool
+	puts    atomic.Int32
+	touches atomic.Int32
+}
+
+func (s *putTrapStore) Put(ctx context.Context, rec *auth.StoredSession) error {
+	if s.armed.Load() {
+		s.puts.Add(1)
+	}
+	return s.MemoryStore.Put(ctx, rec)
+}
+
+func (s *putTrapStore) Touch(ctx context.Context, id string, lastSeen time.Time) error {
+	if s.armed.Load() {
+		s.touches.Add(1)
+	}
+	return s.MemoryStore.Touch(ctx, id, lastSeen)
 }
 
 // TestSessionScheme_ConcurrentCheckRevoke exercises the race between a
@@ -362,6 +512,9 @@ func (f *flakyStore) Get(ctx context.Context, id string) (*auth.StoredSession, e
 }
 func (f *flakyStore) Put(ctx context.Context, s *auth.StoredSession) error {
 	return f.inner.Put(ctx, s)
+}
+func (f *flakyStore) Touch(ctx context.Context, id string, lastSeen time.Time) error {
+	return f.inner.Touch(ctx, id, lastSeen)
 }
 func (f *flakyStore) Delete(ctx context.Context, id string) error { return f.inner.Delete(ctx, id) }
 func (f *flakyStore) DeleteAllForUser(ctx context.Context, userID string) error {

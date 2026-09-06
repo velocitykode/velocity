@@ -1102,29 +1102,48 @@ func (g *SessionScheme) consultServerStore(r *http.Request, session auth.Session
 		return resolved
 	}
 
+	if err := g.maybeRefreshLastSeen(r.Context(), store, rec); err != nil {
+		// The record vanished between Get and Touch: a revocation won the
+		// race. Deny this request rather than let it ride on the stale read.
+		if holder != nil {
+			holder.setStoreCache(nil, err)
+		}
+		return err
+	}
+
 	if holder != nil {
 		holder.setStoreCache(rec, nil)
 	}
-
-	g.maybeRefreshLastSeen(r.Context(), store, rec)
 	return nil
 }
 
 // maybeRefreshLastSeen writes a debounced LastSeenAt update back to the
 // store. The debounce keeps the read on every request (mandatory for
 // revocation) without doubling the round-trips.
-func (g *SessionScheme) maybeRefreshLastSeen(ctx context.Context, store auth.ServerSessionStore, rec *auth.StoredSession) {
+//
+// The write goes through ServerSessionStore.Touch, never Put: Put is
+// create-or-replace and would recreate a record deleted between the Get
+// above and this write. A not-found (or expired) result from Touch means
+// the session was revoked mid-request and is returned as
+// auth.ErrSessionRevoked so the caller denies the request. Any other
+// store error is logged and swallowed: the refresh is best-effort and the
+// Get already proved the session live.
+func (g *SessionScheme) maybeRefreshLastSeen(ctx context.Context, store auth.ServerSessionStore, rec *auth.StoredSession) error {
 	if rec == nil {
-		return
+		return nil
 	}
 	if time.Since(rec.LastSeenAt) < lastSeenDebounce {
-		return
+		return nil
 	}
-	updated := *rec
-	updated.LastSeenAt = time.Now()
-	if err := store.Put(ctx, &updated); err != nil {
-		g.logWarn("velocity/auth: server session store put (lastseen) failed", "session_id", rec.ID, "error", err)
+	err := store.Touch(ctx, rec.ID, time.Now())
+	if err == nil {
+		return nil
 	}
+	if errors.Is(err, auth.ErrSessionNotFound) || errors.Is(err, auth.ErrSessionExpired) {
+		return auth.ErrSessionRevoked
+	}
+	g.logWarn("velocity/auth: server session store touch (lastseen) failed", "session_id", rec.ID, "error", err)
+	return nil
 }
 
 // recordServerSession writes the freshly-issued session to the server-side

@@ -47,6 +47,18 @@ func (f *fakeServerSessionStore) Put(_ context.Context, s *StoredSession) error 
 	return nil
 }
 
+func (f *fakeServerSessionStore) Touch(_ context.Context, id string, lastSeen time.Time) error {
+	f.record("touch:" + id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.byID[id]
+	if !ok {
+		return ErrSessionNotFound
+	}
+	s.LastSeenAt = lastSeen
+	return nil
+}
+
 func (f *fakeServerSessionStore) Delete(_ context.Context, id string) error {
 	f.record("delete:" + id)
 	f.mu.Lock()
