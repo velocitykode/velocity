@@ -159,12 +159,21 @@ func (a *App) runBootstrap() error {
 		a.commandsFn(a.commands)
 	}
 
-	// 7. Configure exceptions
+	// 7. Register database seeders (consumed by `vel db seed`)
+	a.seeders = chain.NewSeeders()
+	dispatchModuleCallback(a.chainModules, func(sp chain.SeederModule) {
+		sp.Seeders(a.seeders)
+	})
+	if a.seedersFn != nil {
+		a.seedersFn(a.seeders)
+	}
+
+	// 8. Configure exceptions
 	if a.exceptionsFn != nil {
 		a.exceptionsFn(a.Services.Exceptions)
 	}
 
-	// 8. Refuse to run with CookieStore-only sessions in production
+	// 9. Refuse to run with CookieStore-only sessions in production
 	// unless the operator explicitly opted in. The CookieStore in-process
 	// revocation list (H-04) closes the captured-cookie window on a
 	// single host, but cannot propagate across a fleet on its own. See

@@ -91,6 +91,7 @@ func newCommandRegistry() *commandRegistry {
 		migrateRollbackCmd{},
 		migrateStatusCmd{},
 		dbWipeCmd{},
+		dbSeedCmd{},
 	)
 	r.addSection("Queue & Scheduler",
 		queueWorkCmd{},
@@ -103,6 +104,7 @@ func newCommandRegistry() *commandRegistry {
 		genHandlerCmd{},
 		genModelCmd{},
 		genMigrationCmd{},
+		genSeederCmd{},
 		genMiddlewareCmd{},
 		genEventCmd{},
 		genListenerCmd{},
@@ -223,9 +225,12 @@ func hasForceFlag(args []string) bool {
 	return false
 }
 
-// guardProductionDataLoss refuses to run a command that destroys database
-// data (db wipe, migrate fresh, migrate rollback) in a production-class
-// environment unless the operator passed --force. Same fail-secure stance
+// guardProduction refuses to run a command that changes database data in a
+// production-class environment unless the operator passed --force. reason is
+// the clause the refusal prints after the environment ("this command destroys
+// database data"). guardProductionDataLoss is the data-loss instance used by
+// db wipe, migrate fresh and migrate rollback; db seed guards through
+// guardProduction directly with its own reason. Same fail-secure stance
 // as the other production gates (session store validation, gRPC reflection,
 // mail log-driver warning): contract.IsProductionEnv treats "production",
 // "prod", "staging", and any unrecognised APP_ENV value as production, so a
@@ -233,9 +238,9 @@ func hasForceFlag(args []string) bool {
 //
 // The guard lives in the cmd layer by design and runs BEFORE Bootstrap so a
 // refused command never executes the module lifecycle. Programmatic
-// callers of console.DBWipe / console.MigrateFresh / console.MigrateRollback
-// are unaffected; those functions are unguarded by contract.
-func guardProductionDataLoss(a *App, name string, args []string) error {
+// callers of console.DBWipe / console.MigrateFresh / console.MigrateRollback /
+// console.Seed are unaffected; those functions are unguarded by contract.
+func guardProduction(a *App, name string, args []string, reason string) error {
 	if hasForceFlag(args) {
 		return nil
 	}
@@ -246,7 +251,13 @@ func guardProductionDataLoss(a *App, name string, args []string) error {
 	if !contract.IsProductionEnv(env) {
 		return nil
 	}
-	return fmt.Errorf("vel: refusing to run %q in a production environment (APP_ENV=%q): this command destroys database data; pass --force to proceed", name, env)
+	return fmt.Errorf("vel: refusing to run %q in a production environment (APP_ENV=%q): %s; pass --force to proceed", name, env, reason)
+}
+
+// guardProductionDataLoss is guardProduction for the commands that drop or
+// truncate data (db wipe, migrate fresh, migrate rollback).
+func guardProductionDataLoss(a *App, name string, args []string) error {
+	return guardProduction(a, name, args, "this command destroys database data")
 }
 
 // Run dispatches CLI commands or starts the HTTP server.

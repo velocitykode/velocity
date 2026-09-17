@@ -69,6 +69,7 @@ func TestGen_DirFlag_WritesToCustomDir(t *testing.T) {
 		defltAt string // package default dir that must stay empty
 	}{
 		{name: "gen command", run: func(n string) error { return GenCommand(n, GenCommandOptions{Dir: dir}) }, input: "SendEmail", file: "send_email.go", defltAt: "internal/commands"},
+		{name: "gen seeder", run: func(n string) error { return GenSeeder(n, GenSeederOptions{Dir: dir}) }, input: "Role", file: "role.go", defltAt: "database/seeders"},
 		{name: "gen event", run: func(n string) error { return GenEvent(n, GenEventOptions{Dir: dir}) }, input: "UserRegistered", file: "user_registered.go", defltAt: "internal/events"},
 		{name: "gen job", run: func(n string) error { return GenJob(n, GenJobOptions{Dir: dir}) }, input: "ProcessImport", file: "process_import.go", defltAt: "internal/jobs"},
 		{name: "gen listener", run: func(n string) error { return GenListener(n, GenListenerOptions{Dir: dir}) }, input: "SendWelcome", file: "send_welcome.go", defltAt: "internal/listeners"},

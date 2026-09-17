@@ -5,11 +5,13 @@ import (
 	"testing"
 )
 
-// destructiveDBCommands lists every built-in command that drops or truncates
+// productionGuardedDBCommands lists every built-in command that changes
 // database data and must therefore refuse to run in a production-class
-// environment without --force. If a new drop/truncate command is added to the
-// registry, add it here so it inherits the guard coverage.
-var destructiveDBCommands = []string{"db wipe", "migrate fresh", "migrate rollback"}
+// environment without --force: the three that drop or truncate (db wipe,
+// migrate fresh, migrate rollback) and db seed, which writes fixture rows. If
+// a new such command is added to the registry, add it here so it inherits the
+// guard coverage.
+var productionGuardedDBCommands = []string{"db wipe", "migrate fresh", "migrate rollback", "db seed"}
 
 // TestDestructiveDBCommands_RefuseInProductionWithoutForce is the V2-06
 // regression test: db wipe / migrate fresh / migrate rollback must refuse in
@@ -18,7 +20,7 @@ var destructiveDBCommands = []string{"db wipe", "migrate fresh", "migrate rollba
 // --force was passed. The refusal must fire BEFORE Bootstrap so no module
 // lifecycle runs.
 func TestDestructiveDBCommands_RefuseInProductionWithoutForce(t *testing.T) {
-	for _, name := range destructiveDBCommands {
+	for _, name := range productionGuardedDBCommands {
 		for _, env := range []string{"production", "prod", "staging", "some-typo"} {
 			t.Run(name+"/"+env, func(t *testing.T) {
 				a, err := NewTestApp()
@@ -52,7 +54,7 @@ func TestDestructiveDBCommands_RefuseInProductionWithoutForce(t *testing.T) {
 // The test app has no database configured, so the underlying console
 // functions warn and return nil; a nil error proves the guard stepped aside.
 func TestDestructiveDBCommands_ForceOverridesProductionGuard(t *testing.T) {
-	for _, name := range destructiveDBCommands {
+	for _, name := range productionGuardedDBCommands {
 		for _, flag := range []string{"--force", "-f"} {
 			t.Run(name+"/"+flag, func(t *testing.T) {
 				a, err := NewTestApp()
@@ -83,7 +85,7 @@ func TestDestructiveDBCommands_ForceOverridesProductionGuard(t *testing.T) {
 // non-production envs: the guard must not change behavior there, with or
 // without --force.
 func TestDestructiveDBCommands_UnguardedInDevAndTestEnvs(t *testing.T) {
-	for _, name := range destructiveDBCommands {
+	for _, name := range productionGuardedDBCommands {
 		for _, env := range []string{"development", "dev", "test", "testing", "local", ""} {
 			t.Run(name+"/env="+env, func(t *testing.T) {
 				a, err := NewTestApp()

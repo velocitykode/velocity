@@ -85,6 +85,8 @@ type App struct {
 	scheduleFn   func(scheduler.TaskScheduler)
 	commandsFn   func(*chain.Commands)
 	commands     *chain.Commands
+	seedersFn    func(*chain.Seeders)
+	seeders      *chain.Seeders
 	exceptionsFn func(exceptions.ExceptionHandler)
 	bootstrapped bool
 	// bootstrapErr is the sticky result of the first bootstrap() run.
@@ -910,7 +912,8 @@ func (a *App) Version() string {
 // Modules registers a callback that adds modules to the application.
 // Modules registered here participate in the full bootstrap lifecycle including
 // optional interfaces (chain.RouteModule, chain.MiddlewareModule,
-// chain.EventModule, chain.ScheduleModule, chain.CommandModule).
+// chain.EventModule, chain.ScheduleModule, chain.CommandModule,
+// chain.SeederModule).
 func (a *App) Modules(fn func(*chain.ModuleRegistry)) *App {
 	a.modulesFn = fn
 	return a
@@ -944,6 +947,14 @@ func (a *App) Schedule(fn func(scheduler.TaskScheduler)) *App {
 // Commands are invokable via `vel run <name>`.
 func (a *App) Commands(fn func(*chain.Commands)) *App {
 	a.commandsFn = fn
+	return a
+}
+
+// Seeders registers a callback that adds database seeders to the application.
+// Seeders run in registration order via `vel db seed` and
+// `vel migrate fresh --seed`; `vel db seed --only <name>` runs one of them.
+func (a *App) Seeders(fn func(*chain.Seeders)) *App {
+	a.seedersFn = fn
 	return a
 }
 

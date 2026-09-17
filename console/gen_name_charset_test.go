@@ -129,6 +129,10 @@ func TestGen_RejectsSourceInjection(t *testing.T) {
 			run:  func(n string) error { return GenCommand(n, GenCommandOptions{}) },
 		},
 		{
+			name: "gen seeder",
+			run:  func(n string) error { return GenSeeder(n, GenSeederOptions{}) },
+		},
+		{
 			name: "gen event",
 			run:  func(n string) error { return GenEvent(n, GenEventOptions{}) },
 		},
@@ -236,6 +240,10 @@ func TestGen_RejectsSlashInIdentifierNames(t *testing.T) {
 		{
 			name: "gen command",
 			run:  func(n string) error { return GenCommand(n, GenCommandOptions{}) },
+		},
+		{
+			name: "gen seeder",
+			run:  func(n string) error { return GenSeeder(n, GenSeederOptions{}) },
 		},
 		{
 			name: "gen event",

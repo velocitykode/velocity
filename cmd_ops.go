@@ -1,8 +1,12 @@
 package velocity
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/velocitykode/velocity/console"
 )
@@ -25,6 +29,38 @@ func (dbWipeCmd) run(a *App, args []string) error {
 		return err
 	}
 	return console.DBWipe(a.ormDB())
+}
+
+type dbSeedCmd struct{}
+
+func (dbSeedCmd) name() string        { return "db seed" }
+func (dbSeedCmd) description() string { return "Run the registered database seeders" }
+func (dbSeedCmd) run(a *App, args []string) error {
+	// Parse before the guard/Bootstrap so a typo fails fast. --only and
+	// --force compose in any order; --force is consumed by the guard below.
+	only, err := parseDBSeedArgs(args)
+	if err != nil {
+		return err
+	}
+	// Seeding writes rows, not drops them, but a development fixture set
+	// landing in a production database is still an incident: same gate,
+	// same --force escape hatch, its own wording.
+	if err := guardProduction(a, "db seed", args, "this command writes seed data"); err != nil {
+		return err
+	}
+	if err := a.Bootstrap(); err != nil {
+		return err
+	}
+	ctx, stop := interruptContext()
+	defer stop()
+	return console.Seed(ctx, a.ormManager(), a.seeders.All(), console.SeedOptions{Only: only})
+}
+
+// interruptContext returns a context cancelled by SIGINT / SIGTERM, so a
+// long seeding run stops between seeders on Ctrl-C instead of being killed
+// mid-insert. Callers must call stop to release the signal handler.
+func interruptContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
 // --- Cache ---

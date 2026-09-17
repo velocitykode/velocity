@@ -29,12 +29,17 @@ func TestCmdRejectsUnknownFlags(t *testing.T) {
 		{"migrate status unknown flag", "migrate status", []string{"--bogus"}, "unknown flag: --bogus"},
 		// Database
 		{"db wipe unknown flag", "db wipe", []string{"--bogus"}, "unknown flag: --bogus"},
+		{"db seed unknown flag", "db seed", []string{"--bogus"}, "unknown flag: --bogus"},
+		{"db seed stray positional", "db seed", []string{"role"}, "unexpected argument: role"},
+		{"db seed force with value", "db seed", []string{"--force=yes"}, "unknown flag: --force=yes"},
+		{"migrate fresh seed then unknown flag", "migrate fresh", []string{"--seed", "--bogus"}, "unknown flag: --bogus"},
 		// Cache
 		{"cache clear unknown flag", "cache clear", []string{"--bogus"}, "unknown flag: --bogus"},
 		// Code generation (gen *)
 		{"gen handler unknown flag", "gen handler", []string{"User", "--bogus"}, "unknown flag: --bogus"},
 		{"gen model unknown flag", "gen model", []string{"User", "--bogus"}, "unknown flag: --bogus"},
 		{"gen migration unknown flag", "gen migration", []string{"create_x", "--bogus"}, "unknown flag: --bogus"},
+		{"gen seeder unknown flag", "gen seeder", []string{"Role", "--bogus"}, "unknown flag: --bogus"},
 		{"gen middleware unknown flag", "gen middleware", []string{"Auth", "--bogus"}, "unknown flag: --bogus"},
 		{"gen event unknown flag", "gen event", []string{"Ev", "--bogus"}, "unknown flag: --bogus"},
 		{"gen listener unknown flag", "gen listener", []string{"Ln", "--bogus"}, "unknown flag: --bogus"},
@@ -69,6 +74,7 @@ func TestCmdRejectsUnknownFlags(t *testing.T) {
 		// Stray positionals
 		{"gen middleware second positional", "gen middleware", []string{"Auth", "Extra"}, "unexpected argument: Extra"},
 		{"gen command second positional", "gen command", []string{"Cm", "Extra"}, "unexpected argument: Extra"},
+		{"gen seeder second positional", "gen seeder", []string{"Role", "Extra"}, "unexpected argument: Extra"},
 		{"gen grpc rpc third positional", "gen grpc rpc", []string{"Svc", "Rpc", "Extra"}, "unexpected argument: Extra"},
 
 		// migrate rollback --step validation
@@ -84,6 +90,8 @@ func TestCmdRejectsUnknownFlags(t *testing.T) {
 		{"gen migration create missing value", "gen migration", []string{"create_x", "--create"}, "needs a value"},
 		{"gen migration table missing value", "gen migration", []string{"create_x", "--table"}, "needs a value"},
 		{"gen handler dir missing value", "gen handler", []string{"User", "--dir"}, "needs a value"},
+		{"db seed only missing value", "db seed", []string{"--only"}, "needs a value"},
+		{"db seed only= empty value", "db seed", []string{"--only="}, "needs a value"},
 
 		// An unknown flag must not be swallowed as the preceding flag's value.
 		{"queue work queue then unknown flag", "queue work", []string{"--queue", "--bogus"}, "unknown flag: --bogus"},
@@ -93,6 +101,7 @@ func TestCmdRejectsUnknownFlags(t *testing.T) {
 		{"gen migration create then unknown flag", "gen migration", []string{"create_x", "--create", "--bogus"}, "unknown flag: --bogus"},
 		{"gen migration table then unknown flag", "gen migration", []string{"create_x", "--table", "--bogus"}, "unknown flag: --bogus"},
 		{"gen handler dir then unknown flag", "gen handler", []string{"User", "--dir", "--bogus"}, "unknown flag: --bogus"},
+		{"db seed only then unknown flag", "db seed", []string{"--only", "--bogus"}, "unknown flag: --bogus"},
 		{"gen grpc service package then unknown flag", "gen grpc service", []string{"Svc", "--package", "--bogus"}, "unknown flag: --bogus"},
 	}
 

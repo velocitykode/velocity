@@ -89,9 +89,9 @@ func rejectNoArgs(args []string) error {
 	return nil
 }
 
-// parseForceOnlyArgs is the parser for the destructive commands (db wipe,
-// migrate fresh) that accept only the --force / -f flag consumed by
-// guardProductionDataLoss. Every other token is rejected.
+// parseForceOnlyArgs is the parser for db wipe, which accepts only the
+// --force / -f flag consumed by guardProductionDataLoss. Every other token is
+// rejected. (migrate fresh has its own parser because it also takes --seed.)
 func parseForceOnlyArgs(args []string) error {
 	for _, arg := range args {
 		switch arg {
@@ -426,4 +426,51 @@ func parseDirOnlyArgs(args []string) (string, error) {
 		}
 	}
 	return dir, nil
+}
+
+// parseMigrateFreshArgs parses `migrate fresh` arguments. It accepts --seed
+// (run the registered seeders after the fresh migration) and tolerates the
+// --force / -f flag consumed by the production-data-loss guard. Every other
+// token is rejected. db wipe keeps the stricter parseForceOnlyArgs.
+func parseMigrateFreshArgs(args []string) (seedAfter bool, err error) {
+	for _, arg := range args {
+		switch arg {
+		case "--force", "-f":
+			// Consumed by guardProductionDataLoss; legal here, ignored.
+		case "--seed":
+			seedAfter = true
+		default:
+			return false, unknownToken(arg, arg)
+		}
+	}
+	return seedAfter, nil
+}
+
+// parseDBSeedArgs parses `db seed` arguments and returns the --only seeder
+// name (empty when every registered seeder should run). It accepts
+// --only <name> and --only=<name>, tolerates the --force / -f flag consumed
+// by the production guard, and rejects every other token. A dangling --only
+// errors instead of silently seeding everything.
+func parseDBSeedArgs(args []string) (only string, err error) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		key, val, hasEq := strings.Cut(arg, "=")
+		switch key {
+		case "--force", "-f":
+			// Consumed by guardProduction, which matches the bare flag only:
+			// "--force=yes" is neither honoured there nor accepted here.
+			if hasEq {
+				return "", unknownToken(arg, arg)
+			}
+		case "--only":
+			v, ni, err := flagValue(args, i, key, val, hasEq)
+			if err != nil {
+				return "", err
+			}
+			only, i = v, ni
+		default:
+			return "", unknownToken(arg, key)
+		}
+	}
+	return only, nil
 }

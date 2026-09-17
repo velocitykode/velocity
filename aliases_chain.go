@@ -41,10 +41,15 @@ type (
 	// Commands is the argument to App.Commands(fn). Use (*Commands).Add
 	// to register a custom CLI command reachable via `vel run <name>`.
 	Commands = chain.Commands
+
+	// Seeders is the argument to App.Seeders(fn). Use (*Seeders).Add to
+	// register database seeders, in execution order, for `vel db seed`
+	// and `vel migrate fresh --seed`.
+	Seeders = chain.Seeders
 )
 
 // Optional module interfaces — implemented by Module types to
-// auto-wire routes, middleware, events, schedules, or commands during
+// auto-wire routes, middleware, events, schedules, commands, or seeders during
 // bootstrap. Implementation is structural (no explicit "implements"
 // declaration needed), but type assertions and compile-time conformance
 // checks use these names.
@@ -54,6 +59,7 @@ type (
 	EventModule      = chain.EventModule
 	ScheduleModule   = chain.ScheduleModule
 	CommandModule    = chain.CommandModule
+	SeederModule     = chain.SeederModule
 )
 
 // Service container types.

@@ -16,6 +16,16 @@ func (a *App) ormDB() orm.Database {
 	return db
 }
 
+// ormManager returns the database as the concrete *orm.Manager, which the
+// seeder contract (seed.Seeder.Run) and orm/factory take. Same reasoning as
+// ormDB: a.DB is typed as the stdlib-only contract.Database, the stored
+// value is always the concrete manager. Returns nil when no database is
+// configured.
+func (a *App) ormManager() *orm.Manager {
+	m, _ := a.DB.(*orm.Manager)
+	return m
+}
+
 type routesCmd struct{}
 
 func (routesCmd) name() string        { return "routes" }
@@ -59,11 +69,15 @@ func (migrateCmd) run(a *App, args []string) error {
 
 type migrateFreshCmd struct{}
 
-func (migrateFreshCmd) name() string        { return "migrate fresh" }
-func (migrateFreshCmd) description() string { return "Drop all tables and re-run migrations" }
+func (migrateFreshCmd) name() string { return "migrate fresh" }
+func (migrateFreshCmd) description() string {
+	return "Drop all tables and re-run migrations (--seed runs the seeders after)"
+}
 func (migrateFreshCmd) run(a *App, args []string) error {
-	// Only --force / -f is legal; reject any other token before the guard.
-	if err := parseForceOnlyArgs(args); err != nil {
+	// Only --force / -f and --seed are legal; reject any other token before
+	// the guard.
+	seedAfter, err := parseMigrateFreshArgs(args)
+	if err != nil {
 		return err
 	}
 	if err := guardProductionDataLoss(a, "migrate fresh", args); err != nil {
@@ -72,7 +86,17 @@ func (migrateFreshCmd) run(a *App, args []string) error {
 	if err := a.Bootstrap(); err != nil {
 		return err
 	}
-	return console.MigrateFresh(a.ormDB())
+	if err := console.MigrateFresh(a.ormDB()); err != nil {
+		return err
+	}
+	if !seedAfter {
+		return nil
+	}
+	// The data-loss guard above already gated this run, so the seed step
+	// inherits the operator's --force decision.
+	ctx, stop := interruptContext()
+	defer stop()
+	return console.Seed(ctx, a.ormManager(), a.seeders.All())
 }
 
 type migrateRollbackCmd struct{}

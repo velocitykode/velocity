@@ -136,6 +136,24 @@ func (genMigrationCmd) run(a *App, args []string) error {
 	return console.GenMigration(args[0], opts)
 }
 
+type genSeederCmd struct{}
+
+func (genSeederCmd) name() string        { return "gen seeder" }
+func (genSeederCmd) description() string { return "Create a new database seeder" }
+func (genSeederCmd) run(a *App, args []string) error {
+	if err := requireGenName(args, "Seeder", "gen seeder",
+		"  vel gen seeder Role",
+		"  vel gen seeder UserProfile --dir db/seeders"); err != nil {
+		return err
+	}
+	dir, err := parseDirOnlyArgs(args[1:])
+	if err != nil {
+		genNameUsageHint("gen seeder")
+		return err
+	}
+	return console.GenSeeder(args[0], console.GenSeederOptions{Dir: dir})
+}
+
 type genMiddlewareCmd struct{}
 
 func (genMiddlewareCmd) name() string        { return "gen middleware" }

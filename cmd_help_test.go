@@ -19,7 +19,7 @@ var wantHelpSections = []commandSection{
 		serveCmd{}, buildCmd{}, downCmd{}, upCmd{},
 	}},
 	{title: "Database", cmds: []command{
-		migrateCmd{}, migrateFreshCmd{}, migrateRollbackCmd{}, migrateStatusCmd{}, dbWipeCmd{},
+		migrateCmd{}, migrateFreshCmd{}, migrateRollbackCmd{}, migrateStatusCmd{}, dbWipeCmd{}, dbSeedCmd{},
 	}},
 	{title: "Queue & Scheduler", cmds: []command{
 		queueWorkCmd{}, scheduleWorkCmd{},
@@ -28,7 +28,7 @@ var wantHelpSections = []commandSection{
 		cacheClearCmd{},
 	}},
 	{title: "Code Generation", cmds: []command{
-		genHandlerCmd{}, genModelCmd{}, genMigrationCmd{}, genMiddlewareCmd{},
+		genHandlerCmd{}, genModelCmd{}, genMigrationCmd{}, genSeederCmd{}, genMiddlewareCmd{},
 		genEventCmd{}, genListenerCmd{}, genJobCmd{}, genMailCmd{},
 		genNotificationCmd{}, genResourceCmd{}, genPolicyCmd{}, genModuleCmd{},
 		genCommandCmd{}, genGRPCServiceCmd{}, genGRPCRPCCmd{}, genGRPCGenCmd{},
@@ -71,10 +71,10 @@ func TestRegistryOrder_FlattensSections(t *testing.T) {
 	want := []string{
 		"serve", "build", "down", "up",
 		"migrate", "migrate fresh", "migrate rollback", "migrate status",
-		"db wipe",
+		"db wipe", "db seed",
 		"queue work", "schedule work",
 		"cache clear",
-		"gen handler", "gen model", "gen migration", "gen middleware",
+		"gen handler", "gen model", "gen migration", "gen seeder", "gen middleware",
 		"gen event", "gen listener", "gen job", "gen mail",
 		"gen notification", "gen resource", "gen policy", "gen module",
 		"gen command", "gen grpc service", "gen grpc rpc", "gen grpc gen",
