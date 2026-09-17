@@ -9,7 +9,7 @@ import (
 // Commands are registered via the Commands chain step and invoked with
 // `vel run <name>`.
 type Command interface {
-	// Name returns the command name used to invoke it (e.g. "seed").
+	// Name returns the command name used to invoke it (e.g. "prune-expired").
 	Name() string
 
 	// Description returns a short description shown in help output.

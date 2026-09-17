@@ -44,24 +44,30 @@ func init() {
 	})
 }
 
-// --- Mock seeders ---
+// --- Test doubles ---
 
-type mockSeeder struct {
-	name    string
-	runFunc func(*orm.Manager) error
+type stubSeeder struct {
+	name string
+	run  func(ctx context.Context, db *orm.Manager) error
 }
 
-func (s *mockSeeder) Name() string                   { return s.name }
-func (s *mockSeeder) Run(manager *orm.Manager) error { return s.runFunc(manager) }
-
-func newMockSeeder(name string) *mockSeeder {
-	return &mockSeeder{
-		name:    name,
-		runFunc: func(m *orm.Manager) error { return nil },
+func (s *stubSeeder) Name() string { return s.name }
+func (s *stubSeeder) Run(ctx context.Context, db *orm.Manager) error {
+	if s.run == nil {
+		return nil
 	}
+	return s.run(ctx, db)
 }
 
-// --- Test helpers ---
+// recording returns a seeder that appends its name to order when run.
+func recording(name string, order *[]string) *stubSeeder {
+	return &stubSeeder{name: name, run: func(context.Context, *orm.Manager) error {
+		*order = append(*order, name)
+		return nil
+	}}
+}
+
+// --- Helpers ---
 
 func newTestManager(t *testing.T) *orm.Manager {
 	t.Helper()
@@ -72,6 +78,7 @@ func newTestManager(t *testing.T) *orm.Manager {
 	if err != nil {
 		t.Fatalf("failed to create ORM manager: %v", err)
 	}
+	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
 	return manager
 }
 
@@ -92,577 +99,286 @@ func runMigrations(t *testing.T, manager *orm.Manager) {
 	}
 }
 
-// --- Registry tests ---
-
-func TestRegister(t *testing.T) {
-	Reset()
-	defer Reset()
-
-	Register(newMockSeeder("TestSeeder"))
-
-	all := All()
-	if len(all) != 1 {
-		t.Fatalf("expected 1 seeder, got %d", len(all))
+func countRows(t *testing.T, manager *orm.Manager, table string) int {
+	t.Helper()
+	var n int
+	if err := manager.DB().QueryRow("SELECT COUNT(*) FROM " + table).Scan(&n); err != nil {
+		t.Fatalf("count %s: %v", table, err)
 	}
-	if all[0].Name() != "TestSeeder" {
-		t.Errorf("expected name %q, got %q", "TestSeeder", all[0].Name())
-	}
+	return n
 }
 
-func TestRegisterMultiple(t *testing.T) {
-	Reset()
-	defer Reset()
+// --- Runner construction ---
 
-	Register(newMockSeeder("First"))
-	Register(newMockSeeder("Second"))
-	Register(newMockSeeder("Third"))
-
-	all := All()
-	if len(all) != 3 {
-		t.Fatalf("expected 3 seeders, got %d", len(all))
-	}
-
-	// Verify registration order preserved
-	expected := []string{"First", "Second", "Third"}
-	for i, s := range all {
-		if s.Name() != expected[i] {
-			t.Errorf("index %d: expected %q, got %q", i, expected[i], s.Name())
-		}
+func TestNewRunner_NilManager(t *testing.T) {
+	if _, err := NewRunner(nil); err == nil {
+		t.Fatal("NewRunner(nil) = nil error, want error")
 	}
 }
 
-func TestRegisterDuplicatePanics(t *testing.T) {
-	Reset()
-	defer Reset()
+// --- Runner.Run ---
 
-	Register(newMockSeeder("Dup"))
+func TestRunnerRun_ExecutesInOrderAndRecords(t *testing.T) {
+	manager := newTestManager(t)
+	runner := mustNewRunner(t, manager)
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for duplicate registration")
-		}
-	}()
-	Register(newMockSeeder("Dup"))
-}
-
-func TestRegisterNilPanics(t *testing.T) {
-	Reset()
-	defer Reset()
-
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for nil seeder")
-		}
-	}()
-	Register(nil)
-}
-
-func TestRegisterEmptyNamePanics(t *testing.T) {
-	Reset()
-	defer Reset()
-
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for empty name")
-		}
-	}()
-	Register(newMockSeeder(""))
-}
-
-func TestFind(t *testing.T) {
-	Reset()
-	defer Reset()
-
-	Register(newMockSeeder("FindMe"))
-
-	s, err := Find("FindMe")
+	var order []string
+	err := runner.Run(context.Background(),
+		recording("region", &order),
+		recording("role", &order),
+		recording("user", &order),
+	)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
-	if s.Name() != "FindMe" {
-		t.Errorf("expected name %q, got %q", "FindMe", s.Name())
+
+	want := []string{"region", "role", "user"}
+	if fmt.Sprint(order) != fmt.Sprint(want) {
+		t.Errorf("execution order = %v, want %v", order, want)
 	}
-}
-
-func TestFindNotFound(t *testing.T) {
-	Reset()
-	defer Reset()
-
-	_, err := Find("NotHere")
-	if err == nil {
-		t.Error("expected error for non-existent seeder")
+	if got := runner.Ran(); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("Ran() = %v, want %v", got, want)
 	}
 }
 
-func TestReset(t *testing.T) {
-	Reset()
-	defer Reset()
-
-	Register(newMockSeeder("A"))
-	Register(newMockSeeder("B"))
-
-	if len(All()) != 2 {
-		t.Fatal("expected 2 seeders before reset")
-	}
-
-	Reset()
-
-	if len(All()) != 0 {
-		t.Errorf("expected 0 seeders after reset, got %d", len(All()))
-	}
-}
-
-// --- Runner tests ---
-
-func TestNewRunnerNilManager(t *testing.T) {
-	_, err := NewRunner(nil)
-	if err == nil {
-		t.Error("expected error for nil manager")
-	}
-}
-
-func TestRunnerRun(t *testing.T) {
-	Reset()
-	defer Reset()
-
+func TestRunnerRun_PassesContextAndManager(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Shutdown(context.Background())
-	runMigrations(t, manager)
+	runner := mustNewRunner(t, manager)
 
-	ran := false
-	Register(&mockSeeder{
-		name: "RunTest",
-		runFunc: func(m *orm.Manager) error {
-			ran = true
+	type key struct{}
+	ctx := context.WithValue(context.Background(), key{}, "marker")
+
+	var gotCtx context.Context
+	var gotDB *orm.Manager
+	s := &stubSeeder{name: "observe", run: func(ctx context.Context, db *orm.Manager) error {
+		gotCtx, gotDB = ctx, db
+		return nil
+	}}
+	if err := runner.Run(ctx, s); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if gotCtx == nil || gotCtx.Value(key{}) != "marker" {
+		t.Error("seeder did not receive the caller's context")
+	}
+	if gotDB != manager {
+		t.Error("seeder did not receive the runner's manager")
+	}
+}
+
+func TestRunnerRun_StopsAtFirstFailure(t *testing.T) {
+	manager := newTestManager(t)
+	runner := mustNewRunner(t, manager)
+
+	boom := errors.New("boom")
+	var order []string
+	err := runner.Run(context.Background(),
+		recording("ok", &order),
+		&stubSeeder{name: "fail", run: func(context.Context, *orm.Manager) error { return boom }},
+		recording("never", &order),
+	)
+	if err == nil {
+		t.Fatal("Run = nil, want error")
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("error %v does not wrap the seeder's error", err)
+	}
+	if want := "seed: seeder fail failed: boom"; err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+	if fmt.Sprint(order) != fmt.Sprint([]string{"ok"}) {
+		t.Errorf("executed %v, want only [ok]", order)
+	}
+	if got := runner.Ran(); len(got) != 1 || got[0] != "ok" {
+		t.Errorf("Ran() = %v, want [ok]: a failing seeder must not be recorded", got)
+	}
+}
+
+func TestRunnerRun_NilSeeder(t *testing.T) {
+	manager := newTestManager(t)
+	runner := mustNewRunner(t, manager)
+
+	err := runner.Run(context.Background(), nil)
+	if err == nil || err.Error() != "seed: seeder cannot be nil" {
+		t.Fatalf("Run(nil) error = %v, want %q", err, "seed: seeder cannot be nil")
+	}
+}
+
+func TestRunnerRun_CancelledContextStopsBetweenSeeders(t *testing.T) {
+	manager := newTestManager(t)
+	runner := mustNewRunner(t, manager)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var order []string
+	err := runner.Run(ctx,
+		&stubSeeder{name: "first", run: func(context.Context, *orm.Manager) error {
+			order = append(order, "first")
+			cancel() // simulate Ctrl-C while the first seeder is running
 			return nil
-		},
-	})
-
-	runner := mustNewRunner(t, manager)
-	if err := runner.Run("RunTest"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		}},
+		recording("second", &order),
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context.Canceled", err)
 	}
-
-	if !ran {
-		t.Error("expected seeder to have run")
+	if fmt.Sprint(order) != fmt.Sprint([]string{"first"}) {
+		t.Errorf("executed %v, want only [first]", order)
 	}
-
-	if len(runner.Ran()) != 1 || runner.Ran()[0] != "RunTest" {
-		t.Errorf("expected Ran() = [RunTest], got %v", runner.Ran())
+	if got := runner.Ran(); len(got) != 1 || got[0] != "first" {
+		t.Errorf("Ran() = %v, want [first]", got)
 	}
 }
 
-func TestRunnerRunNotFound(t *testing.T) {
-	Reset()
-	defer Reset()
-
+func TestRunnerRun_AlreadyCancelledContextRunsNothing(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Shutdown(context.Background())
-
 	runner := mustNewRunner(t, manager)
-	err := runner.Run("NonExistent")
-	if err == nil {
-		t.Error("expected error for non-existent seeder")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var order []string
+	err := runner.Run(ctx, recording("first", &order))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context.Canceled", err)
+	}
+	if len(order) != 0 {
+		t.Errorf("executed %v, want nothing", order)
 	}
 }
 
-func TestRunnerRunError(t *testing.T) {
-	Reset()
-	defer Reset()
-
+func TestRunnerRun_NoSeeders(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Shutdown(context.Background())
-
-	Register(&mockSeeder{
-		name: "Failing",
-		runFunc: func(m *orm.Manager) error {
-			return errors.New("seeder failed")
-		},
-	})
-
 	runner := mustNewRunner(t, manager)
-	err := runner.Run("Failing")
-	if err == nil {
-		t.Error("expected error from failing seeder")
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatalf("Run with no seeders: %v", err)
 	}
 	if len(runner.Ran()) != 0 {
-		t.Errorf("failing seeder should not be in Ran(), got %v", runner.Ran())
+		t.Errorf("Ran() = %v, want empty", runner.Ran())
 	}
 }
 
-func TestRunnerRunAll(t *testing.T) {
-	Reset()
-	defer Reset()
-
+func TestRunnerRan_ReturnsCopy(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Shutdown(context.Background())
-	runMigrations(t, manager)
-
-	order := make([]string, 0)
-	Register(&mockSeeder{
-		name: "First",
-		runFunc: func(m *orm.Manager) error {
-			order = append(order, "First")
-			return nil
-		},
-	})
-	Register(&mockSeeder{
-		name: "Second",
-		runFunc: func(m *orm.Manager) error {
-			order = append(order, "Second")
-			return nil
-		},
-	})
-
 	runner := mustNewRunner(t, manager)
-	if err := runner.RunAll(); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 
-	if len(order) != 2 {
-		t.Fatalf("expected 2 seeders to run, got %d", len(order))
+	var order []string
+	if err := runner.Run(context.Background(), recording("a", &order)); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
-	if order[0] != "First" || order[1] != "Second" {
-		t.Errorf("expected [First, Second], got %v", order)
-	}
-
-	if len(runner.Ran()) != 2 {
-		t.Errorf("expected 2 in Ran(), got %d", len(runner.Ran()))
+	got := runner.Ran()
+	got[0] = "mutated"
+	if again := runner.Ran(); again[0] != "a" {
+		t.Errorf("Ran() exposed internal slice: %v", again)
 	}
 }
 
-func TestRunnerRunAllWithDatabaseSeeder(t *testing.T) {
-	Reset()
-	defer Reset()
+// --- Package-level Run ---
 
+func TestRun_NilManager(t *testing.T) {
+	if err := Run(context.Background(), nil, &stubSeeder{name: "x"}); err == nil {
+		t.Fatal("Run(nil manager) = nil, want error")
+	}
+}
+
+func TestRun_ComposesFromInsideASeeder(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Shutdown(context.Background())
+
+	var order []string
+	root := &stubSeeder{name: "database", run: func(ctx context.Context, db *orm.Manager) error {
+		return Run(ctx, db, recording("role", &order), recording("user", &order))
+	}}
+	if err := Run(context.Background(), manager, root); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if fmt.Sprint(order) != fmt.Sprint([]string{"role", "user"}) {
+		t.Errorf("nested order = %v, want [role user]", order)
+	}
+}
+
+// --- Integration: seeders writing through orm/factory ---
+
+func TestIntegration_SeederWithFactory(t *testing.T) {
+	manager := newTestManager(t)
 	runMigrations(t, manager)
 
-	// Register individual seeders
-	userRan := false
-	Register(&mockSeeder{
-		name: "UserSeeder",
-		runFunc: func(m *orm.Manager) error {
-			userRan = true
-			return nil
-		},
-	})
-
-	postRan := false
-	Register(&mockSeeder{
-		name: "PostSeeder",
-		runFunc: func(m *orm.Manager) error {
-			postRan = true
-			return nil
-		},
-	})
-
-	// Register DatabaseSeeder that orchestrates others
-	Register(&mockSeeder{
-		name: "DatabaseSeeder",
-		runFunc: func(m *orm.Manager) error {
-			r, err := NewRunner(m)
-			if err != nil {
-				return err
+	users := &stubSeeder{name: "user", run: func(ctx context.Context, db *orm.Manager) error {
+		f := factory.NewFactory(db, "users", func() map[string]interface{} {
+			return map[string]interface{}{
+				"name":  factory.F().Name(),
+				"email": factory.F().Email(),
 			}
-			return r.Call("UserSeeder", "PostSeeder")
-		},
-	})
+		})
+		f.Count(5).Create(ctx)
+		return nil
+	}}
 
-	runner := mustNewRunner(t, manager)
-	if err := runner.RunAll(); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !userRan {
-		t.Error("expected UserSeeder to have run")
-	}
-	if !postRan {
-		t.Error("expected PostSeeder to have run")
-	}
-
-	// RunAll only records DatabaseSeeder at top level
-	ran := runner.Ran()
-	if len(ran) != 1 || ran[0] != "DatabaseSeeder" {
-		t.Errorf("expected Ran() = [DatabaseSeeder], got %v", ran)
-	}
-}
-
-func TestRunnerCall(t *testing.T) {
-	Reset()
-	defer Reset()
-
-	manager := newTestManager(t)
-	defer manager.Shutdown(context.Background())
-	runMigrations(t, manager)
-
-	order := make([]string, 0)
-	Register(&mockSeeder{
-		name:    "A",
-		runFunc: func(m *orm.Manager) error { order = append(order, "A"); return nil },
-	})
-	Register(&mockSeeder{
-		name:    "B",
-		runFunc: func(m *orm.Manager) error { order = append(order, "B"); return nil },
-	})
-	Register(&mockSeeder{
-		name:    "C",
-		runFunc: func(m *orm.Manager) error { order = append(order, "C"); return nil },
-	})
-
-	runner := mustNewRunner(t, manager)
-	if err := runner.Call("C", "A", "B"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(order) != 3 {
-		t.Fatalf("expected 3, got %d", len(order))
-	}
-	// Call executes in the order specified, not registration order
-	expected := []string{"C", "A", "B"}
-	for i, name := range expected {
-		if order[i] != name {
-			t.Errorf("index %d: expected %q, got %q", i, name, order[i])
-		}
-	}
-}
-
-func TestRunnerCallStopsOnError(t *testing.T) {
-	Reset()
-	defer Reset()
-
-	manager := newTestManager(t)
-	defer manager.Shutdown(context.Background())
-
-	Register(&mockSeeder{
-		name:    "OK",
-		runFunc: func(m *orm.Manager) error { return nil },
-	})
-	Register(&mockSeeder{
-		name:    "Fail",
-		runFunc: func(m *orm.Manager) error { return errors.New("boom") },
-	})
-	Register(&mockSeeder{
-		name:    "NeverReached",
-		runFunc: func(m *orm.Manager) error { return nil },
-	})
-
-	runner := mustNewRunner(t, manager)
-	err := runner.Call("OK", "Fail", "NeverReached")
-	if err == nil {
-		t.Error("expected error")
-	}
-
-	ran := runner.Ran()
-	if len(ran) != 1 || ran[0] != "OK" {
-		t.Errorf("expected only OK in Ran(), got %v", ran)
-	}
-}
-
-// --- Convenience function tests ---
-
-func TestSeed(t *testing.T) {
-	Reset()
-	defer Reset()
-
-	manager := newTestManager(t)
-	defer manager.Shutdown(context.Background())
-	runMigrations(t, manager)
-
-	ran := false
-	Register(&mockSeeder{
-		name:    "OnlySeeder",
-		runFunc: func(m *orm.Manager) error { ran = true; return nil },
-	})
-
-	if err := Seed(manager); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !ran {
-		t.Error("expected seeder to run via Seed()")
-	}
-}
-
-func TestSeedNilManager(t *testing.T) {
-	err := Seed(nil)
-	if err == nil {
-		t.Error("expected error for nil manager")
-	}
-}
-
-func TestSeedOne(t *testing.T) {
-	Reset()
-	defer Reset()
-
-	manager := newTestManager(t)
-	defer manager.Shutdown(context.Background())
-	runMigrations(t, manager)
-
-	ran := false
-	Register(&mockSeeder{
-		name:    "Target",
-		runFunc: func(m *orm.Manager) error { ran = true; return nil },
-	})
-	Register(&mockSeeder{
-		name:    "Other",
-		runFunc: func(m *orm.Manager) error { t.Error("Other should not run"); return nil },
-	})
-
-	if err := SeedOne(manager, "Target"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !ran {
-		t.Error("expected Target seeder to run")
-	}
-}
-
-// --- Integration test: seeders with factories and real database ---
-
-func TestIntegrationSeederWithFactory(t *testing.T) {
-	Reset()
-	defer Reset()
-
-	manager := newTestManager(t)
-	defer manager.Shutdown(context.Background())
-	runMigrations(t, manager)
-
-	// Register a seeder that uses the factory package
-	Register(&mockSeeder{
-		name: "UserSeeder",
-		runFunc: func(m *orm.Manager) error {
-			f := factory.NewFactory(m, "users", func() map[string]interface{} {
-				return map[string]interface{}{
-					"name":  factory.F().Name(),
-					"email": factory.F().Email(),
-				}
-			})
-			f.Count(5).Create(context.Background())
-			return nil
-		},
-	})
-
-	if err := Seed(manager); err != nil {
+	if err := Run(context.Background(), manager, users); err != nil {
 		t.Fatalf("seeding failed: %v", err)
 	}
-
-	// Verify data was seeded
-	var count int
-	err := manager.DB().QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
-	if err != nil {
-		t.Fatalf("failed to query users: %v", err)
-	}
-	if count != 5 {
-		t.Errorf("expected 5 users, got %d", count)
+	if got := countRows(t, manager, "users"); got != 5 {
+		t.Errorf("users = %d, want 5", got)
 	}
 }
 
-func TestIntegrationDatabaseSeederWithFactories(t *testing.T) {
-	Reset()
-	defer Reset()
-
+func TestIntegration_OrderedSeedersAcrossTables(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Shutdown(context.Background())
 	runMigrations(t, manager)
 
-	Register(&mockSeeder{
-		name: "UserSeeder",
-		runFunc: func(m *orm.Manager) error {
-			f := factory.NewFactory(m, "users", func() map[string]interface{} {
-				return map[string]interface{}{
-					"name":  factory.F().Name(),
-					"email": factory.F().Email(),
-				}
-			})
-			f.Count(3).Create(context.Background())
-			return nil
-		},
-	})
-
-	Register(&mockSeeder{
-		name: "PostSeeder",
-		runFunc: func(m *orm.Manager) error {
-			f := factory.NewFactory(m, "posts", func() map[string]interface{} {
-				return map[string]interface{}{
-					"title":   factory.F().Sentence(5),
-					"body":    factory.F().Paragraph(1, 3, 10, " "),
-					"user_id": 1,
-				}
-			})
-			f.Count(10).Create(context.Background())
-			return nil
-		},
-	})
-
-	Register(&mockSeeder{
-		name: "DatabaseSeeder",
-		runFunc: func(m *orm.Manager) error {
-			r, err := NewRunner(m)
-			if err != nil {
-				return err
+	users := &stubSeeder{name: "user", run: func(ctx context.Context, db *orm.Manager) error {
+		f := factory.NewFactory(db, "users", func() map[string]interface{} {
+			return map[string]interface{}{
+				"name":  factory.F().Name(),
+				"email": factory.F().Email(),
 			}
-			return r.Call("UserSeeder", "PostSeeder")
-		},
-	})
+		})
+		f.Count(3).Create(ctx)
+		return nil
+	}}
+	posts := &stubSeeder{name: "post", run: func(ctx context.Context, db *orm.Manager) error {
+		f := factory.NewFactory(db, "posts", func() map[string]interface{} {
+			return map[string]interface{}{
+				"title":   factory.F().Sentence(5),
+				"body":    factory.F().Paragraph(1, 3, 10, " "),
+				"user_id": 1,
+			}
+		})
+		f.Count(10).Create(ctx)
+		return nil
+	}}
 
-	if err := Seed(manager); err != nil {
+	if err := Run(context.Background(), manager, users, posts); err != nil {
 		t.Fatalf("seeding failed: %v", err)
 	}
-
-	// Verify users
-	var userCount int
-	if err := manager.DB().QueryRow("SELECT COUNT(*) FROM users").Scan(&userCount); err != nil {
-		t.Fatalf("failed to query users: %v", err)
+	if got := countRows(t, manager, "users"); got != 3 {
+		t.Errorf("users = %d, want 3", got)
 	}
-	if userCount != 3 {
-		t.Errorf("expected 3 users, got %d", userCount)
+	if got := countRows(t, manager, "posts"); got != 10 {
+		t.Errorf("posts = %d, want 10", got)
 	}
-
-	// Verify posts
-	var postCount int
-	if err := manager.DB().QueryRow("SELECT COUNT(*) FROM posts").Scan(&postCount); err != nil {
-		t.Fatalf("failed to query posts: %v", err)
-	}
-	if postCount != 10 {
-		t.Errorf("expected 10 posts, got %d", postCount)
-	}
-
-	t.Logf("DatabaseSeeder integration: %d users, %d posts seeded", userCount, postCount)
 }
 
-func TestIntegrationSeederWithSequence(t *testing.T) {
-	Reset()
-	defer Reset()
-
+func TestIntegration_SeederWithSequence(t *testing.T) {
 	manager := newTestManager(t)
-	defer manager.Shutdown(context.Background())
 	runMigrations(t, manager)
 
-	Register(&mockSeeder{
-		name: "SeqSeeder",
-		runFunc: func(m *orm.Manager) error {
-			f := factory.NewFactory(m, "users", func() map[string]interface{} {
-				return map[string]interface{}{
-					"name":  "User",
-					"email": "default@test.com",
-				}
-			})
-			f.Count(3).Sequence("email", func(i int) interface{} {
-				return fmt.Sprintf("user%d@test.com", i)
-			}).Create(context.Background())
-			return nil
-		},
-	})
-
-	if err := Seed(manager); err != nil {
+	seq := &stubSeeder{name: "sequence", run: func(ctx context.Context, db *orm.Manager) error {
+		f := factory.NewFactory(db, "users", func() map[string]interface{} {
+			return map[string]interface{}{
+				"name":  "User",
+				"email": "default@test.com",
+			}
+		})
+		f.Count(3).Sequence("email", func(i int) interface{} {
+			return fmt.Sprintf("user%d@test.com", i)
+		}).Create(ctx)
+		return nil
+	}}
+	if err := Run(context.Background(), manager, seq); err != nil {
 		t.Fatalf("seeding failed: %v", err)
 	}
 
 	rows, err := manager.DB().Query("SELECT email FROM users ORDER BY id")
 	if err != nil {
-		t.Fatalf("failed to query: %v", err)
+		t.Fatalf("query: %v", err)
 	}
 	defer rows.Close()
 
@@ -671,14 +387,17 @@ func TestIntegrationSeederWithSequence(t *testing.T) {
 	for rows.Next() {
 		var email string
 		if err := rows.Scan(&email); err != nil {
-			t.Fatalf("scan error: %v", err)
+			t.Fatalf("scan: %v", err)
 		}
 		if i < len(expected) && email != expected[i] {
-			t.Errorf("row %d: expected %q, got %q", i, expected[i], email)
+			t.Errorf("row %d: email = %q, want %q", i, email, expected[i])
 		}
 		i++
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
 	if i != 3 {
-		t.Errorf("expected 3 rows, got %d", i)
+		t.Errorf("rows = %d, want 3", i)
 	}
 }

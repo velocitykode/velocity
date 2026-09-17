@@ -1,0 +1,25 @@
+package {{ .Package }}
+
+import (
+	"context"
+
+	"github.com/velocitykode/velocity/orm"
+)
+
+// {{ .Name }}Seeder seeds the database.
+//
+// Register this seeder in database/seeders/kernel.go, after the seeders whose
+// rows it depends on:
+//   r.Add(&{{ .Name }}Seeder{})
+type {{ .Name }}Seeder struct{}
+
+// Name returns the seeder name used by `vel db seed --only <name>`.
+func (s {{ .Name }}Seeder) Name() string {
+	return "{{ .SeederName }}"
+}
+
+// Run inserts the seed data. Use orm.Model[T] for reference rows and
+// orm/factory for generated fixtures; both take ctx.
+func (s {{ .Name }}Seeder) Run(ctx context.Context, db *orm.Manager) error {
+	return nil
+}

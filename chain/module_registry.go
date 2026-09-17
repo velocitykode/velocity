@@ -53,3 +53,9 @@ type ScheduleModule interface {
 type CommandModule interface {
 	Commands(r *Commands)
 }
+
+// SeederModule is an optional interface that modules can implement
+// to register database seeders during bootstrap.
+type SeederModule interface {
+	Seeders(r *Seeders)
+}

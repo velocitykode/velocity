@@ -1,123 +1,64 @@
-// Package seed provides a database seeding system for populating
-// development and staging databases with sample data.
+// Package seed runs database seeders: small units of code that insert
+// reference data (roles, regions, default settings) or development fixtures
+// through the ORM and the orm/factory package.
 //
-// Seeders are registered globally via Register() and executed via
-// a Runner or the convenience Seed() function. Seeders use factories
-// from the orm/factory package to generate realistic data.
+// A seeder is any type implementing [Seeder]. Seeders are plain values with
+// no registry of their own: an application lists them, in dependency order,
+// in the Seeders step of the bootstrap chain and the `vel db seed` command
+// runs that list. Composition is ordinary Go: a seeder that needs to run
+// others calls [Run] with them.
 //
-// Basic usage:
+//	type RoleSeeder struct{}
 //
-//	// Define a seeder
-//	type UserSeeder struct{}
-//	func (s *UserSeeder) Name() string { return "UserSeeder" }
-//	func (s *UserSeeder) Run(manager *orm.Manager) error {
-//	    f := factory.NewFactory(manager, "users", func() map[string]interface{}{
-//	        return map[string]interface{}{"name": factory.F().Name()}
-//	    })
-//	    f.Count(10).Create()
+//	func (RoleSeeder) Name() string { return "role" }
+//
+//	func (RoleSeeder) Run(ctx context.Context, db *orm.Manager) error {
+//	    for _, name := range []string{"owner", "admin", "member"} {
+//	        if _, err := (orm.Model[Role]{}).FirstOrCreate(ctx,
+//	            map[string]any{"name": name}, nil); err != nil {
+//	            return err
+//	        }
+//	    }
 //	    return nil
 //	}
 //
-//	// Register in init()
-//	func init() { seed.Register(&UserSeeder{}) }
+//	// database/seeders/kernel.go
+//	func Register(r *velocity.Seeders) {
+//	    r.Add(&RoleSeeder{}, &UserSeeder{}) // runs in this order
+//	}
 //
-//	// Run all seeders
-//	seed.Seed(manager)
+// Every call is context-first. A cancelled context stops the run between
+// seeders, and a context carrying a transaction (see orm.TxFromContext) is
+// honoured by the ORM and factory writes inside each seeder, which is what
+// the transaction-rollback test isolation relies on.
 package seed
 
 import (
-	"fmt"
-	"sync"
+	"context"
 
 	"github.com/velocitykode/velocity/orm"
 )
 
-// Seeder defines the contract for a database seeder.
-// Each seeder populates one or more tables with development/staging data.
+// Seeder is one unit of seed data.
 type Seeder interface {
-	// Name returns a unique identifier for this seeder.
-	// Convention: "UserSeeder", "PostSeeder", "DatabaseSeeder"
+	// Name identifies the seeder to operators: it is what
+	// `vel db seed --only <name>` matches and what progress output prints.
+	// Names are kebab-case by convention ("role", "user-profile") and must
+	// be unique within an application.
 	Name() string
 
-	// Run executes the seeder. The manager provides database access.
-	// Seeders should use factories from orm/factory or direct orm.Save()
-	// to insert data.
-	Run(manager *orm.Manager) error
+	// Run inserts the seed data. db is the application's ORM manager, for
+	// factories and raw access; orm.Model[T] calls need only ctx.
+	Run(ctx context.Context, db *orm.Manager) error
 }
 
-// SeederRegistry is a global registry for all seeders.
-type SeederRegistry struct {
-	seeders map[string]Seeder
-	order   []string // preserves registration order
-	mu      sync.RWMutex
-}
-
-var globalRegistry = &SeederRegistry{
-	seeders: make(map[string]Seeder),
-	order:   make([]string, 0),
-}
-
-// Register adds a seeder to the global registry.
-// Panics if the seeder is nil, has an empty name, or a duplicate name is registered.
-// Typically called from init() functions.
-func Register(seeder Seeder) {
-	if seeder == nil {
-		panic("seed: seeder cannot be nil")
+// Run executes seeders in the order given against db and stops at the first
+// failure. It is the composition primitive: a seeder that depends on others
+// calls Run with them from inside its own Run.
+func Run(ctx context.Context, db *orm.Manager, seeders ...Seeder) error {
+	runner, err := NewRunner(db)
+	if err != nil {
+		return err
 	}
-	name := seeder.Name()
-	if name == "" {
-		panic("seed: seeder name cannot be empty")
-	}
-
-	globalRegistry.mu.Lock()
-	defer globalRegistry.mu.Unlock()
-
-	if _, exists := globalRegistry.seeders[name]; exists {
-		panic(fmt.Sprintf("seed: duplicate seeder name: %s", name))
-	}
-
-	globalRegistry.seeders[name] = seeder
-	globalRegistry.order = append(globalRegistry.order, name)
-}
-
-// All returns all registered seeders in registration order.
-func All() []Seeder {
-	return globalRegistry.All()
-}
-
-// Find returns a seeder by name.
-func Find(name string) (Seeder, error) {
-	return globalRegistry.Find(name)
-}
-
-// Reset clears all registered seeders. Used in tests.
-func Reset() {
-	globalRegistry.mu.Lock()
-	defer globalRegistry.mu.Unlock()
-	globalRegistry.seeders = make(map[string]Seeder)
-	globalRegistry.order = make([]string, 0)
-}
-
-// All returns all registered seeders in registration order.
-func (r *SeederRegistry) All() []Seeder {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	result := make([]Seeder, 0, len(r.order))
-	for _, name := range r.order {
-		result = append(result, r.seeders[name])
-	}
-	return result
-}
-
-// Find returns a seeder by name.
-func (r *SeederRegistry) Find(name string) (Seeder, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	seeder, exists := r.seeders[name]
-	if !exists {
-		return nil, fmt.Errorf("seed: seeder not found: %s", name)
-	}
-	return seeder, nil
+	return runner.Run(ctx, seeders...)
 }

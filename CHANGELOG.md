@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - Database seeders
+
+- **`App.Seeders` chain step, `vel db seed`, `vel gen seeder`,
+  `vel migrate fresh --seed`**: seeders are first-class. A seeder is any type
+  implementing `seed.Seeder` (`Name() string`, `Run(ctx, *orm.Manager)
+  error`) and an application lists them, in dependency order, in one place:
+  `v.Seeders(seeders.Register)` with `func Register(r *velocity.Seeders) {
+  r.Add(&RoleSeeder{}, &UserSeeder{}) }`, exactly like `Commands`. Chain
+  modules can contribute through the optional `SeederModule` interface.
+  `vel db seed` runs the list in order and stops at the first failure,
+  `--only <name>` runs one seeder, `vel migrate fresh --seed` seeds after the
+  rebuild, and `vel gen seeder <Name>` scaffolds `database/seeders/<name>.go`
+  with the `kernel.go` registration hint. `console.Seed(ctx, db, seeders,
+  opts)` is the unguarded programmatic primitive. `db seed` is production
+  gated like the destructive database commands (refuses when `APP_ENV` is
+  production-class unless `--force`), with its own wording: a fixture set is
+  not data loss, but it is still not something to land in production by
+  accident. Ctrl-C cancels the context and the run stops between seeders.
+- **`orm/seed` reshaped (breaking)**: the package-global registry
+  (`seed.Register`, `All`, `Find`, `Reset`), the string-addressed
+  `Runner.RunAll` / `Runner.Call`, the magic `"DatabaseSeeder"` aggregator
+  name and the `Seed` / `SeedOne` helpers are gone: seeders are values the
+  application wires explicitly, so there is nothing to discover and no
+  `init()` to trigger. `Seeder.Run` takes `ctx` first, and the runner checks
+  it between seeders. What remains is `seed.Seeder`, `seed.NewRunner(db)`,
+  `(*Runner).Run(ctx, seeders...)`, `(*Runner).Ran()` and the composition
+  helper `seed.Run(ctx, db, seeders...)` for a seeder that runs others.
+
 ### Security - Shared session store with atomic revocation
 
 - **`session.NewCacheStore`**: a cache-backed `auth.ServerSessionStore` now

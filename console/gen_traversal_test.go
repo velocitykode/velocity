@@ -29,6 +29,10 @@ func TestGen_RejectsTraversal(t *testing.T) {
 			run:  func(n string) error { return GenCommand(n, GenCommandOptions{}) },
 		},
 		{
+			name: "gen seeder",
+			run:  func(n string) error { return GenSeeder(n, GenSeederOptions{}) },
+		},
+		{
 			name: "gen event",
 			run:  func(n string) error { return GenEvent(n, GenEventOptions{}) },
 		},
@@ -130,6 +134,12 @@ func TestGen_AcceptsValidName(t *testing.T) {
 			run:      func(n string) error { return GenCommand(n, GenCommandOptions{}) },
 			input:    "SendEmail",
 			expected: filepath.Join("internal", "commands", "send_email.go"),
+		},
+		{
+			name:     "gen seeder",
+			run:      func(n string) error { return GenSeeder(n, GenSeederOptions{}) },
+			input:    "Role",
+			expected: filepath.Join("database", "seeders", "role.go"),
 		},
 		{
 			name:     "gen event",

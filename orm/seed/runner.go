@@ -1,117 +1,57 @@
 package seed
 
 import (
+	"context"
+	"errors"
 	"fmt"
 
 	"github.com/velocitykode/velocity/orm"
 )
 
-// Runner executes seeders against a database connection.
+// Runner executes seeders against one database connection and records which
+// of them completed. A Runner is not safe for concurrent use.
 type Runner struct {
-	manager *orm.Manager
-	ran     []string // names of seeders that have been run
+	db  *orm.Manager
+	ran []string
 }
 
-// NewRunner creates a new Runner instance.
-// Returns an error if manager is nil or has no active database connection.
-func NewRunner(manager *orm.Manager) (*Runner, error) {
-	if manager == nil {
-		return nil, fmt.Errorf("seed: manager cannot be nil")
+// NewRunner returns a Runner bound to db. It fails when db is nil or has no
+// open connection, so a misconfigured environment is reported before any
+// seeder runs.
+func NewRunner(db *orm.Manager) (*Runner, error) {
+	if db == nil {
+		return nil, errors.New("seed: manager cannot be nil")
 	}
-	if manager.DB() == nil {
-		return nil, fmt.Errorf("seed: manager has no active database connection")
+	if db.DB() == nil {
+		return nil, errors.New("seed: manager has no active database connection")
 	}
-
-	return &Runner{
-		manager: manager,
-		ran:     make([]string, 0),
-	}, nil
+	return &Runner{db: db}, nil
 }
 
-// Run executes a single seeder by name from the global registry.
-func (r *Runner) Run(name string) error {
-	seeder, err := globalRegistry.Find(name)
-	if err != nil {
-		return err
-	}
-
-	if err := seeder.Run(r.manager); err != nil {
-		return fmt.Errorf("seed: seeder %s failed: %w", name, err)
-	}
-
-	r.ran = append(r.ran, name)
-	return nil
-}
-
-// RunAll executes all registered seeders.
-// If a "DatabaseSeeder" is registered, only that seeder is run
-// (it is responsible for calling other seeders via Call).
-// Otherwise, all registered seeders are run in registration order.
-func (r *Runner) RunAll() error {
-	// "DatabaseSeeder" is the conventional aggregator name — when present
-	// it runs alone and is expected to dispatch the others via Call.
-	if _, err := globalRegistry.Find("DatabaseSeeder"); err == nil {
-		return r.Run("DatabaseSeeder")
-	}
-
-	// No DatabaseSeeder -- run all seeders in registration order
-	seeders := globalRegistry.All()
-	for _, seeder := range seeders {
-		if err := seeder.Run(r.manager); err != nil {
-			return fmt.Errorf("seed: seeder %s failed: %w", seeder.Name(), err)
+// Run executes seeders in order. It stops at the first failure and returns
+// that error wrapped with the seeder's name. Before each seeder it checks
+// ctx, so a cancelled context ends the run between seeders instead of
+// starting the next one.
+func (r *Runner) Run(ctx context.Context, seeders ...Seeder) error {
+	for _, s := range seeders {
+		if s == nil {
+			return errors.New("seed: seeder cannot be nil")
 		}
-		r.ran = append(r.ran, seeder.Name())
-	}
-	return nil
-}
-
-// Call executes one or more seeders by name. This is the method
-// a DatabaseSeeder uses inside its Run() to invoke other seeders.
-//
-// Usage inside a seeder:
-//
-//	func (s *DatabaseSeeder) Run(manager *orm.Manager) error {
-//	    runner := seed.NewRunner(manager)
-//	    return runner.Call("UserSeeder", "PostSeeder")
-//	}
-func (r *Runner) Call(names ...string) error {
-	for _, name := range names {
-		if err := r.Run(name); err != nil {
-			return err
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("seed: seeding stopped before %s: %w", s.Name(), err)
 		}
+		if err := s.Run(ctx, r.db); err != nil {
+			return fmt.Errorf("seed: seeder %s failed: %w", s.Name(), err)
+		}
+		r.ran = append(r.ran, s.Name())
 	}
 	return nil
 }
 
-// Ran returns the names of all seeders that were executed.
+// Ran returns the names of the seeders that completed, in execution order.
+// The slice is a copy.
 func (r *Runner) Ran() []string {
-	result := make([]string, len(r.ran))
-	copy(result, r.ran)
-	return result
-}
-
-// Seed runs all seeders (or just DatabaseSeeder if registered) using the given manager.
-// This is the primary entry point for seeding a database.
-//
-// Usage:
-//
-//	manager, _ := orm.NewManager(config)
-//	if err := seed.Seed(manager); err != nil {
-//	    log.Fatal(err)
-//	}
-func Seed(manager *orm.Manager) error {
-	runner, err := NewRunner(manager)
-	if err != nil {
-		return err
-	}
-	return runner.RunAll()
-}
-
-// SeedOne runs a single named seeder.
-func SeedOne(manager *orm.Manager, name string) error {
-	runner, err := NewRunner(manager)
-	if err != nil {
-		return err
-	}
-	return runner.Run(name)
+	out := make([]string, len(r.ran))
+	copy(out, r.ran)
+	return out
 }

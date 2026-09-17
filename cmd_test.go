@@ -23,12 +23,12 @@ func TestCommandRegistry_CoversEveryPreviousSwitchCase(t *testing.T) {
 		// Migrations
 		"migrate", "migrate fresh", "migrate rollback", "migrate status",
 		// Code generation
-		"gen handler", "gen model", "gen migration", "gen middleware",
+		"gen handler", "gen model", "gen migration", "gen seeder", "gen middleware",
 		"gen event", "gen listener", "gen job", "gen mail",
 		"gen notification", "gen resource", "gen policy", "gen module",
 		"gen command",
 		// Database
-		"db wipe",
+		"db wipe", "db seed",
 		// Cache
 		"cache clear",
 		// Queue & scheduler
