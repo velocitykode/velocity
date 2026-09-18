@@ -16,7 +16,10 @@ import (
 	"github.com/velocitykode/velocity/internal/inflect"
 )
 
-var titleCaser = cases.Title(language.Und)
+// titleCaser returns a fresh title caser. A cases.Caser carries transform
+// state while it processes a string and is not safe for concurrent use, so it
+// is built per call and never shared across goroutines.
+func titleCaser() cases.Caser { return cases.Title(language.Und) }
 
 // After returns the substring after the first occurrence of the given value.
 // If the value doesn't exist, returns the entire string.
@@ -709,7 +712,7 @@ func Take(str string, limit int) string {
 
 // Title converts the string to title case.
 func Title(value string) string {
-	return titleCaser.String(strings.ToLower(value))
+	return titleCaser().String(strings.ToLower(value))
 }
 
 // Trim trims the string of the given characters.
