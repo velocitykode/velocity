@@ -58,9 +58,10 @@ func Camel(value string) string {
 	}
 
 	// First word is lowercase, rest are title case
+	caser := titleCaser()
 	result := strings.ToLower(words[0])
 	for i := 1; i < len(words); i++ {
-		result += titleCaser.String(strings.ToLower(words[i]))
+		result += caser.String(strings.ToLower(words[i]))
 	}
 
 	return result
@@ -87,9 +88,10 @@ func Studly(value string) string {
 	words := strings.Fields(value)
 
 	// Title case each word
+	caser := titleCaser()
 	var result string
 	for _, word := range words {
-		result += titleCaser.String(strings.ToLower(word))
+		result += caser.String(strings.ToLower(word))
 	}
 
 	return result
