@@ -2,7 +2,9 @@ package scaffold
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,8 +76,8 @@ func write(outputDir, filename, kind, stub string, data map[string]any) (string,
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(outputPath, content, defaultFileMode); err != nil {
-		return "", fmt.Errorf("failed to write file: %w", err)
+	if err := WriteNewFile(outputPath, kind, content); err != nil {
+		return "", err
 	}
 	return outputPath, nil
 }
@@ -172,7 +174,46 @@ func ResolveDir(defaultDir, override string) (string, error) {
 	return dir, nil
 }
 
-// EnsureWritableTarget rejects existing files and final-path symlinks.
+// WriteNewFile creates path with content, failing if anything already exists
+// there. The create is exclusive (O_CREATE|O_EXCL), so the no-overwrite and
+// no-final-symlink guarantee holds at the moment of writing: a file or symlink
+// that appears after an earlier EnsureWritableTarget check is rejected rather
+// than truncated or followed.
+//
+// The exclusive create is the only operation performed on the path. Content
+// goes through the open descriptor, and a failed write leaves the incomplete
+// file in place: ownership of the path is only known at creation, so removing
+// it by name afterwards could delete a file another process has since put
+// there.
+func WriteNewFile(path, kind string, content []byte) error {
+	return writeNewFile(path, kind, content, (*os.File).Write)
+}
+
+// writeNewFile is WriteNewFile with the content write injectable, so tests
+// can fail it and change the path underneath it.
+func writeNewFile(path, kind string, content []byte, write func(*os.File, []byte) (int, error)) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, defaultFileMode)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			if guardErr := EnsureWritableTarget(path, kind); guardErr != nil {
+				return guardErr
+			}
+			return fmt.Errorf("%s already exists: %s", kind, path)
+		}
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	_, writeErr := write(f, content)
+	closeErr := f.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		return fmt.Errorf("failed to write file (an incomplete %s may remain at %s): %w", kind, path, err)
+	}
+	return nil
+}
+
+// EnsureWritableTarget rejects existing files and final-path symlinks. It is
+// an early, advisory check that gives a precise error before any rendering
+// work; WriteNewFile is what enforces the guarantee at write time.
 func EnsureWritableTarget(path, kind string) error {
 	info, err := os.Lstat(path)
 	if err != nil {

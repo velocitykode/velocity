@@ -346,7 +346,7 @@ func writeProtoFile(sc grpcScaffold) error {
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return fmt.Errorf("render proto: %w", err)
 	}
-	if err := os.WriteFile(path, buf.Bytes(), defaultFileMode); err != nil {
+	if err := scaffold.WriteNewFile(path, "proto", buf.Bytes()); err != nil {
 		return fmt.Errorf("write proto: %w", err)
 	}
 	prism.Success(fmt.Sprintf("Created: %s", path))
@@ -354,8 +354,9 @@ func writeProtoFile(sc grpcScaffold) error {
 }
 
 // ensureBufConfigs writes api/proto/buf.yaml and api/proto/buf.gen.yaml on
-// first run so `vel gen grpc gen` works out of the box. Existing files are
-// left untouched. Write failures are propagated, since the scaffolder
+// first run so `vel gen grpc gen` works out of the box. Existing files,
+// including symlinks (dangling or not), are left untouched; the create is
+// exclusive so nothing is ever written through one. Write failures are propagated, since the scaffolder
 // otherwise reports success while leaving generation broken.
 func ensureBufConfigs() error {
 	protoRoot := filepath.Join("api", "proto")
@@ -364,7 +365,7 @@ func ensureBufConfigs() error {
 	}
 
 	bufYaml := filepath.Join(protoRoot, "buf.yaml")
-	if _, err := os.Stat(bufYaml); os.IsNotExist(err) {
+	if _, err := os.Lstat(bufYaml); os.IsNotExist(err) {
 		content := `version: v2
 modules:
   - path: .
@@ -375,14 +376,14 @@ breaking:
   use:
     - FILE
 `
-		if err := os.WriteFile(bufYaml, []byte(content), defaultFileMode); err != nil {
+		if err := scaffold.WriteNewFile(bufYaml, "buf config", []byte(content)); err != nil {
 			return fmt.Errorf("write %s: %w", bufYaml, err)
 		}
 		prism.Success(fmt.Sprintf("Created: %s", bufYaml))
 	}
 
 	bufGen := filepath.Join(protoRoot, "buf.gen.yaml")
-	if _, err := os.Stat(bufGen); os.IsNotExist(err) {
+	if _, err := os.Lstat(bufGen); os.IsNotExist(err) {
 		content := `version: v2
 plugins:
   - remote: buf.build/protocolbuffers/go
@@ -394,7 +395,7 @@ plugins:
       - paths=source_relative
       - require_unimplemented_servers=false
 `
-		if err := os.WriteFile(bufGen, []byte(content), defaultFileMode); err != nil {
+		if err := scaffold.WriteNewFile(bufGen, "buf config", []byte(content)); err != nil {
 			return fmt.Errorf("write %s: %w", bufGen, err)
 		}
 		prism.Success(fmt.Sprintf("Created: %s", bufGen))
@@ -443,7 +444,7 @@ func writeServiceImpl(sc grpcScaffold) error {
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return fmt.Errorf("render service: %w", err)
 	}
-	if err := os.WriteFile(path, buf.Bytes(), defaultFileMode); err != nil {
+	if err := scaffold.WriteNewFile(path, "service", buf.Bytes()); err != nil {
 		return fmt.Errorf("write service: %w", err)
 	}
 	prism.Success(fmt.Sprintf("Created: %s", path))
