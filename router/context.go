@@ -1,6 +1,7 @@
 package router
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/xml"
@@ -478,12 +479,42 @@ func (c *Context) NoContent() error {
 // DefaultMaxBodySize is the default maximum request body size (10MB).
 const DefaultMaxBodySize int64 = 10 * 1024 * 1024
 
-// Bind parses the request body as JSON into the given struct
+// ErrBindExtraData is returned by Bind and BindXML when the request body holds
+// anything besides the single expected value: a second value, trailing junk,
+// a stray closing token, or (XML) text outside the root element. Surrounding
+// whitespace is always allowed.
+var ErrBindExtraData = errors.New("velocity/router: request body contains data outside the expected value")
+
+// Bind parses the request body as JSON into the given struct. The body must
+// be exactly one JSON value, optionally surrounded by whitespace; anything
+// after it fails with ErrBindExtraData. An empty body returns io.EOF.
 func (c *Context) Bind(v interface{}) error {
 	if c.Get(bodyLimitKey) == nil {
 		c.Request.Body = http.MaxBytesReader(c.Response, c.Request.Body, DefaultMaxBodySize)
 	}
-	return json.NewDecoder(c.Request.Body).Decode(v)
+	dec := json.NewDecoder(c.Request.Body)
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	// A second Decode, not dec.More(): More reports false at a stray ']' or
+	// '}', which would let `{"a":1}]` through.
+	var extra json.RawMessage
+	return bindRemainderErr(dec.Decode(&extra))
+}
+
+// bindRemainderErr maps the error from reading past the bound value: io.EOF
+// means the body ended cleanly, a body-limit error is passed through so the
+// caller still sees the 413 condition, and anything else is extra data.
+func bindRemainderErr(err error) error {
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.Is(err, io.EOF):
+		return nil
+	case errors.As(err, &tooLarge):
+		return err
+	default:
+		return ErrBindExtraData
+	}
 }
 
 // Method returns the HTTP method
@@ -970,12 +1001,70 @@ func (c *Context) BindQuery(v interface{}) error {
 	return bindValues(v, c.Request.URL.Query(), "query")
 }
 
-// BindXML parses the request body as XML into v (10 MB limit).
+// BindXML parses the request body as XML into v (10 MB limit). The body must
+// be exactly one document: a single root element, with only whitespace,
+// comments and processing instructions around it (plus a DOCTYPE before it).
+// Anything else fails with ErrBindExtraData. An empty body returns io.EOF.
 func (c *Context) BindXML(v interface{}) error {
 	if c.Get(bodyLimitKey) == nil {
 		c.Request.Body = http.MaxBytesReader(c.Response, c.Request.Body, DefaultMaxBodySize)
 	}
-	return xml.NewDecoder(c.Request.Body).Decode(v)
+	dec := xml.NewDecoder(c.Request.Body)
+
+	// Walk to the root by hand: xml.Decoder.Decode silently skips any
+	// character data in front of the first start element.
+	var root *xml.StartElement
+	for first := true; root == nil; first = false {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			root = &t
+		case xml.CharData:
+			b := []byte(t)
+			if first {
+				// XML permits one UTF-8 byte order mark at the very start
+				// of the entity; the decoder surfaces it as character data.
+				b = bytes.TrimPrefix(b, utf8BOM)
+			}
+			if !isXMLWhitespace(b) {
+				return ErrBindExtraData
+			}
+		case xml.Comment, xml.ProcInst, xml.Directive:
+		default:
+			return ErrBindExtraData
+		}
+	}
+	if err := dec.DecodeElement(v, root); err != nil {
+		return err
+	}
+
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return bindRemainderErr(err)
+		}
+		switch t := tok.(type) {
+		case xml.CharData:
+			if !isXMLWhitespace(t) {
+				return ErrBindExtraData
+			}
+		case xml.Comment, xml.ProcInst:
+		default:
+			return ErrBindExtraData
+		}
+	}
+}
+
+// utf8BOM is the UTF-8 encoding of U+FEFF.
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+// isXMLWhitespace reports whether b holds only XML whitespace (the S
+// production: space, tab, CR, LF).
+func isXMLWhitespace(b []byte) bool {
+	return len(bytes.Trim(b, " \t\r\n")) == 0
 }
 
 // BindAuto inspects Content-Type and delegates to the appropriate binder.
