@@ -714,8 +714,22 @@ func (c *Context) Unauthorized(message ...string) error {
 //     normalisers fold these into ASCII "/", which again creates a
 //     network-path reference. Reject conservatively before we trust the
 //     leading character as a path separator.
+//   - Control bytes and edge spaces ("/\t/evil", "/\n/evil", " //evil"):
+//     the WHATWG URL parser removes every TAB, LF and CR and trims
+//     leading/trailing C0-control-or-space before parsing, and net/http
+//     trims header values, so each of these reaches the browser as
+//     "//evil". See hasUnsafeRedirectBytes.
+//
+// An accepted target is returned byte-for-byte. Callers must write that
+// exact value to the response: any transformation applied after this
+// check (stripping, trimming, unescaping) invalidates it.
 func sanitizeRedirect(target string, allowedHosts []string) string {
 	if target == "" {
+		return "/"
+	}
+	// Reject bytes a browser or net/http drops before parsing; what we
+	// validate below must be what the client ends up resolving.
+	if hasUnsafeRedirectBytes(target) {
 		return "/"
 	}
 	// Reject backslash variants and Unicode-similar slash codepoints up
@@ -784,6 +798,23 @@ func containsSlashLookalike(target string) bool {
 		}
 	}
 	return false
+}
+
+// hasUnsafeRedirectBytes reports whether target contains a byte that is
+// dropped between this check and the browser's URL parser: any C0 control
+// or DEL anywhere, or a space at either end. The WHATWG URL standard
+// removes TAB/LF/CR from the whole input and trims leading/trailing
+// C0-control-or-space; net/http additionally trims spaces and tabs from
+// header values on write. Any of them can collapse an accepted "/x" into
+// the network-path reference "//host", so they are rejected outright
+// rather than stripped. target must be non-empty.
+func hasUnsafeRedirectBytes(target string) bool {
+	for i := 0; i < len(target); i++ {
+		if b := target[i]; b < 0x20 || b == 0x7f {
+			return true
+		}
+	}
+	return target[0] == ' ' || target[len(target)-1] == ' '
 }
 
 // Forbidden sends a 403 error response
