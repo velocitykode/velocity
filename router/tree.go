@@ -3,6 +3,7 @@ package router
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 
@@ -192,19 +193,7 @@ func (t *Tree) matchLazy(method, path string) *MatchResult {
 	// trailing slash). Avoids strings.Split's per-request slice
 	// allocation on the dynamic/404 hot path.
 	partsPtr := pathPartsPool.Get().(*[]string)
-	parts := (*partsPtr)[:0]
-	start := 0
-	for i := 0; i < len(path); i++ {
-		if path[i] == '/' {
-			if i > start {
-				parts = append(parts, path[start:i])
-			}
-			start = i + 1
-		}
-	}
-	if len(path) > start {
-		parts = append(parts, path[start:])
-	}
+	parts := appendPathParts((*partsPtr)[:0], path)
 
 	// Pre-allocate matched values buffer with typical capacity
 	matchedValues := make([]string, 0, 4)
@@ -391,63 +380,92 @@ func (n *Node) collectStaticRoutes(prefix string, compiled map[string]*MatchResu
 	}
 }
 
-// AllowedMethods returns all HTTP methods registered for a path
+// appendPathParts appends the non-empty '/'-separated segments of path
+// to parts. Matching and AllowedMethods both split through here, so the
+// two can never disagree about what the segments of a path are.
+func appendPathParts(parts []string, path string) []string {
+	start := 0
+	for i := 0; i < len(path); i++ {
+		if path[i] == '/' {
+			if i > start {
+				parts = append(parts, path[start:i])
+			}
+			start = i + 1
+		}
+	}
+	if len(path) > start {
+		parts = append(parts, path[start:])
+	}
+	return parts
+}
+
+// AllowedMethods returns, sorted, every method registered on a route
+// that path matches: exactly the methods for which Match would find a
+// route. A route registered for any method is reported as "ANY". The
+// result is nil when no route matches path under any method.
+//
+// A method is matched by backtracking through the static, regex, param
+// and wildcard children in turn, so two methods on one path can be
+// served by different nodes (GET /users/new and POST /users/{id} both
+// answer /users/new). The walk therefore visits every node the matcher
+// could reach instead of stopping at the first one.
 func (t *Tree) AllowedMethods(path string) []string {
 	path = strings.Trim(path, "/")
 
-	var node *Node
-
+	var methods []string
 	if path == "" {
-		node = t.root
+		methods = t.root.appendHandlerMethods(methods)
 	} else {
-		parts := strings.Split(path, "/")
-		node = t.root.findNode(parts)
+		partsPtr := pathPartsPool.Get().(*[]string)
+		parts := appendPathParts((*partsPtr)[:0], path)
+		methods = t.root.appendAllowedMethods(parts, methods)
+		*partsPtr = parts[:0]
+		pathPartsPool.Put(partsPtr)
 	}
 
-	if node == nil || node.handlers == nil {
-		return nil
-	}
-
-	methods := make([]string, 0, len(node.handlers))
-	for method := range node.handlers {
-		methods = append(methods, method)
-	}
-
+	slices.Sort(methods)
 	return methods
 }
 
-// findNode finds the node matching the path (for AllowedMethods)
-func (n *Node) findNode(parts []string) *Node {
+// appendAllowedMethods mirrors match: every branch match would try for
+// some method is followed, and the methods of each endpoint reached are
+// collected.
+func (n *Node) appendAllowedMethods(parts []string, methods []string) []string {
 	if len(parts) == 0 {
-		return n
+		methods = n.appendHandlerMethods(methods)
+		if n.wildcardChild != nil {
+			methods = n.wildcardChild.appendHandlerMethods(methods)
+		}
+		return methods
 	}
 
 	part := parts[0]
 	remaining := parts[1:]
 
-	// Try static
-	if n.staticChildren != nil {
-		if child, ok := n.staticChildren[part]; ok {
-			return child.findNode(remaining)
-		}
+	if child, ok := n.staticChildren[part]; ok {
+		methods = child.appendAllowedMethods(remaining, methods)
 	}
-
-	// Try regex
 	for _, child := range n.regexChildren {
 		if child.segment.Match(part) {
-			return child.findNode(remaining)
+			methods = child.appendAllowedMethods(remaining, methods)
 		}
 	}
-
-	// Try param
 	if n.paramChild != nil {
-		return n.paramChild.findNode(remaining)
+		methods = n.paramChild.appendAllowedMethods(remaining, methods)
 	}
-
-	// Try wildcard
 	if n.wildcardChild != nil {
-		return n.wildcardChild
+		methods = n.wildcardChild.appendHandlerMethods(methods)
 	}
+	return methods
+}
 
-	return nil
+// appendHandlerMethods appends the methods registered on this node that
+// are not in methods yet.
+func (n *Node) appendHandlerMethods(methods []string) []string {
+	for method := range n.handlers {
+		if !slices.Contains(methods, method) {
+			methods = append(methods, method)
+		}
+	}
+	return methods
 }

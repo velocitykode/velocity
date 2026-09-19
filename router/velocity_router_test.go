@@ -60,7 +60,7 @@ func TestVelocityRouterV2_BasicRouting(t *testing.T) {
 		}
 	})
 
-	t.Run("returns 404 for wrong method", func(t *testing.T) {
+	t.Run("returns 405 with Allow for wrong method", func(t *testing.T) {
 		router := NewV2()
 		router.Get("/users", func(c *Context) error { return nil })
 
@@ -68,8 +68,11 @@ func TestVelocityRouterV2_BasicRouting(t *testing.T) {
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 
-		if w.Code != http.StatusNotFound {
-			t.Errorf("expected 404, got %d", w.Code)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("expected 405, got %d", w.Code)
+		}
+		if got := w.Header().Get("Allow"); got != "GET" {
+			t.Errorf("expected Allow: GET, got %q", got)
 		}
 	})
 }
@@ -366,8 +369,11 @@ func TestVelocityRouterV2_AnyAndMatch(t *testing.T) {
 		req = httptest.NewRequest("DELETE", "/resource", nil)
 		w = httptest.NewRecorder()
 		router.ServeHTTP(w, req)
-		if w.Code != http.StatusNotFound {
-			t.Errorf("DELETE /resource: expected 404, got %d", w.Code)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("DELETE /resource: expected 405, got %d", w.Code)
+		}
+		if allow := w.Header().Get("Allow"); allow == "" || strings.Contains(allow, "DELETE") {
+			t.Errorf("DELETE /resource: Allow = %q, want the served methods without DELETE", allow)
 		}
 	})
 }

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -149,16 +150,22 @@ func TestResource_Only(t *testing.T) {
 		req = httptest.NewRequest("POST", "/posts", nil)
 		w = httptest.NewRecorder()
 		router.ServeHTTP(w, req)
-		if w.Code != http.StatusNotFound {
-			t.Errorf("POST /posts: expected 404, got %d", w.Code)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("POST /posts: expected 405, got %d", w.Code)
+		}
+		if allow := w.Header().Get("Allow"); allow == "" || strings.Contains(allow, "POST") {
+			t.Errorf("POST /posts: Allow = %q, want the served methods without POST", allow)
 		}
 
 		// Destroy should NOT work
 		req = httptest.NewRequest("DELETE", "/posts/1", nil)
 		w = httptest.NewRecorder()
 		router.ServeHTTP(w, req)
-		if w.Code != http.StatusNotFound {
-			t.Errorf("DELETE /posts/1: expected 404, got %d", w.Code)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("DELETE /posts/1: expected 405, got %d", w.Code)
+		}
+		if allow := w.Header().Get("Allow"); allow == "" || strings.Contains(allow, "DELETE") {
+			t.Errorf("DELETE /posts/1: Allow = %q, want the served methods without DELETE", allow)
 		}
 	})
 }
@@ -190,16 +197,22 @@ func TestResource_Except(t *testing.T) {
 		req = httptest.NewRequest("DELETE", "/comments/1", nil)
 		w = httptest.NewRecorder()
 		router.ServeHTTP(w, req)
-		if w.Code != http.StatusNotFound {
-			t.Errorf("DELETE /comments/1: expected 404, got %d", w.Code)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("DELETE /comments/1: expected 405, got %d", w.Code)
+		}
+		if allow := w.Header().Get("Allow"); allow == "" || strings.Contains(allow, "DELETE") {
+			t.Errorf("DELETE /comments/1: Allow = %q, want the served methods without DELETE", allow)
 		}
 
 		// Store should NOT work (excluded)
 		req = httptest.NewRequest("POST", "/comments", nil)
 		w = httptest.NewRecorder()
 		router.ServeHTTP(w, req)
-		if w.Code != http.StatusNotFound {
-			t.Errorf("POST /comments: expected 404, got %d", w.Code)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("POST /comments: expected 405, got %d", w.Code)
+		}
+		if allow := w.Header().Get("Allow"); allow == "" || strings.Contains(allow, "POST") {
+			t.Errorf("POST /comments: Allow = %q, want the served methods without POST", allow)
 		}
 	})
 }
@@ -231,8 +244,11 @@ func TestResource_PartialController(t *testing.T) {
 		req = httptest.NewRequest("POST", "/items", nil)
 		w = httptest.NewRecorder()
 		router.ServeHTTP(w, req)
-		if w.Code != http.StatusNotFound {
-			t.Errorf("POST /items: expected 404, got %d", w.Code)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("POST /items: expected 405, got %d", w.Code)
+		}
+		if allow := w.Header().Get("Allow"); allow == "" || strings.Contains(allow, "POST") {
+			t.Errorf("POST /items: Allow = %q, want the served methods without POST", allow)
 		}
 	})
 }

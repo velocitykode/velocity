@@ -72,7 +72,7 @@ func TestTimeoutClonePropagatesFullWiring(t *testing.T) {
 }
 
 // TestNotFoundContextGetsFullWiring verifies contexts on the
-// handleNotFound path receive the same wiring as matched routes, by
+// handleUnmatched path receive the same wiring as matched routes, by
 // recording wiring presence from a global middleware on an unknown path.
 func TestNotFoundContextGetsFullWiring(t *testing.T) {
 	dir := t.TempDir()
