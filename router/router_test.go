@@ -62,7 +62,7 @@ func TestHTTPMethods(t *testing.T) {
 				t.Errorf("%s handler was not called", tt.name)
 			}
 
-			// Test wrong method returns 404 (V2 returns 404 for method mismatch)
+			// Test wrong method is refused with 405 naming the registered method
 			wrongMethod := "GET"
 			if tt.method == "GET" {
 				wrongMethod = "POST"
@@ -75,6 +75,9 @@ func TestHTTPMethods(t *testing.T) {
 
 			if called {
 				t.Errorf("%s handler was called with wrong method", tt.name)
+			}
+			if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != tt.method {
+				t.Errorf("%s: wrong method got %d Allow=%q, want 405 Allow=%q", tt.name, w.Code, w.Header().Get("Allow"), tt.method)
 			}
 		})
 	}

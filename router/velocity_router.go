@@ -11,6 +11,7 @@ import (
 	"path"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -156,24 +157,26 @@ type VelocityRouterV2 struct {
 	// signature verifications.
 	signedURLKey signedURLKey
 
-	// notFoundHandler is the global middleware chain wrapped around a
-	// synthetic terminal handler that writes the 404 response. Built once
-	// during commitOnce so unmatched requests still pass through every
-	// Use(...) middleware (rate limiters, security headers, body limits,
-	// etc.). Stored via atomic.Pointer so the read on the hot path is
-	// lock-free; written only under mu inside commitOnce / ClearRoutes.
-	notFoundHandler atomic.Pointer[HandlerFunc]
+	// unmatchedHandler is the global middleware chain wrapped around a
+	// synthetic terminal handler that answers a request no route matched:
+	// 404 for an unknown path, 405 with Allow for a known path under a
+	// method it has no route for. Built once during commitOnce so
+	// unmatched requests still pass through every Use(...) middleware
+	// (rate limiters, security headers, body limits, etc.). Stored via
+	// atomic.Pointer so the read on the hot path is lock-free; written
+	// only under mu inside commitOnce / ClearRoutes.
+	unmatchedHandler atomic.Pointer[HandlerFunc]
 
 	// staticHandler is the global middleware chain wrapped around a
 	// terminal handler that invokes the static FileServer. Built once
-	// during commitOnce (alongside notFoundHandler) so static responses
+	// during commitOnce (alongside unmatchedHandler) so static responses
 	// pass through every Use(...) middleware (security headers, rate
 	// limits, body limits) instead of bypassing them (OWASP finding
 	// V2-01). ServeHTTP only dispatches into this handler after
 	// staticProbe has confirmed the FileServer will produce a response,
 	// which preserves the invariant that the global chain runs exactly
 	// once per request: here, in the matched route's handler, or in the
-	// 404 handler, never twice.
+	// unmatched handler, never twice.
 	staticHandler atomic.Pointer[HandlerFunc]
 }
 
@@ -632,7 +635,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// middleware chain. The probe runs BEFORE the chain so a static miss
 	// falls through to route matching with no middleware having run;
 	// the chain executes exactly once per request, in whichever terminal
-	// (static, matched route, 404) ends up handling it (V2-01).
+	// (static, matched route, unmatched) ends up handling it (V2-01).
 	if r.staticEnabled && !r.staticFallbackOnly && r.staticProbe(req) {
 		r.dispatchStatic(rw, req, meta)
 		return
@@ -645,7 +648,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			r.dispatchStatic(rw, req, meta)
 			return
 		}
-		r.handleNotFound(rw, req, meta)
+		r.handleUnmatched(rw, req, meta)
 		return
 	}
 
@@ -727,7 +730,7 @@ func (r *VelocityRouterV2) staticProbe(req *http.Request) bool {
 // commitOnce. Called only after staticProbe confirmed the FileServer
 // will produce a response, so the global chain never runs twice for a
 // request that misses static and then matches a route. Mirrors the
-// handleNotFound structure: Context acquired/released exactly once,
+// handleUnmatched structure: Context acquired/released exactly once,
 // RequestRouted/RequestHandled fire exactly once with Route "[static]".
 func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request, meta requestMeta) {
 	r.dispatchInstanceEvent(req.Context(), &RequestRouted{
@@ -820,20 +823,22 @@ func (r *VelocityRouterV2) matchRoute(req *http.Request) *MatchResult {
 	return tree.matchLazy("ANY", path)
 }
 
-// handleNotFound runs the unmatched-path response through the global
-// middleware chain and dispatches events. The middleware chain is built
-// once during commitOnce (see notFoundHandler) so global Use(...)
-// middleware (rate limiters, security headers, body limits) applies to
-// 404 responses just as it does to matched routes. Without this, an
-// attacker could hammer arbitrary unknown paths to bypass per-IP
-// throttles while still costing the server per-request work
-// (security-audit-2026-05 finding E-01).
+// handleUnmatched runs the response for a request no route matched
+// through the global middleware chain and dispatches events. The
+// terminal handler of that chain answers 404 or 405 (see answerUnmatched).
+//
+// The middleware chain is built once during commitOnce (see
+// unmatchedHandler) so global Use(...) middleware (rate limiters,
+// security headers, body limits) applies to these responses just as it
+// does to matched routes. Without this, an attacker could hammer
+// arbitrary unknown paths to bypass per-IP throttles while still costing
+// the server per-request work (security-audit-2026-05 finding E-01).
 //
 // RequestRouted fires with Matched=false (no route was matched);
 // RequestHandled fires after the middleware chain completes with the
 // final status. A Context is acquired from the pool exactly once and
 // released exactly once, matching the invokeHandler pairing.
-func (r *VelocityRouterV2) handleNotFound(rw *responseWriter, req *http.Request, meta requestMeta) {
+func (r *VelocityRouterV2) handleUnmatched(rw *responseWriter, req *http.Request, meta requestMeta) {
 	r.dispatchInstanceEvent(req.Context(), &RequestRouted{
 		Context:   req.Context(),
 		RequestID: meta.id,
@@ -886,20 +891,56 @@ func (r *VelocityRouterV2) handleNotFound(rw *responseWriter, req *http.Request,
 		r.ctxPool.Put(ctx)
 	}()
 
-	handler := r.notFoundHandler.Load()
+	handler := r.unmatchedHandler.Load()
 	if handler == nil {
 		// commitOnce has not run (or ClearRoutes wiped state and no
-		// request has rebuilt it yet). Fall back to a bare 404 so the
-		// router degrades safely rather than panicking; this branch is
-		// effectively unreachable from ServeHTTP because commitOnce
+		// request has rebuilt it yet). Fall back to the bare response so
+		// the router degrades safely rather than panicking; this branch
+		// is effectively unreachable from ServeHTTP because commitOnce
 		// runs at the top of every request.
-		http.NotFound(rw, req)
+		r.answerUnmatched(rw, req)
 		return
 	}
 	handlerErr = (*handler)(ctx)
 	if handlerErr != nil && !errors.Is(handlerErr, ErrValidationAborted) {
 		r.handleError(ctx, rw, handlerErr, "")
 	}
+}
+
+// answerUnmatched answers a request this router has no route for. The
+// path may still be a real one that simply has no route for the method:
+// that is a 405 naming the methods that do, not a 404 (RFC 9110 section
+// 15.5.6).
+//
+// The answer is worked out here, from this router's own tree and the
+// request in hand, and is never carried from where matching happened.
+// Carried state can be dropped by a middleware that runs the chain on
+// another Context (Timeout clones it) and can be inherited by another
+// router the request is delegated to; a value computed on the spot can
+// be neither.
+func (r *VelocityRouterV2) answerUnmatched(w http.ResponseWriter, req *http.Request) {
+	allowed := r.tree.Load().AllowedMethods(req.URL.EscapedPath())
+	// A middleware may have rewritten the request since matching. If the
+	// request as it now stands names a method this path does serve, a
+	// 405 would list the very method it refuses; the honest answer for a
+	// request that reached the unmatched terminal is then 404.
+	if slices.Contains(allowed, req.Method) || slices.Contains(allowed, "ANY") {
+		allowed = nil
+	}
+	writeUnmatched(w, req, allowed)
+}
+
+// writeUnmatched writes the terminal response for a request no route
+// matched. With no allowed methods the path is unknown: 404. Otherwise
+// the path is served under other methods only: 405, with the Allow
+// header RFC 9110 section 15.5.6 requires on it.
+func writeUnmatched(w http.ResponseWriter, req *http.Request, allowed []string) {
+	if len(allowed) == 0 {
+		http.NotFound(w, req)
+		return
+	}
+	w.Header().Set("Allow", strings.Join(allowed, ", "))
+	http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 }
 
 // enrichRequest attaches route params, name, pattern, and services to
@@ -1106,18 +1147,19 @@ func (r *VelocityRouterV2) commitOnce() {
 	compiled := tree.CompileStaticRoutes()
 	r.compiledRoutes.Store(&compiled)
 
-	// Build the 404 handler with the global middleware chain wrapped
-	// around a synthetic terminal handler. Without this wrap, unknown
-	// paths would bypass every Router.Use(...) middleware (rate
-	// limiters, security headers, body limits), letting an attacker
-	// hammer arbitrary paths at zero cost and skipping the operator's
-	// global throttle (security-audit-2026-05 finding E-01).
+	// Build the unmatched-request handler (404 / 405) with the global
+	// middleware chain wrapped around a synthetic terminal handler.
+	// Without this wrap, unknown paths would bypass every
+	// Router.Use(...) middleware (rate limiters, security headers, body
+	// limits), letting an attacker hammer arbitrary paths at zero cost
+	// and skipping the operator's global throttle
+	// (security-audit-2026-05 finding E-01).
 	terminal := HandlerFunc(func(c *Context) error {
-		http.NotFound(c.Response, c.Request)
+		r.answerUnmatched(c.Response, c.Request)
 		return nil
 	})
 	wrapped := applyMiddlewareChain(terminal, r.middlewares)
-	r.notFoundHandler.Store(&wrapped)
+	r.unmatchedHandler.Store(&wrapped)
 
 	// Build the static handler with the same global chain so static
 	// responses cannot bypass Use(...) middleware (V2-01, mirrors the
@@ -1152,9 +1194,10 @@ func (r *VelocityRouterV2) ClearCompiledRoutes() {
 	r.compiledRoutes.Store(nil)
 }
 
-// ClearRoutes fully resets the router (tree, compiled cache, groups, resources,
-// and the wrapped 404 handler). After calling this, new routes can be
-// registered and will be committed on the next request.
+// ClearRoutes fully resets the router (tree, compiled cache, groups,
+// resources, and the wrapped unmatched-request handler). After calling
+// this, new routes can be registered and will be committed on the next
+// request.
 func (r *VelocityRouterV2) ClearRoutes() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1167,7 +1210,7 @@ func (r *VelocityRouterV2) ClearRoutes() {
 	r.rootGroup = NewGroupDefinition("", nil)
 	r.resources = nil
 	r.compiledRoutes.Store(nil)
-	r.notFoundHandler.Store(nil)
+	r.unmatchedHandler.Store(nil)
 	r.staticHandler.Store(nil)
 	r.frozen = false
 }

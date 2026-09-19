@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed - Router answers 405 when only the method is wrong
+
+- **A request for a path that has a route, under a method that route does
+  not serve, now answers `405 Method Not Allowed` with an `Allow` header
+  instead of `404 Not Found`** (RFC 9110 section 15.5.6). With `POST /mcp`
+  registered, `GET /mcp` used to be indistinguishable from a path that does
+  not exist; it now answers `405` with `Allow: POST`. A path no route
+  matches under any method is still `404`, with no `Allow` header. `Allow`
+  lists, sorted, exactly the methods the router would serve for that path,
+  including when they live on different routes (`GET /users/new` and
+  `POST /users/{id}` both answer `/users/new`). The 405 runs through the
+  global `Use(...)` middleware chain exactly as the 404 does, so rate
+  limits, security headers and a CORS preflight middleware still apply;
+  `RequestRouted` still fires with `Matched=false` and `RequestHandled`
+  carries status 405. The route handler is never run. Each router decides
+  from its own routes at the moment it answers, so the result is the same
+  under `Timeout` (which runs the chain on a cloned `Context`) and when a
+  request is handed from one router to another. `HEAD` is not
+  implied by `GET` and `OPTIONS` is not answered automatically: both get
+  the 405 unless a route (or `Any`) serves them. **Behaviour change:**
+  tests, monitors or clients that expected `404` for a wrong method on a
+  known path (for example a `Resource` action excluded with `Only` /
+  `Except`) now see `405`.
+- **`router.Tree.AllowedMethods` returns a sorted list that agrees with
+  `Tree.Match`.** It used to stop at the first node the path reached, so
+  it missed methods served by a sibling node, ignored the empty-wildcard
+  match, split `//` differently from the matcher, and returned the methods
+  in map order.
+
 ### Added - Database seeders
 
 - **`App.Seeders` chain step, `vel db seed`, `vel gen seeder`,
