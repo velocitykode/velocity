@@ -28,13 +28,11 @@ func (b *Bond) Redirect(w http.ResponseWriter, r *http.Request, url string) {
 // The URL is validated to prevent open redirects: only relative paths and
 // same-host URLs are allowed. Use Location() for external redirects.
 func (b *Bond) RedirectWithStatus(w http.ResponseWriter, r *http.Request, rawURL string, status int) {
+	// The sanitised value is written byte-for-byte: nothing may transform
+	// it after validation (a post-validation CR/LF strip once turned an
+	// accepted "/\n/evil" into "//evil"). Control bytes are rejected by
+	// the sanitizer itself, which also covers header injection.
 	rawURL = sanitizeRedirectURL(rawURL, b.allowedHostsFor(r))
-	// stripCRLF before any Header().Set defends in depth against header
-	// injection. Go's net/http catches CR/LF in header values at write
-	// time, but relying on that is fragile (the panic surfaces only when
-	// the response is committed, and middleware that inspects the header
-	// in the meantime sees the raw value). Sanitise at the source.
-	rawURL = stripCRLF(rawURL)
 	if isInertiaRequest(r) {
 		// For Inertia requests, set the location header for client-side handling
 		w.Header().Set("X-Inertia-Location", rawURL)
@@ -80,11 +78,11 @@ func (b *Bond) LocationExternal(w http.ResponseWriter, r *http.Request, target s
 
 // emitLocation writes an already-sanitized full-page-reload target as
 // either an Inertia 409 (X-Inertia-Location) or a standard 302 redirect.
+//
+// url must come straight from sanitizeRedirectURL or
+// sanitizeLocationScheme and is written byte-for-byte; both reject
+// control bytes, so nothing is stripped or rewritten here.
 func (b *Bond) emitLocation(w http.ResponseWriter, r *http.Request, url string) {
-	// Defence-in-depth: strip CR/LF before any Header().Set even though
-	// net/http will reject them at write time. Same rationale as
-	// RedirectWithStatus above; see stripCRLF.
-	url = stripCRLF(url)
 	if isInertiaRequest(r) {
 		// 409 Conflict with X-Inertia-Location triggers full page reload
 		w.Header().Set("X-Inertia-Location", url)
@@ -95,20 +93,25 @@ func (b *Bond) emitLocation(w http.ResponseWriter, r *http.Request, url string) 
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
-// stripCRLF removes ASCII CR and LF bytes from a header value. Returns
-// the original string when no CR/LF is present (avoids the allocation
-// on the happy path). This is a defence-in-depth helper applied at
-// every Header().Set sink that writes a URL coming from a non-trivial
-// source (the redirect path, the buffered Location rewrite in
-// Middleware, etc.). It mirrors the CRLF reject performed by mail's
-// Address.Validate and router's Context.SetHeader, so bond cannot
-// regress to a strictly-weaker stance than the rest of the framework.
-func stripCRLF(s string) string {
-	if !strings.ContainsAny(s, "\r\n") {
-		return s
+// hasUnsafeTargetBytes reports whether s contains a byte that is dropped
+// between validation and the browser's URL parser: any C0 control or DEL
+// anywhere, or a space at either end (WHATWG URL preprocessing removes
+// TAB/LF/CR and trims edge C0-control-or-space; net/http trims header
+// values). It is the same rule router.SanitizeRedirect applies, kept
+// here for the sinks that cannot delegate to it (LocationExternal allows
+// external hosts; the version-mismatch 409 echoes the request URL).
+// Such values are REJECTED, never stripped: stripping after validation
+// changes the bytes that were validated ("/\n/evil" becomes "//evil").
+func hasUnsafeTargetBytes(s string) bool {
+	if s == "" {
+		return false
 	}
-	r := strings.NewReplacer("\r", "", "\n", "")
-	return r.Replace(s)
+	for i := 0; i < len(s); i++ {
+		if b := s[i]; b < 0x20 || b == 0x7f {
+			return true
+		}
+	}
+	return s[0] == ' ' || s[len(s)-1] == ' '
 }
 
 // Back redirects to the previous page using the Referer header.
@@ -172,6 +175,12 @@ func (b *Bond) allowedHostsFor(r *http.Request) []string {
 // sanitizeRedirectURL uses for rejected targets.
 func sanitizeLocationScheme(target string) string {
 	if target == "" {
+		return "/"
+	}
+
+	// Checked before the leading-"/" shortcut below, which would
+	// otherwise return the target without any byte-level validation.
+	if hasUnsafeTargetBytes(target) {
 		return "/"
 	}
 

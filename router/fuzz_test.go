@@ -20,6 +20,10 @@ import (
 //     c. an absolute URL whose Host is in the allowlist
 //  3. When the output is in category (b) or (c), it equals the input —
 //     the sanitizer does not silently rewrite legitimate redirects.
+//  4. A non-fallback output survives browser URL preprocessing unchanged
+//     (WHATWG: remove TAB/LF/CR, trim edge C0-control-or-space), so the
+//     value validated here is the value the browser resolves. Without
+//     this, "/\t/evil" satisfies (b) yet navigates to "//evil".
 //
 // Run ad-hoc: go test -run=^$ -fuzz=FuzzSanitizeRedirect -fuzztime=30s ./router
 func FuzzSanitizeRedirect(f *testing.F) {
@@ -38,6 +42,13 @@ func FuzzSanitizeRedirect(f *testing.F) {
 		"javascript:alert(1)",
 		"data:text/html,<script>",
 		"\x00",
+		"/\t/evil.example",
+		"/\n/evil.example",
+		"/\r/evil.example",
+		" //evil.example",
+		"\x1f//evil.example",
+		"/ok ",
+		"/ok\x7f",
 		"/path with spaces",
 		"/%2F..%2Fescape",
 		"foo.html",
@@ -61,6 +72,15 @@ func FuzzSanitizeRedirect(f *testing.F) {
 		}
 		if got != target {
 			t.Errorf("sanitizer rewrote non-fallback output: input=%q output=%q", target, got)
+			return
+		}
+
+		if pre := browserPreprocess(got); pre != got {
+			t.Errorf("accepted output changes under browser preprocessing: output=%q browser-view=%q", got, pre)
+			return
+		}
+		if strings.ContainsFunc(got, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+			t.Errorf("accepted output contains a control byte: %q", got)
 			return
 		}
 
@@ -93,4 +113,12 @@ func FuzzSanitizeRedirect(f *testing.F) {
 			t.Errorf("sanitizer returned disallowed host %q (input=%q output=%q)", u.Host, target, got)
 		}
 	})
+}
+
+// browserPreprocess applies the input preprocessing of the WHATWG URL
+// parser: trim leading/trailing C0-control-or-space, then remove every
+// ASCII TAB, LF and CR.
+func browserPreprocess(s string) string {
+	s = strings.TrimFunc(s, func(r rune) bool { return r <= 0x20 })
+	return strings.NewReplacer("\t", "", "\n", "", "\r", "").Replace(s)
 }

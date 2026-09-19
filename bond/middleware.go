@@ -42,11 +42,15 @@ func (b *Bond) serveBuffered(w http.ResponseWriter, r *http.Request, next http.H
 	if r.Method == http.MethodGet {
 		clientVersion := r.Header.Get(HeaderVersion)
 		if clientVersion != "" && clientVersion != b.version {
-			// Defence-in-depth CRLF strip on the URL before
-			// Header().Set. net/http rejects CR/LF at write time,
-			// but a hostile or fuzzed request URI should never
-			// reach a header-set sink raw. See stripCRLF.
-			w.Header().Set(HeaderLocation, stripCRLF(r.URL.String()))
+			// Defence-in-depth: a hostile or fuzzed request URI
+			// carrying control bytes never reaches the header-set
+			// sink; it is rejected, not stripped. See
+			// hasUnsafeTargetBytes.
+			reload := r.URL.String()
+			if hasUnsafeTargetBytes(reload) {
+				reload = "/"
+			}
+			w.Header().Set(HeaderLocation, reload)
 			w.WriteHeader(http.StatusConflict)
 			return
 		}
