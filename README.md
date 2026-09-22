@@ -13,10 +13,10 @@ One binary. No external runtime. No Docker required for development.
 
 Requires Go 1.26+.
 
-> **Status:** Pre-1.0 (currently v0.74.x). API is still in flux — breaking
-> changes may occur between minor releases. See [RELEASES.md](RELEASES.md)
-> for the versioning policy and [CHANGELOG.md](CHANGELOG.md) for per-release
-> breaking-change notes.
+> **Status:** Pre-1.0. API is still in flux — breaking changes may occur
+> between minor releases. See [RELEASES.md](RELEASES.md) for the versioning
+> policy and [CHANGELOG.md](CHANGELOG.md) for per-release breaking-change
+> notes.
 
 ## Get Started
 
@@ -106,6 +106,8 @@ queue, and a typed JSON response comes back — all in one handler:
 
 ```go
 v.Router.Post("/signup", func(c *router.Context) error {
+    ctx := c.Request.Context()
+
     if err := c.Validate(validation.Rules{
         "email": {validation.Required(), validation.Email()},
         "name":  {validation.Required()},
@@ -121,12 +123,17 @@ v.Router.Post("/signup", func(c *router.Context) error {
         return c.BadRequest(err.Error())
     }
 
-    user := models.User{Email: input.Email, Name: input.Name}
-    if err := user.Save(); err != nil {
+    user, err := models.User{}.Create(ctx, map[string]any{
+        "email": input.Email,
+        "name":  input.Name,
+    })
+    if err != nil {
         return err
     }
 
-    v.Queue.Push(jobs.SendWelcomeEmail{UserID: user.ID})
+    if err := v.Queue.PushCtx(ctx, jobs.SendWelcomeEmail{UserID: user.ID}); err != nil {
+        return err
+    }
 
     return c.JSON(201, user)
 })
@@ -145,7 +152,7 @@ checked at compile time. If the types don't match, it doesn't build.
 users, _ := User{}.Where("active = ?", true).
     OrderBy("created_at", "DESC").
     Limit(10).
-    Get()
+    Get(ctx)
 ```
 
 [Queries](https://vel.build/docs/database/queries) ·
@@ -160,7 +167,7 @@ variables.
 | Subsystem    | Drivers                                                  |
 | ------------ | -------------------------------------------------------- |
 | Database     | PostgreSQL, MySQL, SQLite                                |
-| Cache        | Memory, File, Redis, Database                            |
+| Cache        | Memory, File, Redis                                      |
 | Queue        | Memory, Redis, Database                                  |
 | Storage      | Local, S3, Memory                                        |
 | Mail         | Postmark, Mailgun, Local (writes to disk)                |
@@ -171,7 +178,7 @@ SQLite in development, PostgreSQL in production. One env var:
 
 ```env
 DB_CONNECTION=sqlite    # or postgres, mysql
-CACHE_DRIVER=redis      # or memory, file, database
+CACHE_DRIVER=redis      # or memory, file
 QUEUE_DRIVER=redis      # or memory, database
 STORAGE_DRIVER=s3       # or local, memory
 MAIL_DRIVER=postmark    # or mailgun, local, log
@@ -286,7 +293,7 @@ listing, doc search, log reading, and config inspection, plus auto-generated
 guidelines and skills matched to your project.
 
 ```bash
-go install github.com/velocitykode/velocity-arrow@latest
+go install github.com/velocitykode/velocity-arrow/cmd/arrow@latest
 ```
 
 [velocity-mcp](https://vel.build/docs/ecosystem/velocity-mcp) lets you rapidly
