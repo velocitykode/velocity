@@ -1362,7 +1362,9 @@ func (q *Query[T]) Get(ctx context.Context) ([]T, error) {
 
 	// Resolve the column-to-field scan plan once for the whole result
 	// set (lazily, so an empty result set never touches rows.Columns).
-	var results []T
+	// Non-nil so an empty result set is an empty list (JSON `[]`), never
+	// null: plural reads always return a slice callers can range and encode.
+	results := make([]T, 0)
 	var plan *scanPlan
 	for rows.Next() {
 		if plan == nil {
@@ -1547,7 +1549,7 @@ func (q *Query[T]) Pluck(ctx context.Context, column string) ([]any, error) {
 	}
 	defer rows.Close()
 
-	var results []any
+	results := make([]any, 0)
 	for rows.Next() {
 		var value any
 		if err := rows.Scan(&value); err != nil {
@@ -2462,7 +2464,7 @@ func (r *RawQuery[T]) Get(ctx context.Context) ([]T, error) {
 
 	// Resolve the column-to-field scan plan once for the whole result
 	// set - same reasoning as Query[T].Get above.
-	var results []T
+	results := make([]T, 0)
 	var plan *scanPlan
 	for rows.Next() {
 		if plan == nil {

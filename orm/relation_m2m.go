@@ -162,6 +162,9 @@ func (q *Query[T]) loadM2M(ctx context.Context, models *[]T, meta *m2mMeta) erro
 		}
 	}
 	if len(parentIDs) == 0 {
+		// Nothing can match, but every parent still gets an empty slice
+		// (JSON `[]`), never nil.
+		ensureEmptySlices(models, meta.fieldIndex)
 		return nil
 	}
 
@@ -175,6 +178,7 @@ func (q *Query[T]) loadM2M(ctx context.Context, models *[]T, meta *m2mMeta) erro
 		return err
 	}
 	if len(relatedIDs) == 0 {
+		ensureEmptySlices(models, meta.fieldIndex)
 		return nil
 	}
 
@@ -215,11 +219,12 @@ func (q *Query[T]) loadM2M(ctx context.Context, models *[]T, meta *m2mMeta) erro
 			continue
 		}
 		rows := byParent[normalizeKey(pidVal)]
+		field := parentVal.Field(meta.fieldIndex)
 		if len(rows) == 0 {
+			ensureEmptySlice(field)
 			continue
 		}
 
-		field := parentVal.Field(meta.fieldIndex)
 		slice := reflect.MakeSlice(field.Type(), 0, len(rows))
 		for _, row := range rows {
 			rel, ok := relatedByID[normalizeKey(row.relatedID)]

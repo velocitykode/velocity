@@ -528,6 +528,12 @@ func (q *Query[T]) loadRelation(ctx context.Context, models *[]T, meta *relation
 	}
 
 	if len(keys) == 0 {
+		// No parent carries a key, so nothing can match. HasMany fields
+		// still become empty slices, not nil, so callers and encoders see
+		// an empty list.
+		if meta.relType == HasMany {
+			ensureEmptySlices(models, meta.fieldIndex)
+		}
 		return nil
 	}
 
@@ -606,6 +612,7 @@ func (q *Query[T]) loadRelation(ctx context.Context, models *[]T, meta *relation
 // value-type slices, the held pointer for pointer-type slices).
 func assignSlice(field reflect.Value, matches []reflect.Value, meta *relationMeta) {
 	if len(matches) == 0 {
+		ensureEmptySlice(field)
 		return
 	}
 	slice := reflect.MakeSlice(field.Type(), len(matches), len(matches))
@@ -652,5 +659,33 @@ func assignSingle(field reflect.Value, matches []reflect.Value, meta *relationMe
 		if field.CanAddr() {
 			storeExistenceBitFromAny(field.Addr().Interface())
 		}
+	}
+}
+
+// ensureEmptySlice sets a nil slice field to an empty, non-nil slice so a
+// parent with no related rows exposes an empty list (JSON `[]`) rather
+// than null. A field that already holds a slice is left untouched.
+func ensureEmptySlice(field reflect.Value) {
+	if !field.IsValid() || !field.CanSet() || field.Kind() != reflect.Slice || !field.IsNil() {
+		return
+	}
+	field.Set(reflect.MakeSlice(field.Type(), 0, 0))
+}
+
+// ensureEmptySlices applies ensureEmptySlice to the slice field at fieldIndex
+// on every model, for loaders that return before the per-parent assignment.
+func ensureEmptySlices[T any](models *[]T, fieldIndex int) {
+	for i := range *models {
+		v := reflect.ValueOf(&(*models)[i]).Elem()
+		if v.Kind() == reflect.Ptr {
+			if v.IsNil() {
+				continue
+			}
+			v = v.Elem()
+		}
+		if v.Kind() != reflect.Struct {
+			continue
+		}
+		ensureEmptySlice(v.Field(fieldIndex))
 	}
 }
