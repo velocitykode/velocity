@@ -289,7 +289,7 @@ always documented in [CHANGELOG.md](CHANGELOG.md) under the version's
 
 ## AI-Assisted Development
 
-[Arrow](https://vel.build/docs/ecosystem/velocity-arrow) is a Velocity-aware
+[Arrow](https://vel.build/docs/ai/arrow) is a Velocity-aware
 MCP server that gives AI agents (Claude Code, Cursor, Codex, and more) the
 context to write correct Velocity code: app info, database schema, route
 listing, doc search, log reading, and config inspection, plus auto-generated
@@ -299,9 +299,13 @@ guidelines and skills matched to your project.
 go install github.com/velocitykode/velocity-arrow/cmd/arrow@latest
 ```
 
-[velocity-mcp](https://vel.build/docs/ecosystem/velocity-mcp) lets you rapidly
+[velocity-mcp](https://vel.build/docs/ai/mcp) lets you rapidly
 build your own MCP servers for Velocity applications, exposing tools,
 resources, and prompts to AI agents.
+
+[AI SDK](https://vel.build/docs/ai/ai-sdk) (coming soon): a first-party module for
+calling LLM providers, generating embeddings, and running vector search from
+a Velocity application.
 
 ## Community
 
