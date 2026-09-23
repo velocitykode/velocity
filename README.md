@@ -303,6 +303,10 @@ go install github.com/velocitykode/velocity-arrow/cmd/arrow@latest
 build your own MCP servers for Velocity applications, exposing tools,
 resources, and prompts to AI agents.
 
+```bash
+go get github.com/velocitykode/velocity-mcp
+```
+
 [AI SDK](https://vel.build/docs/ai/ai-sdk) (coming soon): a first-party module for
 calling LLM providers, generating embeddings, and running vector search from
 a Velocity application.
