@@ -25,7 +25,7 @@ brew install --cask velocitykode/tap/velocity
 ```
 
 ```bash
-velocity new myapp --stack=react && cd myapp && ./vel serve
+velocity new myapp --stack=react && cd myapp && vel serve
 ```
 
 Or add to an existing project:
@@ -256,19 +256,22 @@ all chain. [Testing docs](https://vel.build/docs/testing).
 
 ## Commands
 
-Each project builds a `./vel` binary for development and code generation.
+Each project builds its own `./vel` binary for development and code generation.
+The `vel` launcher (installed with the Homebrew cask above) finds the project,
+rebuilds that binary, and runs it. Without the launcher, use `./vel <command>`
+or `go run . <command>`.
 
 ```bash
-./vel serve              # dev server with live reload
-./vel build              # compile the production binary
-./vel migrate            # run migrations (also fresh, rollback, status)
-./vel queue work         # process queued jobs
-./vel schedule work      # run the scheduler
-./vel routes             # list registered routes (--json for machine-readable output)
-./vel cache clear        # flush the cache
-./vel key generate       # generate the app encryption key
-./vel up / ./vel down    # toggle maintenance mode
-./vel gen model User     # scaffold (model, handler, job, policy, module, migration, ...)
+vel serve                # dev server with live reload
+vel build                # compile the production binary
+vel migrate              # run migrations (also fresh, rollback, status)
+vel queue work           # process queued jobs
+vel schedule work        # run the scheduler
+vel routes               # list registered routes (--json for machine-readable output)
+vel cache clear          # flush the cache
+vel key generate         # generate the app encryption key
+vel up / vel down        # toggle maintenance mode
+vel gen model User       # scaffold (model, handler, job, policy, module, migration, ...)
 ```
 
 Full reference: [vel.build/docs/cli/commands](https://vel.build/docs/cli/commands).
