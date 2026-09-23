@@ -299,7 +299,7 @@ guidelines and skills matched to your project.
 go install github.com/velocitykode/velocity-arrow/cmd/arrow@latest
 ```
 
-[velocity-mcp](https://vel.build/docs/ai/mcp) lets you rapidly
+[Velocity MCP](https://vel.build/docs/ai/mcp) lets you rapidly
 build your own MCP servers for Velocity applications, exposing tools,
 resources, and prompts to AI agents.
 
