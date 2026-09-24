@@ -248,6 +248,45 @@ func TestReportGate_ThrottleDefaultWindowAndSweep(t *testing.T) {
 	}
 }
 
+// TestReportGate_ThrottleEvictsOldestLiveBucket asserts the bucket map
+// never grows past maxThrottleBuckets when no bucket has expired: with a
+// fixed hour-long window, each insert into a full map evicts the bucket
+// whose window started first.
+func TestReportGate_ThrottleEvictsOldestLiveBucket(t *testing.T) {
+	b := newThrottleBuckets()
+	now := time.Unix(0, 0)
+	b.now = func() time.Time { return now }
+	rule := contract.ThrottleRule{Key: "k", Match: func(error) bool { return true }, Throttle: contract.Throttle{
+		MaxPerWindow: 1, Window: time.Hour, By: func(err error) string { return err.Error() },
+	}}
+	const overflow = 50
+	for i := 0; i < maxThrottleBuckets+overflow; i++ {
+		if !b.allow(rule, fmt.Errorf("e%d", i)) {
+			t.Fatalf("insert %d: a new key must get its first report", i)
+		}
+		b.mu.Lock()
+		n := len(b.buckets)
+		b.mu.Unlock()
+		if n > maxThrottleBuckets {
+			t.Fatalf("insert %d: buckets = %d, want at most %d", i, n, maxThrottleBuckets)
+		}
+		now = now.Add(time.Millisecond)
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i := 0; i < overflow; i++ {
+		if _, kept := b.buckets[bucketID{rule: "k", by: fmt.Sprintf("e%d", i)}]; kept {
+			t.Errorf("bucket e%d kept, want it evicted as one of the oldest", i)
+		}
+	}
+	for _, i := range []int{overflow, maxThrottleBuckets + overflow - 1} {
+		if _, kept := b.buckets[bucketID{rule: "k", by: fmt.Sprintf("e%d", i)}]; !kept {
+			t.Errorf("bucket e%d evicted, want it kept", i)
+		}
+	}
+}
+
 func TestReportGate_ShouldReportDoesNotConsumeThrottle(t *testing.T) {
 	h, rep, _ := newTestHandler()
 	ThrottleFor[*contextualErr](h, contract.Throttle{MaxPerWindow: 1, Window: time.Hour})

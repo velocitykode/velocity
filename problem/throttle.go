@@ -13,8 +13,10 @@ import (
 // a cap but no Window.
 const defaultThrottleWindow = time.Minute
 
-// maxThrottleBuckets bounds the bucket map; past it, expired buckets are
-// swept on the next insert so a per-value By key cannot grow it without end.
+// maxThrottleBuckets bounds the bucket map: an insert into a full map first
+// sweeps the expired buckets and, when none expired, evicts the bucket
+// whose window started first, so a per-value By key cannot grow it past
+// the bound.
 const maxThrottleBuckets = 4096
 
 // throttleBuckets holds the in-process MaxPerWindow counters, keyed by the
@@ -86,12 +88,26 @@ func (t *throttleBuckets) allow(rule contract.ThrottleRule, err error) bool {
 	return true
 }
 
-// sweep drops every bucket whose window has passed. Callers hold t.mu.
+// sweep drops every bucket whose window has passed and, when the map is
+// still at maxThrottleBuckets, the live bucket whose window started first,
+// so the insert that follows never grows the map past the bound. Callers
+// hold t.mu.
 func (t *throttleBuckets) sweep(now time.Time) {
+	var (
+		oldestID bucketID
+		oldest   *bucket
+	)
 	for id, b := range t.buckets {
 		if now.Sub(b.start) >= b.window {
 			delete(t.buckets, id)
+			continue
 		}
+		if oldest == nil || b.start.Before(oldest.start) {
+			oldestID, oldest = id, b
+		}
+	}
+	if oldest != nil && len(t.buckets) >= maxThrottleBuckets {
+		delete(t.buckets, oldestID)
 	}
 }
 
