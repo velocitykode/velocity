@@ -1,6 +1,7 @@
 package problem
 
 import (
+	"bufio"
 	"errors"
 	"io"
 	"net"
@@ -324,5 +325,58 @@ func TestTrackedWriter_PassThrough(t *testing.T) {
 	_ = resp.Body.Close()
 	if !<-hijacked {
 		t.Error("a successful Hijack must pass through and mark the response committed")
+	}
+}
+
+// panicHeaderWriter panics when its status line would be committed, before
+// anything reaches the wire, as a writer whose pre-commit hook panics does:
+// on WriteHeader, on a Write or Flush that commits an implicit 200, and on
+// Hijack.
+type panicHeaderWriter struct {
+	*httptest.ResponseRecorder
+}
+
+func (w *panicHeaderWriter) WriteHeader(int) { panic("hook exploded") }
+
+func (w *panicHeaderWriter) Write(p []byte) (int, error) {
+	w.WriteHeader(http.StatusOK)
+	return w.ResponseRecorder.Write(p)
+}
+
+func (w *panicHeaderWriter) Flush() { w.WriteHeader(http.StatusOK) }
+
+func (w *panicHeaderWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	panic("hook exploded")
+}
+
+// TestTrackedWriter_PanickingWriterLeavesUncommitted asserts the tracked
+// writer records a commitment only after the wrapped writer took it: every
+// committing path whose wrapped writer panics before committing leaves
+// Committed false, so a recovery can still answer.
+func TestTrackedWriter_PanickingWriterLeavesUncommitted(t *testing.T) {
+	tests := []struct {
+		name string
+		act  func(tw *TrackedWriter)
+	}{
+		{name: "WriteHeader", act: func(tw *TrackedWriter) { tw.WriteHeader(http.StatusNoContent) }},
+		{name: "Write", act: func(tw *TrackedWriter) { _, _ = tw.Write([]byte("x")) }},
+		{name: "Flush", act: func(tw *TrackedWriter) { tw.Flush() }},
+		{name: "Hijack", act: func(tw *TrackedWriter) { _, _, _ = tw.Hijack() }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tw := NewTrackedWriter(&panicHeaderWriter{ResponseRecorder: httptest.NewRecorder()})
+			panicked := false
+			func() {
+				defer func() { panicked = recover() != nil }()
+				tt.act(tw)
+			}()
+			if !panicked {
+				t.Fatal("the wrapped writer did not panic")
+			}
+			if tw.Committed() {
+				t.Error("Committed() = true after the wrapped writer panicked before committing")
+			}
+		})
 	}
 }

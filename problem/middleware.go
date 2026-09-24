@@ -84,7 +84,9 @@ func ErrorHandler(h contract.ErrorHandler) func(http.ResponseWriter, *http.Reque
 // TrackedWriter is an http.ResponseWriter that records whether its
 // response was committed: a final WriteHeader (1xx other than 101 does not
 // commit), a Write (which sends an implicit 200), a successful Flush or a
-// successful Hijack. It reports that through Committed, which
+// successful Hijack. Each is recorded only after the wrapped writer
+// returns, so one that panics before committing (a panicking pre-commit
+// hook) leaves the response uncommitted. It reports that through Committed, which
 // contract.NewRenderContext honours, so an error rendered over it after
 // the handler already answered writes nothing. Flush, Hijack and Push pass
 // through to the wrapped writer, and Unwrap exposes it to
@@ -114,10 +116,13 @@ func (t *TrackedWriter) WriteHeader(code int) {
 	}
 }
 
-// Write records the response committed and writes p through.
+// Write writes p through and records the response committed once the
+// wrapped writer returns (its implicit 200 went out even when the write
+// itself failed).
 func (t *TrackedWriter) Write(p []byte) (int, error) {
+	n, err := t.ResponseWriter.Write(p)
 	t.committed = true
-	return t.ResponseWriter.Write(p)
+	return n, err
 }
 
 // FlushError flushes the wrapped writer through http.ResponseController
