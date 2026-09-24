@@ -188,3 +188,41 @@ func TestNewRenderContext_Redirect_AfterWrite(t *testing.T) {
 		t.Errorf("redirect after write changed the response: %d %q", w.Code, w.Header().Get("Location"))
 	}
 }
+
+// commitWriter is a recorder that reports its own commitment.
+type commitWriter struct {
+	*httptest.ResponseRecorder
+	committed bool
+}
+
+func (w *commitWriter) Committed() bool { return w.committed }
+
+func TestNewRenderContext_HonoursCommitReporter(t *testing.T) {
+	tests := []struct {
+		name      string
+		committed bool
+		wantW     bool
+	}{
+		{"committed writer", true, true},
+		{"uncommitted writer", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &commitWriter{ResponseRecorder: httptest.NewRecorder(), committed: tt.committed}
+			rc := NewRenderContext(w, httptest.NewRequest(http.MethodPost, "/x", nil))
+			if rc.Written() != tt.wantW {
+				t.Fatalf("Written() = %v, want %v", rc.Written(), tt.wantW)
+			}
+			err := rc.Redirect(http.StatusSeeOther, "/back")
+			if tt.committed != errors.Is(err, ErrInvalidRedirect) {
+				t.Errorf("Redirect() = %v, want refused=%v", err, tt.committed)
+			}
+			if tt.committed {
+				rc.WriteHeader(http.StatusTeapot)
+				if w.Code != http.StatusOK || w.Header().Get("Location") != "" {
+					t.Errorf("committed writer got status %d Location %q, want nothing written", w.Code, w.Header().Get("Location"))
+				}
+			}
+		})
+	}
+}

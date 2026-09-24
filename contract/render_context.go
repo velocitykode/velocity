@@ -38,10 +38,23 @@ type RenderContext interface {
 // response already written.
 var ErrInvalidRedirect = errors.New("velocity: invalid redirect")
 
+// CommitReporter is a response writer that knows whether its response is
+// committed: the status line (or a body byte, or a flush) already went
+// out, so a second response cannot be written.
+type CommitReporter interface {
+	Committed() bool
+}
+
 // NewRenderContext returns the net/http RenderContext for w and r.
 // WriteHeader is idempotent, SetHeader drops CR/LF, and Redirect accepts
 // only a relative target (single leading slash, no scheme, no "//", no
 // backslash or slash lookalike, no control bytes).
+//
+// When w implements CommitReporter, Written also reports true while
+// w.Committed does, so a response the handler already committed through w
+// counts as written: WriteHeader and Redirect then write nothing, and the
+// error pipeline renders nothing over it. Any other writer counts as
+// written only after this RenderContext writes to it.
 func NewRenderContext(w http.ResponseWriter, r *http.Request) RenderContext {
 	return &httpRenderContext{w: w, r: r}
 }
@@ -56,14 +69,23 @@ type httpRenderContext struct {
 
 func (c *httpRenderContext) Request() *http.Request      { return c.r }
 func (c *httpRenderContext) Writer() http.ResponseWriter { return c.w }
-func (c *httpRenderContext) Written() bool               { return c.written }
 func (c *httpRenderContext) WantsJSON() bool             { return WantsJSON(c.r) }
 func (c *httpRenderContext) IsInertia() bool             { return IsInertia(c.r) }
 
-// WriteHeader writes status once. A status outside 100-999 is written as
-// 500 because net/http rejects it.
-func (c *httpRenderContext) WriteHeader(status int) {
+// Written reports whether this RenderContext wrote the status line, or
+// the writer reports its response committed (see CommitReporter).
+func (c *httpRenderContext) Written() bool {
 	if c.written {
+		return true
+	}
+	cr, ok := c.w.(CommitReporter)
+	return ok && cr.Committed()
+}
+
+// WriteHeader writes status once, and never over a committed response. A
+// status outside 100-999 is written as 500 because net/http rejects it.
+func (c *httpRenderContext) WriteHeader(status int) {
+	if c.Written() {
 		return
 	}
 	c.written = true
@@ -72,7 +94,7 @@ func (c *httpRenderContext) WriteHeader(status int) {
 
 // Write writes p, writing a 200 status first when none was written.
 func (c *httpRenderContext) Write(p []byte) (int, error) {
-	if !c.written {
+	if !c.Written() {
 		c.WriteHeader(http.StatusOK)
 	}
 	return c.w.Write(p)
@@ -91,7 +113,7 @@ func (c *httpRenderContext) SetHeader(key, value string) {
 // a 400 HTTPError); both wrap ErrInvalidRedirect and write nothing, as does
 // a call after the response was written.
 func (c *httpRenderContext) Redirect(status int, target string) error {
-	if c.written {
+	if c.Written() {
 		return &HTTPError{Status: http.StatusInternalServerError, Cause: ErrInvalidRedirect}
 	}
 	if status < 300 || status > 399 {
