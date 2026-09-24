@@ -903,3 +903,43 @@ func TestDefaultErrorHandler_Guards(t *testing.T) {
 		t.Errorf("body = %+v (%v)", body, err)
 	}
 }
+
+// TestDefaultErrorHandler_ProblemBodyMembers asserts the standalone body
+// carries the pipeline's members: instance as the request path (decoded,
+// no query string) and request_id and trace_id when the ErrorInfo carries
+// them.
+func TestDefaultErrorHandler_ProblemBodyMembers(t *testing.T) {
+	tests := []struct {
+		name string
+		info ErrorInfo
+		want problemBody
+	}{
+		{
+			name: "with ids",
+			info: ErrorInfo{RequestID: "req-1", TraceID: "trace-1", SpanID: "span-1"},
+			want: problemBody{Type: "about:blank", Title: "Not Found", Status: 404, Detail: "Not Found", Instance: "/users/a b", RequestID: "req-1", TraceID: "trace-1"},
+		},
+		{
+			name: "without ids",
+			want: problemBody{Type: "about:blank", Title: "Not Found", Status: 404, Detail: "Not Found", Instance: "/users/a b"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, w := NewTestContext(http.MethodGet, "/users/a%20b?token=secret")
+			c.Request.Header.Set("Accept", "application/json")
+			DefaultErrorHandler(c, contract.NewHTTPError(http.StatusNotFound), tt.info)
+
+			var got problemBody
+			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+				t.Fatalf("body is not JSON: %v (%q)", err, w.Body.String())
+			}
+			if got != tt.want {
+				t.Errorf("problem body = %+v, want %+v", got, tt.want)
+			}
+			if strings.Contains(w.Body.String(), "secret") {
+				t.Errorf("query string leaked into the body: %q", w.Body.String())
+			}
+		})
+	}
+}

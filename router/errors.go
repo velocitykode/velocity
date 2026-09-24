@@ -100,13 +100,16 @@ func newPanicError(err error, skip int) *PanicError {
 }
 
 // problemBody is the application/problem+json body (RFC 9457) the default
-// error handler writes when the client wants JSON.
+// error handler writes when the client wants JSON: the members the error
+// pipeline writes outside debug mode.
 type problemBody struct {
-	Type     string `json:"type"`
-	Title    string `json:"title"`
-	Status   int    `json:"status"`
-	Detail   string `json:"detail,omitempty"`
-	Instance string `json:"instance,omitempty"`
+	Type      string `json:"type"`
+	Title     string `json:"title"`
+	Status    int    `json:"status"`
+	Detail    string `json:"detail,omitempty"`
+	Instance  string `json:"instance,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
+	TraceID   string `json:"trace_id,omitempty"`
 }
 
 // defaultLogLevel is the level the router's default path logs an error at.
@@ -205,7 +208,8 @@ func requestGone(c *Context) bool {
 // headers from contract.StatusOf, or 500 when it names none.
 //
 // The body is application/problem+json (type, title, status, detail,
-// instance) when contract.WantsJSON holds for the request, plain text
+// instance as the request path, and request_id and trace_id when info
+// carries them) when contract.WantsJSON holds for the request, plain text
 // otherwise. A 4xx answer echoes the message of the first
 // contract.MessageError in the chain (HTTPError.Message, for one) when it
 // names the answered status; a 5xx answer shows only the status text, so
@@ -223,11 +227,11 @@ func DefaultErrorHandler(c *Context, err error, info ErrorInfo) {
 	if !res.write {
 		return
 	}
-	writeDefaultError(c, err, res)
+	writeDefaultError(c, err, res, info)
 }
 
 // writeDefaultError writes the resolved default response for err.
-func writeDefaultError(c *Context, err error, res defaultResolution) {
+func writeDefaultError(c *Context, err error, res defaultResolution, info ErrorInfo) {
 	h := c.Response.Header()
 	for key, values := range res.headers {
 		if key == "" || strings.ContainsAny(key, "\r\n") {
@@ -251,12 +255,18 @@ func writeDefaultError(c *Context, err error, res defaultResolution) {
 	}
 
 	if c.Request != nil && contract.WantsJSON(c.Request) {
+		instance := ""
+		if c.Request.URL != nil {
+			instance = c.Request.URL.Path
+		}
 		body, mErr := json.Marshal(problemBody{
-			Type:     "about:blank",
-			Title:    statusText(res.status),
-			Status:   res.status,
-			Detail:   detail,
-			Instance: c.Request.URL.EscapedPath(),
+			Type:      "about:blank",
+			Title:     statusText(res.status),
+			Status:    res.status,
+			Detail:    detail,
+			Instance:  instance,
+			RequestID: info.RequestID,
+			TraceID:   info.TraceID,
 		})
 		if mErr == nil {
 			h.Del("Content-Length")

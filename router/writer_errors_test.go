@@ -245,7 +245,7 @@ func TestRouterWriters_JSONProblem(t *testing.T) {
 				Title:    http.StatusText(tc.status),
 				Status:   tc.status,
 				Detail:   tc.detail,
-				Instance: req.URL.EscapedPath(),
+				Instance: req.URL.Path,
 			}
 			if body != want {
 				t.Errorf("problem = %+v, want %+v", body, want)
