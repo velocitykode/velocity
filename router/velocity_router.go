@@ -941,18 +941,14 @@ func (r *VelocityRouterV2) unmatchedError(req *http.Request) error {
 	return unmatchedHTTPError(allowed)
 }
 
-// notFoundMessage is the 404 text for an unmatched request, the same text
-// http.NotFound writes, so a standalone router's plain-text 404 body is
-// unchanged.
-const notFoundMessage = "404 page not found"
-
 // unmatchedHTTPError builds the error the unmatched terminal returns. With
-// no allowed methods the path is unknown: 404. Otherwise the path is
-// served under other methods only: 405, carrying the Allow header RFC 9110
-// section 15.5.6 requires on it. The error boundary renders either one.
+// no allowed methods the path is unknown: a bare 404, whose message is the
+// status text like every other 404. Otherwise the path is served under
+// other methods only: 405, carrying the Allow header RFC 9110 section
+// 15.5.6 requires on it. The error boundary renders either one.
 func unmatchedHTTPError(allowed []string) *contract.HTTPError {
 	if len(allowed) == 0 {
-		return contract.NewHTTPError(http.StatusNotFound, notFoundMessage)
+		return contract.NewHTTPError(http.StatusNotFound)
 	}
 	return contract.NewHTTPError(http.StatusMethodNotAllowed).
 		WithHeader("Allow", strings.Join(allowed, ", "))

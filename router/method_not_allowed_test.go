@@ -565,7 +565,7 @@ func TestUnmatchedHTTPError(t *testing.T) {
 		wantAllow []string
 		wantMsg   string
 	}{
-		{name: "no allowed methods is a 404 without Allow", wantCode: http.StatusNotFound, wantMsg: "404 page not found"},
+		{name: "no allowed methods is a 404 without Allow", wantCode: http.StatusNotFound, wantMsg: "Not Found"},
 		{name: "allowed methods is a 405 naming them", allowed: []string{"POST", "PUT"}, wantCode: http.StatusMethodNotAllowed, wantAllow: []string{"POST, PUT"}, wantMsg: "Method Not Allowed"},
 	}
 	for _, tt := range tests {

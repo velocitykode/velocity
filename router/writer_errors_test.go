@@ -16,12 +16,11 @@ import (
 	"github.com/velocitykode/velocity/contract"
 )
 
-// Wire bytes of the unmatched responses captured before the terminal
-// returned errors (http.NotFound, and http.Error with the 405 status
-// text). A text client of a standalone router must keep seeing exactly
-// these.
+// Wire bytes of the unmatched responses a text client of a standalone
+// router sees: the status text, the same message every other 404 and 405
+// the router answers carries.
 const (
-	unmatchedNotFoundBody         = "404 page not found\n"
+	unmatchedNotFoundBody         = "Not Found\n"
 	unmatchedMethodNotAllowedBody = "Method Not Allowed\n"
 	plainTextContentType          = "text/plain; charset=utf-8"
 )
@@ -55,7 +54,7 @@ func writerCases() []writerCase {
 			request:  func() *http.Request { return httptest.NewRequest(http.MethodGet, "/nope", nil) },
 			status:   http.StatusNotFound,
 			textBody: unmatchedNotFoundBody,
-			detail:   "404 page not found",
+			detail:   "Not Found",
 		},
 		{
 			name: "unmatched method",

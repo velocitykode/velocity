@@ -163,8 +163,8 @@ func TestMiddlewareOrderingOn404(t *testing.T) {
 	}
 }
 
-// TestNotFoundBodyPreserved verifies the standard 404 response shape
-// (status + body) is preserved when the chain has no middleware.
+// TestNotFoundBodyPreserved verifies the default 404 answer (status and
+// status-text body) when the chain has no middleware.
 func TestNotFoundBodyPreserved(t *testing.T) {
 	r := New()
 	r.Get("/ok", func(c *Context) error { return nil })
@@ -175,7 +175,7 @@ func TestNotFoundBodyPreserved(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "404 page not found") {
+	if rec.Body.String() != "Not Found\n" {
 		t.Errorf("expected default 404 body, got %q", rec.Body.String())
 	}
 }

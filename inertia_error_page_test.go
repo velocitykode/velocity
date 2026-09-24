@@ -102,7 +102,7 @@ func TestInertiaErrorPage(t *testing.T) {
 			name: "XHRUnmatchedRouteRendersComponent", errorPage: "Error", method: http.MethodGet, path: "/nowhere",
 			headers:    map[string]string{"X-Inertia": "true"},
 			wantStatus: http.StatusNotFound, wantPage: true, wantXHR: true, wantContent: "application/json",
-			wantMessage: "404 page not found",
+			wantMessage: "Not Found",
 		},
 		{
 			name: "FullPageRouteErrorRendersComponent", errorPage: "Error", method: http.MethodGet, path: "/page",
@@ -114,7 +114,7 @@ func TestInertiaErrorPage(t *testing.T) {
 			name: "FullPageUnmatchedRouteRendersComponent", errorPage: "Error", method: http.MethodGet, path: "/nowhere",
 			headers:    map[string]string{"Accept": "text/html"},
 			wantStatus: http.StatusNotFound, wantPage: true, wantContent: "text/html; charset=utf-8",
-			wantMessage: "404 page not found",
+			wantMessage: "Not Found",
 		},
 		{
 			name: "NoComponentGETReloadsCurrentURL", method: http.MethodGet, path: "/page?tab=a",
