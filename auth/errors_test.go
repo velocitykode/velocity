@@ -288,3 +288,59 @@ func TestManager_RequestUserID(t *testing.T) {
 		})
 	}
 }
+
+// TestManager_RenderAlreadyAuthenticated asserts the guest render rule:
+// JSON falls through to the 403 body, a browser or Inertia request is
+// redirected to the error's target ("/" when empty), and a refused target
+// warns and falls through.
+func TestManager_RenderAlreadyAuthenticated(t *testing.T) {
+	tests := []struct {
+		name         string
+		nilManager   bool
+		err          error
+		kind         string
+		want         bool
+		wantLocation string
+		wantWarn     bool
+	}{
+		{name: "json falls through", err: &AlreadyAuthenticatedError{RedirectTo: "/home"}, kind: kindJSON},
+		{name: "xhr falls through", err: &AlreadyAuthenticatedError{RedirectTo: "/home"}, kind: kindXHR},
+		{name: "browser redirected", err: &AlreadyAuthenticatedError{RedirectTo: "/home"}, kind: kindBrowser, want: true, wantLocation: "/home"},
+		{name: "inertia redirected", err: &AlreadyAuthenticatedError{RedirectTo: "/home"}, kind: kindInertia, want: true, wantLocation: "/home"},
+		{name: "wrapped error target", err: fmt.Errorf("guard: %w", &AlreadyAuthenticatedError{RedirectTo: "/home"}), kind: kindBrowser, want: true, wantLocation: "/home"},
+		{name: "empty target is root", err: &AlreadyAuthenticatedError{}, kind: kindBrowser, want: true, wantLocation: "/"},
+		{name: "nil manager", nilManager: true, err: &AlreadyAuthenticatedError{}, kind: kindBrowser, want: true, wantLocation: "/"},
+		{name: "protocol relative refused", err: &AlreadyAuthenticatedError{RedirectTo: "//evil"}, kind: kindBrowser, wantWarn: true},
+		{name: "absolute refused", err: &AlreadyAuthenticatedError{RedirectTo: "https://evil.example/"}, kind: kindBrowser, wantWarn: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := &warnRecorder{}
+			var m *Manager
+			if !tt.nilManager {
+				m = NewManager()
+				m.SetLogger(logs)
+			}
+			w := &writeTracker{ResponseRecorder: httptest.NewRecorder()}
+			rc := contract.NewRenderContext(w, newDenialRequest(http.MethodGet, "/login", tt.kind))
+
+			if got := m.RenderAlreadyAuthenticated(rc, tt.err, nil); got != tt.want {
+				t.Fatalf("RenderAlreadyAuthenticated = %v, want %v", got, tt.want)
+			}
+			if !tt.want {
+				if w.wrote || w.Header().Get("Location") != "" {
+					t.Errorf("fall-through wrote a response (code %d, Location %q)", w.Code, w.Header().Get("Location"))
+				}
+			} else if w.Code != http.StatusSeeOther || w.Header().Get("Location") != tt.wantLocation {
+				t.Errorf("response = %d %q, want 303 %q", w.Code, w.Header().Get("Location"), tt.wantLocation)
+			}
+			if gotWarn := len(logs.warns) > 0; gotWarn != tt.wantWarn {
+				t.Errorf("warned = %v (%v), want %v", gotWarn, logs.warns, tt.wantWarn)
+			}
+		})
+	}
+	var nilManager *Manager
+	if nilManager.RenderAlreadyAuthenticated(nil, &AlreadyAuthenticatedError{}, nil) {
+		t.Error("RenderAlreadyAuthenticated with a nil render context = true, want false")
+	}
+}

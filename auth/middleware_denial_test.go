@@ -82,6 +82,9 @@ func guestOnly(m *Manager) router.MiddlewareFunc { return GuestMiddleware(m) }
 func guestOnlyToDashboard(m *Manager) router.MiddlewareFunc {
 	return GuestMiddlewareWithRedirect(m, "/dashboard")
 }
+func guestOnlyToEvil(m *Manager) router.MiddlewareFunc {
+	return GuestMiddlewareWithRedirect(m, "//evil.example")
+}
 
 // writeTracker records whether anything reached the response writer.
 type writeTracker struct {
@@ -156,6 +159,13 @@ func servePipeline(t *testing.T, m *Manager, mw router.MiddlewareFunc, req *http
 			return errors.As(err, &ue)
 		},
 		Render: m.RenderUnauthenticated,
+	})
+	h.AddFrameworkRenderRule(contract.RenderRule{
+		Match: func(err error) bool {
+			var ae *AlreadyAuthenticatedError
+			return errors.As(err, &ae)
+		},
+		Render: m.RenderAlreadyAuthenticated,
 	})
 	r := router.New()
 	routerbridge.Install(r, routerbridge.WithHandler(func() contract.ErrorHandler { return h }))
@@ -280,6 +290,8 @@ func TestMiddleware_DenialThroughPipeline(t *testing.T) {
 		{name: "guest browser", fixture: signedInAs(nil, guestOnly), target: "/login", kind: kindBrowser, wantStatus: http.StatusSeeOther, wantLocation: "/"},
 		{name: "guest browser custom redirect", fixture: signedInAs(nil, guestOnlyToDashboard), target: "/login", kind: kindBrowser, wantStatus: http.StatusSeeOther, wantLocation: "/dashboard"},
 		{name: "guest inertia", fixture: signedInAs(nil, guestOnlyToDashboard), target: "/login", kind: kindInertia, wantStatus: http.StatusSeeOther, wantLocation: "/dashboard"},
+		{name: "guest xhr", fixture: signedInAs(nil, guestOnly), target: "/login", kind: kindXHR, wantStatus: http.StatusForbidden, wantType: problem.ProblemTypeContent, wantDetail: "Already authenticated."},
+		{name: "guest browser unsafe redirect", fixture: signedInAs(nil, guestOnlyToEvil), target: "/login", kind: kindBrowser, wantStatus: http.StatusForbidden, wantType: "text/html"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -361,47 +373,53 @@ func TestAuthMiddleware_StashesIntended(t *testing.T) {
 	}
 }
 
-// TestGuestMiddleware_AuthenticatedReturns asserts what the guest guard
-// returns for an authenticated user: a 403 error for JSON with nothing
-// written, and a written redirect reported as contract.ErrResponseWritten
-// otherwise.
+// TestGuestMiddleware_AuthenticatedReturns asserts the guest guard
+// returns an *AlreadyAuthenticatedError carrying its redirect target for
+// an authenticated user, whatever the request kind, and writes nothing.
 func TestGuestMiddleware_AuthenticatedReturns(t *testing.T) {
-	tests := []struct {
-		name         string
-		kind         string
-		wantWritten  bool
-		wantLocation string
-	}{
-		{name: "json", kind: kindJSON},
-		{name: "browser", kind: kindBrowser, wantWritten: true, wantLocation: "/dashboard"},
-		{name: "inertia", kind: kindInertia, wantWritten: true, wantLocation: "/dashboard"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, kind := range []string{kindJSON, kindBrowser, kindInertia, kindXHR} {
+		t.Run(kind, func(t *testing.T) {
 			m := newManagerWithScheme(true)
 			w := &writeTracker{ResponseRecorder: httptest.NewRecorder()}
-			c := router.NewContext(w, newDenialRequest(http.MethodGet, "/login", tt.kind))
+			c := router.NewContext(w, newDenialRequest(http.MethodGet, "/login", kind))
 			err := GuestMiddlewareWithRedirect(m, "/dashboard")(func(*router.Context) error {
 				t.Error("next handler should not be called")
 				return nil
 			})(c)
 
-			if w.wrote != tt.wantWritten {
-				t.Errorf("wrote = %v, want %v", w.wrote, tt.wantWritten)
+			if w.wrote || w.Header().Get("Location") != "" {
+				t.Errorf("guard wrote a response (code %d, Location %q), want nothing written", w.Code, w.Header().Get("Location"))
 			}
-			if !tt.wantWritten {
-				var he *contract.HTTPError
-				if !errors.As(err, &he) || he.StatusCode() != http.StatusForbidden || he.Message != "Already authenticated." {
-					t.Errorf("error = %v, want a 403 HTTPError \"Already authenticated.\"", err)
-				}
-				return
+			var ae *AlreadyAuthenticatedError
+			if !errors.As(err, &ae) || ae.RedirectTo != "/dashboard" {
+				t.Fatalf("error = %v, want *AlreadyAuthenticatedError with RedirectTo /dashboard", err)
 			}
-			if !errors.Is(err, contract.ErrResponseWritten) || contract.HandledCause(err) != nil {
-				t.Errorf("error = %v, want the bare ErrResponseWritten", err)
+			var me contract.MessageError
+			if !errors.As(err, &me) || me.StatusCode() != http.StatusForbidden || me.ClientMessage() != "Already authenticated." {
+				t.Errorf("error = %v, want a 403 with the message \"Already authenticated.\"", err)
 			}
-			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != tt.wantLocation {
-				t.Errorf("response = %d %q, want 303 %q", w.Code, w.Header().Get("Location"), tt.wantLocation)
+			var rep contract.Reportable
+			if !errors.As(err, &rep) || rep.ShouldReport() {
+				t.Errorf("error %v must be Reportable with ShouldReport false", err)
 			}
 		})
+	}
+}
+
+// TestGuestMiddleware_StandaloneRouterAnswers403 asserts a router without
+// the error pipeline answers the guest denial with the 403 and its
+// message.
+func TestGuestMiddleware_StandaloneRouterAnswers403(t *testing.T) {
+	m := newManagerWithScheme(true)
+	r := router.New()
+	r.Use(GuestMiddleware(m))
+	r.Get("/login", func(*router.Context) error {
+		t.Error("guarded handler ran")
+		return nil
+	})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, newDenialRequest(http.MethodGet, "/login", kindBrowser))
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "Already authenticated.") {
+		t.Errorf("response = %d %q, want 403 with the message", w.Code, w.Body.String())
 	}
 }

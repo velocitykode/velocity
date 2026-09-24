@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 
 	"github.com/velocitykode/velocity/app"
-	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/router"
 )
@@ -258,29 +257,25 @@ func AuthorizeMiddleware(manager *Manager, ability string, resourceFunc ...func(
 }
 
 // GuestMiddleware returns middleware that only allows unauthenticated users.
-// For an authenticated user it returns a 403 error for a request that
-// wants JSON, and redirects any other request to "/".
+// It is GuestMiddlewareWithRedirect with the redirect target "/".
 func GuestMiddleware(manager *Manager) router.MiddlewareFunc {
 	return GuestMiddlewareWithRedirect(manager, "/")
 }
 
 // GuestMiddlewareWithRedirect returns middleware that only allows
-// unauthenticated users. For an authenticated user it returns a 403 error
-// ("Already authenticated.") for a request that wants JSON, rendered by the
-// error pipeline; any other request, Inertia included, is redirected (303)
-// to redirectTo and contract.ErrResponseWritten is returned.
+// unauthenticated users. For an authenticated user it writes nothing and
+// returns an *AlreadyAuthenticatedError carrying redirectTo. Through the
+// framework's error pipeline, a request that wants JSON (by the error
+// handler's negotiation: API mode, API prefixes and JSON predicates
+// count) gets a 403 problem+json body ("Already authenticated."), and any
+// other request, Inertia included, is redirected (303) to redirectTo (see
+// Manager.RenderAlreadyAuthenticated). A standalone router without the
+// pipeline answers the 403 with that message.
 func GuestMiddlewareWithRedirect(manager *Manager, redirectTo string) router.MiddlewareFunc {
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
 			if manager.Check(c.Request) {
-				if c.WantsJSON() {
-					return contract.NewHTTPError(http.StatusForbidden, "Already authenticated.")
-				}
-				// Browser/Inertia: redirect (Inertia follows as a fresh visit).
-				if err := c.Redirect(http.StatusSeeOther, redirectTo); err != nil {
-					return err
-				}
-				return contract.ErrResponseWritten
+				return &AlreadyAuthenticatedError{RedirectTo: redirectTo}
 			}
 			return next(c)
 		}

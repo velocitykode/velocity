@@ -477,3 +477,75 @@ func TestAuthErrorRules_InertiaIntendedURLSurvivesCookieSession(t *testing.T) {
 		t.Errorf("login page body = %q, want %q (session cookie lost on the redirect)", got, want)
 	}
 }
+
+// TestGuestErrorRule_ThroughApp drives the guest guard through a real app:
+// the error handler's negotiation (API mode here) decides JSON, a browser
+// or Inertia request is redirected to the guard's target, and a refused
+// target warns and answers the 403.
+func TestGuestErrorRule_ThroughApp(t *testing.T) {
+	tests := []struct {
+		name          string
+		authenticated bool
+		apiMode       bool
+		redirectTo    string
+		accept        string
+		kind          string
+		wantStatus    int
+		wantType      string
+		wantLocation  string
+		wantWarn      int
+	}{
+		{name: "api mode accept any", authenticated: true, apiMode: true, redirectTo: "/home", accept: "*/*", wantStatus: http.StatusForbidden, wantType: problem.ProblemTypeContent},
+		{name: "browser", authenticated: true, redirectTo: "/home", kind: "browser", wantStatus: http.StatusSeeOther, wantLocation: "/home"},
+		{name: "inertia", authenticated: true, redirectTo: "/home", kind: "inertia", wantStatus: http.StatusSeeOther, wantLocation: "/home"},
+		{name: "unsafe target", authenticated: true, redirectTo: "//evil", kind: "browser", wantStatus: http.StatusForbidden, wantType: "text/html", wantWarn: 1},
+		{name: "unauthenticated passes through", redirectTo: "/home", kind: "browser", wantStatus: http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, _, rec := newPipelineApp(t)
+			a.Services.Errors.SetDebug(false)
+			a.Services.Errors.SetAPIMode(tt.apiMode)
+			m := auth.FromServices(a.Services)
+			if m == nil {
+				t.Fatal("app has no *auth.Manager")
+			}
+			authLog := &levelLogger{}
+			m.SetLogger(authLog)
+			m.RegisterScheme("web", &stubAuthScheme{authenticated: tt.authenticated, sess: auth.NewSession("sid")})
+			a.Router.Use(auth.GuestMiddlewareWithRedirect(m, tt.redirectTo))
+			a.Router.Get("/login", func(c *router.Context) error {
+				return c.String(http.StatusOK, "login page")
+			})
+
+			req := authRequest(http.MethodGet, "/login", tt.kind)
+			if tt.accept != "" {
+				req.Header.Set("Accept", tt.accept)
+			}
+			w := httptest.NewRecorder()
+			a.Router.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %q)", w.Code, tt.wantStatus, w.Body.String())
+			}
+			if got := w.Header().Get("Content-Type"); tt.wantType != "" && !strings.HasPrefix(got, tt.wantType) {
+				t.Errorf("Content-Type = %q, want %q", got, tt.wantType)
+			}
+			if got := w.Header().Get("Location"); got != tt.wantLocation {
+				t.Errorf("Location = %q, want %q", got, tt.wantLocation)
+			}
+			if tt.wantType == problem.ProblemTypeContent {
+				var body map[string]any
+				if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body["detail"] != "Already authenticated." {
+					t.Errorf("problem body = %q, want detail \"Already authenticated.\"", w.Body.String())
+				}
+			}
+			if got := authLog.count("warn"); got != tt.wantWarn {
+				t.Errorf("warnings = %d, want %d", got, tt.wantWarn)
+			}
+			if rec.count() != 0 {
+				t.Errorf("reports = %d, want 0", rec.count())
+			}
+		})
+	}
+}
