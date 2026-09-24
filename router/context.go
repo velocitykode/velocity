@@ -631,25 +631,17 @@ func (c *Context) WantsJSON() bool {
 
 // Wrap converts a HandlerFunc to http.HandlerFunc.
 //
-// Error mapping mirrors the router's default handleError path: a
-// *HTTPError (direct or wrapped) responds with its code, echoing its
-// message only for 4xx (client-facing by design); 5xx and non-HTTPError
-// errors produce a generic body so server-side detail never reaches the
-// client.
+// Error mapping is the router's default handleError mapping
+// (defaultErrorResponse): a *HTTPError (direct or wrapped) responds with
+// its code, echoing its message only for 4xx (client-facing by design);
+// 5xx and non-HTTPError errors produce a generic body so server-side
+// detail never reaches the client.
 func Wrap(h HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c := NewContext(w, r)
 		if err := h(c); err != nil {
-			var he *HTTPError
-			if errors.As(err, &he) {
-				if he.Code >= http.StatusInternalServerError {
-					http.Error(w, http.StatusText(he.Code), he.Code)
-				} else {
-					http.Error(w, he.Message, he.Code)
-				}
-				return
-			}
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			code, body := defaultErrorResponse(err)
+			http.Error(w, body, code)
 		}
 	}
 }

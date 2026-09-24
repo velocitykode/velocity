@@ -1,6 +1,9 @@
 package router
 
-import "net/http"
+import (
+	"errors"
+	"net/http"
+)
 
 // HTTPError represents an HTTP error with a status code and message.
 // Handlers can return this to control the response status and message
@@ -32,6 +35,22 @@ func NewHTTPError(code int, message ...string) *HTTPError {
 		Code:    code,
 		Message: msg,
 	}
+}
+
+// defaultErrorResponse is the status and client-facing body written for err
+// when no ErrorHandler is set, shared by the router's handleError and Wrap.
+// A *HTTPError anywhere in err's chain (errors.As) names the status; its
+// message reaches the client only for 4xx, since 5xx text is server-side
+// detail. Every other error is a generic 500.
+func defaultErrorResponse(err error) (int, string) {
+	var he *HTTPError
+	if errors.As(err, &he) {
+		if he.Code >= http.StatusInternalServerError {
+			return he.Code, http.StatusText(he.Code)
+		}
+		return he.Code, he.Message
+	}
+	return http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError)
 }
 
 // ErrorHandlerMiddleware returns a middleware that routes errors from

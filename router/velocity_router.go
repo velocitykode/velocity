@@ -1060,33 +1060,28 @@ func (r *VelocityRouterV2) onPanic(ctx *Context, rw *responseWriter, req *http.R
 }
 
 // handleError writes an error response using the custom ErrorHandler if set,
-// or falls back to the default HTTP 500 behavior. On the default path,
-// 500-class failures are logged via the wired errorLogger (see
-// SetErrorLogger for the full logging-ownership policy); stack is
+// or falls back to the default mapping in defaultErrorResponse. On the
+// default path, 500-class failures are logged via the wired errorLogger
+// (see SetErrorLogger for the full logging-ownership policy); stack is
 // non-empty only on the panic-recovery path.
+//
+// A recovered panic always responds 500 on the default path, even when the
+// panic value is an *HTTPError that errors.As would reach through the
+// recovered-panic wrapper: a panic is a bug, not a response.
 func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err error, stack string) {
 	if r.ErrorHandler != nil {
 		r.ErrorHandler(ctx, err)
 		return
 	}
 
-	// Check for HTTPError type
-	if he, ok := err.(*HTTPError); ok {
-		if he.Code >= http.StatusInternalServerError {
-			// 5xx messages are server-side detail: log them, but never
-			// echo handler-supplied text to the client (generic-error
-			// house rule). 4xx messages are client-facing by design
-			// (validation hints, etc.) and pass through unchanged.
-			r.logServerError(ctx, err, stack)
-			http.Error(rw, http.StatusText(he.Code), he.Code)
-			return
-		}
-		http.Error(rw, he.Message, he.Code)
-		return
+	code, body := http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError)
+	if stack == "" {
+		code, body = defaultErrorResponse(err)
 	}
-
-	r.logServerError(ctx, err, stack)
-	http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
+	if code >= http.StatusInternalServerError {
+		r.logServerError(ctx, err, stack)
+	}
+	http.Error(rw, body, code)
 }
 
 // logServerError emits the single default-path error log entry for a
