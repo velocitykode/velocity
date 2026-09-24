@@ -136,10 +136,11 @@ func TestSessionMiddleware_Integration_RedirectFlushesCookie(t *testing.T) {
 	}
 }
 
-// TestSessionMiddleware_Integration_EmptyHandlerFlushesCookie covers the
-// defer-fallback path: handler mutates the session but returns without
-// writing any output. The pre-commit hook never fires; the defer Save
-// MUST still flush Set-Cookie.
+// TestSessionMiddleware_Integration_EmptyHandlerFlushesCookie covers a
+// handler that mutates the session but returns without writing any
+// output. No write fires the pre-commit hook; the router fires it once
+// the error boundary is done, so Set-Cookie MUST still reach the implicit
+// 200.
 func TestSessionMiddleware_Integration_EmptyHandlerFlushesCookie(t *testing.T) {
 	scheme := newRealCookieScheme(t)
 	r := newRouterWithSessionMiddleware(t, scheme, func(c *router.Context) error {
@@ -159,7 +160,7 @@ func TestSessionMiddleware_Integration_EmptyHandlerFlushesCookie(t *testing.T) {
 	defer resp.Body.Close()
 
 	if _, ok := hasSessionCookie(resp, "vel_session"); !ok {
-		t.Fatalf("empty-body response carries no vel_session Set-Cookie; defer-fallback did not fire")
+		t.Fatalf("empty-body response carries no vel_session Set-Cookie; the router did not fire the pending hook")
 	}
 }
 

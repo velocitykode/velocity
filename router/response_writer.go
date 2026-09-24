@@ -58,11 +58,14 @@ func releaseResponseWriter(rw *responseWriter) {
 }
 
 // BeforeFirstWrite registers fn to run exactly once, just before the
-// first WriteHeader or Write call commits the response headers. Use this
-// from middleware that needs to write headers (e.g. Set-Cookie for
-// save-at-end session persistence) lazily but still in time for the
-// real net/http transport to flush them. Subsequent calls overwrite the
-// registered hook only if it has not yet fired.
+// first WriteHeader or Write call commits the response headers, or, when
+// nothing commits them, once the router's error boundary is done with the
+// request (see finalize). Use this from middleware that needs to write
+// headers (e.g. Set-Cookie for save-at-end session persistence) lazily but
+// still in time for the real net/http transport to flush them, including
+// on the response the error boundary writes after the middleware
+// returned. Subsequent calls overwrite the registered hook only if it has
+// not yet fired.
 //
 // fn must NOT call methods on the wrapper that themselves trip
 // WriteHeader (the sync.Once gate makes that safe against re-entry but
@@ -92,6 +95,19 @@ func (rw *responseWriter) fireBeforeFirstWrite() {
 			fn()
 		}
 	})
+}
+
+// finalize fires the BeforeFirstWrite hook when nothing fired it: the
+// router calls it once per request after the error boundary has answered
+// (or found nothing to answer) and before the writer is released, so a
+// request whose handler and error path wrote nothing, which net/http then
+// answers with an implicit 200, still runs its pre-commit hook (the
+// session middleware's save, for one). No-op when the hook already fired
+// or none is registered.
+func (rw *responseWriter) finalize() {
+	if rw.beforeFirstWriteFn != nil {
+		rw.fireBeforeFirstWrite()
+	}
 }
 
 // WriteHeader captures the status code

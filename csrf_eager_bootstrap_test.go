@@ -102,8 +102,9 @@ func TestCSRF_EagerBootstrap_AnonymousGETMintsTokenAndCookie(t *testing.T) {
 
 	// Read directly from the live recorder header map. Result().Cookies()
 	// snapshots headers at WriteHeader time, so any Set-Cookie added by
-	// doSave's defer-fallback (which runs after the inner WriteHeader in
-	// this fixture) is invisible to the snapshot. The production
+	// the post-handler save for a writer without the pre-commit hook
+	// (which runs after the inner WriteHeader in this fixture) is
+	// invisible to the snapshot. The production
 	// router.responseWriter uses BeforeFirstWrite so save runs ahead of
 	// commit; here we just inspect the post-handler header map directly.
 	rawSetCookie := rec.Header().Values("Set-Cookie")

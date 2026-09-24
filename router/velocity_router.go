@@ -788,6 +788,7 @@ func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request,
 		} else if handlerErr != nil {
 			r.dispatchRequestFailed(req, meta, failure)
 		}
+		rw.finalize()
 		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
 			Context:      req.Context(),
 			RequestID:    meta.id,
@@ -888,6 +889,7 @@ func (r *VelocityRouterV2) handleUnmatched(rw *responseWriter, req *http.Request
 		} else if handlerErr != nil {
 			r.dispatchRequestFailed(req, meta, failure)
 		}
+		rw.finalize()
 		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
 			Context:      req.Context(),
 			RequestID:    meta.id,
@@ -1022,6 +1024,7 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 		} else if handlerErr != nil {
 			r.dispatchRequestFailed(req, meta, failure)
 		}
+		rw.finalize()
 		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
 			Context:      req.Context(),
 			RequestID:    meta.id,

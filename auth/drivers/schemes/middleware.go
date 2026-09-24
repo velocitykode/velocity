@@ -9,10 +9,12 @@ import (
 )
 
 // preCommitHooker is the optional capability the save-at-end middleware
-// uses to register a pre-commit hook on the response writer. *router.
-// responseWriter implements it; other implementations (test recorders,
-// custom wrappers) fall through to the defer-fallback save path so the
-// middleware still functions, it just cannot intercept header commit.
+// uses to register a pre-commit hook on the response writer. The
+// router's response writer implements it, and the router fires a hook
+// nothing fired once its error boundary is done with the request; other
+// implementations (test recorders, custom wrappers) fall through to the
+// post-handler save so the middleware still functions, it just cannot
+// intercept header commit.
 type preCommitHooker interface {
 	BeforeFirstWrite(fn func())
 }
@@ -21,26 +23,27 @@ type preCommitHooker interface {
 // request save-at-end session semantics: the request is given a sessionHolder
 // (via WithSessionContext) so SessionScheme.getSession can cache the
 // resolved session for the lifetime of the request; BEFORE the response
-// headers are committed AND as a defer fallback, the holder is consulted
-// and, if a session was touched and mutated, it is saved to the response
-// writer.
+// headers are committed, the holder is consulted and, if a session was
+// touched and mutated, it is saved to the response writer.
 //
-// Why two save sites:
+// Where the save happens:
 //
-//   - Pre-commit hook (preferred). The router's *responseWriter exposes
-//     BeforeFirstWrite, which fires once before the first WriteHeader
-//     or Write call. Set-Cookie lands in the same response that the
-//     handler is about to flush. This is the only site that works for
-//     handlers using c.JSON / c.Text / c.Redirect / direct writes,
-//     because those commit headers from inside the handler body and the
-//     post-handler save (line below) would write to an already-flushed
-//     ResponseWriter with no effect.
+//   - Pre-commit hook, on the router's response writer, which exposes
+//     BeforeFirstWrite. The hook fires once before the first WriteHeader
+//     or Write call, so Set-Cookie lands in the same response the
+//     handler is about to flush (c.JSON / c.Text / c.Redirect / direct
+//     writes commit headers from inside the handler body). The hook stays
+//     armed after the handler returns: when the handler returned an
+//     error, the router's error boundary writes the error response later,
+//     and its first write fires the hook, so session changes the error
+//     path makes (a flash the error page drains, a render rule's Put, the
+//     intended-URL stash) are saved with it. When neither the handler nor
+//     the error path writes anything, the router fires the hook once the
+//     boundary is done, before net/http sends its implicit 200.
 //
-//   - Post-handler defer fallback. Handlers that never write any output
-//     (return after pure session mutation, e.g. a CSRF-only refresh
-//     endpoint) never trip the pre-commit hook. The defer-path save
-//     covers them, and httptest.ResponseRecorder paths (which don't
-//     implement preCommitHooker but do accept late header writes).
+//   - Post-handler save, for a response writer without the hook
+//     (httptest.ResponseRecorder, custom wrappers), right after the
+//     handler returns.
 //
 // Without this middleware every ctx.Auth().Session(r).Put("k", v) and
 // every Flash() write is silently lost because the framework never calls
@@ -91,11 +94,9 @@ func (g *SessionScheme) SessionMiddleware() router.MiddlewareFunc {
 			// the cookie even when the handler never touched the bag.
 			ensureSession(g, c.Request)
 
-			// saved guards both the pre-commit hook AND the defer
-			// fallback so the session writes Set-Cookie at most once
-			// per request. Without this gate a handler that calls
-			// WriteHeader explicitly + the defer-fallback would issue
-			// two Set-Cookie headers (one fresh, one stale).
+			// saved makes the save run at most once per request, so
+			// the session never writes two Set-Cookie headers (one
+			// fresh, one stale) whichever site invokes doSave.
 			var saved sync.Once
 			doSave := func() {
 				saved.Do(func() {
@@ -121,21 +122,22 @@ func (g *SessionScheme) SessionMiddleware() router.MiddlewareFunc {
 			}
 
 			// Pre-commit hook: fires once just before the first
-			// WriteHeader/Write/Hijack commits the response. This is
-			// the load-bearing site for handlers that produce output
-			// (c.JSON, c.Redirect, c.Text, ...).
-			if h, ok := c.Response.(preCommitHooker); ok {
+			// WriteHeader/Write/Hijack commits the response, whether the
+			// handler or the router's error boundary writes it, and
+			// otherwise once the boundary is done with the request.
+			h, hooked := c.Response.(preCommitHooker)
+			if hooked {
 				h.BeforeFirstWrite(doSave)
 			}
 
 			err := next(c)
 
-			// Defer-style fallback: covers handlers that never wrote
-			// anything (so the pre-commit hook never fired) AND
-			// response writers that did not implement
-			// preCommitHooker (test recorders, custom wrappers).
-			// sync.Once ensures we never double-save.
-			doSave()
+			// A writer without the hook (test recorders, custom
+			// wrappers) saves here. sync.Once ensures we never
+			// double-save.
+			if !hooked {
+				doSave()
+			}
 			return err
 		}
 	}
