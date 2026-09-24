@@ -1,6 +1,7 @@
 package routerbridge
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -466,5 +467,74 @@ func TestInstall_ErrorResponseDropsStaleContentLength(t *testing.T) {
 	var doc map[string]any
 	if resp.StatusCode != http.StatusInternalServerError || json.Unmarshal(raw, &doc) != nil || doc["status"] != float64(http.StatusInternalServerError) {
 		t.Errorf("response = %d %q, want the full 500 problem body", resp.StatusCode, raw)
+	}
+}
+
+// TestInstall_StatusResolutionMatchesStandalone asserts the standalone
+// router default and the installed pipeline answer the same status and
+// headers when an explicit status wraps a deadline or an oversized body,
+// for the bare fallbacks, and for a panic carrying a 4xx value.
+func TestInstall_StatusResolutionMatchesStandalone(t *testing.T) {
+	tests := []struct {
+		name       string
+		handler    router.HandlerFunc
+		wantStatus int
+		wantRetry  string
+	}{
+		{
+			name: "500 wrapping MaxBytesError",
+			handler: func(*router.Context) error {
+				return contract.NewHTTPError(http.StatusInternalServerError).WithCause(&http.MaxBytesError{Limit: 1024})
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "503 with Retry-After wrapping DeadlineExceeded",
+			handler: func(*router.Context) error {
+				return contract.NewHTTPError(http.StatusServiceUnavailable).WithHeader("Retry-After", "7").WithCause(context.DeadlineExceeded)
+			},
+			wantStatus: http.StatusServiceUnavailable,
+			wantRetry:  "7",
+		},
+		{
+			name:       "bare MaxBytesError",
+			handler:    func(*router.Context) error { return &http.MaxBytesError{Limit: 1024} },
+			wantStatus: http.StatusRequestEntityTooLarge,
+		},
+		{
+			name:       "bare DeadlineExceeded",
+			handler:    func(*router.Context) error { return context.DeadlineExceeded },
+			wantStatus: http.StatusServiceUnavailable,
+		},
+		{
+			name:       "panic carrying a 404 HTTPError",
+			handler:    func(*router.Context) error { panic(contract.NewHTTPError(http.StatusNotFound)) },
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			standalone := router.New()
+			standalone.Get("/x", tt.handler)
+
+			h := problem.NewHandler(problem.WithReporters())
+			h.SetDebug(false)
+			installed := router.New()
+			Install(installed, WithHandler(func() contract.ErrorHandler { return h }))
+			installed.Get("/x", tt.handler)
+
+			for name, r := range map[string]*router.VelocityRouterV2{"standalone": standalone, "pipeline": installed} {
+				w := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, "/x", nil)
+				req.Header.Set("Accept", "application/json")
+				r.ServeHTTP(w, req)
+				if w.Code != tt.wantStatus {
+					t.Errorf("%s: status = %d, want %d", name, w.Code, tt.wantStatus)
+				}
+				if got := w.Header().Get("Retry-After"); got != tt.wantRetry {
+					t.Errorf("%s: Retry-After = %q, want %q", name, got, tt.wantRetry)
+				}
+			}
+		})
 	}
 }

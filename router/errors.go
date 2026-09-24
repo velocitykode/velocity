@@ -122,67 +122,270 @@ const (
 )
 
 // defaultResolution is what the default error path decided for one error:
-// the status to answer with, the headers the error carries, whether to
-// write at all, and at which level (if any) the router logs it.
+// the status to answer with, the headers the error carries, the client
+// message a 4xx answer echoes, whether to write at all, and at which level
+// (if any) the router logs it.
 type defaultResolution struct {
 	status  int
 	headers http.Header
+	message string
 	write   bool
 	level   defaultLogLevel
 }
 
-// resolveStatus maps err to the status the router answers with, apart
-// from the recovered and response-written cases: a deadline is 503, an
-// oversized body is 413, otherwise contract.StatusOf decides. ok is false
-// when nothing in err names a status (the answer is then 500).
-func resolveStatus(err error) (status int, headers http.Header, ok bool) {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return http.StatusServiceUnavailable, nil, true
-	}
-	var mbe *http.MaxBytesError
-	if errors.As(err, &mbe) {
-		return http.StatusRequestEntityTooLarge, nil, true
-	}
-	return contract.StatusOf(err)
+// walkLimit bounds how many nodes deep classifyError walks an error chain
+// by hand before it hands the rest of that branch to the errors package,
+// whose answer is the same at any depth.
+const walkLimit = 64
+
+// errorFacts is what one walk of an error chain found: the first
+// StatusError, HeaderError, MessageError and *PanicError in errors.As
+// order, and whether errors.Is would match *http.MaxBytesError,
+// context.Canceled, context.DeadlineExceeded and
+// contract.ErrResponseWritten.
+type errorFacts struct {
+	status   contract.StatusError
+	header   contract.HeaderError
+	message  contract.MessageError
+	panicErr *PanicError
+
+	haveStatus  bool
+	haveHeader  bool
+	haveMessage bool
+	panicked    bool
+	maxBytes    bool
+	canceled    bool
+	deadline    bool
+	written     bool
 }
 
-// markedWritten reports whether err marks a response written on purpose:
-// it matches contract.ErrResponseWritten (bare or through
-// contract.Handled) outside the value of any recovered panic it carries.
-// A panic is a 500 whatever its value, so a marker inside a *PanicError,
-// or anywhere in err when recovered is set and err carries no
-// *PanicError, counts for nothing. A Handled value wrapping a *PanicError
-// (a middleware rendered the panic) still marks the response written.
-func markedWritten(err error, recovered bool) bool {
-	if !errors.Is(err, contract.ErrResponseWritten) {
+// classifyError walks err's chain once. The walk visits nodes in the
+// order errors.As and errors.Is do and matches with type assertions, so no
+// target escapes to the heap. A node with an As method, or one deeper than
+// walkLimit, has its branch handed to errors.As (and, past the limit,
+// errors.Is), so every answer matches the errors package for any chain.
+func classifyError(err error) errorFacts {
+	var f errorFacts
+	f.walk(err, 0, false)
+	return f
+}
+
+// walk visits err and the errors below it. skipAs is set below a node
+// whose As method already had its branch searched by errors.As.
+func (f *errorFacts) walk(err error, depth int, skipAs bool) {
+	for err != nil {
+		if depth >= walkLimit {
+			if !skipAs {
+				f.fallbackAs(err)
+			}
+			f.fallbackIs(err)
+			return
+		}
+		if !skipAs {
+			f.matchAs(err)
+			if _, ok := err.(interface{ As(any) bool }); ok {
+				f.fallbackAs(err)
+				skipAs = true
+			}
+		}
+		f.matchIs(err)
+		switch x := err.(type) {
+		case interface{ Unwrap() error }:
+			err = x.Unwrap()
+			depth++
+		case interface{ Unwrap() []error }:
+			for _, e := range x.Unwrap() {
+				if e != nil {
+					f.walk(e, depth+1, skipAs)
+				}
+			}
+			return
+		default:
+			return
+		}
+	}
+}
+
+// matchAs records the As targets err itself satisfies.
+func (f *errorFacts) matchAs(err error) {
+	if !f.haveStatus {
+		if se, ok := err.(contract.StatusError); ok {
+			f.status, f.haveStatus = se, true
+		}
+	}
+	if !f.haveHeader {
+		if he, ok := err.(contract.HeaderError); ok {
+			f.header, f.haveHeader = he, true
+		}
+	}
+	if !f.haveMessage {
+		if me, ok := err.(contract.MessageError); ok {
+			f.message, f.haveMessage = me, true
+		}
+	}
+	if !f.panicked {
+		if pe, ok := err.(*PanicError); ok {
+			f.panicErr, f.panicked = pe, true
+		}
+	}
+	if !f.maxBytes {
+		if _, ok := err.(*http.MaxBytesError); ok {
+			f.maxBytes = true
+		}
+	}
+}
+
+// matchIs records the sentinels err itself matches, as errors.Is does:
+// equality, then an Is method.
+func (f *errorFacts) matchIs(err error) {
+	if !f.canceled {
+		f.canceled = isNode(err, context.Canceled)
+	}
+	if !f.deadline {
+		f.deadline = isNode(err, context.DeadlineExceeded)
+	}
+	if !f.written {
+		f.written = isNode(err, contract.ErrResponseWritten)
+	}
+}
+
+// isNode reports whether err itself (not its chain) matches target under
+// errors.Is. target must be comparable.
+func isNode(err, target error) bool {
+	if err == target {
+		return true
+	}
+	x, ok := err.(interface{ Is(error) bool })
+	return ok && x.Is(target)
+}
+
+// fallbackAs resolves the As targets still missing over err's whole
+// branch through errors.As.
+func (f *errorFacts) fallbackAs(err error) {
+	if !f.haveStatus {
+		var se contract.StatusError
+		if errors.As(err, &se) {
+			f.status, f.haveStatus = se, true
+		}
+	}
+	if !f.haveHeader {
+		var he contract.HeaderError
+		if errors.As(err, &he) {
+			f.header, f.haveHeader = he, true
+		}
+	}
+	if !f.haveMessage {
+		var me contract.MessageError
+		if errors.As(err, &me) {
+			f.message, f.haveMessage = me, true
+		}
+	}
+	if !f.panicked {
+		var pe *PanicError
+		if errors.As(err, &pe) {
+			f.panicErr, f.panicked = pe, true
+		}
+	}
+	if !f.maxBytes {
+		var mbe *http.MaxBytesError
+		f.maxBytes = errors.As(err, &mbe)
+	}
+}
+
+// fallbackIs resolves the sentinels still unmatched over err's whole
+// branch through errors.Is.
+func (f *errorFacts) fallbackIs(err error) {
+	if !f.canceled {
+		f.canceled = errors.Is(err, context.Canceled)
+	}
+	if !f.deadline {
+		f.deadline = errors.Is(err, context.DeadlineExceeded)
+	}
+	if !f.written {
+		f.written = errors.Is(err, contract.ErrResponseWritten)
+	}
+}
+
+// markedWritten reports whether the classified error marks a response
+// written on purpose: it matches contract.ErrResponseWritten (bare or
+// through contract.Handled) outside the value of any recovered panic it
+// carries. A panic is a 500 whatever its value, so a marker inside a
+// *PanicError, or anywhere in the error when recovered is set and it
+// carries no *PanicError, counts for nothing. A Handled value wrapping a
+// *PanicError (a middleware rendered the panic) still marks the response
+// written.
+func (f *errorFacts) markedWritten(recovered bool) bool {
+	if !f.written {
 		return false
 	}
-	var pe *PanicError
-	if errors.As(err, &pe) {
-		return !errors.Is(pe, contract.ErrResponseWritten)
+	if f.panicked {
+		return !errors.Is(f.panicErr, contract.ErrResponseWritten)
 	}
 	return !recovered
+}
+
+// markedWritten is errorFacts.markedWritten for an unclassified error.
+func markedWritten(err error, recovered bool) bool {
+	f := classifyError(err)
+	return f.markedWritten(recovered)
+}
+
+// answer resolves the status and headers for an error that is neither a
+// recovered panic nor a client-gone cancellation. First match wins: an
+// explicit StatusError (with the first HeaderError's headers), a deadline
+// (503), an oversized body (413), otherwise 500 with the first
+// HeaderError's headers. named is false only in the last case.
+func (f *errorFacts) answer() (status int, headers http.Header, named bool) {
+	switch {
+	case f.haveStatus:
+		status, named = f.status.StatusCode(), true
+		if status < 100 || status > 999 {
+			status = http.StatusInternalServerError
+		}
+	case f.deadline:
+		return http.StatusServiceUnavailable, nil, true
+	case f.maxBytes:
+		return http.StatusRequestEntityTooLarge, nil, true
+	default:
+		status = http.StatusInternalServerError
+	}
+	if f.haveHeader {
+		headers = f.header.Headers()
+	}
+	return status, headers, named
 }
 
 // resolveDefault decides how the default error path answers err. The
 // cases, first match wins:
 //
 //   - a bare contract.ErrResponseWritten outside a recovered panic (see
-//     markedWritten): nothing written, nothing logged.
+//     errorFacts.markedWritten): nothing written, nothing logged.
 //   - a contract.Handled value outside a recovered panic: nothing
-//     written; the cause is logged when it resolves to 500 or above.
-//   - info.Recovered (or a *PanicError in the chain): 500, logged with the
-//     stack, whatever the panic value carries.
+//     written; the cause resolves (and logs) through these same cases.
+//   - info.Recovered (or a *PanicError in the chain): 500, logged at
+//     error level with the stack, whatever the panic value carries.
 //   - context.Canceled while the request context is dead: the client is
 //     gone, nothing written, nothing logged.
-//   - context.DeadlineExceeded: 503, logged at warn.
+//   - an explicit StatusError: its status, with the headers of the first
+//     HeaderError in the chain, even when it wraps a deadline or an
+//     oversized body.
+//   - context.DeadlineExceeded: 503.
 //   - *http.MaxBytesError: 413.
-//   - otherwise contract.StatusOf; an error naming no status is 500.
+//   - otherwise 500.
 //
-// Other statuses of 500 and above are logged at error level.
-// info.Committed turns off writing but keeps the logging decision.
+// A 503 whose chain holds context.DeadlineExceeded (explicit or not) logs
+// at warn; any other status of 500 and above logs at error level; below
+// 500 nothing is logged. info.Committed turns off writing but keeps the
+// logging decision.
 func resolveDefault(c *Context, err error, info ErrorInfo) defaultResolution {
-	if markedWritten(err, info.Recovered) {
+	f := classifyError(err)
+	return resolveClassified(c, err, &f, info)
+}
+
+// resolveClassified is resolveDefault for an error already classified
+// into f.
+func resolveClassified(c *Context, err error, f *errorFacts, info ErrorInfo) defaultResolution {
+	if f.markedWritten(info.Recovered) {
 		cause := contract.HandledCause(err)
 		if cause == nil {
 			return defaultResolution{}
@@ -193,19 +396,21 @@ func resolveDefault(c *Context, err error, info ErrorInfo) defaultResolution {
 	}
 
 	var res defaultResolution
-	var pe *PanicError
 	switch {
-	case info.Recovered || errors.As(err, &pe):
+	case info.Recovered || f.panicked:
 		res = defaultResolution{status: http.StatusInternalServerError, level: logError}
-	case errors.Is(err, context.Canceled) && requestGone(c):
+	case f.canceled && requestGone(c):
 		return defaultResolution{}
-	case errors.Is(err, context.DeadlineExceeded):
-		res = defaultResolution{status: http.StatusServiceUnavailable, level: logWarn}
 	default:
-		status, headers, _ := resolveStatus(err)
-		res = defaultResolution{status: status, headers: headers}
-		if status >= http.StatusInternalServerError {
+		res.status, res.headers, _ = f.answer()
+		switch {
+		case res.status == http.StatusServiceUnavailable && f.deadline:
+			res.level = logWarn
+		case res.status >= http.StatusInternalServerError:
 			res.level = logError
+		}
+		if res.status < http.StatusInternalServerError && f.haveMessage && f.message.StatusCode() == res.status {
+			res.message = f.message.ClientMessage()
 		}
 	}
 	res.write = !info.Committed
@@ -223,9 +428,11 @@ func requestGone(c *Context) bool {
 // contract.ErrResponseWritten outside a recovered panic (a panic answers
 // 500 whatever its value), and for a context.Canceled whose request
 // context is dead (the client is gone). Otherwise the status resolves as
-// follows: a recovered panic is 500; context.DeadlineExceeded is 503;
-// *http.MaxBytesError is 413; any other error takes its status and
-// headers from contract.StatusOf, or 500 when it names none.
+// follows, first match wins: a recovered panic is 500; an explicit
+// contract.StatusError names the status, with the headers of the first
+// contract.HeaderError in the chain, even when it wraps a deadline or an
+// oversized body; context.DeadlineExceeded is 503; *http.MaxBytesError is
+// 413; any other error is 500.
 //
 // The body is application/problem+json (type, title, status, detail,
 // instance as the request path, and request_id and trace_id when info
@@ -247,11 +454,11 @@ func DefaultErrorHandler(c *Context, err error, info ErrorInfo) {
 	if !res.write {
 		return
 	}
-	writeDefaultError(c, err, res, info)
+	writeDefaultError(c, res, info)
 }
 
-// writeDefaultError writes the resolved default response for err.
-func writeDefaultError(c *Context, err error, res defaultResolution, info ErrorInfo) {
+// writeDefaultError writes the resolved default response.
+func writeDefaultError(c *Context, res defaultResolution, info ErrorInfo) {
 	h := c.Response.Header()
 	for key, values := range res.headers {
 		if key == "" || strings.ContainsAny(key, "\r\n") {
@@ -267,11 +474,8 @@ func writeDefaultError(c *Context, err error, res defaultResolution, info ErrorI
 	}
 
 	detail := statusText(res.status)
-	if res.status < http.StatusInternalServerError {
-		var me contract.MessageError
-		if errors.As(err, &me) && me.StatusCode() == res.status && me.ClientMessage() != "" {
-			detail = me.ClientMessage()
-		}
+	if res.message != "" {
+		detail = res.message
 	}
 
 	if c.Request != nil && contract.WantsJSON(c.Request) {

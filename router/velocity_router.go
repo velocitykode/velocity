@@ -781,11 +781,12 @@ func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request,
 	ctx.applyWiring(r.currentWiring())
 
 	var handlerErr error
+	var failure requestFailure
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			r.onPanic(ctx, rw, req, meta, recovered)
 		} else if handlerErr != nil {
-			r.dispatchRequestFailed(req, meta, handlerErr, false, "")
+			r.dispatchRequestFailed(req, meta, failure)
 		}
 		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
 			Context:      req.Context(),
@@ -814,7 +815,7 @@ func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request,
 	}
 	handlerErr = (*handler)(ctx)
 	if handlerErr != nil {
-		r.handleError(ctx, rw, handlerErr, ErrorInfo{})
+		failure = r.handleError(ctx, rw, handlerErr, ErrorInfo{})
 	}
 }
 
@@ -880,11 +881,12 @@ func (r *VelocityRouterV2) handleUnmatched(rw *responseWriter, req *http.Request
 	ctx.applyWiring(r.currentWiring())
 
 	var handlerErr error
+	var failure requestFailure
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			r.onPanic(ctx, rw, req, meta, recovered)
 		} else if handlerErr != nil {
-			r.dispatchRequestFailed(req, meta, handlerErr, false, "")
+			r.dispatchRequestFailed(req, meta, failure)
 		}
 		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
 			Context:      req.Context(),
@@ -915,7 +917,7 @@ func (r *VelocityRouterV2) handleUnmatched(rw *responseWriter, req *http.Request
 		handlerErr = (*handler)(ctx)
 	}
 	if handlerErr != nil {
-		r.handleError(ctx, rw, handlerErr, ErrorInfo{})
+		failure = r.handleError(ctx, rw, handlerErr, ErrorInfo{})
 	}
 }
 
@@ -947,12 +949,15 @@ func (r *VelocityRouterV2) unmatchedError(req *http.Request) error {
 // status text like every other 404. Otherwise the path is served under
 // other methods only: 405, carrying the Allow header RFC 9110 section
 // 15.5.6 requires on it. The error boundary renders either one.
+//
+// The value is built as a literal, so it records no origin: the origin
+// would point inside the router, never at application code.
 func unmatchedHTTPError(allowed []string) *contract.HTTPError {
 	if len(allowed) == 0 {
-		return contract.NewHTTPError(http.StatusNotFound)
+		return &contract.HTTPError{Status: http.StatusNotFound, Message: http.StatusText(http.StatusNotFound)}
 	}
-	return contract.NewHTTPError(http.StatusMethodNotAllowed).
-		WithHeader("Allow", strings.Join(allowed, ", "))
+	e := &contract.HTTPError{Status: http.StatusMethodNotAllowed, Message: http.StatusText(http.StatusMethodNotAllowed)}
+	return e.WithHeader("Allow", strings.Join(allowed, ", "))
 }
 
 // enrichRequest attaches route params, name, pattern, and services to
@@ -1010,11 +1015,12 @@ func (r *VelocityRouterV2) acquireContext(rw *responseWriter, req *http.Request,
 // happy path stays branch-light.
 func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *http.Request, result *MatchResult, meta requestMeta) {
 	var handlerErr error
+	var failure requestFailure
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			r.onPanic(ctx, rw, req, meta, recovered)
 		} else if handlerErr != nil {
-			r.dispatchRequestFailed(req, meta, handlerErr, false, "")
+			r.dispatchRequestFailed(req, meta, failure)
 		}
 		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
 			Context:      req.Context(),
@@ -1035,7 +1041,7 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 
 	handlerErr = result.Handler(ctx)
 	if handlerErr != nil {
-		r.handleError(ctx, rw, handlerErr, ErrorInfo{})
+		failure = r.handleError(ctx, rw, handlerErr, ErrorInfo{})
 	}
 }
 
@@ -1047,77 +1053,103 @@ func (r *VelocityRouterV2) onPanic(ctx *Context, rw *responseWriter, req *http.R
 	// Skip onPanic and the deferred function so the trace starts at the
 	// panic site.
 	pe := newPanicError(panicerr.FromRecovered(recovered), 2)
-	r.dispatchRequestFailed(req, meta, pe, true, pe.Stack)
+	r.dispatchRequestFailed(req, meta, requestFailure{err: pe, stack: pe.Stack, recovered: true, fire: true})
 	r.handleError(ctx, rw, pe, ErrorInfo{Recovered: true, Stack: pe.Stack, StackTrace: pe.Trace})
 }
 
-// dispatchRequestFailed dispatches RequestFailed for a failed request.
-// A bare contract.ErrResponseWritten is a deliberate response and
-// dispatches nothing; a contract.Handled value dispatches its cause. A
-// marker the value of a recovered panic carries counts for nothing (see
-// markedWritten). The event fires only for a recovered panic (including a
-// *PanicError the Timeout middleware forwarded), an error resolving to
-// status 500 or above, or an error naming no status. 4xx outcomes are
-// responses, not failures.
-func (r *VelocityRouterV2) dispatchRequestFailed(req *http.Request, meta requestMeta, err error, recovered bool, stack string) {
-	if r.eventDispatcher == nil {
+// requestFailure is the boundary's RequestFailed decision for one failed
+// request: whether the event fires and, when it does, the error it
+// carries (the cause of a contract.Handled value), whether that error is
+// a recovered panic, and the panic's stack.
+type requestFailure struct {
+	err       error
+	stack     string
+	recovered bool
+	fire      bool
+}
+
+// dispatchRequestFailed dispatches RequestFailed for a failed request as
+// the boundary decided (see failureOf).
+func (r *VelocityRouterV2) dispatchRequestFailed(req *http.Request, meta requestMeta, failure requestFailure) {
+	if !failure.fire || r.eventDispatcher == nil {
 		return
-	}
-	if markedWritten(err, recovered) {
-		cause := contract.HandledCause(err)
-		if cause == nil {
-			return
-		}
-		err = cause
-	}
-	var pe *PanicError
-	if !recovered && errors.As(err, &pe) {
-		recovered = true
-		stack = pe.Stack
-	}
-	if !recovered {
-		if status, _, ok := resolveStatus(err); ok && status < http.StatusInternalServerError {
-			return
-		}
 	}
 	r.dispatchInstanceEvent(req.Context(), &RequestFailed{
 		Context:   req.Context(),
 		RequestID: meta.id,
 		Method:    req.Method,
 		Path:      req.URL.Path,
-		Error:     err,
-		Stack:     stack,
-		Recovered: recovered,
+		Error:     failure.err,
+		Stack:     failure.stack,
+		Recovered: failure.recovered,
 		TraceID:   meta.traceID,
 		SpanID:    meta.spanID,
 		ParentID:  meta.parentID,
 	})
 }
 
-// handleError is the router's error boundary for one failed request. The
-// boundary first fills in whether the request panicked (a *PanicError
-// forwarded by the Timeout middleware counts as recovered). A bare
-// contract.ErrResponseWritten outside a recovered panic ends here: the
-// response was written deliberately and there is nothing to report; a
-// panic is a 500 whatever its value, so panic(contract.ErrResponseWritten)
-// does not. Otherwise the boundary fills in the rest of the ErrorInfo
-// (Committed comes from the router's own response writer) and calls the
-// handler installed with SetErrorHandler, or logs through the default
-// policy (see SetErrorLogger) and calls DefaultErrorHandler.
+// failureOf decides RequestFailed for a handler error err, classified
+// into f. A bare contract.ErrResponseWritten is a deliberate response and
+// fires nothing; a contract.Handled value fires with its cause. A marker
+// the value of a recovered panic carries counts for nothing (see
+// errorFacts.markedWritten). The event fires only for a recovered panic
+// (a *PanicError the Timeout middleware forwarded), an error resolving to
+// status 500 or above, or an error naming no status. 4xx outcomes are
+// responses, not failures.
+func failureOf(err error, f *errorFacts) requestFailure {
+	if f.markedWritten(false) {
+		cause := contract.HandledCause(err)
+		if cause == nil {
+			return requestFailure{}
+		}
+		cf := classifyError(cause)
+		err, f = cause, &cf
+	}
+	failure := requestFailure{err: err, fire: true}
+	if f.panicked {
+		failure.recovered = true
+		if f.panicErr != nil {
+			failure.stack = f.panicErr.Stack
+		}
+		return failure
+	}
+	if status, _, named := f.answer(); named && status < http.StatusInternalServerError {
+		return requestFailure{}
+	}
+	return failure
+}
+
+// handleError is the router's error boundary for one failed request. It
+// classifies err once and derives everything from that one walk: whether
+// the request panicked (a *PanicError forwarded by the Timeout middleware
+// counts as recovered), the RequestFailed decision it returns for the
+// caller to dispatch, and on the default path the status, headers, log
+// level and body. A bare contract.ErrResponseWritten outside a recovered
+// panic ends here: the response was written deliberately and there is
+// nothing to report; a panic is a 500 whatever its value, so
+// panic(contract.ErrResponseWritten) does not. Otherwise the boundary
+// fills in the rest of the ErrorInfo (Committed comes from the router's
+// own response writer) and calls the handler installed with
+// SetErrorHandler, or logs through the default policy (see
+// SetErrorLogger) and writes the DefaultErrorHandler response.
 //
 // ctx.Response is reset to the router's writer first: every middleware
 // has returned by now, so a writer one of them swapped in is stale.
-func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err error, info ErrorInfo) {
-	if !info.Recovered {
-		var pe *PanicError
-		if errors.As(err, &pe) {
-			info.Recovered = true
+func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err error, info ErrorInfo) requestFailure {
+	f := classifyError(err)
+	if !info.Recovered && f.panicked {
+		info.Recovered = true
+		if pe := f.panicErr; pe != nil {
 			info.Stack = pe.Stack
 			info.StackTrace = pe.Trace
 		}
 	}
-	if markedWritten(err, info.Recovered) && contract.HandledCause(err) == nil {
-		return
+	var failure requestFailure
+	if r.eventDispatcher != nil {
+		failure = failureOf(err, &f)
+	}
+	if f.markedWritten(info.Recovered) && contract.HandledCause(err) == nil {
+		return failure
 	}
 	info.Committed = rw.committed()
 	ctx.Response = rw
@@ -1131,19 +1163,22 @@ func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err err
 			info.SpanID = trace.GetSpanID(req.Context())
 		}
 		fn(ctx, err, info)
-		return
+		return failure
 	}
-	r.logDefault(ctx, err, info)
-	DefaultErrorHandler(ctx, err, info)
+	res := resolveClassified(ctx, err, &f, info)
+	r.logDefault(ctx, err, &f, info, res.level)
+	if res.write {
+		writeDefaultError(ctx, res, info)
+	}
+	return failure
 }
 
 // logDefault emits the single default-path log entry for a failed request
-// at the level resolveDefault chose. No-op when the matching logger is
-// not wired (standalone router).
-func (r *VelocityRouterV2) logDefault(ctx *Context, err error, info ErrorInfo) {
-	res := resolveDefault(ctx, err, info)
+// at level, the level the resolution chose; f classifies err. No-op when
+// the matching logger is not wired (standalone router).
+func (r *VelocityRouterV2) logDefault(ctx *Context, err error, f *errorFacts, info ErrorInfo, level defaultLogLevel) {
 	var fn func(msg string, kvs ...any)
-	switch res.level {
+	switch level {
 	case logError:
 		fn = r.errorLogger
 	case logWarn:
@@ -1152,7 +1187,7 @@ func (r *VelocityRouterV2) logDefault(ctx *Context, err error, info ErrorInfo) {
 	if fn == nil {
 		return
 	}
-	if markedWritten(err, info.Recovered) {
+	if f.markedWritten(info.Recovered) {
 		if cause := contract.HandledCause(err); cause != nil {
 			err = cause
 		}
