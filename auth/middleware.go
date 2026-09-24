@@ -86,31 +86,12 @@ func hashClientIP(manager *Manager, r *http.Request) string {
 
 // denyUnauthenticated returns an *UnauthenticatedError naming the default
 // scheme and the manager's login target, and writes nothing: the error
-// pipeline answers it (see Manager.RenderUnauthenticated). Shared by all
-// auth-requiring middleware. The manager's logger records the denial when
-// installed.
+// pipeline answers it, and its render rule stashes the intended URL when
+// it redirects to the login target (see Manager.RenderUnauthenticated).
+// Shared by all auth-requiring middleware. The manager's logger records
+// the denial when installed.
 func denyUnauthenticated(manager *Manager, c *router.Context) error {
 	manager.logWarn("velocity/auth: authentication required", "method", c.Request.Method, "path", c.Request.URL.Path, "ip_hash", hashClientIP(manager, c.Request))
-	// Intended stash: remember the originally requested URL server-side in
-	// the session, so the browser is bounced to a clean login target. The
-	// URL bar never exposes the destination and an attacker cannot inject
-	// one via ?redirect=. ctx.RedirectToIntended pulls it back after login.
-	//
-	// Only stash safe GET navigations that are not JSON requests (Inertia
-	// visits are GET). A POST/PUT that lands here lost its body to the
-	// redirect anyway, and stashing it would replay the wrong intent after
-	// login. The session cookie is set now, before anything is written, so
-	// it rides on whatever response the pipeline renders.
-	if c.Request.Method == http.MethodGet && !c.WantsJSON() {
-		if sess := manager.Session(c.Request); sess != nil {
-			redirectURL := c.Request.URL.Path
-			if c.Request.URL.RawQuery != "" {
-				redirectURL += "?" + c.Request.URL.RawQuery
-			}
-			sess.Put(router.IntendedSessionKey, redirectURL)
-			_ = sess.Save(c.Response)
-		}
-	}
 	return &UnauthenticatedError{
 		Schemes:    []string{manager.defaultSchemeName()},
 		RedirectTo: manager.loginTarget(c.Request),

@@ -780,7 +780,7 @@ func New(opts ...Option) (*App, error) {
 	})
 
 	// Wire the intended-redirect resolver: ctx.Intended pulls the URL that
-	// auth's denyUnauthenticated stashed under router.IntendedSessionKey
+	// auth's unauthenticated render rule stashed under router.IntendedSessionKey
 	// before the unauthenticated request was redirected to the login
 	// target.
 	// Reading is one-shot so a later navigation cannot replay a stale

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/router"
 )
 
 // defaultLoginPath is the login target used when no login redirect is set.
@@ -187,18 +188,30 @@ func (m *Manager) RequestUserID(r *http.Request) (id string) {
 }
 
 // RenderUnauthenticated is the framework's default render rule for an
-// *UnauthenticatedError in err's chain. A request that wants JSON returns
-// false so the error pipeline renders the 401 problem+json body. Any other
-// request, an Inertia visit included (the Inertia client follows the
-// redirect), is redirected (303) to the error's RedirectTo, or to the
-// manager's login target when that is empty, and true is returned. A
-// target the render context refuses (not same-origin and not an allowed
-// host) is logged and returns false, leaving the 401 to the pipeline. A
-// nil manager uses "/login".
+// *UnauthenticatedError in err's chain. A request that wants JSON (the
+// error handler's negotiation answer, so API mode, API prefixes and JSON
+// predicates count) returns false so the error pipeline renders the 401
+// problem+json body. Any other request, an Inertia visit included (the
+// Inertia client follows the redirect), is redirected (303) to the
+// error's RedirectTo, or to the manager's login target when that is
+// empty, and true is returned. A target the render context refuses (not
+// same-origin and not an allowed host) is logged and returns false,
+// leaving the 401 to the pipeline. A nil manager uses "/login".
+//
+// Before redirecting, a GET request's URL (path and query) is stashed in
+// the session under router.IntendedSessionKey and the session is saved,
+// so its cookie precedes the redirect status line and
+// ctx.RedirectToIntended can send the user back after login. The browser
+// is bounced to a clean login target: the URL bar never exposes the
+// destination and nobody can inject one through a query parameter. Only a
+// GET is stashed (an Inertia visit is a GET): any other method lost its
+// body to the redirect, and replaying it after login would be the wrong
+// intent. A nil manager, or a request with no session, stashes nothing.
 func (m *Manager) RenderUnauthenticated(rc contract.RenderContext, err error, _ *contract.ErrorContext) bool {
 	if rc == nil || rc.WantsJSON() {
 		return false
 	}
+	m.stashIntended(rc)
 	target := ""
 	var ue *UnauthenticatedError
 	if errors.As(err, &ue) {
@@ -214,6 +227,27 @@ func (m *Manager) RenderUnauthenticated(rc contract.RenderContext, err error, _ 
 		return false
 	}
 	return true
+}
+
+// stashIntended stores the URL of a GET request in the request's session
+// under router.IntendedSessionKey and saves the session through rc's
+// writer. It does nothing for a nil manager, another method, or a request
+// with no session.
+func (m *Manager) stashIntended(rc contract.RenderContext) {
+	r := rc.Request()
+	if m == nil || r == nil || r.Method != http.MethodGet || r.URL == nil {
+		return
+	}
+	sess := m.Session(r)
+	if sess == nil {
+		return
+	}
+	intended := r.URL.Path
+	if r.URL.RawQuery != "" {
+		intended += "?" + r.URL.RawQuery
+	}
+	sess.Put(router.IntendedSessionKey, intended)
+	_ = sess.Save(rc.Writer())
 }
 
 // RenderAlreadyAuthenticated is the framework's default render rule for an

@@ -125,7 +125,7 @@ func TestAuthErrorRules_ThroughApp(t *testing.T) {
 		{name: "forbidden inertia", authenticated: true, mw: requireAbility, kind: "inertia", target: "/reports", wantStatus: http.StatusConflict, wantInertiaLocation: "/reports"},
 		{name: "guest json", authenticated: true, mw: guestOnly, kind: "json", target: "/login", wantStatus: http.StatusForbidden, wantType: problem.ProblemTypeContent, wantDetail: "Already authenticated."},
 		{name: "guest browser", authenticated: true, mw: guestOnly, kind: "browser", target: "/login", wantStatus: http.StatusSeeOther, wantLocation: "/"},
-		{name: "handler unauthenticated browser", handlerErr: &auth.UnauthenticatedError{}, kind: "browser", target: "/account", wantStatus: http.StatusSeeOther, wantLocation: "/auth/sign-in"},
+		{name: "handler unauthenticated browser", handlerErr: &auth.UnauthenticatedError{}, kind: "browser", target: "/account", wantStatus: http.StatusSeeOther, wantLocation: "/auth/sign-in", wantStash: "/account"},
 		{name: "handler forbidden json", handlerErr: &auth.ForbiddenError{Err: errors.New("policy said no")}, kind: "json", target: "/account", wantStatus: http.StatusForbidden, wantType: problem.ProblemTypeContent, wantDetail: "Forbidden"},
 	}
 	for _, tt := range tests {

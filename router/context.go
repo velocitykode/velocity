@@ -395,13 +395,13 @@ func (c *Context) Redirect(status int, rawURL string) error {
 	return nil
 }
 
-// IntendedSessionKey is the session-bag key under which auth middleware
-// stashes the originally requested URL of an unauthenticated GET before
-// the error pipeline redirects it to the login target (the auth manager's
-// login redirect, "/login" by default). Centralising the name here keeps
-// the producer (auth's denyUnauthenticated) and the consumer
-// (ctx.Intended, via the wired intendedFn resolver) in sync without an
-// import cycle.
+// IntendedSessionKey is the session-bag key under which auth's
+// unauthenticated render rule stashes the originally requested URL of an
+// unauthenticated GET as the error pipeline redirects it to the login
+// target (the auth manager's login redirect, "/login" by default).
+// Centralising the name here keeps the producer (auth's
+// Manager.RenderUnauthenticated) and the consumer (ctx.Intended, via the
+// wired intendedFn resolver) in sync without an import cycle.
 const IntendedSessionKey = "url.intended"
 
 // Intended returns the safe redirect target for the "intended" post-login
@@ -409,13 +409,12 @@ const IntendedSessionKey = "url.intended"
 // when the stored value fails open-redirect validation.
 //
 // The destination is read (and consumed) from the session via the
-// resolver wired by Router.SetIntendedResolver during app init: auth
-// middleware stashed it under IntendedSessionKey when it turned the
-// unauthenticated request away to the login target. Reading is one-shot
-// (pull): the
-// resolver removes the key so a later navigation does not replay a stale
-// destination. When no resolver is wired or nothing was stashed, fallback
-// is used.
+// resolver wired by Router.SetIntendedResolver during app init: auth's
+// unauthenticated render rule stashed it under IntendedSessionKey when it
+// redirected the unauthenticated request to the login target. Reading is
+// one-shot (pull): the resolver removes the key so a later navigation does
+// not replay a stale destination. When no resolver is wired or nothing was
+// stashed, fallback is used.
 //
 // The returned string is ALWAYS safe to pass straight to ctx.Redirect:
 // it has been validated through the router's allowlist + scheme +
@@ -453,11 +452,11 @@ func (c *Context) Intended(fallback string) string {
 
 // RedirectToIntended issues a 303 See Other to the safe Intended()
 // target (or fallback). This is the canonical caller for post-login
-// flows: the auth middleware stashes the originally requested URL in the
-// session (IntendedSessionKey) and the request is redirected to the login
-// target with a clean URL; the login handler verifies the credentials,
-// then calls ctx.RedirectToIntended("/") to ship the user back to where
-// they were headed.
+// flows: auth's unauthenticated render rule stashes the originally
+// requested URL in the session (IntendedSessionKey) and redirects the
+// request to the login target with a clean URL; the login handler verifies
+// the credentials, then calls ctx.RedirectToIntended("/") to ship the user
+// back to where they were headed.
 //
 // The destination is open-redirect-safe by construction: ctx.Intended
 // runs both the stored value and the fallback through the same sanitiser

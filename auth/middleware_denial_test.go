@@ -151,8 +151,18 @@ func newDenialRequest(method, target, kind string) *http.Request {
 // installs it, and mw guarding a handler that must not run.
 func servePipeline(t *testing.T, m *Manager, mw router.MiddlewareFunc, req *http.Request) (*httptest.ResponseRecorder, *countingReporter) {
 	t.Helper()
+	return servePipelineWith(t, m, mw, req, nil)
+}
+
+// servePipelineWith is servePipeline with configure, when non-nil, run on
+// the error handler before serving (API prefixes, a JSONWhen predicate).
+func servePipelineWith(t *testing.T, m *Manager, mw router.MiddlewareFunc, req *http.Request, configure func(*problem.Handler)) (*httptest.ResponseRecorder, *countingReporter) {
+	t.Helper()
 	rep := &countingReporter{}
 	h := problem.NewHandler(problem.WithReporters(rep))
+	if configure != nil {
+		configure(h)
+	}
 	h.AddFrameworkRenderRule(contract.RenderRule{
 		Match: func(err error) bool {
 			var ue *UnauthenticatedError
@@ -333,14 +343,23 @@ func TestMiddleware_DenialThroughPipeline(t *testing.T) {
 	}
 }
 
-// TestAuthMiddleware_StashesIntended asserts the intended URL is stashed
-// in the session only for GET requests that do not want JSON, and that
+// TestAuthMiddleware_StashesIntended asserts the unauthenticated render
+// rule stashes the intended URL only for a GET it redirects to the login
+// target, following the error handler's negotiation answer (API prefixes,
+// a JSONWhen predicate) rather than the request headers alone, and that
 // the browser is bounced to a clean login target.
 func TestAuthMiddleware_StashesIntended(t *testing.T) {
+	const pre = "/settings"
+	forceHTML := func(h *problem.Handler) { h.JSONWhen(func(*http.Request, error) bool { return false }) }
+	apiPrefix := func(h *problem.Handler) { h.SetAPIPrefixes("/api") }
 	tests := []struct {
 		name       string
 		method     string
+		target     string
 		kind       string
+		accept     string
+		configure  func(*problem.Handler)
+		preStash   string
 		wantStash  string
 		wantStatus int
 	}{
@@ -348,22 +367,40 @@ func TestAuthMiddleware_StashesIntended(t *testing.T) {
 		{name: "inertia get", method: http.MethodGet, kind: kindInertia, wantStash: "/settings?tab=profile&page=2", wantStatus: http.StatusSeeOther},
 		{name: "json get", method: http.MethodGet, kind: kindJSON, wantStatus: http.StatusUnauthorized},
 		{name: "browser post", method: http.MethodPost, kind: kindBrowser, wantStatus: http.StatusSeeOther},
+		{name: "inertia post", method: http.MethodPost, kind: kindInertia, preStash: pre, wantStash: pre, wantStatus: http.StatusSeeOther},
+		{name: "api prefix any accept keeps the stash", method: http.MethodGet, target: "/api/notifications", accept: "*/*", configure: apiPrefix, preStash: pre, wantStash: pre, wantStatus: http.StatusUnauthorized},
+		{name: "json when forces html for a json get", method: http.MethodGet, kind: kindJSON, configure: forceHTML, wantStash: "/settings?tab=profile&page=2", wantStatus: http.StatusSeeOther},
+		{name: "json when forces html for a json post", method: http.MethodPost, kind: kindJSON, configure: forceHTML, preStash: pre, wantStash: pre, wantStatus: http.StatusSeeOther},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sess := NewSession("sid")
+			if tt.preStash != "" {
+				sess.Put(router.IntendedSessionKey, tt.preStash)
+			}
 			m := NewManager()
 			m.RegisterScheme("web", &sessionAwareScheme{mockSchemeForMiddleware{authenticated: false}, sess})
+			target := tt.target
+			if target == "" {
+				target = "/settings?tab=profile&page=2"
+			}
+			req := newDenialRequest(tt.method, target, tt.kind)
+			if tt.accept != "" {
+				req.Header.Set("Accept", tt.accept)
+			}
 
-			w, _ := servePipeline(t, m, AuthMiddleware(m), newDenialRequest(tt.method, "/settings?tab=profile&page=2", tt.kind))
+			w, _ := servePipelineWith(t, m, AuthMiddleware(m), req, tt.configure)
 
 			if w.Code != tt.wantStatus {
-				t.Fatalf("status = %d, want %d", w.Code, tt.wantStatus)
+				t.Fatalf("status = %d, want %d (body %q)", w.Code, tt.wantStatus, w.Body.String())
 			}
 			if tt.wantStatus == http.StatusSeeOther {
 				if loc := w.Header().Get("Location"); loc != "/login" {
 					t.Errorf("Location = %q, want /login (no ?redirect= leak)", loc)
 				}
+			}
+			if tt.wantStatus == http.StatusUnauthorized && !strings.HasPrefix(w.Header().Get("Content-Type"), problem.ProblemTypeContent) {
+				t.Errorf("Content-Type = %q, want %q", w.Header().Get("Content-Type"), problem.ProblemTypeContent)
 			}
 			got, _ := sess.Get(router.IntendedSessionKey).(string)
 			if got != tt.wantStash {

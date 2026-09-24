@@ -144,7 +144,7 @@ type VelocityRouterV2 struct {
 	warnLogger func(msg string, kvs ...any)
 
 	// intendedFn is wired during app init to pull the "intended" post-login
-	// URL from the session (auth's denyUnauthenticated stashes it). Lets
+	// URL from the session (auth's unauthenticated render rule stashes it). Lets
 	// ctx.Intended read the session without router importing auth.
 	intendedFn func(c *Context) string
 
