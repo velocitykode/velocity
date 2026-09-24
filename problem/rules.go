@@ -287,15 +287,46 @@ func registerStdlibRules(h *Handler) {
 		Key:   clientGoneKey{},
 		Match: matchIs(context.Canceled),
 		Render: func(rc RenderContext, _ error, _ *ErrorContext) bool {
-			return requestGone(requestOf(rc))
+			r := requestOf(rc)
+			return requestGone(r) && !shuttingDown(r)
 		},
 	})
 }
 
 // requestGone reports whether r's context is done: the client went away or
-// the server is cancelling the request.
+// the server cut the request off while shutting down (see shuttingDown).
+// Either way the outcome belongs to the client, and it is not reported.
 func requestGone(r *http.Request) bool {
 	return r != nil && r.Context().Err() != nil
+}
+
+// shuttingDown reports whether r's context is done because the server is
+// shutting down: its cause is contract.ErrServerShuttingDown.
+func shuttingDown(r *http.Request) bool {
+	return requestGone(r) && errors.Is(context.Cause(r.Context()), contract.ErrServerShuttingDown)
+}
+
+// serverCancelled reports whether err is a context.Canceled for a request
+// the server cut off while shutting down.
+func serverCancelled(err error, r *http.Request) bool {
+	return shuttingDown(r) && errors.Is(err, context.Canceled)
+}
+
+// serverShutdownError is the answer to a request the server cut off while
+// shutting down: 503, retry after a second, on a new connection.
+func serverShutdownError(cause error) *contract.HTTPError {
+	return (&contract.HTTPError{Status: http.StatusServiceUnavailable, Message: http.StatusText(http.StatusServiceUnavailable)}).
+		WithHeader("Retry-After", "1").
+		WithHeader("Connection", "close").
+		WithCause(cause)
+}
+
+// requestPath returns r's URL path, or "".
+func requestPath(r *http.Request) string {
+	if r == nil || r.URL == nil {
+		return ""
+	}
+	return r.URL.Path
 }
 
 // typeKey returns the rule key for type T.

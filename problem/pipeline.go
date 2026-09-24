@@ -22,6 +22,10 @@ import (
 //  3. The report gate (see ShouldReport), then SelfReporting, ReportFor
 //     rules, context merge, level selection and the reporters.
 //  4. Rendering: nothing when the response is already written; a
+//     context.Canceled on a request the server cut off while shutting
+//     down (its context's cause is contract.ErrServerShuttingDown) becomes
+//     a 503 with Retry-After: 1 and Connection: close, logged at warn and
+//     never reported, while one whose client went away renders nothing; a
 //     Renderable error; the framework prepare table (only for an error
 //     that names no status); user render rules; framework render rules;
 //     content negotiation. A recovered panic skips Renderable, the
@@ -55,7 +59,11 @@ func (h *Handler) HandleRequest(rc RenderContext, err error, ctx *ErrorContext) 
 
 	err = h.applyMap(s, err)
 	if !marked {
-		h.report(s, err, ctx, requestOf(rc))
+		r := requestOf(rc)
+		h.report(s, err, ctx, r)
+		if serverCancelled(err, r) {
+			safeWarn(s.logger, "problem: request cut off by server shutdown", "error", err.Error(), "method", r.Method, "path", requestPath(r))
+		}
 	}
 	if written || rc == nil {
 		return
@@ -176,9 +184,10 @@ func (h *Handler) passes(s *snapshot, err error, ctx *ErrorContext, r *http.Requ
 	}
 	if !anyIgnoreMatch(s.unignoreRules, err) {
 		// A cancel whose request context is dead is a fact about the
-		// request (the client went away), not a property of the error, so
-		// no ShouldReport answer overrides it: a Timeout 503 wrapping the
-		// cancel is dropped like the bare cancel.
+		// request (the client went away, or the server cut it off while
+		// shutting down), not a property of the error, so no ShouldReport
+		// answer overrides it: a Timeout 503 wrapping the cancel is
+		// dropped like the bare cancel.
 		if errors.Is(err, context.Canceled) && requestGone(r) {
 			return false
 		}
@@ -344,6 +353,10 @@ func (h *Handler) renderStage(s *snapshot, rc RenderContext, err error, ctx *Err
 	if isRecovered(err, ctx) {
 		pinned = http.StatusInternalServerError
 		prepared = contract.NewHTTPError(pinned).WithCause(err)
+	} else if serverCancelled(err, rc.Request()) {
+		// Checked before the error's own status, as the router does: a
+		// Timeout 503 wrapping the cancel answers as the shutdown.
+		prepared = serverShutdownError(err)
 	} else {
 		var renderable contract.Renderable
 		if errors.As(err, &renderable) && renderable.RenderError(rc, ctx) {
@@ -629,6 +642,15 @@ func safeLog(logger contract.Logger, msg string, kvs ...any) {
 	}
 	defer func() { _ = recover() }()
 	logger.Error(msg, kvs...)
+}
+
+// safeWarn is safeLog at warn level.
+func safeWarn(logger contract.Logger, msg string, kvs ...any) {
+	if logger == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	logger.Warn(msg, kvs...)
 }
 
 // clientMessage returns the client-facing message for err at status: the

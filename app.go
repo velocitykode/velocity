@@ -67,14 +67,18 @@ type App struct {
 	Router *router.VelocityRouterV2
 
 	// Internal
-	config         *Config
-	server         *http.Server
-	version        string
-	noEvents       bool // skip event dispatcher initialization
-	runScheduler   bool // start scheduler in-process under Serve() (WithSchedulerInProcess)
-	modules        []app.Module
+	config       *Config
+	server       *http.Server
+	version      string
+	noEvents     bool // skip event dispatcher initialization
+	runScheduler bool // start scheduler in-process under Serve() (WithSchedulerInProcess)
+	modules      []app.Module
+	// shutdownCtx is the base context of every request the server
+	// accepts (http.Server.BaseContext). Shutdown cancels it with the
+	// cause contract.ErrServerShuttingDown once the graceful drain ends,
+	// cutting off the requests that outlived it.
 	shutdownCtx    context.Context
-	shutdownCancel context.CancelFunc
+	shutdownCancel context.CancelCauseFunc
 
 	// Declarative bootstrap chain
 	modulesFn    func(*chain.ModuleRegistry)
@@ -120,7 +124,7 @@ type App struct {
 // failures are logged (where a logger is available) but do not replace the
 // original error returned to the caller.
 func New(opts ...Option) (*App, error) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancelCause(context.Background())
 	a := &App{
 		Services:       &app.Services{},
 		version:        BuildInfo.Version,
@@ -156,7 +160,7 @@ func New(opts ...Option) (*App, error) {
 	// path, Shutdown() cancels it.
 	// As cleanups[0], the deferred reverse walk runs this cancel() on every
 	// failure return below, so later sites need no explicit cancel() call.
-	cleanups = append(cleanups, func() { cancel() })
+	cleanups = append(cleanups, func() { cancel(contract.ErrServerShuttingDown) })
 
 	// Fast-fail config validation. Catches typo'd driver names, malformed
 	// ports, and negative timeouts before we allocate file handles or

@@ -408,8 +408,11 @@ func (f *errorFacts) answer() (status int, headers http.Header, named bool) {
 //   - info.Recovered (or a contract.RecoveredPanic in the chain, such as
 //     a *PanicError): 500, logged at error level with the stack when there
 //     is one, whatever the panic value carries.
-//   - context.Canceled while the request context is dead: the client is
-//     gone, nothing written, nothing logged.
+//   - context.Canceled while the request context is dead: when its cause
+//     is contract.ErrServerShuttingDown the server cut the request off
+//     while shutting down, answered 503 with Retry-After: 1 and
+//     Connection: close and logged at warn; otherwise the client is gone,
+//     nothing written, nothing logged.
 //   - an explicit StatusError: its status, with the headers of the first
 //     HeaderError in the chain, even when it wraps a deadline or an
 //     oversized body.
@@ -417,9 +420,10 @@ func (f *errorFacts) answer() (status int, headers http.Header, named bool) {
 //   - *http.MaxBytesError: 413.
 //   - otherwise 500.
 //
-// A 503 whose chain holds context.DeadlineExceeded (explicit or not) logs
-// at warn; any other status of 500 and above logs at error level; below
-// 500 nothing is logged. info.Committed turns off writing but keeps the
+// A 503 whose chain holds context.DeadlineExceeded (explicit or not), and
+// a request the server cancelled while shutting down, log at warn; any
+// other status of 500 and above logs at error level; below 500 nothing is
+// logged. info.Committed turns off writing but keeps the
 // logging decision.
 func resolveDefault(c *Context, err error, info ErrorInfo) defaultResolution {
 	f := classifyError(err)
@@ -444,7 +448,11 @@ func resolveClassified(c *Context, err error, f *errorFacts, info ErrorInfo) def
 	case info.Recovered || f.panicked:
 		res = defaultResolution{status: http.StatusInternalServerError, level: logError}
 	case f.canceled && requestGone(c):
-		return defaultResolution{}
+		if !serverCancelled(c) {
+			return defaultResolution{}
+		}
+		shutdown := serverShutdownError(err)
+		res = defaultResolution{status: shutdown.StatusCode(), headers: shutdown.Headers(), level: logWarn}
 	default:
 		res.status, res.headers, _ = f.answer()
 		switch {
@@ -461,9 +469,30 @@ func resolveClassified(c *Context, err error, f *errorFacts, info ErrorInfo) def
 	return res
 }
 
-// requestGone reports whether the request context of c is already done.
+// requestGone reports whether the request context of c is already done:
+// the client went away, or the server cancelled the request (see
+// serverCancelled).
 func requestGone(c *Context) bool {
 	return c != nil && c.Request != nil && c.Request.Context().Err() != nil
+}
+
+// serverCancelled reports whether the request context of c is done because
+// the server is shutting down: its cause is contract.ErrServerShuttingDown.
+func serverCancelled(c *Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	ctx := c.Request.Context()
+	return ctx.Err() != nil && errors.Is(context.Cause(ctx), contract.ErrServerShuttingDown)
+}
+
+// serverShutdownError is the answer to a request the server cancelled
+// while shutting down: 503, retry after a second, on a new connection.
+func serverShutdownError(cause error) *contract.HTTPError {
+	return (&contract.HTTPError{Status: http.StatusServiceUnavailable, Message: http.StatusText(http.StatusServiceUnavailable)}).
+		WithHeader("Retry-After", "1").
+		WithHeader("Connection", "close").
+		WithCause(cause)
 }
 
 // DefaultErrorHandler is the router's own error response, used when no
@@ -471,8 +500,11 @@ func requestGone(c *Context) bool {
 // when info.Committed is true, for an error matching
 // contract.ErrResponseWritten outside a recovered panic (a panic answers
 // 500 whatever its value), and for a context.Canceled whose request
-// context is dead (the client is gone). Otherwise the status resolves as
-// follows, first match wins: a recovered panic is 500; an explicit
+// context is dead (the client is gone), unless that context's cause is
+// contract.ErrServerShuttingDown: the server cut the request off while
+// shutting down, and it answers 503 with Retry-After: 1 and Connection:
+// close. Otherwise the status resolves as follows, first match wins: a
+// recovered panic is 500; an explicit
 // contract.StatusError names the status, with the headers of the first
 // contract.HeaderError in the chain, even when it wraps a deadline or an
 // oversized body; context.DeadlineExceeded is 503; *http.MaxBytesError is

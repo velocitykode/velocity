@@ -34,7 +34,7 @@ func (a *App) Serve() error {
 	// otherwise would leak the context goroutine created in New().
 	// Shutdown() also calls shutdownCancel; double-cancel is a no-op.
 	if a.shutdownCancel != nil {
-		defer a.shutdownCancel()
+		defer a.shutdownCancel(contract.ErrServerShuttingDown)
 	}
 
 	// If CLI arguments are present, delegate to the command dispatcher.
@@ -101,9 +101,10 @@ func (a *App) serveHTTP() error {
 	// App.Shutdown -> a.Scheduler.Shutdown(ctx), which closes the stop
 	// channel and waits on runWg for in-flight jobs. Tying scheduler.Run
 	// directly to a.shutdownCtx would race: a.Shutdown cancels
-	// shutdownCtx first, scheduler.Run then calls its own Shutdown with
-	// the cancelled ctx and returns immediately without draining
-	// runWg, leaving in-flight jobs orphaned.
+	// shutdownCtx before it stops the scheduler, scheduler.Run then
+	// calls its own Shutdown with the cancelled ctx and returns
+	// immediately without draining runWg, leaving in-flight jobs
+	// orphaned.
 	//
 	// Start-after-teardown race: if ListenAndServe fails fast, the
 	// errCh path below calls a.Shutdown before this goroutine may have
@@ -168,13 +169,6 @@ func (a *App) serveHTTP() error {
 // Every subsystem's Shutdown is called even if an earlier one fails; all errors
 // are aggregated via errors.Join.
 func (a *App) Shutdown(ctx context.Context) error {
-	// Cancel the app-wide shutdown context first so any in-flight request
-	// handler or background worker observing it (via BaseContext or
-	// context.Value from router.Context) can exit promptly.
-	if a.shutdownCancel != nil {
-		a.shutdownCancel()
-	}
-
 	var errs []error
 	collect := func(err error) {
 		if err != nil {
@@ -182,9 +176,17 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// 1. Stop accepting new connections
+	// 1. Stop accepting new connections and drain the in-flight requests
+	// until they finish or ctx ends. Then cancel the shutdown context,
+	// the base context of every request (BaseContext), with the cause
+	// contract.ErrServerShuttingDown: a request still running past ctx's
+	// deadline sees its context done, and the error boundary answers it
+	// 503 (not the empty 200 a client-gone cancel gets).
 	if a.server != nil {
 		collect(a.server.Shutdown(ctx))
+	}
+	if a.shutdownCancel != nil {
+		a.shutdownCancel(contract.ErrServerShuttingDown)
 	}
 
 	// 2. Drain async event dispatcher workers (no-op if running sync).

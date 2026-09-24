@@ -465,6 +465,14 @@ func (f *statusFinder) fallback(err error) {
 // visible for reporting.
 var ErrResponseWritten = errors.New("velocity: response already written")
 
+// ErrServerShuttingDown is the cause (context.Cause) of a request context
+// the server cancelled because it is shutting down: the in-flight request
+// outlived the graceful drain. The error boundaries answer such a request
+// 503 with Retry-After and Connection: close, log it at warn and do not
+// report it; a request context done for any other cause means the client
+// went away, and nothing is written.
+var ErrServerShuttingDown = errors.New("velocity: server shutting down")
+
 // RecoveredPanic is an error carrying the value a recovered panic handed
 // to recover(). The framework's own recovered-panic error implements it;
 // so may any other error that stands for a recovered panic.
