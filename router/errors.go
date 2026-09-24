@@ -206,11 +206,12 @@ func requestGone(c *Context) bool {
 //
 // The body is application/problem+json (type, title, status, detail,
 // instance) when contract.WantsJSON holds for the request, plain text
-// otherwise. A 4xx answer echoes the *contract.HTTPError message; a 5xx
-// answer shows only the status text, so server-side detail never reaches
-// the client. Headers the error carries (Retry-After, Allow, ...) are
-// copied before the status line is written; a key or value containing CR
-// or LF is dropped.
+// otherwise. A 4xx answer echoes the message of the first
+// contract.MessageError in the chain (HTTPError.Message, for one) when it
+// names the answered status; a 5xx answer shows only the status text, so
+// server-side detail never reaches the client. Headers the error carries
+// (Retry-After, Allow, ...) are copied before the status line is written;
+// a key or value containing CR or LF is dropped.
 //
 // DefaultErrorHandler does not log; the router's default path logs before
 // calling it (see SetErrorLogger).
@@ -243,9 +244,9 @@ func writeDefaultError(c *Context, err error, res defaultResolution) {
 
 	detail := statusText(res.status)
 	if res.status < http.StatusInternalServerError {
-		var he *contract.HTTPError
-		if errors.As(err, &he) && he.StatusCode() == res.status && he.Message != "" {
-			detail = he.Message
+		var me contract.MessageError
+		if errors.As(err, &me) && me.StatusCode() == res.status && me.ClientMessage() != "" {
+			detail = me.ClientMessage()
 		}
 	}
 

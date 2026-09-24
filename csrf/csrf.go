@@ -255,7 +255,7 @@ func (c *CSRF) protect(w http.ResponseWriter, r *http.Request) (*http.Request, *
 	// once the cap is exceeded; we reject with 419 without truncating
 	// the request downstream).
 	if err := c.validateToken(w, r); err != nil {
-		return r, &TokenMismatchError{Reason: err, handler: c.config.ErrorHandler}
+		return r, &TokenMismatchError{Reason: err, Message: c.config.ErrorMessage, handler: c.config.ErrorHandler}
 	}
 	return r, nil
 }

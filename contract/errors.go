@@ -188,6 +188,15 @@ func (e *HTTPError) Unwrap() error {
 	return e.Cause
 }
 
+// ClientMessage returns Message, the text a 4xx answer at this error's
+// status echoes to the client.
+func (e *HTTPError) ClientMessage() string {
+	if e == nil {
+		return ""
+	}
+	return e.Message
+}
+
 // ShouldReport reports whether the error is server-side: status 500 and
 // above.
 func (e *HTTPError) ShouldReport() bool {
@@ -271,6 +280,16 @@ func hasCRLF(s string) bool {
 type StatusError interface {
 	error
 	StatusCode() int
+}
+
+// MessageError is a StatusError that carries its own client-facing
+// message. A 4xx answer at the error's status echoes ClientMessage (an
+// empty one means the status title); a 5xx answer never shows it. The
+// first MessageError in an error's chain (errors.As) is the one read.
+// HTTPError implements it through Message.
+type MessageError interface {
+	StatusError
+	ClientMessage() string
 }
 
 // HeaderError is an error that carries response headers.

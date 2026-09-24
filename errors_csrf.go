@@ -13,9 +13,10 @@ import (
 // rejected CSRF token. The Config.ErrorHandler of the CSRF instance that
 // rejected the request answers when it has one (the error carries it, so a
 // custom instance mounted on a group or swapped in by a module is honoured).
-// Otherwise the rule falls through to negotiation, which renders the 419
-// through the csrf.ErrTokenMissing sentinel mapping: problem+json for JSON
-// clients, the Inertia fallback for Inertia requests, HTML otherwise.
+// Otherwise the rule falls through to negotiation, which renders the
+// *csrf.TokenMismatchError itself at 419 with that instance's
+// Config.ErrorMessage as the detail: problem+json for JSON clients, the
+// Inertia answer for Inertia requests, HTML otherwise.
 func installCSRFErrorRules(h *problem.Handler) {
 	h.AddFrameworkRenderRule(contract.RenderRule{
 		Key: reflect.TypeFor[*csrf.TokenMismatchError](),

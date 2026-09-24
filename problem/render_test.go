@@ -478,6 +478,10 @@ func TestRender_InertiaPageMessagePolicy(t *testing.T) {
 		{"ServerErrorHidden", Internal("db password wrong"), false, "Internal Server Error"},
 		{"PlainErrorHidden", errors.New("secret"), false, "Internal Server Error"},
 		{"NotFoundTitle", NotFound(), false, "Not Found"},
+		{"MessageErrorFacet", &messageErr{status: http.StatusConflict, msg: "already taken"}, false, "already taken"},
+		{"MessageErrorEmptyUsesTitle", &messageErr{status: http.StatusConflict}, false, "Conflict"},
+		{"MessageErrorServerHidden", &messageErr{status: http.StatusBadGateway, msg: "upstream secret"}, false, "Bad Gateway"},
+		{"OuterMessageErrorWins", Conflict("outer").WithCause(&messageErr{status: http.StatusConflict, msg: "inner"}), false, "outer"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -492,6 +496,16 @@ func TestRender_InertiaPageMessagePolicy(t *testing.T) {
 		})
 	}
 }
+
+// messageErr is a contract.MessageError that is not an HTTPError.
+type messageErr struct {
+	status int
+	msg    string
+}
+
+func (e *messageErr) Error() string         { return "message error" }
+func (e *messageErr) StatusCode() int       { return e.status }
+func (e *messageErr) ClientMessage() string { return e.msg }
 
 // fakeLocatorPage is an error page renderer with the ReloadLocator facet
 // that declines every page.

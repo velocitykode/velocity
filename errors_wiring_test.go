@@ -2,6 +2,7 @@ package velocity
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -765,6 +766,89 @@ func TestInstallFrameworkErrorRules(t *testing.T) {
 			h.HandleRequest(contract.NewRenderContext(w, httptest.NewRequest(http.MethodGet, "/x", nil)), err, nil)
 			if w.Code != http.StatusTeapot {
 				t.Errorf("status with user rule = %d, want 418", w.Code)
+			}
+		})
+	}
+}
+
+// TestErrorPipeline_StatusBearingErrorKeepsItself asserts the framework
+// prepare table never overrides an error that already names a status: an
+// application HTTPError or a user map result whose cause holds a framework
+// sentinel renders with its own status, message and headers.
+func TestErrorPipeline_StatusBearingErrorKeepsItself(t *testing.T) {
+	tests := []struct {
+		name       string
+		handler    router.HandlerFunc
+		configure  func(h contract.ErrorHandler)
+		wantStatus int
+		wantDetail string
+		wantHeader map[string]string
+	}{
+		{
+			name: "http error wrapping orm not found",
+			handler: func(*router.Context) error {
+				return contract.NewHTTPError(http.StatusGone, "Post was removed").WithCause(orm.ErrNotFound)
+			},
+			wantStatus: http.StatusGone,
+			wantDetail: "Post was removed",
+		},
+		{
+			name: "http error wrapping auth unauthorized keeps headers",
+			handler: func(*router.Context) error {
+				return contract.NewHTTPError(http.StatusForbidden, "Upgrade your plan").
+					WithHeader("X-Plan", "pro").
+					WithCause(auth.ErrUnauthorized)
+			},
+			wantStatus: http.StatusForbidden,
+			wantDetail: "Upgrade your plan",
+			wantHeader: map[string]string{"X-Plan": "pro"},
+		},
+		{
+			name:    "user map result wrapping orm not found",
+			handler: func(*router.Context) error { return fmt.Errorf("load: %w", orm.ErrNotFound) },
+			configure: func(h contract.ErrorHandler) {
+				problem.MapIs(h, orm.ErrNotFound, func(err error) error {
+					return contract.NewHTTPError(http.StatusNotFound, "No such record").WithCause(err)
+				})
+			},
+			wantStatus: http.StatusNotFound,
+			wantDetail: "No such record",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, _, rec := newPipelineApp(t)
+			a.Services.Errors.SetDebug(false)
+			if tt.configure != nil {
+				tt.configure(a.Services.Errors)
+			}
+			a.Router.Get("/t", tt.handler)
+
+			req := httptest.NewRequest(http.MethodGet, "/t", nil)
+			req.Header.Set("Accept", "application/json")
+			w := httptest.NewRecorder()
+			a.Router.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %q)", w.Code, tt.wantStatus, w.Body.String())
+			}
+			var body struct {
+				Status int    `json:"status"`
+				Detail string `json:"detail"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("problem body: %v (%q)", err, w.Body.String())
+			}
+			if body.Status != tt.wantStatus || body.Detail != tt.wantDetail {
+				t.Errorf("problem body = %+v, want status %d detail %q", body, tt.wantStatus, tt.wantDetail)
+			}
+			for k, v := range tt.wantHeader {
+				if got := w.Header().Get(k); got != v {
+					t.Errorf("header %s = %q, want %q", k, got, v)
+				}
+			}
+			if rec.count() != 0 {
+				t.Errorf("reports = %d, want 0 (%v)", rec.count(), rec.errs)
 			}
 		})
 	}

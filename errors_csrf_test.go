@@ -16,10 +16,14 @@ import (
 )
 
 // newEnforcingCSRF returns a CSRF instance that enforces tokens (no
-// testing bypass) and binds them to the raw "session_id" cookie value.
-func newEnforcingCSRF(t *testing.T, errorHandler func(http.ResponseWriter, *http.Request, error)) *csrf.CSRF {
+// testing bypass) and binds them to the raw "session_id" cookie value. A
+// non-empty errorMessage replaces Config.ErrorMessage.
+func newEnforcingCSRF(t *testing.T, errorHandler func(http.ResponseWriter, *http.Request, error), errorMessage string) *csrf.CSRF {
 	t.Helper()
 	cfg := csrf.DefaultConfig()
+	if errorMessage != "" {
+		cfg.ErrorMessage = errorMessage
+	}
 	cfg.Store = stores.NewSessionStore()
 	cfg.SessionIDResolver = func(r *http.Request) (string, error) {
 		ck, err := r.Cookie("session_id")
@@ -49,20 +53,29 @@ func TestErrorPipeline_CSRFRejection(t *testing.T) {
 		name         string
 		headers      map[string]string
 		errorHandler func(http.ResponseWriter, *http.Request, error)
+		errorMessage string
 		configure    func(h contract.ErrorHandler)
 
 		wantStatus      int
 		wantContentType string
 		wantHeader      map[string]string
 		wantBody        string
-		wantProblem     bool
+		wantDetail      string // non-empty: expect a problem+json body with this detail
 	}{
 		{
 			name:            "JSON client gets 419 problem+json",
 			headers:         map[string]string{"Accept": "application/json"},
 			wantStatus:      problem.StatusTokenMismatch,
 			wantContentType: problem.ProblemTypeContent,
-			wantProblem:     true,
+			wantDetail:      csrf.DefaultConfig().ErrorMessage,
+		},
+		{
+			name:            "configured ErrorMessage is the detail",
+			headers:         map[string]string{"Accept": "application/json"},
+			errorMessage:    "Your session expired, please retry.",
+			wantStatus:      problem.StatusTokenMismatch,
+			wantContentType: problem.ProblemTypeContent,
+			wantDetail:      "Your session expired, please retry.",
 		},
 		{
 			name:       "Inertia client gets the 409 location reload",
@@ -120,7 +133,7 @@ func TestErrorPipeline_CSRFRejection(t *testing.T) {
 				tt.configure(h)
 			}
 
-			c := newEnforcingCSRF(t, tt.errorHandler)
+			c := newEnforcingCSRF(t, tt.errorHandler, tt.errorMessage)
 			other, err := csrf.GenerateToken()
 			if err != nil {
 				t.Fatalf("GenerateToken: %v", err)
@@ -157,7 +170,7 @@ func TestErrorPipeline_CSRFRejection(t *testing.T) {
 			if tt.wantBody != "" && w.Body.String() != tt.wantBody {
 				t.Errorf("body = %q, want %q", w.Body.String(), tt.wantBody)
 			}
-			if tt.wantProblem {
+			if tt.wantDetail != "" {
 				var body struct {
 					Status int    `json:"status"`
 					Title  string `json:"title"`
@@ -166,8 +179,8 @@ func TestErrorPipeline_CSRFRejection(t *testing.T) {
 				if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 					t.Fatalf("problem body: %v (%q)", err, w.Body.String())
 				}
-				if body.Status != problem.StatusTokenMismatch || body.Title != "Page Expired" || body.Detail != "CSRF token mismatch" {
-					t.Errorf("problem body = %+v", body)
+				if body.Status != problem.StatusTokenMismatch || body.Title != "Page Expired" || body.Detail != tt.wantDetail {
+					t.Errorf("problem body = %+v, want status 419, title Page Expired, detail %q", body, tt.wantDetail)
 				}
 			}
 			if got := rec.count(); got != 0 {
@@ -184,7 +197,7 @@ func TestErrorPipeline_CSRFRejection(t *testing.T) {
 // rejection still satisfies the ErrTokenMissing sentinel the framework
 // ignore and prepare rules key on, wrapped or not.
 func TestErrorPipeline_CSRFRejectionMatchesSentinel(t *testing.T) {
-	c := newEnforcingCSRF(t, nil)
+	c := newEnforcingCSRF(t, nil, "")
 	_, err := c.Protect(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/posts", nil))
 	var tm *csrf.TokenMismatchError
 	if !errors.As(err, &tm) {

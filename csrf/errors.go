@@ -11,7 +11,8 @@ import (
 const statusTokenMismatch = 419
 
 // TokenMismatchError is the error Protect returns when an unsafe request
-// fails CSRF protection. It answers 419, is never reported, and unwraps to
+// fails CSRF protection. It answers 419 with Message as the client-facing
+// text (contract.MessageError), is never reported, and unwraps to
 // ErrTokenMissing, so a match on that sentinel covers every rejection
 // however it is wrapped.
 type TokenMismatchError struct {
@@ -20,6 +21,9 @@ type TokenMismatchError struct {
 	// SessionIDResolver returned. It is the error Config.ErrorHandler
 	// receives.
 	Reason error
+	// Message is the client-facing text: the Config.ErrorMessage of the
+	// instance that rejected the request. Empty means the status title.
+	Message string
 
 	// handler is the Config.ErrorHandler of the instance that rejected the
 	// request, nil when that instance has none.
@@ -37,6 +41,9 @@ func (e *TokenMismatchError) Error() string {
 
 // StatusCode returns 419.
 func (e *TokenMismatchError) StatusCode() int { return statusTokenMismatch }
+
+// ClientMessage returns Message.
+func (e *TokenMismatchError) ClientMessage() string { return e.Message }
 
 // ShouldReport returns false: a rejected token is a client outcome, not a
 // failure.

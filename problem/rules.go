@@ -194,7 +194,9 @@ func (h *Handler) AddFrameworkIgnoreRule(rule contract.IgnoreRule) {
 // AddFrameworkPrepareRule registers a framework prepare rule. Prepare rules
 // run at render time only (the report sees the original error) and turn a
 // matched error into the error that is rendered, normally an HTTPError whose
-// Cause is the original so errors.Is still reaches it.
+// Cause is the original so errors.Is still reaches it. They apply only to an
+// error that names no status (contract.StatusOf reports false): an error
+// that already names one keeps its own status, message and headers.
 func (h *Handler) AddFrameworkPrepareRule(rule contract.MapRule) {
 	if rule.Match == nil || rule.Map == nil {
 		return

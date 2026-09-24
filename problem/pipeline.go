@@ -21,7 +21,8 @@ import (
 //  3. The report gate (see ShouldReport), then SelfReporting, ReportFor
 //     rules, context merge, level selection and the reporters.
 //  4. Rendering: nothing when the response is already written; a
-//     Renderable error; the framework prepare table; user render rules;
+//     Renderable error; the framework prepare table (only for an error
+//     that names no status); user render rules;
 //     framework render rules; content negotiation. A render that fails or
 //     panics falls back to a plain-text 500.
 //
@@ -289,8 +290,14 @@ func (h *Handler) render(s *snapshot, rc RenderContext, err error, ctx *ErrorCon
 }
 
 // prepare returns the replacement from the first matching framework prepare
-// rule, or err.
+// rule, or err. The table only gives a status to an error that names none:
+// an error whose chain already holds a StatusError (an application
+// HTTPError, a user map result, a typed subsystem error) keeps itself, so
+// its status, message and headers are never replaced by the framework's.
 func prepare(s *snapshot, err error) error {
+	if _, _, ok := contract.StatusOf(err); ok {
+		return err
+	}
 	for _, rule := range s.frameworkPrepare {
 		if rule.Match(err) {
 			if mapped := rule.Map(err); mapped != nil {
@@ -468,9 +475,9 @@ func safeLog(logger contract.Logger, msg string, kvs ...any) {
 }
 
 // clientMessage returns the client-facing message for err at status: the
-// full Error() in debug; the status title for 5xx; for 4xx the Message of
-// the HTTPError in err's chain when it names the same status, else the
-// status title.
+// full Error() in debug; the status title for 5xx; for 4xx the
+// ClientMessage of the first contract.MessageError in err's chain when it
+// names the same status, else the status title.
 func clientMessage(err error, status int, debug bool) string {
 	if debug {
 		return err.Error()
@@ -478,9 +485,11 @@ func clientMessage(err error, status int, debug bool) string {
 	if status >= http.StatusInternalServerError {
 		return statusTitle(status)
 	}
-	var he *contract.HTTPError
-	if errors.As(err, &he) && he.StatusCode() == status && he.Message != "" {
-		return he.Message
+	var me contract.MessageError
+	if errors.As(err, &me) && me.StatusCode() == status {
+		if msg := me.ClientMessage(); msg != "" {
+			return msg
+		}
 	}
 	return statusTitle(status)
 }

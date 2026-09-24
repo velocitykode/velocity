@@ -161,6 +161,10 @@ type Config struct {
 	ExcludeFunc  func(*http.Request) bool
 
 	// Error handling
+
+	// ErrorMessage is the client-facing text of a rejection: the 419
+	// detail on the router path (carried by TokenMismatchError) and the
+	// body the bare Middleware writes.
 	ErrorMessage string
 	ErrorHandler func(http.ResponseWriter, *http.Request, error)
 }
