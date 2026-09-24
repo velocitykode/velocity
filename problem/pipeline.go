@@ -330,7 +330,8 @@ func (h *Handler) renderStage(s *snapshot, rc RenderContext, err error, ctx *Err
 	// Every rule and renderer below reads the handler's negotiation
 	// answer through rc.WantsJSON, so a rule that picks between JSON and a
 	// browser answer agrees with the negotiation that follows it.
-	rc = negotiatedContext{RenderContext: rc, json: wantsJSON(s, rc, err)}
+	asJSON, _ := wantsJSON(s, rc, err)
+	rc = negotiatedContext{RenderContext: rc, json: asJSON}
 
 	// A panic is a bug: always a 500, whatever the panic value carries. The
 	// panic never renders itself (no Renderable) and skips the prepare
@@ -447,13 +448,19 @@ func (h *Handler) respond(s *snapshot, rc RenderContext, err error, ctx *ErrorCo
 		status = http.StatusInternalServerError
 	}
 
+	asJSON, byRequest := forceJSON, false
+	if !forceJSON {
+		asJSON, byRequest = wantsJSON(s, rc, err)
+	}
 	var renderErr error
 	switch {
-	case forceJSON || wantsJSON(s, rc, err):
+	case asJSON:
+		varyOnAccept(rc, byRequest)
 		renderErr = rendererFor(s, "json").Render(rc, err, ctx, status, s.debug)
 	case rc.IsInertia():
 		renderErr = h.renderInertia(s, rc, err, ctx, status)
 	default:
+		varyOnAccept(rc, byRequest)
 		renderErr = h.renderHTML(s, rc, err, ctx, status)
 	}
 	if renderErr != nil {
@@ -523,29 +530,40 @@ func renderErrorPage(s *snapshot, rc RenderContext, err error, status int) (bool
 
 // wantsJSON decides the JSON branch for rc: the JSONWhen predicate alone
 // when set, otherwise API mode, an API prefix, then the request's own
-// negotiation.
-func wantsJSON(s *snapshot, rc RenderContext, err error) bool {
+// negotiation. byRequest reports that the request's negotiation decided.
+func wantsJSON(s *snapshot, rc RenderContext, err error) (asJSON, byRequest bool) {
 	return negotiatesJSON(s, rc.Request(), err, rc.WantsJSON)
 }
 
 // negotiatesJSON is the negotiation order shared by the pipeline and
 // Handler.WantsJSON; fallback answers when neither JSONWhen, API mode nor
-// an API prefix decides.
-func negotiatesJSON(s *snapshot, r *http.Request, err error, fallback func() bool) bool {
+// an API prefix decides, and byRequest reports that it did.
+func negotiatesJSON(s *snapshot, r *http.Request, err error, fallback func() bool) (asJSON, byRequest bool) {
 	if s.jsonWhen != nil {
-		return s.jsonWhen(r, err)
+		return s.jsonWhen(r, err), false
 	}
 	if s.apiMode {
-		return true
+		return true, false
 	}
 	if r != nil && r.URL != nil {
 		for _, prefix := range s.apiPrefixes {
 			if prefix != "" && strings.HasPrefix(r.URL.Path, prefix) {
-				return true
+				return true, false
 			}
 		}
 	}
-	return fallback()
+	return fallback(), true
+}
+
+// varyOnAccept lists Accept in the response's Vary header when the
+// request's own negotiation (its Accept header) chose the format, so a
+// cache keyed on the URL does not serve a JSON error to a browser or an
+// HTML one to an API client. A format fixed by JSONWhen, API mode or an
+// API prefix does not vary with the request.
+func varyOnAccept(rc RenderContext, byRequest bool) {
+	if byRequest {
+		contract.AppendVary(rc.Writer().Header(), "Accept")
+	}
 }
 
 // negotiatedContext is the RenderContext the render stage hands to

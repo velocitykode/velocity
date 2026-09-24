@@ -219,11 +219,6 @@ func (b *Bond) ContainerID() string {
 	return b.containerID
 }
 
-// isInertiaRequest checks if the request is an Inertia XHR request
-func isInertiaRequest(r *http.Request) bool {
-	return r.Header.Get("X-Inertia") == "true"
-}
-
 // SetSharePropsFunc sets a function that returns props to be shared per request.
 func (b *Bond) SetSharePropsFunc(fn func(r *http.Request) (Props, error)) {
 	b.mu.Lock()

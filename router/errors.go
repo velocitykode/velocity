@@ -482,6 +482,8 @@ func requestGone(c *Context) bool {
 // instance as the request path, errors, and request_id and trace_id when
 // info carries them) when contract.WantsJSON holds for the request, plain
 // text otherwise: the body the error pipeline writes outside debug mode.
+// Unless the request is an Inertia request, the response lists Accept in
+// its Vary header.
 // The title is contract.StatusTitle. A 4xx answer echoes the message of
 // the first contract.MessageError in the chain (HTTPError.Message, for
 // one) when it names the answered status, and carries the per-field
@@ -526,7 +528,15 @@ func writeDefaultError(c *Context, err error, res defaultResolution, info ErrorI
 		detail = res.message
 	}
 
-	if c.Request != nil && contract.WantsJSON(c.Request) {
+	// Outside Inertia (whose answer X-Inertia fixes), the request's
+	// Accept header picks problem+json or plain text, so a cache must key
+	// the response on it.
+	asJSON := false
+	if c.Request != nil && !contract.IsInertia(c.Request) {
+		varyOnAccept(h)
+		asJSON = contract.WantsJSON(c.Request)
+	}
+	if asJSON {
 		instance := ""
 		if c.Request.URL != nil {
 			instance = c.Request.URL.Path
@@ -555,6 +565,22 @@ func writeDefaultError(c *Context, err error, res defaultResolution, info ErrorI
 		}
 	}
 	http.Error(c.Response, detail, res.status)
+}
+
+// varyAccept is the Vary value varyOnAccept sets on a response that
+// declares none. It is shared and never written through: http.Header.Add
+// appends into a new array (the slice's length equals its capacity) and
+// Set replaces the slice, so one response cannot change another's value.
+// Sharing it keeps the default error path from allocating for the header.
+var varyAccept = []string{"Accept"}
+
+// varyOnAccept declares Accept in h's Vary header.
+func varyOnAccept(h http.Header) {
+	if _, ok := h["Vary"]; !ok {
+		h["Vary"] = varyAccept
+		return
+	}
+	contract.AppendVary(h, "Accept")
 }
 
 // ErrorHandlerMiddleware returns a middleware that offers errors from

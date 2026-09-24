@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -619,14 +618,23 @@ func (c *Context) reset() {
 	c.insecureFlashCookies = false
 }
 
-// IsAjax returns true if the request is an AJAX request
+// IsAjax reports whether the request is an XMLHttpRequest
+// (X-Requested-With: XMLHttpRequest, in any case).
 func (c *Context) IsAjax() bool {
-	return c.Request.Header.Get("X-Requested-With") == "XMLHttpRequest"
+	return strings.EqualFold(c.Request.Header.Get("X-Requested-With"), "XMLHttpRequest")
 }
 
-// WantsJSON reports whether the client asks for a JSON response (see
-// contract.WantsJSON). An Inertia request never wants JSON.
+// WantsJSON reports whether the response to this request renders as
+// JSON. When the services carry an error handler (Services.Errors) it
+// answers, so a handler choosing its success format agrees with the
+// format its errors render in: the JSONWhen predicate, API mode and the
+// API prefixes, then the request. Without one it is contract.WantsJSON,
+// the request's own negotiation, under which an Inertia request never
+// wants JSON.
 func (c *Context) WantsJSON() bool {
+	if c.services != nil && c.services.Errors != nil {
+		return c.services.Errors.WantsJSON(c.Request, nil)
+	}
 	return contract.WantsJSON(c.Request)
 }
 
@@ -677,7 +685,7 @@ type ctxRenderContext struct {
 
 func (rc *ctxRenderContext) Request() *http.Request      { return rc.c.Request }
 func (rc *ctxRenderContext) Writer() http.ResponseWriter { return rc.c.Response }
-func (rc *ctxRenderContext) WantsJSON() bool             { return rc.c.WantsJSON() }
+func (rc *ctxRenderContext) WantsJSON() bool             { return contract.WantsJSON(rc.c.Request) }
 func (rc *ctxRenderContext) IsInertia() bool             { return rc.c.IsInertia() }
 
 // Written reports whether the status line has been written, through this
@@ -2100,15 +2108,10 @@ func (c *Context) Validate(rules contract.ValidationRuleSet, messages ...contrac
 // Content negotiation
 // ---------------------------------------------------------------------------
 
-// acceptEntry is a single (media-type, q-value) pair parsed from an
-// Accept header.
-type acceptEntry struct {
-	mime string
-	q    float64
-}
-
 // Accepts parses the Accept header and returns the first offered type
-// that the client accepts, ordered by q-value.
+// that the client accepts, ordered by q-value (contract.ParseAccept: the
+// first listed among equal q, q=0 not acceptable). Media types compare
+// without case; a */* range accepts any offered type.
 //
 // If no Accept header is set, the first offered type is returned as a
 // sensible default; if nothing matches, the empty string is returned.
@@ -2120,64 +2123,15 @@ func (c *Context) Accepts(offered ...string) string {
 		}
 		return ""
 	}
-	entries := parseAcceptHeader(accept)
-	return selectOffered(entries, offered)
+	return selectOffered(contract.ParseAccept(accept), offered)
 }
 
-// parseAcceptHeader splits an Accept header into (mime, q) pairs
-// sorted by descending q-value. Invalid or empty components are
-// dropped silently, same as net/http's behaviour.
-func parseAcceptHeader(header string) []acceptEntry {
-	parts := strings.Split(header, ",")
-	entries := make([]acceptEntry, 0, len(parts))
-	for _, p := range parts {
-		if e, ok := parseAcceptEntry(p); ok {
-			entries = append(entries, e)
-		}
-	}
-	sort.SliceStable(entries, func(i, j int) bool {
-		return entries[i].q > entries[j].q
-	})
-	return entries
-}
-
-// parseAcceptEntry parses a single Accept header component such as
-// "text/html;q=0.8". Returns false if the component is empty.
-func parseAcceptEntry(raw string) (acceptEntry, bool) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return acceptEntry{}, false
-	}
-	mediaType := raw
-	q := 1.0
-	if idx := strings.Index(raw, ";"); idx != -1 {
-		mediaType = strings.TrimSpace(raw[:idx])
-		q = parseQValue(raw[idx+1:])
-	}
-	return acceptEntry{mime: mediaType, q: q}, true
-}
-
-// parseQValue walks a list of ";"-separated parameters looking for
-// q=<float>. Returns 1.0 on absence or parse failure.
-func parseQValue(params string) float64 {
-	for _, param := range strings.Split(params, ";") {
-		param = strings.TrimSpace(param)
-		if !strings.HasPrefix(param, "q=") {
-			continue
-		}
-		if v, err := strconv.ParseFloat(strings.TrimPrefix(param, "q="), 64); err == nil {
-			return v
-		}
-	}
-	return 1.0
-}
-
-// selectOffered walks the ranked Accept entries and returns the first
-// offered type that matches (exact or "*/*").
-func selectOffered(entries []acceptEntry, offered []string) string {
-	for _, e := range entries {
+// selectOffered walks the ranked Accept ranges and returns the first
+// offered type that matches (same type without case, or "*/*").
+func selectOffered(ranges []contract.MediaRange, offered []string) string {
+	for _, mr := range ranges {
 		for _, o := range offered {
-			if e.mime == o || e.mime == "*/*" {
+			if mr.Type == "*/*" || strings.EqualFold(mr.Type, o) {
 				return o
 			}
 		}

@@ -2,10 +2,13 @@ package bond
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 const validTemplate = `<!DOCTYPE html>
@@ -105,29 +108,43 @@ func TestNew_EncryptHistoryFlag(t *testing.T) {
 	}
 }
 
-func TestIsInertiaRequest_True(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.Header.Set("X-Inertia", "true")
-
-	if !isInertiaRequest(r) {
-		t.Error("expected isInertiaRequest to return true")
+// TestRender_InertiaDetectionMatchesContract asserts bond answers with an
+// Inertia page exactly for the X-Inertia values contract.IsInertia (and so
+// the error pipeline's Inertia branch) accepts: "true" in any case.
+func TestRender_InertiaDetectionMatchesContract(t *testing.T) {
+	tests := []struct {
+		value string
+		set   bool
+		want  bool
+	}{
+		{value: "true", set: true, want: true},
+		{value: "TRUE", set: true, want: true},
+		{value: "True", set: true, want: true},
+		{value: "1", set: true},
+		{value: "false", set: true},
+		{value: "yes", set: true},
+		{value: "", set: true},
+		{set: false},
 	}
-}
-
-func TestIsInertiaRequest_False(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-
-	if isInertiaRequest(r) {
-		t.Error("expected isInertiaRequest to return false")
-	}
-}
-
-func TestIsInertiaRequest_FalseValue(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.Header.Set("X-Inertia", "false")
-
-	if isInertiaRequest(r) {
-		t.Error("expected isInertiaRequest to return false for 'false' value")
+	b := setupBond(t)
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%q set=%v", tt.value, tt.set), func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+			if tt.set {
+				r.Header.Set("X-Inertia", tt.value)
+			}
+			if got := contract.IsInertia(r); got != tt.want {
+				t.Fatalf("contract.IsInertia = %v, want %v", got, tt.want)
+			}
+			w := httptest.NewRecorder()
+			if err := b.Render(w, r, "Dashboard", Props{}); err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			gotPage := w.Header().Get("X-Inertia") == "true"
+			if gotPage != tt.want {
+				t.Errorf("bond answered with an Inertia page = %v, want %v (Content-Type %q)", gotPage, tt.want, w.Header().Get("Content-Type"))
+			}
+		})
 	}
 }
 

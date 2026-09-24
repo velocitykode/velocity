@@ -7,6 +7,8 @@ import (
 	"html/template"
 	"net/http"
 	"strings"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // Render renders a component with props
@@ -72,7 +74,7 @@ func (b *Bond) Render(w http.ResponseWriter, r *http.Request, component string, 
 	}
 
 	// 7. Route to appropriate renderer
-	if isInertiaRequest(r) {
+	if contract.IsInertia(r) {
 		return b.renderJSON(w, page)
 	}
 	return b.renderHTML(r.Context(), w, page)
@@ -246,7 +248,7 @@ func (b *Bond) renderJSON(w http.ResponseWriter, page Page) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Inertia", "true")
-	appendVary(w.Header(), "X-Inertia")
+	contract.AppendVary(w.Header(), "X-Inertia")
 
 	// No buffer pooling here: Go 1.26 json.Marshal/Encoder already pools its
 	// internal scratch buffer, and the encoded bytes are streamed straight to

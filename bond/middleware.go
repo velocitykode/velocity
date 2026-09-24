@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"io"
 	"net/http"
-	"strings"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -32,10 +32,10 @@ func (b *Bond) Middleware(next http.Handler) http.Handler {
 func (b *Bond) serveBuffered(w http.ResponseWriter, r *http.Request, next http.Handler, handlerErred func() bool) {
 	// Always add Vary for proper caching, preserving values set by
 	// earlier middleware (CORS's Origin, security headers' Host).
-	appendVary(w.Header(), "X-Inertia")
+	contract.AppendVary(w.Header(), "X-Inertia")
 
 	// Non-Inertia requests pass through unbuffered
-	if !isInertiaRequest(r) {
+	if !contract.IsInertia(r) {
 		next.ServeHTTP(w, r)
 		return
 	}
@@ -142,20 +142,6 @@ func (b *Bond) MiddlewareFunc() router.MiddlewareFunc {
 			return handlerErr
 		}
 	}
-}
-
-// appendVary adds v to the Vary header unless some earlier middleware
-// already listed it, so repeated runs (Middleware then renderJSON) do
-// not duplicate the entry and other middleware's cache keys survive.
-func appendVary(h http.Header, v string) {
-	for _, existing := range h.Values("Vary") {
-		for _, part := range strings.Split(existing, ",") {
-			if strings.EqualFold(strings.TrimSpace(part), v) {
-				return
-			}
-		}
-	}
-	h.Add("Vary", v)
 }
 
 // cachingHeaders are the headers an errored empty response drops before

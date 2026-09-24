@@ -201,17 +201,6 @@ func TestVary_ComposesAcrossMiddlewareStack(t *testing.T) {
 	}
 }
 
-func TestAppendVary_DoesNotDuplicate(t *testing.T) {
-	h := http.Header{}
-	appendVary(h, "X-Inertia")
-	appendVary(h, "X-Inertia")
-	appendVary(h, "x-inertia")
-
-	if got := h.Values("Vary"); len(got) != 1 {
-		t.Errorf("expected a single Vary entry, got %v", got)
-	}
-}
-
 // varyLists reports whether value appears as a member of any Vary entry.
 func varyLists(h http.Header, value string) bool {
 	for _, entry := range h.Values("Vary") {

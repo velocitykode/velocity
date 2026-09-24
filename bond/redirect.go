@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -33,7 +34,7 @@ func (b *Bond) RedirectWithStatus(w http.ResponseWriter, r *http.Request, rawURL
 	// accepted "/\n/evil" into "//evil"). Control bytes are rejected by
 	// the sanitizer itself, which also covers header injection.
 	rawURL = sanitizeRedirectURL(rawURL, b.allowedHostsFor(r))
-	if isInertiaRequest(r) {
+	if contract.IsInertia(r) {
 		// For Inertia requests, set the location header for client-side handling
 		w.Header().Set("X-Inertia-Location", rawURL)
 	}
@@ -83,7 +84,7 @@ func (b *Bond) LocationExternal(w http.ResponseWriter, r *http.Request, target s
 // sanitizeLocationScheme and is written byte-for-byte; both reject
 // control bytes, so nothing is stripped or rewritten here.
 func (b *Bond) emitLocation(w http.ResponseWriter, r *http.Request, url string) {
-	if isInertiaRequest(r) {
+	if contract.IsInertia(r) {
 		// 409 Conflict with X-Inertia-Location triggers full page reload
 		w.Header().Set("X-Inertia-Location", url)
 		w.WriteHeader(http.StatusConflict)

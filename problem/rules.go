@@ -163,7 +163,8 @@ func (h *Handler) JSONWhen(fn func(r *http.Request, err error) bool) {
 // Render rules read the same answer through RenderContext.WantsJSON. err
 // may be nil.
 func (h *Handler) WantsJSON(r *http.Request, err error) bool {
-	return negotiatesJSON(h.snap(), r, err, func() bool { return contract.WantsJSON(r) })
+	asJSON, _ := negotiatesJSON(h.snap(), r, err, func() bool { return contract.WantsJSON(r) })
+	return asJSON
 }
 
 // BeforeRender registers a hook run once, right before the pipeline's own

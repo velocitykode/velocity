@@ -20,7 +20,7 @@ func TestWantsJSON(t *testing.T) {
 		{"html first then json", "text/html, application/json", "", "", false},
 		{"browser default", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "", "", false},
 		{"json with parameters", "application/json; charset=utf-8", "", "", true},
-		{"json with q", "application/json;q=0.9, text/html", "", "", true},
+		{"json with lower q", "application/json;q=0.9, text/html", "", "", false},
 		{"case and spaces", "  Application/JSON  ", "", "", true},
 		{"problem json suffix", "application/problem+json", "", "", true},
 		{"vendor json suffix", "application/vnd.api+json;q=1, text/html", "", "", true},
@@ -38,6 +38,18 @@ func TestWantsJSON(t *testing.T) {
 		{"inertia json accept", "application/json", "", "true", false},
 		{"inertia xhr", "", "XMLHttpRequest", "true", false},
 		{"inertia problem json", "application/problem+json", "XMLHttpRequest", "true", false},
+		{"inertia upper case", "application/json", "", "TRUE", false},
+		{"x-inertia 1 is not inertia", "application/json", "", "1", true},
+		{"x-inertia false is not inertia", "application/json", "", "false", true},
+		{"html preferred by q", "application/json;q=0.5, text/html", "", "", false},
+		{"json preferred by q", "text/html;q=0.9, application/json", "", "", true},
+		{"tie keeps listed order", "text/html;q=0.8, application/json;q=0.8", "", "", false},
+		{"q zero excluded", "application/json;q=0, text/html;q=0.1", "", "", false},
+		{"q zero html excluded", "text/html;q=0, application/json;q=0.1", "", "", true},
+		{"upper case q", "text/html;Q=0.2, application/json", "", "", true},
+		{"unparsable q is one", "text/html;q=abc, application/json;q=0.9", "", "", false},
+		{"everything excluded xhr", "application/json;q=0", "XMLHttpRequest", "", true},
+		{"wildcard preferred xhr", "text/html;q=0.5, */*", "XMLHttpRequest", "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -71,8 +83,12 @@ func TestIsInertia(t *testing.T) {
 		set   bool
 		want  bool
 	}{
-		{"present", "true", true, true},
-		{"any value", "1", true, true},
+		{"true", "true", true, true},
+		{"upper case", "TRUE", true, true},
+		{"mixed case", "True", true, true},
+		{"one", "1", true, false},
+		{"false", "false", true, false},
+		{"other value", "yes", true, false},
 		{"empty value", "", true, false},
 		{"absent", "", false, false},
 	}
@@ -89,5 +105,89 @@ func TestIsInertia(t *testing.T) {
 	}
 	if IsInertia(nil) {
 		t.Error("IsInertia(nil) = true, want false")
+	}
+}
+
+func TestParseAccept(t *testing.T) {
+	tests := []struct {
+		accept string
+		want   []MediaRange
+	}{
+		{"", []MediaRange{}},
+		{" , ,", []MediaRange{}},
+		{"text/html", []MediaRange{{"text/html", 1}}},
+		{"Text/HTML;charset=utf-8", []MediaRange{{"text/html", 1}}},
+		{"text/html;q=0.9, application/json", []MediaRange{{"application/json", 1}, {"text/html", 0.9}}},
+		{"a/a;q=0.5, b/b;q=0.5, c/c", []MediaRange{{"c/c", 1}, {"a/a", 0.5}, {"b/b", 0.5}}},
+		{"a/a;q=0, b/b", []MediaRange{{"b/b", 1}}},
+		{"a/a;level=1;q=0.3", []MediaRange{{"a/a", 0.3}}},
+		{"a/a;q=2", []MediaRange{{"a/a", 1}}},
+		{"a/a;q=-1, b/b;q=NaN", []MediaRange{{"b/b", 1}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.accept, func(t *testing.T) {
+			got := ParseAccept(tt.accept)
+			if len(got) != len(tt.want) {
+				t.Fatalf("ParseAccept(%q) = %v, want %v", tt.accept, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("ParseAccept(%q)[%d] = %v, want %v", tt.accept, i, got[i], tt.want[i])
+				}
+			}
+			first := ""
+			if len(got) > 0 {
+				first = got[0].Type
+			}
+			if p := PreferredMediaRange(tt.accept); p != first {
+				t.Errorf("PreferredMediaRange(%q) = %q, want ParseAccept's first %q", tt.accept, p, first)
+			}
+		})
+	}
+}
+
+func TestPreferredMediaRange_DoesNotAllocate(t *testing.T) {
+	accept := "text/html;q=0.9, application/json, */*;q=0.1"
+	allocs := testing.AllocsPerRun(100, func() {
+		if PreferredMediaRange(accept) != "application/json" {
+			t.Fatal("wrong preferred range")
+		}
+	})
+	if allocs != 0 {
+		t.Errorf("PreferredMediaRange allocated %v times, want 0", allocs)
+	}
+}
+
+func TestAppendVary(t *testing.T) {
+	tests := []struct {
+		name  string
+		start []string
+		add   []string
+		want  []string
+	}{
+		{name: "empty", add: []string{"Accept"}, want: []string{"Accept"}},
+		{name: "no duplicate", add: []string{"X-Inertia", "X-Inertia", "x-inertia"}, want: []string{"X-Inertia"}},
+		{name: "listed in a combined value", start: []string{"Origin, accept"}, add: []string{"Accept"}, want: []string{"Origin, accept"}},
+		{name: "appends another", start: []string{"Origin"}, add: []string{"Accept"}, want: []string{"Origin", "Accept"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := http.Header{}
+			if tt.start != nil {
+				h["Vary"] = append([]string(nil), tt.start...)
+			}
+			for _, v := range tt.add {
+				AppendVary(h, v)
+			}
+			got := h.Values("Vary")
+			if len(got) != len(tt.want) {
+				t.Fatalf("Vary = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("Vary = %v, want %v", got, tt.want)
+				}
+			}
+		})
 	}
 }
