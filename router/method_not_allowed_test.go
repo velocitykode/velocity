@@ -557,21 +557,28 @@ func TestMethodNotAllowed_AfterClearRoutes(t *testing.T) {
 	}
 }
 
-func TestWriteUnmatched(t *testing.T) {
-	t.Run("no allowed methods is a 404 without Allow", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		writeUnmatched(w, httptest.NewRequest("GET", "/x", nil), nil)
-		if w.Code != http.StatusNotFound || len(w.Header().Values("Allow")) != 0 {
-			t.Errorf("got %d Allow=%q", w.Code, w.Header().Values("Allow"))
-		}
-	})
-	t.Run("allowed methods is a 405 naming them", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		writeUnmatched(w, httptest.NewRequest("GET", "/x", nil), []string{"POST", "PUT"})
-		if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != "POST, PUT" {
-			t.Errorf("got %d Allow=%q", w.Code, w.Header().Get("Allow"))
-		}
-	})
+func TestUnmatchedHTTPError(t *testing.T) {
+	tests := []struct {
+		name      string
+		allowed   []string
+		wantCode  int
+		wantAllow []string
+		wantMsg   string
+	}{
+		{name: "no allowed methods is a 404 without Allow", wantCode: http.StatusNotFound, wantMsg: "404 page not found"},
+		{name: "allowed methods is a 405 naming them", allowed: []string{"POST", "PUT"}, wantCode: http.StatusMethodNotAllowed, wantAllow: []string{"POST, PUT"}, wantMsg: "Method Not Allowed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			he := unmatchedHTTPError(tt.allowed)
+			if he.StatusCode() != tt.wantCode || he.Message != tt.wantMsg {
+				t.Errorf("got %d %q, want %d %q", he.StatusCode(), he.Message, tt.wantCode, tt.wantMsg)
+			}
+			if got := he.Headers().Values("Allow"); !slices.Equal(got, tt.wantAllow) {
+				t.Errorf("Allow = %q, want %q", got, tt.wantAllow)
+			}
+		})
+	}
 }
 
 // AllowedMethods must name exactly the methods Match finds a route for.

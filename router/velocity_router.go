@@ -158,13 +158,13 @@ type VelocityRouterV2 struct {
 	signedURLKey signedURLKey
 
 	// unmatchedHandler is the global middleware chain wrapped around a
-	// synthetic terminal handler that answers a request no route matched:
-	// 404 for an unknown path, 405 with Allow for a known path under a
-	// method it has no route for. Built once during commitOnce so
-	// unmatched requests still pass through every Use(...) middleware
-	// (rate limiters, security headers, body limits, etc.). Stored via
-	// atomic.Pointer so the read on the hot path is lock-free; written
-	// only under mu inside commitOnce / ClearRoutes.
+	// synthetic terminal handler that returns the error for a request no
+	// route matched: 404 for an unknown path, 405 with Allow for a known
+	// path under a method it has no route for. Built once during
+	// commitOnce so unmatched requests still pass through every Use(...)
+	// middleware (rate limiters, security headers, body limits, etc.).
+	// Stored via atomic.Pointer so the read on the hot path is lock-free;
+	// written only under mu inside commitOnce / ClearRoutes.
 	unmatchedHandler atomic.Pointer[HandlerFunc]
 
 	// staticHandler is the global middleware chain wrapped around a
@@ -843,7 +843,9 @@ func (r *VelocityRouterV2) matchRoute(req *http.Request) *MatchResult {
 
 // handleUnmatched runs the response for a request no route matched
 // through the global middleware chain and dispatches events. The
-// terminal handler of that chain answers 404 or 405 (see answerUnmatched).
+// terminal handler of that chain returns a 404 or 405 error (see
+// unmatchedError), which the error boundary renders like any other
+// handler error.
 //
 // The middleware chain is built once during commitOnce (see
 // unmatchedHandler) so global Use(...) middleware (rate limiters,
@@ -902,23 +904,24 @@ func (r *VelocityRouterV2) handleUnmatched(rw *responseWriter, req *http.Request
 	handler := r.unmatchedHandler.Load()
 	if handler == nil {
 		// commitOnce has not run (or ClearRoutes wiped state and no
-		// request has rebuilt it yet). Fall back to the bare response so
-		// the router degrades safely rather than panicking; this branch
-		// is effectively unreachable from ServeHTTP because commitOnce
-		// runs at the top of every request.
-		r.answerUnmatched(rw, req)
-		return
+		// request has rebuilt it yet). Fall back to the bare unmatched
+		// error without the middleware chain so the router degrades
+		// safely rather than panicking; this branch is effectively
+		// unreachable from ServeHTTP because commitOnce runs at the top
+		// of every request.
+		handlerErr = r.unmatchedError(req)
+	} else {
+		handlerErr = (*handler)(ctx)
 	}
-	handlerErr = (*handler)(ctx)
 	if handlerErr != nil {
 		r.handleError(ctx, rw, handlerErr, ErrorInfo{})
 	}
 }
 
-// answerUnmatched answers a request this router has no route for. The
-// path may still be a real one that simply has no route for the method:
-// that is a 405 naming the methods that do, not a 404 (RFC 9110 section
-// 15.5.6).
+// unmatchedError returns the error for a request this router has no
+// route for. The path may still be a real one that simply has no route
+// for the method: that is a 405 naming the methods that do, not a 404
+// (RFC 9110 section 15.5.6).
 //
 // The answer is worked out here, from this router's own tree and the
 // request in hand, and is never carried from where matching happened.
@@ -926,7 +929,7 @@ func (r *VelocityRouterV2) handleUnmatched(rw *responseWriter, req *http.Request
 // another Context (Timeout clones it) and can be inherited by another
 // router the request is delegated to; a value computed on the spot can
 // be neither.
-func (r *VelocityRouterV2) answerUnmatched(w http.ResponseWriter, req *http.Request) {
+func (r *VelocityRouterV2) unmatchedError(req *http.Request) error {
 	allowed := r.tree.Load().AllowedMethods(req.URL.EscapedPath())
 	// A middleware may have rewritten the request since matching. If the
 	// request as it now stands names a method this path does serve, a
@@ -935,20 +938,24 @@ func (r *VelocityRouterV2) answerUnmatched(w http.ResponseWriter, req *http.Requ
 	if slices.Contains(allowed, req.Method) || slices.Contains(allowed, "ANY") {
 		allowed = nil
 	}
-	writeUnmatched(w, req, allowed)
+	return unmatchedHTTPError(allowed)
 }
 
-// writeUnmatched writes the terminal response for a request no route
-// matched. With no allowed methods the path is unknown: 404. Otherwise
-// the path is served under other methods only: 405, with the Allow
-// header RFC 9110 section 15.5.6 requires on it.
-func writeUnmatched(w http.ResponseWriter, req *http.Request, allowed []string) {
+// notFoundMessage is the 404 text for an unmatched request, the same text
+// http.NotFound writes, so a standalone router's plain-text 404 body is
+// unchanged.
+const notFoundMessage = "404 page not found"
+
+// unmatchedHTTPError builds the error the unmatched terminal returns. With
+// no allowed methods the path is unknown: 404. Otherwise the path is
+// served under other methods only: 405, carrying the Allow header RFC 9110
+// section 15.5.6 requires on it. The error boundary renders either one.
+func unmatchedHTTPError(allowed []string) *contract.HTTPError {
 	if len(allowed) == 0 {
-		http.NotFound(w, req)
-		return
+		return contract.NewHTTPError(http.StatusNotFound, notFoundMessage)
 	}
-	w.Header().Set("Allow", strings.Join(allowed, ", "))
-	http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+	return contract.NewHTTPError(http.StatusMethodNotAllowed).
+		WithHeader("Allow", strings.Join(allowed, ", "))
 }
 
 // enrichRequest attaches route params, name, pattern, and services to
@@ -1203,10 +1210,11 @@ func (r *VelocityRouterV2) commitOnce() {
 	// Router.Use(...) middleware (rate limiters, security headers, body
 	// limits), letting an attacker hammer arbitrary paths at zero cost
 	// and skipping the operator's global throttle
-	// (security-audit-2026-05 finding E-01).
+	// (security-audit-2026-05 finding E-01). The terminal writes
+	// nothing: it returns the 404 / 405 error back up the chain to the
+	// error boundary.
 	terminal := HandlerFunc(func(c *Context) error {
-		r.answerUnmatched(c.Response, c.Request)
-		return nil
+		return r.unmatchedError(c.Request)
 	})
 	wrapped := applyMiddlewareChain(terminal, r.middlewares)
 	r.unmatchedHandler.Store(&wrapped)
