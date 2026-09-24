@@ -146,14 +146,33 @@ func resolveStatus(err error) (status int, headers http.Header, ok bool) {
 	return contract.StatusOf(err)
 }
 
+// markedWritten reports whether err marks a response written on purpose:
+// it matches contract.ErrResponseWritten (bare or through
+// contract.Handled) outside the value of any recovered panic it carries.
+// A panic is a 500 whatever its value, so a marker inside a *PanicError,
+// or anywhere in err when recovered is set and err carries no
+// *PanicError, counts for nothing. A Handled value wrapping a *PanicError
+// (a middleware rendered the panic) still marks the response written.
+func markedWritten(err error, recovered bool) bool {
+	if !errors.Is(err, contract.ErrResponseWritten) {
+		return false
+	}
+	var pe *PanicError
+	if errors.As(err, &pe) {
+		return !errors.Is(pe, contract.ErrResponseWritten)
+	}
+	return !recovered
+}
+
 // resolveDefault decides how the default error path answers err. The
 // cases, first match wins:
 //
-//   - a bare contract.ErrResponseWritten: nothing written, nothing logged.
-//   - a contract.Handled value: nothing written; the cause is logged when
-//     it resolves to 500 or above.
+//   - a bare contract.ErrResponseWritten outside a recovered panic (see
+//     markedWritten): nothing written, nothing logged.
+//   - a contract.Handled value outside a recovered panic: nothing
+//     written; the cause is logged when it resolves to 500 or above.
 //   - info.Recovered (or a *PanicError in the chain): 500, logged with the
-//     stack.
+//     stack, whatever the panic value carries.
 //   - context.Canceled while the request context is dead: the client is
 //     gone, nothing written, nothing logged.
 //   - context.DeadlineExceeded: 503, logged at warn.
@@ -163,7 +182,7 @@ func resolveStatus(err error) (status int, headers http.Header, ok bool) {
 // Other statuses of 500 and above are logged at error level.
 // info.Committed turns off writing but keeps the logging decision.
 func resolveDefault(c *Context, err error, info ErrorInfo) defaultResolution {
-	if errors.Is(err, contract.ErrResponseWritten) {
+	if markedWritten(err, info.Recovered) {
 		cause := contract.HandledCause(err)
 		if cause == nil {
 			return defaultResolution{}
@@ -201,7 +220,8 @@ func requestGone(c *Context) bool {
 // DefaultErrorHandler is the router's own error response, used when no
 // handler is installed with SetErrorHandler and by Wrap. It writes nothing
 // when info.Committed is true, for an error matching
-// contract.ErrResponseWritten, and for a context.Canceled whose request
+// contract.ErrResponseWritten outside a recovered panic (a panic answers
+// 500 whatever its value), and for a context.Canceled whose request
 // context is dead (the client is gone). Otherwise the status resolves as
 // follows: a recovered panic is 500; context.DeadlineExceeded is 503;
 // *http.MaxBytesError is 413; any other error takes its status and
@@ -302,8 +322,9 @@ func statusText(status int) string {
 // contract.Handled(err): the router boundary writes nothing more but still
 // reports the error once, and RequestFailed still fires with it. fn
 // returns false to leave the error to the boundary unchanged. An error
-// that already matches contract.ErrResponseWritten passes through without
-// calling fn.
+// that already marks a written response passes through without calling
+// fn; a panic the Timeout middleware forwarded is offered to fn whatever
+// its value carries.
 //
 // The middleware sees only errors returned through its group; recovered
 // panics, unmatched routes and static files reach the router boundary
@@ -312,7 +333,7 @@ func ErrorHandlerMiddleware(fn func(c *Context, err error) bool) MiddlewareFunc 
 	return func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
 			err := next(c)
-			if err == nil || errors.Is(err, contract.ErrResponseWritten) {
+			if err == nil || markedWritten(err, false) {
 				return err
 			}
 			if fn(c, err) {

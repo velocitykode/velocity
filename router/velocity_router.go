@@ -240,8 +240,9 @@ func (r *VelocityRouterV2) SetValidator(fn func(c *Context, rules contract.Valid
 // SetErrorHandler installs the router's error boundary: fn receives every
 // handler error that reaches the router (including one a middleware
 // marked with contract.Handled, which it must report but not render) and
-// every recovered panic, with the ErrorInfo the router knows. A bare
-// contract.ErrResponseWritten never reaches fn. fn owns rendering and
+// every recovered panic, whatever its value, with the ErrorInfo the
+// router knows. A bare contract.ErrResponseWritten returned outside a
+// panic never reaches fn. fn owns rendering and
 // reporting for the request: the router writes nothing and does not log
 // once fn is installed, and fn must write nothing when info.Committed is
 // true. A nil fn restores DefaultErrorHandler.
@@ -1052,16 +1053,17 @@ func (r *VelocityRouterV2) onPanic(ctx *Context, rw *responseWriter, req *http.R
 
 // dispatchRequestFailed dispatches RequestFailed for a failed request.
 // A bare contract.ErrResponseWritten is a deliberate response and
-// dispatches nothing; a contract.Handled value dispatches its cause. The
-// event fires only for a recovered panic (including a *PanicError the
-// Timeout middleware forwarded), an error resolving to status 500 or
-// above, or an error naming no status. 4xx outcomes are responses, not
-// failures.
+// dispatches nothing; a contract.Handled value dispatches its cause. A
+// marker the value of a recovered panic carries counts for nothing (see
+// markedWritten). The event fires only for a recovered panic (including a
+// *PanicError the Timeout middleware forwarded), an error resolving to
+// status 500 or above, or an error naming no status. 4xx outcomes are
+// responses, not failures.
 func (r *VelocityRouterV2) dispatchRequestFailed(req *http.Request, meta requestMeta, err error, recovered bool, stack string) {
 	if r.eventDispatcher == nil {
 		return
 	}
-	if errors.Is(err, contract.ErrResponseWritten) {
+	if markedWritten(err, recovered) {
 		cause := contract.HandledCause(err)
 		if cause == nil {
 			return
@@ -1092,21 +1094,20 @@ func (r *VelocityRouterV2) dispatchRequestFailed(req *http.Request, meta request
 	})
 }
 
-// handleError is the router's error boundary for one failed request. A
-// bare contract.ErrResponseWritten ends here: the response was written
-// deliberately and there is nothing to report. Otherwise the boundary
-// fills in the ErrorInfo the router knows (a *PanicError forwarded by the
-// Timeout middleware counts as recovered, Committed comes from the
-// router's own response writer) and calls the handler installed with
-// SetErrorHandler, or logs through the default policy (see
-// SetErrorLogger) and calls DefaultErrorHandler.
+// handleError is the router's error boundary for one failed request. The
+// boundary first fills in whether the request panicked (a *PanicError
+// forwarded by the Timeout middleware counts as recovered). A bare
+// contract.ErrResponseWritten outside a recovered panic ends here: the
+// response was written deliberately and there is nothing to report; a
+// panic is a 500 whatever its value, so panic(contract.ErrResponseWritten)
+// does not. Otherwise the boundary fills in the rest of the ErrorInfo
+// (Committed comes from the router's own response writer) and calls the
+// handler installed with SetErrorHandler, or logs through the default
+// policy (see SetErrorLogger) and calls DefaultErrorHandler.
 //
 // ctx.Response is reset to the router's writer first: every middleware
 // has returned by now, so a writer one of them swapped in is stale.
 func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err error, info ErrorInfo) {
-	if errors.Is(err, contract.ErrResponseWritten) && contract.HandledCause(err) == nil {
-		return
-	}
 	if !info.Recovered {
 		var pe *PanicError
 		if errors.As(err, &pe) {
@@ -1114,6 +1115,9 @@ func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err err
 			info.Stack = pe.Stack
 			info.StackTrace = pe.Trace
 		}
+	}
+	if markedWritten(err, info.Recovered) && contract.HandledCause(err) == nil {
+		return
 	}
 	info.Committed = rw.committed()
 	ctx.Response = rw
@@ -1148,8 +1152,10 @@ func (r *VelocityRouterV2) logDefault(ctx *Context, err error, info ErrorInfo) {
 	if fn == nil {
 		return
 	}
-	if cause := contract.HandledCause(err); cause != nil {
-		err = cause
+	if markedWritten(err, info.Recovered) {
+		if cause := contract.HandledCause(err); cause != nil {
+			err = cause
+		}
 	}
 	kvs := []any{"error", err.Error()}
 	if ctx != nil && ctx.Request != nil {

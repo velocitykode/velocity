@@ -491,3 +491,46 @@ func TestHandler_ConcurrentRulesAndRequests(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestHandleRequest_MarkersInsideAndAroundAPanic asserts a response-written
+// or report-once marker the panic value carries counts for nothing (a
+// reported, rendered 500), while one wrapped around the panic still
+// counts.
+func TestHandleRequest_MarkersInsideAndAroundAPanic(t *testing.T) {
+	tests := []struct {
+		name        string
+		err         error
+		recovered   bool
+		wantReports int
+		wantStatus  int // 0: nothing rendered
+	}{
+		{name: "SentinelInsidePanic", err: panicerr.FromRecovered(contract.ErrResponseWritten), wantReports: 1, wantStatus: http.StatusInternalServerError},
+		{name: "HandledInsidePanic", err: panicerr.FromRecovered(contract.Handled(errors.New("x"))), wantReports: 1, wantStatus: http.StatusInternalServerError},
+		{name: "ReportedInsidePanic", err: panicerr.FromRecovered(contract.MarkReported(errors.New("x"))), wantReports: 1, wantStatus: http.StatusInternalServerError},
+		{name: "SentinelFlaggedRecovered", err: contract.ErrResponseWritten, recovered: true, wantReports: 1, wantStatus: http.StatusInternalServerError},
+		{name: "HandledAroundPanic", err: contract.Handled(panicerr.FromRecovered("boom")), wantReports: 1},
+		{name: "ReportedAroundPanic", err: contract.MarkReported(panicerr.FromRecovered("boom")), wantStatus: http.StatusInternalServerError},
+		{name: "BareSentinel", err: contract.ErrResponseWritten},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, rep, _ := newTestHandler()
+			ctx := NewErrorContext()
+			ctx.Recovered = tt.recovered
+			rc, w := newRC(http.MethodGet, "/x", "Accept", "application/json")
+			h.HandleRequest(rc, tt.err, ctx)
+			if rep.count() != tt.wantReports {
+				t.Errorf("reports = %d, want %d", rep.count(), tt.wantReports)
+			}
+			if tt.wantStatus == 0 {
+				if rc.Written() {
+					t.Errorf("rendered %d, want nothing", w.Code)
+				}
+				return
+			}
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+		})
+	}
+}

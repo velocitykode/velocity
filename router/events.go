@@ -79,7 +79,8 @@ func (e *RequestHandled) Name() string {
 // status 500 or above, or an error naming no status. An error answering
 // below 500 is a response, not a failure, and dispatches nothing; a
 // contract.Handled value dispatches its cause and a bare
-// contract.ErrResponseWritten dispatches nothing.
+// contract.ErrResponseWritten dispatches nothing, except inside the value
+// of a recovered panic, which always dispatches.
 type RequestFailed struct {
 	Context   context.Context
 	RequestID string

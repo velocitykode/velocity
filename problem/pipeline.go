@@ -16,7 +16,9 @@ import (
 //
 //  1. A bare contract.ErrResponseWritten ends the pipeline: the response
 //     was written on purpose and there is nothing to report. A
-//     contract.Handled cause is reported but never rendered.
+//     contract.Handled cause is reported but never rendered. A recovered
+//     panic is a reported 500 whatever its value: a response-written or
+//     report-once marker the panic value carries counts for nothing.
 //  2. User map rules replace the error for both report and render.
 //  3. The report gate (see ShouldReport), then SelfReporting, ReportFor
 //     rules, context merge, level selection and the reporters.
@@ -42,9 +44,9 @@ func (h *Handler) HandleRequest(rc RenderContext, err error, ctx *ErrorContext) 
 		ctx.StackTrace = contract.CaptureStackTrace(1)
 	}
 
-	marked := contract.IsReported(err)
+	marked := outsidePanic(err, ctx, contract.IsReported)
 	written := false
-	if errors.Is(err, contract.ErrResponseWritten) {
+	if outsidePanic(err, ctx, isWrittenMarker) {
 		cause := contract.HandledCause(err)
 		if cause == nil {
 			return
@@ -87,7 +89,8 @@ func (h *Handler) Render(rc RenderContext, err error, ctx *ErrorContext) {
 }
 
 // ShouldReport reports whether err passes the report gate: not already
-// reported; a recovered panic always passes; otherwise an unignore rule
+// reported (a marker inside a recovered panic's value does not count); a
+// recovered panic always passes; otherwise an unignore rule
 // forces it through, or it must survive the dead-request cancel ignore
 // (applied whatever the error's own ShouldReport says), its own
 // ShouldReport, the framework ignores (skipped when ShouldReport says
@@ -128,10 +131,43 @@ func isRecovered(err error, ctx *ErrorContext) bool {
 	return panicerr.AsTyped(err) != nil
 }
 
+// panicValue returns the part of err a recovered panic's value carries:
+// the panic error in err's chain, or the whole of err when ctx flags it
+// recovered and it carries no panic error. It returns nil when err is not
+// a recovered panic.
+func panicValue(err error, ctx *ErrorContext) error {
+	if pe := panicerr.AsTyped(err); pe != nil {
+		return pe
+	}
+	if ctx != nil && ctx.Recovered {
+		return err
+	}
+	return nil
+}
+
+// outsidePanic reports whether match holds for err outside the value of
+// a recovered panic it carries. A panic is a reported 500 whatever its
+// value, so a response-written or report-once marker inside the panic
+// value counts for nothing, while one wrapped around the panic (a
+// middleware that rendered or reported it) still counts.
+func outsidePanic(err error, ctx *ErrorContext, match func(error) bool) bool {
+	if !match(err) {
+		return false
+	}
+	pv := panicValue(err, ctx)
+	return pv == nil || !match(pv)
+}
+
+// isWrittenMarker reports whether err's chain holds
+// contract.ErrResponseWritten.
+func isWrittenMarker(err error) bool {
+	return errors.Is(err, contract.ErrResponseWritten)
+}
+
 // passes runs the report gate. r, when non-nil, lets a cancelled request
 // with a dead context be ignored; consume enables throttling.
 func (h *Handler) passes(s *snapshot, err error, ctx *ErrorContext, r *http.Request, consume bool) bool {
-	if err == nil || contract.IsReported(err) {
+	if err == nil || outsidePanic(err, ctx, contract.IsReported) {
 		return false
 	}
 	if isRecovered(err, ctx) {

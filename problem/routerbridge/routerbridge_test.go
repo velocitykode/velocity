@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/problem"
@@ -386,5 +387,47 @@ func TestCommittedRenderContext(t *testing.T) {
 	}
 	if rc.Request() != c.Request || rc.Writer() != c.Response {
 		t.Error("request or writer not passed through")
+	}
+}
+
+// TestInstall_PanicCarryingMarkerIsAReported500 asserts a panic whose
+// value is the response-written sentinel, a contract.Handled value or a
+// report-once marked error is a reported 500 through the pipeline,
+// directly and under Timeout: a marker the panic value carries counts for
+// nothing.
+func TestInstall_PanicCarryingMarkerIsAReported500(t *testing.T) {
+	values := []struct {
+		name  string
+		value error
+	}{
+		{name: "sentinel", value: contract.ErrResponseWritten},
+		{name: "handled", value: contract.Handled(errors.New("rendered elsewhere"))},
+		{name: "reported", value: contract.MarkReported(errors.New("reported elsewhere"))},
+	}
+	for _, v := range values {
+		for _, timeout := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s timeout=%v", v.name, timeout), func(t *testing.T) {
+				rec := &recordingReporter{}
+				h := problem.NewHandler(problem.WithReporters(rec))
+				r := router.New()
+				Install(r, WithHandler(func() contract.ErrorHandler { return h }))
+				if timeout {
+					r.Use(router.Timeout(time.Minute))
+				}
+				r.Get("/boom", func(*router.Context) error { panic(v.value) })
+
+				w := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, "/boom", nil)
+				req.Header.Set("Accept", "application/json")
+				r.ServeHTTP(w, req)
+
+				if w.Code != http.StatusInternalServerError {
+					t.Errorf("status = %d, want 500 (body %q)", w.Code, w.Body.String())
+				}
+				if rec.count() != 1 {
+					t.Errorf("reports = %d, want 1", rec.count())
+				}
+			})
+		}
 	}
 }
