@@ -74,7 +74,12 @@ func (e *RequestHandled) Name() string {
 	return "request.handled"
 }
 
-// RequestFailed is dispatched when an HTTP request fails with an error or panic
+// RequestFailed is dispatched when an HTTP request fails: a recovered panic
+// (including one the Timeout middleware forwarded), an error resolving to
+// status 500 or above, or an error naming no status. An error answering
+// below 500 is a response, not a failure, and dispatches nothing; a
+// contract.Handled value dispatches its cause and a bare
+// contract.ErrResponseWritten dispatches nothing.
 type RequestFailed struct {
 	Context   context.Context
 	RequestID string

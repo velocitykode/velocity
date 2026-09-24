@@ -789,7 +789,8 @@ func New(opts ...Option) (*App, error) {
 
 	// Wire the intended-redirect resolver: ctx.Intended pulls the URL that
 	// auth's denyUnauthenticated stashed under router.IntendedSessionKey
-	// before bouncing the unauthenticated request to a clean /login.
+	// before the unauthenticated request was redirected to the login
+	// target.
 	// Reading is one-shot so a later navigation cannot replay a stale
 	// destination. Uses schemes.SessionFromRequest so router need not import
 	// auth (same bridge the CSRF resolver above uses).

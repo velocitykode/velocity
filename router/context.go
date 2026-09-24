@@ -396,10 +396,12 @@ func (c *Context) Redirect(status int, rawURL string) error {
 }
 
 // IntendedSessionKey is the session-bag key under which auth middleware
-// stashes the originally requested URL before bouncing an unauthenticated
-// browser to a clean /login. Centralising the name here keeps the producer
-// (auth's denyUnauthenticated) and the consumer (ctx.Intended, via the
-// wired intendedFn resolver) in sync without an import cycle.
+// stashes the originally requested URL of an unauthenticated GET before
+// the error pipeline redirects it to the login target (the auth manager's
+// login redirect, "/login" by default). Centralising the name here keeps
+// the producer (auth's denyUnauthenticated) and the consumer
+// (ctx.Intended, via the wired intendedFn resolver) in sync without an
+// import cycle.
 const IntendedSessionKey = "url.intended"
 
 // Intended returns the safe redirect target for the "intended" post-login
@@ -408,8 +410,9 @@ const IntendedSessionKey = "url.intended"
 //
 // The destination is read (and consumed) from the session via the
 // resolver wired by Router.SetIntendedResolver during app init: auth
-// middleware stashed it under IntendedSessionKey when it bounced the
-// unauthenticated request to /login. Reading is one-shot (pull): the
+// middleware stashed it under IntendedSessionKey when it turned the
+// unauthenticated request away to the login target. Reading is one-shot
+// (pull): the
 // resolver removes the key so a later navigation does not replay a stale
 // destination. When no resolver is wired or nothing was stashed, fallback
 // is used.
@@ -450,17 +453,15 @@ func (c *Context) Intended(fallback string) string {
 
 // RedirectToIntended issues a 303 See Other to the safe Intended()
 // target (or fallback). This is the canonical caller for post-login
-// flows: the auth middleware bounces the browser through
-// /login?redirect=<original>, the login handler verifies the
-// credentials, then calls ctx.RedirectToIntended("/") to ship the
-// user back to where they were headed.
+// flows: the auth middleware stashes the originally requested URL in the
+// session (IntendedSessionKey) and the request is redirected to the login
+// target with a clean URL; the login handler verifies the credentials,
+// then calls ctx.RedirectToIntended("/") to ship the user back to where
+// they were headed.
 //
 // The destination is open-redirect-safe by construction: ctx.Intended
-// runs both the query value and the fallback through the same
-// sanitiser ctx.Redirect uses. Handlers MUST NOT bypass this helper by
-// reading the "redirect" query param directly, that string is
-// untrusted user input and feeding it to ctx.Redirect via string
-// concatenation would re-introduce the open redirect.
+// runs both the stored value and the fallback through the same sanitiser
+// ctx.Redirect uses.
 func (c *Context) RedirectToIntended(fallback string) error {
 	return c.Redirect(http.StatusSeeOther, c.Intended(fallback))
 }
@@ -533,7 +534,7 @@ func (c *Context) Path() string {
 // the RFC 7239 Forwarded header (preferred) or X-Forwarded-For /
 // X-Real-IP (legacy) are consulted via internal/clientip.Extract so
 // the framework speaks one IP-resolution policy across rate limit,
-// throttle, audit log, exceptions, and this accessor.
+// throttle, audit log, error reports, and this accessor.
 func (c *Context) IP() string {
 	if ip := clientip.ExtractString(c.Request, c.trustedProxies.IPNets()); ip != "" {
 		return ip
@@ -2015,11 +2016,18 @@ func writeFlashCookie(w http.ResponseWriter, enc contract.Encryptor, name string
 	http.SetCookie(w, FlashCookie(name, sealed, 300, secure))
 }
 
-// Validate checks the request against rules and automatically redirects back
-// with flashed errors and old input if validation fails. Returns
-// contract.ErrResponseWritten when validation fails; the handler should
-// return this error to the router, which will skip error handling since the
-// redirect response has already been written.
+// Validate checks the request against rules. On failure the handler
+// returns what Validate returned:
+//
+//   - a *validation.Failure, with nothing written, when the error pipeline
+//     answers the request with JSON (the error handler's negotiation) or
+//     the app has no view engine; the pipeline answers 422
+//     application/problem+json with the per-field errors.
+//   - contract.ErrResponseWritten otherwise, after the errors and old
+//     input were flashed and a redirect back was written; the router then
+//     writes nothing more.
+//
+// Either way the handler returns the error unchanged:
 //
 //	func (h *Handler) Store(ctx *router.Context) error {
 //	    if err := ctx.Validate(validation.Rules{
