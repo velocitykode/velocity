@@ -1,4 +1,4 @@
-package exceptions
+package problem
 
 // debugTemplateHTML is the template for development error pages.
 const debugTemplateHTML = `<!DOCTYPE html>

@@ -1,4 +1,4 @@
-package exceptions
+package problem
 
 import (
 	"encoding/json"
@@ -293,8 +293,8 @@ func getExceptionType(err error) string {
 	for t != nil && t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
-	if t != nil && t.PkgPath() == "github.com/velocitykode/velocity/exceptions" {
-		return strings.TrimPrefix(strings.TrimLeft(raw, "*&"), "exceptions.")
+	if t != nil && t.PkgPath() == "github.com/velocitykode/velocity/problem" {
+		return strings.TrimPrefix(strings.TrimLeft(raw, "*&"), "problem.")
 	}
 	return raw
 }

@@ -20,12 +20,12 @@ import (
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/events"
-	"github.com/velocitykode/velocity/exceptions"
 	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/internal/eventqueue"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/orm"
+	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/scheduler"
@@ -247,12 +247,12 @@ func New(opts ...Option) (*App, error) {
 	// fully replace it via the Exceptions() chain method (SetReporters).
 	// WithHandlerLogger routes the handler's own boot-time warnings
 	// (debug-mode notices) through a.Log as well.
-	a.Services.Errors = exceptions.NewHandler(
-		exceptions.WithDebug(a.config.Debug),
-		exceptions.WithEnvironment(a.config.Env),
-		exceptions.WithTrustedProxies(clientip.CloneIPNets(trustedProxyNets)),
-		exceptions.WithHandlerLogger(a.Log),
-		exceptions.WithReporters(exceptions.NewLogReporter(exceptions.WithLogger(a.Log))),
+	a.Services.Errors = problem.NewHandler(
+		problem.WithDebug(a.config.Debug),
+		problem.WithEnvironment(a.config.Env),
+		problem.WithTrustedProxies(clientip.CloneIPNets(trustedProxyNets)),
+		problem.WithHandlerLogger(a.Log),
+		problem.WithReporters(problem.NewLogReporter(problem.WithLogger(a.Log))),
 	)
 
 	// 3. Initialize crypto (auth/csrf may need it). Crypto is stateless
@@ -525,7 +525,7 @@ func New(opts ...Option) (*App, error) {
 	if a.Services.Errors != nil {
 		exHandler := a.Services.Errors
 		reporter = func(job *events.EventListenerJob, jobErr error) {
-			exCtx := exceptions.NewErrorContext().
+			exCtx := problem.NewErrorContext().
 				WithExtra("subsystem", "events").
 				WithExtra("job", "EventListenerJob").
 				WithExtra("listener_type", job.ListenerType).

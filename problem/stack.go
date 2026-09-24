@@ -1,4 +1,4 @@
-package exceptions
+package problem
 
 import (
 	"github.com/velocitykode/velocity/contract"
