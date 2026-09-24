@@ -655,7 +655,7 @@ func Wrap(h HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 		if err := h(NewContext(rw, r)); err != nil {
-			DefaultErrorHandler(NewContext(rw, r), err, ErrorInfo{Committed: rw.committed()})
+			DefaultErrorHandler(NewContext(rw, r), err, ErrorInfo{Committed: rw.Committed()})
 		}
 		rw.firePending()
 	}
@@ -674,8 +674,8 @@ func (c *Context) RenderContext() contract.RenderContext {
 }
 
 // ctxRenderContext is the router's contract.RenderContext. written covers
-// writers that do not report their own state (anything but the router's
-// responseWriter). It is set only after the writer took the write, so a
+// writers that do not report their own state (anything that is not a
+// contract.CommitReporter). It is set only after the writer took the write, so a
 // write whose writer panics before committing (a panicking pre-commit
 // hook) leaves the response unwritten for a fallback.
 type ctxRenderContext struct {
@@ -689,15 +689,15 @@ func (rc *ctxRenderContext) WantsJSON() bool             { return contract.Wants
 func (rc *ctxRenderContext) IsInertia() bool             { return rc.c.IsInertia() }
 
 // Written reports whether the status line has been written, through this
-// adapter or (for the router's response writer) by anyone.
+// adapter or, for a writer reporting its own commitment
+// (contract.CommitReporter, the router's response writer among them), by
+// anyone.
 func (rc *ctxRenderContext) Written() bool {
 	if rc.written {
 		return true
 	}
-	if rw, ok := rc.c.Response.(*responseWriter); ok {
-		return rw.committed()
-	}
-	return false
+	cr, ok := rc.c.Response.(contract.CommitReporter)
+	return ok && cr.Committed()
 }
 
 // WriteHeader writes status once; a status outside 100-999 is written as

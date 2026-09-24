@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"runtime"
 	"sync"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // responseWriter wraps http.ResponseWriter to capture response metrics
@@ -157,14 +159,23 @@ func recoverHookPanic(req *http.Request, logf func(msg string, kvs ...any)) {
 	}()
 }
 
-// WriteHeader captures the status code
+// WriteHeader writes statusCode through and records it as the response
+// status. An informational status (1xx other than 101 Switching
+// Protocols, such as 103 Early Hints) goes through without committing the
+// response: the pre-commit hook does not fire, the recorded status stays,
+// and the handler's final WriteHeader still lands.
 func (rw *responseWriter) WriteHeader(statusCode int) {
-	if !rw.wroteHeader {
-		rw.fireBeforeFirstWrite()
-		rw.status = statusCode
-		rw.wroteHeader = true
-		rw.ResponseWriter.WriteHeader(statusCode)
+	if rw.wroteHeader {
+		return
 	}
+	if statusCode >= 100 && statusCode <= 199 && statusCode != http.StatusSwitchingProtocols {
+		rw.ResponseWriter.WriteHeader(statusCode)
+		return
+	}
+	rw.fireBeforeFirstWrite()
+	rw.status = statusCode
+	rw.wroteHeader = true
+	rw.ResponseWriter.WriteHeader(statusCode)
 }
 
 // Write captures the bytes written
@@ -187,12 +198,18 @@ func (rw *responseWriter) BytesWritten() int64 {
 	return rw.bytesWritten
 }
 
-// committed reports whether the response status line (or any body byte,
-// or a flush) has reached the underlying writer, after which no second
-// response may be written.
-func (rw *responseWriter) committed() bool {
+// Committed reports whether the response is committed: a final status
+// line (an informational 1xx other than 101 does not count), a body byte,
+// a flush or a successful Hijack has reached the underlying writer, after
+// which no second response may be written. It implements
+// contract.CommitReporter, so a contract.NewRenderContext over this writer
+// sees the commitment.
+func (rw *responseWriter) Committed() bool {
 	return rw.wroteHeader || rw.bytesWritten > 0
 }
+
+// The router's writer reports its own commitment.
+var _ contract.CommitReporter = (*responseWriter)(nil)
 
 // Unwrap returns the underlying ResponseWriter (for http.ResponseController)
 func (rw *responseWriter) Unwrap() http.ResponseWriter {
@@ -204,10 +221,18 @@ func (rw *responseWriter) Unwrap() http.ResponseWriter {
 // header writes (Set-Cookie from save-at-end middleware, etc.) land on
 // the connection ahead of the 101 Switching Protocols response that the
 // hijacker is about to write directly.
+//
+// A successful Hijack commits the response: the connection belongs to
+// the caller, so a later WriteHeader is a no-op and an error returned
+// after the upgrade is answered with nothing written.
 func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if h, ok := rw.ResponseWriter.(http.Hijacker); ok {
 		rw.fireBeforeFirstWrite()
-		return h.Hijack()
+		conn, brw, err := h.Hijack()
+		if err == nil {
+			rw.wroteHeader = true
+		}
+		return conn, brw, err
 	}
 	return nil, nil, http.ErrNotSupported
 }

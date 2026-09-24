@@ -1156,7 +1156,7 @@ func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err err
 	if f.markedWritten(err, info.Recovered) && contract.HandledCause(err) == nil {
 		return failure
 	}
-	info.Committed = rw.committed()
+	info.Committed = rw.Committed()
 	ctx.Response = rw
 
 	if fn := r.errorHandler; fn != nil {
