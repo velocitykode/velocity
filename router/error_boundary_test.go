@@ -1013,3 +1013,50 @@ func TestRenderContext_PanickingWriterLeavesUnwritten(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderContext_PanickingRedirectLeavesNoLocation asserts a redirect
+// through the router's render context whose status write panics before
+// committing leaves no Location of its own: the fallback status goes out
+// without it, and a Location set before the redirect is kept.
+func TestRenderContext_PanickingRedirectLeavesNoLocation(t *testing.T) {
+	writers := []struct {
+		name string
+		make func(rec *httptest.ResponseRecorder) http.ResponseWriter
+	}{
+		{name: "PlainWriter", make: func(rec *httptest.ResponseRecorder) http.ResponseWriter {
+			return &panicOnceWriter{ResponseRecorder: rec}
+		}},
+		{name: "RouterWriterHook", make: func(rec *httptest.ResponseRecorder) http.ResponseWriter {
+			rw := &responseWriter{ResponseWriter: rec, status: http.StatusOK}
+			rw.BeforeFirstWrite(func() { panic("hook exploded") })
+			return rw
+		}},
+	}
+	for _, wr := range writers {
+		for _, prior := range []string{"", "/prior"} {
+			t.Run(fmt.Sprintf("%s/prior=%q", wr.name, prior), func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				w := wr.make(rec)
+				if prior != "" {
+					w.Header().Set("Location", prior)
+				}
+				rc := NewContext(w, httptest.NewRequest(http.MethodGet, "/x", nil)).RenderContext()
+				panicked := false
+				func() {
+					defer func() { panicked = recover() != nil }()
+					_ = rc.Redirect(http.StatusSeeOther, "/login")
+				}()
+				if !panicked {
+					t.Fatal("the redirect did not panic")
+				}
+				rc.WriteHeader(http.StatusInternalServerError)
+				if rec.Code != http.StatusInternalServerError {
+					t.Errorf("fallback status = %d, want 500", rec.Code)
+				}
+				if got := rec.Header().Get("Location"); got != prior {
+					t.Errorf("Location = %q, want %q", got, prior)
+				}
+			})
+		}
+	}
+}

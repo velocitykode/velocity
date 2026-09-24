@@ -1206,3 +1206,42 @@ func TestRender_HandledAfterAPlainWriterAppendsNothing(t *testing.T) {
 		t.Errorf("response = %d %q, want 202 %q", w.Code, w.Body.String(), "mine")
 	}
 }
+
+// panicOnceHeaderWriter panics on its first WriteHeader, before anything
+// reaches the wire, and writes through afterwards.
+type panicOnceHeaderWriter struct {
+	*httptest.ResponseRecorder
+	panicked bool
+}
+
+func (w *panicOnceHeaderWriter) WriteHeader(code int) {
+	if !w.panicked {
+		w.panicked = true
+		panic("hook exploded")
+	}
+	w.ResponseRecorder.WriteHeader(code)
+}
+
+// TestRender_PanickingRedirectFallbackHasNoLocation asserts a render rule
+// whose redirect panics in the status write falls back to the plain-text
+// 500 without the redirect's Location header.
+func TestRender_PanickingRedirectFallbackHasNoLocation(t *testing.T) {
+	h, _, logger := newTestHandler()
+	RenderFor(h, func(rc RenderContext, _ *HTTPError, _ *ErrorContext) bool {
+		return rc.Redirect(http.StatusSeeOther, "/login") == nil
+	})
+	w := &panicOnceHeaderWriter{ResponseRecorder: httptest.NewRecorder()}
+	rc := contract.NewRenderContext(w, httptest.NewRequest(http.MethodGet, "/x", nil))
+
+	h.HandleRequest(rc, NotFound(), nil)
+
+	if w.Code != http.StatusInternalServerError || w.Body.String() != http.StatusText(http.StatusInternalServerError) {
+		t.Errorf("response = %d %q, want the plain-text 500", w.Code, w.Body.String())
+	}
+	if loc := w.Header().Get("Location"); loc != "" {
+		t.Errorf("Location = %q, want none", loc)
+	}
+	if !logger.has("error", "problem: rendering panicked") {
+		t.Error("the render panic was not logged")
+	}
+}

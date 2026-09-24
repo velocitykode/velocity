@@ -114,7 +114,10 @@ func (c *httpRenderContext) SetHeader(key, value string) {
 // Redirect writes a Location header and status. The status must be 3xx
 // (else a 500 HTTPError) and the target must pass isRelativeRedirect (else
 // a 400 HTTPError); both wrap ErrInvalidRedirect and write nothing, as does
-// a call after the response was written.
+// a call after the response was written. The Location header stays only
+// once the status write is recorded: a status write that panics before
+// committing restores the header as it was, so a fallback response never
+// carries the refused redirect's target.
 func (c *httpRenderContext) Redirect(status int, target string) error {
 	if c.Written() {
 		return &HTTPError{Status: http.StatusInternalServerError, Cause: ErrInvalidRedirect}
@@ -125,9 +128,26 @@ func (c *httpRenderContext) Redirect(status int, target string) error {
 	if !isRelativeRedirect(target) {
 		return &HTTPError{Status: http.StatusBadRequest, Cause: ErrInvalidRedirect}
 	}
-	c.w.Header().Set("Location", target)
+	h := c.w.Header()
+	prior, hadPrior := h["Location"]
+	defer func() {
+		if !c.written {
+			restoreLocation(h, prior, hadPrior)
+		}
+	}()
+	h.Set("Location", target)
 	c.WriteHeader(status)
 	return nil
+}
+
+// restoreLocation puts h's Location header back to prior, or removes it
+// when there was none.
+func restoreLocation(h http.Header, prior []string, hadPrior bool) {
+	if hadPrior {
+		h["Location"] = prior
+		return
+	}
+	h.Del("Location")
 }
 
 // isRelativeRedirect reports whether target is a same-origin path safe to

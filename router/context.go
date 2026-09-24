@@ -725,7 +725,10 @@ func (rc *ctxRenderContext) SetHeader(key, value string) {
 // Redirect answers with a redirect to target through c.Redirect. The
 // status must be 3xx and the target must pass the router's redirect
 // allowlist unchanged; otherwise nothing is written and the returned
-// error matches contract.ErrInvalidRedirect.
+// error matches contract.ErrInvalidRedirect. The Location header stays
+// only once the redirect is recorded: one whose status write panics
+// before committing restores the header as it was, so a fallback response
+// never carries the refused redirect's target.
 func (rc *ctxRenderContext) Redirect(status int, target string) error {
 	if rc.Written() || status < 300 || status > 399 {
 		return contract.NewHTTPError(http.StatusInternalServerError).WithCause(contract.ErrInvalidRedirect)
@@ -733,6 +736,18 @@ func (rc *ctxRenderContext) Redirect(status int, target string) error {
 	if target == "" || sanitizeRedirect(target, rc.c.redirectAllowedHosts) != target {
 		return contract.NewHTTPError(http.StatusBadRequest).WithCause(contract.ErrInvalidRedirect)
 	}
+	h := rc.c.Response.Header()
+	prior, hadPrior := h["Location"]
+	defer func() {
+		if rc.written {
+			return
+		}
+		if hadPrior {
+			h["Location"] = prior
+		} else {
+			h.Del("Location")
+		}
+	}()
 	if err := rc.c.Redirect(status, target); err != nil {
 		return err
 	}

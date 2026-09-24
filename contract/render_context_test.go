@@ -277,3 +277,40 @@ func TestNewRenderContext_PanickingWriterLeavesUnwritten(t *testing.T) {
 		})
 	}
 }
+
+// TestNewRenderContext_PanickingRedirectLeavesNoLocation asserts a
+// redirect whose status write panics before committing leaves no Location
+// of its own on the response: the fallback status goes out without it,
+// and a Location set before the redirect is kept.
+func TestNewRenderContext_PanickingRedirectLeavesNoLocation(t *testing.T) {
+	tests := []struct {
+		name  string
+		prior string
+	}{
+		{name: "NoPriorLocation"},
+		{name: "PriorLocationKept", prior: "/prior"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &panicOnceWriter{ResponseRecorder: httptest.NewRecorder()}
+			if tt.prior != "" {
+				w.Header().Set("Location", tt.prior)
+			}
+			rc := NewRenderContext(w, httptest.NewRequest(http.MethodGet, "/x", nil))
+			func() {
+				defer func() { _ = recover() }()
+				_ = rc.Redirect(http.StatusSeeOther, "/login")
+			}()
+			if !w.panicked {
+				t.Fatal("the writer did not panic")
+			}
+			rc.WriteHeader(http.StatusInternalServerError)
+			if w.Code != http.StatusInternalServerError {
+				t.Errorf("fallback status = %d, want 500", w.Code)
+			}
+			if got := w.Header().Get("Location"); got != tt.prior {
+				t.Errorf("Location = %q, want %q", got, tt.prior)
+			}
+		})
+	}
+}

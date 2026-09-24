@@ -965,3 +965,48 @@ func TestInstall_PanickingPreCommitHookFallsBackTo500(t *testing.T) {
 		t.Errorf("RequestHandled dispatched %d times, want 1", handled)
 	}
 }
+
+// TestInstall_PanickingRedirectFallbackHasNoLocation asserts a render rule
+// whose redirect trips a pre-commit hook that panics falls back to the
+// plain-text 500 on the wire without the redirect's Location header.
+func TestInstall_PanickingRedirectFallbackHasNoLocation(t *testing.T) {
+	h := problem.NewHandler(problem.WithHandlerLogger(&errLineLogger{}))
+	problem.RenderFor(h, func(rc problem.RenderContext, _ *problem.HTTPError, _ *problem.ErrorContext) bool {
+		return rc.Redirect(http.StatusSeeOther, "/login") == nil
+	})
+	r := router.New()
+	Install(r, WithHandler(func() contract.ErrorHandler { return h }))
+	r.Use(func(next router.HandlerFunc) router.HandlerFunc {
+		return func(c *router.Context) error {
+			if hk, ok := c.Response.(interface{ BeforeFirstWrite(func()) }); ok {
+				fired := false
+				hk.BeforeFirstWrite(func() {
+					if !fired {
+						fired = true
+						panic("hook exploded")
+					}
+				})
+			}
+			return next(c)
+		}
+	})
+	r.Get("/missing", func(*router.Context) error { return problem.NotFound() })
+
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+	client := srv.Client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Get(srv.URL + "/missing")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError || string(body) != http.StatusText(http.StatusInternalServerError) {
+		t.Errorf("response = %d %q, want the plain-text 500", resp.StatusCode, body)
+	}
+	if loc := resp.Header.Get("Location"); loc != "" {
+		t.Errorf("Location = %q, want none", loc)
+	}
+}
