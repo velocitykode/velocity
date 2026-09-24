@@ -1819,8 +1819,60 @@ func flashAADFor(name string) string {
 // only manifests in misconfigured environments. Operators should treat
 // a missing encryptor as a configuration bug; the lack of a flash
 // cookie on the response is the visible symptom.
-func (c *Context) FlashErrors(errors any) {
-	writeFlashCookie(c.Response, c.flashEncryptor(), FlashErrorsCookie, errors, !c.insecureFlashCookies)
+//
+// A value that names an error bag (an ErrorBag() string method returning a
+// non-empty name, found through errors.As when the value is an error) is
+// sealed as the envelope {FlashErrorBagKey: bag, FlashBaggedErrorsKey:
+// messages}, where messages is its Errors() map when it has one, else the
+// value itself. The reader exposes the messages at the top level and under
+// the bag's name.
+func (c *Context) FlashErrors(errs any) {
+	writeFlashCookie(c.Response, c.flashEncryptor(), FlashErrorsCookie, flashErrorsPayload(errs), !c.insecureFlashCookies)
+}
+
+// Members of the error bag envelope FlashErrors seals for a value that
+// names its bag.
+const (
+	FlashErrorBagKey     = "__bag"
+	FlashBaggedErrorsKey = "__errors"
+)
+
+// errorBagNamer is a flashed errors value that names its error bag.
+type errorBagNamer interface {
+	ErrorBag() string
+}
+
+// fieldMessager is a flashed errors value that carries per-field messages.
+type fieldMessager interface {
+	Errors() map[string][]string
+}
+
+// flashErrorsPayload returns the value FlashErrors seals: the error bag
+// envelope for a value naming a non-empty bag, else the value unchanged.
+func flashErrorsPayload(errs any) any {
+	var namer errorBagNamer
+	var fields fieldMessager
+	if err, ok := errs.(error); ok {
+		if !errors.As(err, &namer) {
+			return errs
+		}
+		errors.As(err, &fields)
+	} else {
+		var ok bool
+		if namer, ok = errs.(errorBagNamer); !ok {
+			return errs
+		}
+		fields, _ = errs.(fieldMessager)
+	}
+	bag := namer.ErrorBag()
+	if bag == "" {
+		return errs
+	}
+	var messages any = errs
+	if fields != nil {
+		messages = fields.Errors()
+	}
+	return map[string]any{FlashErrorBagKey: bag, FlashBaggedErrorsKey: messages}
 }
 
 // FlashInput stashes old form input as a flash cookie so it survives

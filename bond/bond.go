@@ -105,6 +105,10 @@ type Bond struct {
 	// bond merges onto Page.Flash during Render. Wired by the framework
 	// via SetFlashReader so bond stays decoupled from auth.
 	flashReader FlashReader
+
+	// errorComponent is the component rendered as the error page, or ""
+	// when none is configured (see SetErrorComponent).
+	errorComponent string
 }
 
 // SetEncryptor sets the encryptor used for history state encryption.

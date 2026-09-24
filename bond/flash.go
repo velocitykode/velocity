@@ -30,7 +30,7 @@ func applyFlashData(w http.ResponseWriter, r *http.Request, props Props) {
 	carried := hasCookie(r, flashErrorsCookie) || hasCookie(r, flashInputCookie)
 
 	if errors, ok := readFlashCookie(r, flashErrorsCookie); ok {
-		props["errors"] = errors
+		props["errors"] = flashErrorsProp(errors)
 	}
 	if old, ok := readFlashCookie(r, flashInputCookie); ok {
 		props["old"] = old
@@ -39,6 +39,28 @@ func applyFlashData(w http.ResponseWriter, r *http.Request, props Props) {
 	if carried {
 		clearFlashCookies(w, r)
 	}
+}
+
+// flashErrorsProp returns the "errors" prop for a flashed errors value. A
+// value sealed as an error bag (see router.FlashErrorBagKey) exposes its
+// errors both at the top level and under errors.{bag}, the key an Inertia
+// visit made with that errorBag reads; any other value is the prop as is.
+func flashErrorsProp(value any) any {
+	envelope, ok := value.(map[string]any)
+	if !ok || len(envelope) != 2 {
+		return value
+	}
+	bag, _ := envelope[router.FlashErrorBagKey].(string)
+	errs, isMap := envelope[router.FlashBaggedErrorsKey].(map[string]any)
+	if bag == "" || !isMap {
+		return value
+	}
+	prop := make(map[string]any, len(errs)+1)
+	for field, messages := range errs {
+		prop[field] = messages
+	}
+	prop[bag] = errs
+	return prop
 }
 
 // hasCookie reports whether the request carried the named cookie,

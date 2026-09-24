@@ -532,6 +532,7 @@ func ConfigFromEnv() Config {
 		SSREnabled: os.Getenv("VIEW_SSR_ENABLED") == "true",
 		SSRURL:     envOrDefault("VIEW_SSR_URL", "http://127.0.0.1:13714"),
 		SSRTimeout: envDurationOrDefault("VIEW_SSR_TIMEOUT", 3*time.Second),
+		ErrorPage:  strings.TrimSpace(os.Getenv("VIEW_ERROR_PAGE")),
 	}
 	if except := os.Getenv("VIEW_SSR_EXCEPT"); except != "" {
 		for _, p := range strings.Split(except, ",") {

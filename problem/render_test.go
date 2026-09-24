@@ -436,6 +436,11 @@ func TestRender_Inertia(t *testing.T) {
 			debug: true, err: errors.New("boom"),
 			wantStatus: http.StatusInternalServerError, wantContent: "text/html; charset=utf-8",
 		},
+		{
+			name: "DebugSkipsErrorPage", method: http.MethodGet, path: "/p",
+			page: &fakeErrorPage{ok: true, write: true}, debug: true, err: NotFound(),
+			wantStatus: http.StatusNotFound, wantContent: "text/html; charset=utf-8",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -472,7 +477,7 @@ func TestRender_InertiaPageMessagePolicy(t *testing.T) {
 		{"ClientErrorMessage", Forbidden("members only"), false, "members only"},
 		{"ServerErrorHidden", Internal("db password wrong"), false, "Internal Server Error"},
 		{"PlainErrorHidden", errors.New("secret"), false, "Internal Server Error"},
-		{"DebugFull", errors.New("secret"), true, "secret"},
+		{"NotFoundTitle", NotFound(), false, "Not Found"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -483,6 +488,132 @@ func TestRender_InertiaPageMessagePolicy(t *testing.T) {
 			h.HandleRequest(rc, tt.err, nil)
 			if page.message != tt.want {
 				t.Errorf("message = %q, want %q", page.message, tt.want)
+			}
+		})
+	}
+}
+
+// fakeLocatorPage is an error page renderer with the ReloadLocator facet
+// that declines every page.
+type fakeLocatorPage struct {
+	location string
+	asked    int
+}
+
+func (p *fakeLocatorPage) RenderErrorPage(RenderContext, int, string) (bool, error) {
+	return false, nil
+}
+
+func (p *fakeLocatorPage) ReloadLocation(*http.Request) string {
+	p.asked++
+	return p.location
+}
+
+func TestRender_InertiaReloadLocator(t *testing.T) {
+	tests := []struct {
+		name         string
+		method       string
+		path         string
+		referer      string
+		location     string
+		wantLocation string
+	}{
+		{name: "LocatorAnswers", method: http.MethodPost, path: "/posts", referer: "http://example.com/posts/new", location: "https://app.example.com/posts/new", wantLocation: "https://app.example.com/posts/new"},
+		{name: "LocatorEmptyFallsBackGET", method: http.MethodGet, path: "/posts/1?tab=a", wantLocation: "/posts/1?tab=a"},
+		{name: "LocatorEmptyFallsBackPOST", method: http.MethodPost, path: "/posts", referer: "http://example.com/posts/new", wantLocation: "/posts/new"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _, _ := newTestHandler()
+			page := &fakeLocatorPage{location: tt.location}
+			h.SetErrorPageRenderer(page)
+			headers := []string{"X-Inertia", "true"}
+			if tt.referer != "" {
+				headers = append(headers, "Referer", tt.referer)
+			}
+			rc, w := newRC(tt.method, tt.path, headers...)
+			h.HandleRequest(rc, NotFound(), nil)
+			if w.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409", w.Code)
+			}
+			if got := w.Header().Get("X-Inertia-Location"); got != tt.wantLocation {
+				t.Errorf("X-Inertia-Location = %q, want %q", got, tt.wantLocation)
+			}
+			if page.asked != 1 {
+				t.Errorf("locator asked %d times, want 1", page.asked)
+			}
+		})
+	}
+}
+
+func TestRender_FullPageErrorPage(t *testing.T) {
+	tests := []struct {
+		name        string
+		page        *fakeErrorPage
+		debug       bool
+		accept      string
+		err         error
+		wantStatus  int
+		wantPage    int
+		wantContent string
+		wantLog     bool
+	}{
+		{
+			name: "ErrorPageAtRealStatus", page: &fakeErrorPage{ok: true, write: true},
+			err: NotFound(), wantStatus: http.StatusNotFound, wantPage: http.StatusNotFound,
+		},
+		{
+			name: "PageDeclinesHTMLRenderer", page: &fakeErrorPage{ok: false},
+			err: NotFound(), wantStatus: http.StatusNotFound, wantPage: http.StatusNotFound,
+			wantContent: "text/html; charset=utf-8",
+		},
+		{
+			name: "PageErrorHTMLRendererAndLog", page: &fakeErrorPage{ok: false, err: errors.New("template broke")},
+			err: errors.New("boom"), wantStatus: http.StatusInternalServerError, wantPage: http.StatusInternalServerError,
+			wantContent: "text/html; charset=utf-8", wantLog: true,
+		},
+		{
+			name: "DebugSkipsErrorPage", page: &fakeErrorPage{ok: true, write: true}, debug: true,
+			err: NotFound(), wantStatus: http.StatusNotFound, wantContent: "text/html; charset=utf-8",
+		},
+		{
+			name: "JSONSkipsErrorPage", page: &fakeErrorPage{ok: true, write: true}, accept: "application/json",
+			err: NotFound(), wantStatus: http.StatusNotFound, wantContent: ProblemTypeContent,
+		},
+		{
+			name: "NoPageHTMLRenderer", err: NotFound(), wantStatus: http.StatusNotFound,
+			wantContent: "text/html; charset=utf-8",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _, logger := newTestHandler(WithDebug(tt.debug))
+			if tt.page != nil {
+				h.SetErrorPageRenderer(tt.page)
+			}
+			accept := tt.accept
+			if accept == "" {
+				accept = "text/html"
+			}
+			rc, w := newRC(http.MethodGet, "/p", "Accept", accept)
+			h.HandleRequest(rc, tt.err, nil)
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+			if tt.page != nil && tt.page.status != tt.wantPage {
+				t.Errorf("page status = %d, want %d", tt.page.status, tt.wantPage)
+			}
+			if tt.wantContent != "" && w.Header().Get("Content-Type") != tt.wantContent {
+				t.Errorf("Content-Type = %q, want %q", w.Header().Get("Content-Type"), tt.wantContent)
+			}
+			logged := false
+			for _, e := range logger.all() {
+				if e.msg == "problem: error page failed" {
+					logged = true
+				}
+			}
+			if logged != tt.wantLog {
+				t.Errorf("error page failure logged = %v, want %v", logged, tt.wantLog)
 			}
 		})
 	}

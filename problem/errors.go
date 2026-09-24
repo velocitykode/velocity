@@ -1,7 +1,8 @@
 // Package problem is Velocity's error pipeline. A Handler reports an error
 // once, through a gate of typed rules, and renders one response for it:
-// application/problem+json (RFC 9457) when JSON is wanted, an Inertia error
-// page or reload for Inertia requests, and an HTML page otherwise. The
+// application/problem+json (RFC 9457) when JSON is wanted, the configured
+// error page or a reload for Inertia requests, and the error page or an HTML
+// page otherwise. The
 // constructors in this file build the framework's one HTTP error value,
 // contract.HTTPError.
 package problem

@@ -82,6 +82,12 @@ type Config struct {
 	//
 	// Then app.go.html says {{ vite "resources/js/app.tsx" }}.
 	Funcs template.FuncMap
+
+	// ErrorPage names the component a failed request renders as its error
+	// page (env VIEW_ERROR_PAGE, for example "Error"), at the response's
+	// real status with the props "status" and "message". Empty means no
+	// error page: an Inertia request is answered with a 409 reload instead.
+	ErrorPage string
 }
 
 // Validate checks the view Config for structural problems. Empty
@@ -130,6 +136,7 @@ func NewEngine(config Config) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	b.SetErrorComponent(config.ErrorPage)
 
 	return &Engine{bond: b}, nil
 }

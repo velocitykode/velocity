@@ -4,7 +4,48 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/velocitykode/velocity/contract"
 )
+
+// ReloadLocator is an optional facet of the error page renderer: it names
+// the target an Inertia client reloads (X-Inertia-Location) when a failed
+// request gets no error page. The view engine implements it with its
+// redirect host allowlist. Without it, or when it returns "", the handler
+// uses inertiaLocation.
+type ReloadLocator interface {
+	ReloadLocation(r *http.Request) string
+}
+
+// reloadLocation returns the X-Inertia-Location target for r: the page
+// renderer's ReloadLocator answer when it has one, else inertiaLocation.
+func reloadLocation(page contract.ErrorPageRenderer, r *http.Request) string {
+	if locator, ok := page.(ReloadLocator); ok && r != nil {
+		if target := locator.ReloadLocation(r); target != "" {
+			return target
+		}
+	}
+	return inertiaLocation(r)
+}
+
+// inertiaLocation returns the same-origin path an Inertia client reloads:
+// the current URL for GET and HEAD, the Referer's path and query when it is
+// same-origin, and "/" otherwise.
+func inertiaLocation(r *http.Request) string {
+	if r == nil {
+		return "/"
+	}
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		if r.URL != nil && isLocalPath(r.URL.RequestURI()) {
+			return r.URL.RequestURI()
+		}
+		return "/"
+	}
+	if loc := sameOriginReferer(r); loc != "" {
+		return loc
+	}
+	return "/"
+}
 
 // isLocalPath reports whether target is a same-origin path safe to hand a
 // client as a location: exactly one leading "/", no control byte, no

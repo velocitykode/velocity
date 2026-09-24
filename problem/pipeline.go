@@ -341,7 +341,7 @@ func (h *Handler) negotiate(s *snapshot, rc RenderContext, err error, ctx *Error
 	case rc.IsInertia():
 		renderErr = h.renderInertia(s, rc, err, ctx, status)
 	default:
-		renderErr = rendererFor(s, "html").Render(rc, err, ctx, status, s.debug)
+		renderErr = h.renderHTML(s, rc, err, ctx, status)
 	}
 	if renderErr != nil {
 		safeLog(s.logger, "problem: rendering failed", "render_error", renderErr.Error(), "error", err.Error())
@@ -349,45 +349,49 @@ func (h *Handler) negotiate(s *snapshot, rc RenderContext, err error, ctx *Error
 	}
 }
 
-// renderInertia answers an Inertia request: the configured error page at
-// status; failing that, the debug page at status in debug mode; otherwise a
-// 409 with X-Inertia-Location so the client reloads the page as a full
+// renderInertia answers an Inertia request: the debug page at status in
+// debug mode; otherwise the configured error page at status; failing that,
+// a 409 with X-Inertia-Location so the client reloads the page as a full
 // visit.
 func (h *Handler) renderInertia(s *snapshot, rc RenderContext, err error, ctx *ErrorContext, status int) error {
-	if s.errorPage != nil {
-		ok, pageErr := s.errorPage.RenderErrorPage(rc, status, clientMessage(err, status, s.debug))
-		if ok || rc.Written() {
-			return pageErr
-		}
-		if pageErr != nil {
-			safeLog(s.logger, "problem: inertia error page failed", "render_error", pageErr.Error())
-		}
-	}
 	if s.debug {
 		return rendererFor(s, "html").Render(rc, err, ctx, status, true)
 	}
-	rc.SetHeader("X-Inertia-Location", inertiaLocation(rc.Request()))
+	if answered, pageErr := renderErrorPage(s, rc, err, status); answered {
+		return pageErr
+	}
+	rc.SetHeader("X-Inertia-Location", reloadLocation(s.errorPage, rc.Request()))
 	rc.WriteHeader(http.StatusConflict)
 	return nil
 }
 
-// inertiaLocation returns the same-origin path an Inertia client reloads:
-// the current URL for GET and HEAD, the Referer's path and query when it is
-// same-origin, and "/" otherwise.
-func inertiaLocation(r *http.Request) string {
-	if r == nil {
-		return "/"
-	}
-	if r.Method == http.MethodGet || r.Method == http.MethodHead {
-		if r.URL != nil && isLocalPath(r.URL.RequestURI()) {
-			return r.URL.RequestURI()
+// renderHTML answers a full-page request: the configured error page at
+// status outside debug mode, else the HTML renderer (the debug page in
+// debug mode).
+func (h *Handler) renderHTML(s *snapshot, rc RenderContext, err error, ctx *ErrorContext, status int) error {
+	if !s.debug {
+		if answered, pageErr := renderErrorPage(s, rc, err, status); answered {
+			return pageErr
 		}
-		return "/"
 	}
-	if loc := sameOriginReferer(r); loc != "" {
-		return loc
+	return rendererFor(s, "html").Render(rc, err, ctx, status, s.debug)
+}
+
+// renderErrorPage asks the error page renderer to answer at status and
+// reports whether it did (or wrote anything). A renderer that declines
+// with an error, having written nothing, is logged and the caller answers.
+func renderErrorPage(s *snapshot, rc RenderContext, err error, status int) (bool, error) {
+	if s.errorPage == nil {
+		return false, nil
 	}
-	return "/"
+	ok, pageErr := s.errorPage.RenderErrorPage(rc, status, clientMessage(err, status, s.debug))
+	if ok || rc.Written() {
+		return true, pageErr
+	}
+	if pageErr != nil {
+		safeLog(s.logger, "problem: error page failed", "render_error", pageErr.Error())
+	}
+	return false, nil
 }
 
 // wantsJSON decides the JSON branch: the JSONWhen predicate alone when set,
