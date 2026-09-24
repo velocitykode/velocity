@@ -689,9 +689,6 @@ type rejectionProblem struct {
 	Instance string `json:"instance,omitempty"`
 }
 
-// titleTokenMismatch is the problem title of a 419.
-const titleTokenMismatch = "Page Expired"
-
 // writeRejection answers a request Middleware rejected: Config.ErrorHandler
 // when configured, else a 419 whose message is Config.ErrorMessage (the
 // title when that is empty): an application/problem+json body with the
@@ -702,28 +699,29 @@ func (c *CSRF) writeRejection(w http.ResponseWriter, r *http.Request, reason err
 		return
 	}
 
+	title := contract.StatusTitle(contract.StatusTokenMismatch)
 	message := c.config.ErrorMessage
 	if message == "" {
-		message = titleTokenMismatch
+		message = title
 	}
 	if contract.WantsJSON(r) {
 		body, err := json.Marshal(rejectionProblem{
 			Type:     "about:blank",
-			Title:    titleTokenMismatch,
-			Status:   statusTokenMismatch,
+			Title:    title,
+			Status:   contract.StatusTokenMismatch,
 			Detail:   message,
 			Instance: r.URL.Path,
 		})
 		if err == nil {
 			w.Header().Set("Content-Type", "application/problem+json")
 			w.Header().Set("X-Content-Type-Options", "nosniff")
-			w.WriteHeader(statusTokenMismatch)
+			w.WriteHeader(contract.StatusTokenMismatch)
 			_, _ = w.Write(body)
 			return
 		}
 	}
 
-	http.Error(w, message, statusTokenMismatch)
+	http.Error(w, message, contract.StatusTokenMismatch)
 }
 
 // RefreshHandler returns a handler that generates and returns a new CSRF token

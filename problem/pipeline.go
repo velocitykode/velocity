@@ -628,7 +628,7 @@ func clientMessage(err error, status int, debug bool) string {
 		return err.Error()
 	}
 	if status >= http.StatusInternalServerError {
-		return statusTitle(status)
+		return contract.StatusTitle(status)
 	}
 	var me contract.MessageError
 	if errors.As(err, &me) && me.StatusCode() == status {
@@ -636,5 +636,5 @@ func clientMessage(err error, status int, debug bool) string {
 			return msg
 		}
 	}
-	return statusTitle(status)
+	return contract.StatusTitle(status)
 }

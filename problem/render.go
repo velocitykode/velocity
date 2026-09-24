@@ -98,7 +98,7 @@ func (r *JSONRenderer) Render(rc RenderContext, err error, ctx *ErrorContext, st
 func buildProblem(rc RenderContext, err error, ctx *ErrorContext, status int, debug bool) problemBody {
 	body := problemBody{
 		Type:   "about:blank",
-		Title:  statusTitle(status),
+		Title:  contract.StatusTitle(status),
 		Status: status,
 		Detail: clientMessage(err, status, debug),
 	}
@@ -311,7 +311,7 @@ func (r *HTMLRenderer) template(status int, debug bool) *template.Template {
 func (r *HTMLRenderer) Render(rc RenderContext, err error, ctx *ErrorContext, status int, debug bool) error {
 	data := &PageData{
 		StatusCode: status,
-		StatusText: statusTitle(status),
+		StatusText: contract.StatusTitle(status),
 		Message:    clientMessage(err, status, debug),
 		Debug:      debug,
 	}

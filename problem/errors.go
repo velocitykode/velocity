@@ -20,9 +20,6 @@ import (
 // HTTPError is the framework's HTTP-shaped error value.
 type HTTPError = contract.HTTPError
 
-// StatusTokenMismatch is the status a rejected CSRF token answers with.
-const StatusTokenMismatch = 419
-
 // BadRequest returns a 400 error. An optional message replaces the status
 // text as the client-facing message.
 func BadRequest(message ...string) *HTTPError {
@@ -74,7 +71,7 @@ func TokenMismatch(message ...string) *HTTPError {
 	if len(message) == 0 || message[0] == "" {
 		message = []string{"CSRF token mismatch"}
 	}
-	return contract.NewHTTPError(StatusTokenMismatch, message...).WithOrigin(1)
+	return contract.NewHTTPError(contract.StatusTokenMismatch, message...).WithOrigin(1)
 }
 
 // TooManyRequests returns a 429 error. A positive retryAfter sets the
@@ -104,16 +101,4 @@ func withRetryAfter(e *HTTPError, d time.Duration) *HTTPError {
 	}
 	secs := int64(math.Ceil(d.Seconds()))
 	return e.WithHeader("Retry-After", strconv.FormatInt(secs, 10))
-}
-
-// statusTitle returns the short title for status: the standard status text,
-// "Page Expired" for 419, or "Error" for a code net/http does not name.
-func statusTitle(status int) string {
-	if status == StatusTokenMismatch {
-		return "Page Expired"
-	}
-	if t := http.StatusText(status); t != "" {
-		return t
-	}
-	return "Error"
 }

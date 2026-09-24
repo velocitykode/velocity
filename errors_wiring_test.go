@@ -188,7 +188,7 @@ func TestErrorPipeline_DefaultMappings(t *testing.T) {
 		{
 			name:       "csrf token missing",
 			handler:    func(*router.Context) error { return csrf.ErrTokenMissing },
-			wantStatus: problem.StatusTokenMismatch,
+			wantStatus: contract.StatusTokenMismatch,
 		},
 		{
 			name:       "bind extra data",

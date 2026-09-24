@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"runtime"
-	"strconv"
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
@@ -103,13 +102,14 @@ func newPanicError(err error, skip int) *PanicError {
 // error handler writes when the client wants JSON: the members the error
 // pipeline writes outside debug mode.
 type problemBody struct {
-	Type      string `json:"type"`
-	Title     string `json:"title"`
-	Status    int    `json:"status"`
-	Detail    string `json:"detail,omitempty"`
-	Instance  string `json:"instance,omitempty"`
-	RequestID string `json:"request_id,omitempty"`
-	TraceID   string `json:"trace_id,omitempty"`
+	Type      string              `json:"type"`
+	Title     string              `json:"title"`
+	Status    int                 `json:"status"`
+	Detail    string              `json:"detail,omitempty"`
+	Instance  string              `json:"instance,omitempty"`
+	Errors    map[string][]string `json:"errors,omitempty"`
+	RequestID string              `json:"request_id,omitempty"`
+	TraceID   string              `json:"trace_id,omitempty"`
 }
 
 // defaultLogLevel is the level the router's default path logs an error at.
@@ -435,12 +435,16 @@ func requestGone(c *Context) bool {
 // 413; any other error is 500.
 //
 // The body is application/problem+json (type, title, status, detail,
-// instance as the request path, and request_id and trace_id when info
-// carries them) when contract.WantsJSON holds for the request, plain text
-// otherwise. A 4xx answer echoes the message of the first
-// contract.MessageError in the chain (HTTPError.Message, for one) when it
-// names the answered status; a 5xx answer shows only the status text, so
-// server-side detail never reaches the client. Headers the error carries
+// instance as the request path, errors, and request_id and trace_id when
+// info carries them) when contract.WantsJSON holds for the request, plain
+// text otherwise: the body the error pipeline writes outside debug mode.
+// The title is contract.StatusTitle. A 4xx answer echoes the message of
+// the first contract.MessageError in the chain (HTTPError.Message, for
+// one) when it names the answered status, and carries the per-field
+// messages of the first error in the chain with an
+// Errors() map[string][]string method (a validation failure) as its
+// errors member; a 5xx answer shows only the status title, so server-side
+// detail never reaches the client. Headers the error carries
 // (Retry-After, Allow, ...) are copied before the status line is written;
 // a key or value containing CR or LF is dropped.
 //
@@ -454,11 +458,11 @@ func DefaultErrorHandler(c *Context, err error, info ErrorInfo) {
 	if !res.write {
 		return
 	}
-	writeDefaultError(c, res, info)
+	writeDefaultError(c, err, res, info)
 }
 
-// writeDefaultError writes the resolved default response.
-func writeDefaultError(c *Context, res defaultResolution, info ErrorInfo) {
+// writeDefaultError writes the resolved default response for err.
+func writeDefaultError(c *Context, err error, res defaultResolution, info ErrorInfo) {
 	h := c.Response.Header()
 	for key, values := range res.headers {
 		if key == "" || strings.ContainsAny(key, "\r\n") {
@@ -473,7 +477,7 @@ func writeDefaultError(c *Context, res defaultResolution, info ErrorInfo) {
 		}
 	}
 
-	detail := statusText(res.status)
+	detail := contract.StatusTitle(res.status)
 	if res.message != "" {
 		detail = res.message
 	}
@@ -483,34 +487,30 @@ func writeDefaultError(c *Context, res defaultResolution, info ErrorInfo) {
 		if c.Request.URL != nil {
 			instance = c.Request.URL.Path
 		}
-		body, mErr := json.Marshal(problemBody{
+		body := problemBody{
 			Type:      "about:blank",
-			Title:     statusText(res.status),
+			Title:     contract.StatusTitle(res.status),
 			Status:    res.status,
 			Detail:    detail,
 			Instance:  instance,
 			RequestID: info.RequestID,
 			TraceID:   info.TraceID,
-		})
+		}
+		var fields fieldMessager
+		if res.status < http.StatusInternalServerError && errors.As(err, &fields) {
+			body.Errors = fields.Errors()
+		}
+		raw, mErr := json.Marshal(body)
 		if mErr == nil {
 			h.Del("Content-Length")
 			h.Set("Content-Type", "application/problem+json")
 			h.Set("X-Content-Type-Options", "nosniff")
 			c.Response.WriteHeader(res.status)
-			_, _ = c.Response.Write(body)
+			_, _ = c.Response.Write(raw)
 			return
 		}
 	}
 	http.Error(c.Response, detail, res.status)
-}
-
-// statusText returns the standard text for status, or "status N" for a
-// code net/http does not name.
-func statusText(status int) string {
-	if t := http.StatusText(status); t != "" {
-		return t
-	}
-	return "status " + strconv.Itoa(status)
 }
 
 // ErrorHandlerMiddleware returns a middleware that offers errors from

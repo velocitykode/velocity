@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func TestConstructors_StatusMessageOrigin(t *testing.T) {
@@ -23,8 +25,8 @@ func TestConstructors_StatusMessageOrigin(t *testing.T) {
 		{"Conflict", Conflict(), http.StatusConflict, "Conflict"},
 		{"Gone", Gone(), http.StatusGone, "Gone"},
 		{"PayloadTooLarge", PayloadTooLarge(), http.StatusRequestEntityTooLarge, "Request Entity Too Large"},
-		{"TokenMismatch", TokenMismatch(), StatusTokenMismatch, "CSRF token mismatch"},
-		{"TokenMismatch_Message", TokenMismatch("expired"), StatusTokenMismatch, "expired"},
+		{"TokenMismatch", TokenMismatch(), contract.StatusTokenMismatch, "CSRF token mismatch"},
+		{"TokenMismatch_Message", TokenMismatch("expired"), contract.StatusTokenMismatch, "expired"},
 		{"TooManyRequests", TooManyRequests(0), http.StatusTooManyRequests, "Too Many Requests"},
 		{"Internal", Internal("db down"), http.StatusInternalServerError, "db down"},
 		{"ServiceUnavailable", ServiceUnavailable(0), http.StatusServiceUnavailable, "Service Unavailable"},
@@ -67,22 +69,5 @@ func TestConstructors_Headers(t *testing.T) {
 				t.Errorf("%s = %q, want %q", tt.header, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestStatusTitle(t *testing.T) {
-	tests := []struct {
-		status int
-		want   string
-	}{
-		{404, "Not Found"},
-		{419, "Page Expired"},
-		{599, "Error"},
-		{500, "Internal Server Error"},
-	}
-	for _, tt := range tests {
-		if got := statusTitle(tt.status); got != tt.want {
-			t.Errorf("statusTitle(%d) = %q, want %q", tt.status, got, tt.want)
-		}
 	}
 }

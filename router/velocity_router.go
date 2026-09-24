@@ -1168,7 +1168,7 @@ func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err err
 	res := resolveClassified(ctx, err, &f, info)
 	r.logDefault(ctx, err, &f, info, res.level)
 	if res.write {
-		writeDefaultError(ctx, res, info)
+		writeDefaultError(ctx, err, res, info)
 	}
 	return failure
 }

@@ -65,7 +65,7 @@ func TestErrorPipeline_CSRFRejection(t *testing.T) {
 		{
 			name:            "JSON client gets 419 problem+json",
 			headers:         map[string]string{"Accept": "application/json"},
-			wantStatus:      problem.StatusTokenMismatch,
+			wantStatus:      contract.StatusTokenMismatch,
 			wantContentType: problem.ProblemTypeContent,
 			wantDetail:      csrf.DefaultConfig().ErrorMessage,
 		},
@@ -73,7 +73,7 @@ func TestErrorPipeline_CSRFRejection(t *testing.T) {
 			name:            "configured ErrorMessage is the detail",
 			headers:         map[string]string{"Accept": "application/json"},
 			errorMessage:    "Your session expired, please retry.",
-			wantStatus:      problem.StatusTokenMismatch,
+			wantStatus:      contract.StatusTokenMismatch,
 			wantContentType: problem.ProblemTypeContent,
 			wantDetail:      "Your session expired, please retry.",
 		},
@@ -86,7 +86,7 @@ func TestErrorPipeline_CSRFRejection(t *testing.T) {
 		{
 			name:            "browser gets the 419 page",
 			headers:         map[string]string{"Accept": "text/html"},
-			wantStatus:      problem.StatusTokenMismatch,
+			wantStatus:      contract.StatusTokenMismatch,
 			wantContentType: "text/html",
 		},
 		{
@@ -179,7 +179,7 @@ func TestErrorPipeline_CSRFRejection(t *testing.T) {
 				if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 					t.Fatalf("problem body: %v (%q)", err, w.Body.String())
 				}
-				if body.Status != problem.StatusTokenMismatch || body.Title != "Page Expired" || body.Detail != tt.wantDetail {
+				if body.Status != contract.StatusTokenMismatch || body.Title != "Page Expired" || body.Detail != tt.wantDetail {
 					t.Errorf("problem body = %+v, want status 419, title Page Expired, detail %q", body, tt.wantDetail)
 				}
 			}

@@ -7,9 +7,6 @@ import (
 	"github.com/velocitykode/velocity/contract"
 )
 
-// statusTokenMismatch is the status a rejected CSRF token answers with.
-const statusTokenMismatch = 419
-
 // TokenMismatchError is the error Protect returns when an unsafe request
 // fails CSRF protection. It answers 419 with Message as the client-facing
 // text (contract.MessageError), is never reported, and unwraps to
@@ -40,7 +37,7 @@ func (e *TokenMismatchError) Error() string {
 }
 
 // StatusCode returns 419.
-func (e *TokenMismatchError) StatusCode() int { return statusTokenMismatch }
+func (e *TokenMismatchError) StatusCode() int { return contract.StatusTokenMismatch }
 
 // ClientMessage returns Message.
 func (e *TokenMismatchError) ClientMessage() string { return e.Message }

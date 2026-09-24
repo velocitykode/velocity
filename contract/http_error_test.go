@@ -384,3 +384,20 @@ func TestMarkReported(t *testing.T) {
 		})
 	}
 }
+
+func TestStatusTitle(t *testing.T) {
+	tests := []struct {
+		status int
+		want   string
+	}{
+		{404, "Not Found"},
+		{StatusTokenMismatch, "Page Expired"},
+		{599, "Error"},
+		{500, "Internal Server Error"},
+	}
+	for _, tt := range tests {
+		if got := StatusTitle(tt.status); got != tt.want {
+			t.Errorf("StatusTitle(%d) = %q, want %q", tt.status, got, tt.want)
+		}
+	}
+}

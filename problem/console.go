@@ -40,7 +40,7 @@ func consoleMessage(err error, debug bool) string {
 	msg := err.Error()
 	if !debug {
 		if status, _, ok := contract.StatusOf(err); ok {
-			msg = statusTitle(status)
+			msg = contract.StatusTitle(status)
 			var he *contract.HTTPError
 			if errors.As(err, &he) && he.StatusCode() == status && he.Message != "" {
 				msg = he.Message

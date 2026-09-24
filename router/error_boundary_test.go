@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -265,7 +266,7 @@ func TestDefaultErrorHandler_StandaloneMatrix(t *testing.T) {
 				if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 					t.Fatalf("body is not JSON: %v (%q)", err, w.Body.String())
 				}
-				if got != *tt.wantJSON {
+				if !reflect.DeepEqual(got, *tt.wantJSON) {
 					t.Errorf("problem body = %+v, want %+v", got, *tt.wantJSON)
 				}
 			}
@@ -894,12 +895,12 @@ func TestDefaultErrorHandler_Guards(t *testing.T) {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
 
-	// A status net/http does not name gets a synthesized title.
+	// A status net/http does not name gets the shared title "Error".
 	c, w = NewTestContext(http.MethodGet, "/")
 	c.Request.Header.Set("Accept", "application/json")
 	DefaultErrorHandler(c, contract.NewHTTPError(599, ""), ErrorInfo{})
 	var body problemBody
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body.Title != "status 599" || body.Status != 599 {
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body.Title != "Error" || body.Status != 599 {
 		t.Errorf("body = %+v (%v)", body, err)
 	}
 }
@@ -934,7 +935,7 @@ func TestDefaultErrorHandler_ProblemBodyMembers(t *testing.T) {
 			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 				t.Fatalf("body is not JSON: %v (%q)", err, w.Body.String())
 			}
-			if got != tt.want {
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("problem body = %+v, want %+v", got, tt.want)
 			}
 			if strings.Contains(w.Body.String(), "secret") {

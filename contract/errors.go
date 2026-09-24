@@ -254,6 +254,22 @@ func (e *HTTPError) Origin() string {
 	return frame.File + ":" + strconv.Itoa(frame.Line) + " " + frame.Function
 }
 
+// StatusTokenMismatch is the status a rejected CSRF token answers with.
+const StatusTokenMismatch = 419
+
+// StatusTitle returns the short title for status that every error body
+// uses: the standard status text, "Page Expired" for StatusTokenMismatch,
+// or "Error" for a code net/http does not name.
+func StatusTitle(status int) string {
+	if status == StatusTokenMismatch {
+		return "Page Expired"
+	}
+	if t := http.StatusText(status); t != "" {
+		return t
+	}
+	return "Error"
+}
+
 // statusText returns the standard text for status, or "status N" for a
 // code net/http does not name.
 func statusText(status int) string {

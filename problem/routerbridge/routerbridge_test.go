@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/router"
+	"github.com/velocitykode/velocity/validation"
 )
 
 // spyHandler records what HandleRequest received and then behaves like the
@@ -533,6 +535,73 @@ func TestInstall_StatusResolutionMatchesStandalone(t *testing.T) {
 				}
 				if got := w.Header().Get("Retry-After"); got != tt.wantRetry {
 					t.Errorf("%s: Retry-After = %q, want %q", name, got, tt.wantRetry)
+				}
+			}
+		})
+	}
+}
+
+// TestInstall_ProblemBodyMatchesStandalone asserts the standalone router
+// default and the installed pipeline write the same problem body members
+// for a JSON request: the validation errors map, the 419 title, a 4xx
+// message as detail and a title-only 5xx detail.
+func TestInstall_ProblemBodyMatchesStandalone(t *testing.T) {
+	result, err := validation.CheckData(map[string]interface{}{"email": "bad"}, validation.Rules{
+		"email": {validation.Email()},
+	})
+	if err != nil {
+		t.Fatalf("CheckData: %v", err)
+	}
+	failure := validation.NewFailure(result)
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantTitle  string
+		wantDetail string
+		wantErrors bool
+	}{
+		{name: "validation failure", err: failure, wantStatus: http.StatusUnprocessableEntity, wantTitle: "Unprocessable Entity", wantDetail: "Unprocessable Entity", wantErrors: true},
+		{name: "csrf mismatch", err: &csrf.TokenMismatchError{Reason: csrf.ErrTokenInvalid}, wantStatus: contract.StatusTokenMismatch, wantTitle: "Page Expired", wantDetail: "Page Expired"},
+		{name: "4xx message", err: contract.NewHTTPError(http.StatusConflict, "Version conflict"), wantStatus: http.StatusConflict, wantTitle: "Conflict", wantDetail: "Version conflict"},
+		{name: "5xx title only", err: contract.NewHTTPError(http.StatusServiceUnavailable, "db down"), wantStatus: http.StatusServiceUnavailable, wantTitle: "Service Unavailable", wantDetail: "Service Unavailable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := func(*router.Context) error { return tt.err }
+			standalone := router.New()
+			standalone.Get("/x", handler)
+
+			h := problem.NewHandler(problem.WithReporters())
+			h.SetDebug(false)
+			installed := router.New()
+			Install(installed, WithHandler(func() contract.ErrorHandler { return h }))
+			installed.Get("/x", handler)
+
+			bodies := map[string]map[string]any{}
+			for name, r := range map[string]*router.VelocityRouterV2{"standalone": standalone, "pipeline": installed} {
+				w := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, "/x", nil)
+				req.Header.Set("Accept", "application/json")
+				r.ServeHTTP(w, req)
+				if w.Code != tt.wantStatus {
+					t.Errorf("%s: status = %d, want %d", name, w.Code, tt.wantStatus)
+				}
+				var body map[string]any
+				if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+					t.Fatalf("%s: body is not JSON: %v (%q)", name, err, w.Body.String())
+				}
+				if body["title"] != tt.wantTitle || body["detail"] != tt.wantDetail {
+					t.Errorf("%s: title %v detail %v, want %q %q", name, body["title"], body["detail"], tt.wantTitle, tt.wantDetail)
+				}
+				if _, ok := body["errors"]; ok != tt.wantErrors {
+					t.Errorf("%s: errors member present = %v, want %v", name, ok, tt.wantErrors)
+				}
+				bodies[name] = body
+			}
+			for _, member := range []string{"type", "title", "status", "detail", "instance", "errors"} {
+				if s, p := fmt.Sprint(bodies["standalone"][member]), fmt.Sprint(bodies["pipeline"][member]); s != p {
+					t.Errorf("%s differs: standalone %s, pipeline %s", member, s, p)
 				}
 			}
 		})

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -246,7 +247,7 @@ func TestRouterWriters_JSONProblem(t *testing.T) {
 				Detail:   tc.detail,
 				Instance: req.URL.Path,
 			}
-			if body != want {
+			if !reflect.DeepEqual(body, want) {
 				t.Errorf("problem = %+v, want %+v", body, want)
 			}
 			checkHeaders(t, "response", w.Header(), tc)
