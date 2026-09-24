@@ -169,8 +169,8 @@ func (c *CSRF) dispatchEvent(ctx context.Context, evt interface{}) {
 // request. An accepted request reaches next carrying the request Protect
 // returned; a rejected one never does. It is answered by
 // Config.ErrorHandler when one is configured, else by a 419 written here:
-// a JSON {code, message} body when the request wants JSON
-// (contract.WantsJSON), plain text otherwise. The router path
+// an application/problem+json body with Config.ErrorMessage as the detail
+// when the request wants JSON (contract.WantsJSON), plain text otherwise. The router path
 // (router.CSRFMiddleware, RouterMiddleware) returns the rejection to the
 // error pipeline instead and writes nothing itself.
 func (c *CSRF) Middleware(next http.Handler) http.Handler {
@@ -678,26 +678,52 @@ func (c *CSRF) isExcluded(r *http.Request) bool {
 	return false
 }
 
+// rejectionProblem is the application/problem+json body (RFC 9457) the
+// bare Middleware writes for a JSON client, with the members the error
+// pipeline writes for the same rejection.
+type rejectionProblem struct {
+	Type     string `json:"type"`
+	Title    string `json:"title"`
+	Status   int    `json:"status"`
+	Detail   string `json:"detail"`
+	Instance string `json:"instance,omitempty"`
+}
+
+// titleTokenMismatch is the problem title of a 419.
+const titleTokenMismatch = "Page Expired"
+
 // writeRejection answers a request Middleware rejected: Config.ErrorHandler
-// when configured, else a 419 with Config.ErrorMessage as a JSON
-// {code, message} body when the request wants JSON, or as plain text.
+// when configured, else a 419 whose message is Config.ErrorMessage (the
+// title when that is empty): an application/problem+json body with the
+// message as its detail when the request wants JSON, plain text otherwise.
 func (c *CSRF) writeRejection(w http.ResponseWriter, r *http.Request, reason error) {
 	if c.config.ErrorHandler != nil {
 		c.config.ErrorHandler(w, r, reason)
 		return
 	}
 
+	message := c.config.ErrorMessage
+	if message == "" {
+		message = titleTokenMismatch
+	}
 	if contract.WantsJSON(r) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(statusTokenMismatch)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"code":    statusTokenMismatch,
-			"message": c.config.ErrorMessage,
+		body, err := json.Marshal(rejectionProblem{
+			Type:     "about:blank",
+			Title:    titleTokenMismatch,
+			Status:   statusTokenMismatch,
+			Detail:   message,
+			Instance: r.URL.Path,
 		})
-		return
+		if err == nil {
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.WriteHeader(statusTokenMismatch)
+			_, _ = w.Write(body)
+			return
+		}
 	}
 
-	http.Error(w, c.config.ErrorMessage, statusTokenMismatch)
+	http.Error(w, message, statusTokenMismatch)
 }
 
 // RefreshHandler returns a handler that generates and returns a new CSRF token

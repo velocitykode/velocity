@@ -459,6 +459,10 @@ func TestRenderTokenMismatch(t *testing.T) {
 	}
 }
 
+// rejectionJSON is the problem+json body the bare Middleware writes for a
+// rejected JSON client under the default Config.ErrorMessage.
+const rejectionJSON = `{"type":"about:blank","title":"Page Expired","status":419,"detail":"CSRF token validation failed. Please refresh and try again.","instance":"/submit"}`
+
 // TestMiddleware_RejectionBody pins the standalone writer: JSON is chosen
 // by contract.WantsJSON, and Config.ErrorHandler wins when configured.
 func TestMiddleware_RejectionBody(t *testing.T) {
@@ -471,8 +475,8 @@ func TestMiddleware_RejectionBody(t *testing.T) {
 		wantBody    string
 		wantHandled bool
 	}{
-		{name: "JSON accept", headers: map[string]string{"Accept": "application/json"}, wantStatus: 419, wantType: "application/json", wantBody: `{"code":419,"message":"CSRF token validation failed. Please refresh and try again."}` + "\n"},
-		{name: "XHR", headers: map[string]string{"X-Requested-With": "XMLHttpRequest"}, wantStatus: 419, wantType: "application/json", wantBody: `{"code":419,"message":"CSRF token validation failed. Please refresh and try again."}` + "\n"},
+		{name: "JSON accept", headers: map[string]string{"Accept": "application/json"}, wantStatus: 419, wantType: "application/problem+json", wantBody: rejectionJSON},
+		{name: "XHR", headers: map[string]string{"X-Requested-With": "XMLHttpRequest"}, wantStatus: 419, wantType: "application/problem+json", wantBody: rejectionJSON},
 		{name: "JSON body without JSON accept", headers: map[string]string{"Content-Type": "application/json", "Accept": "text/html"}, wantStatus: 419, wantType: "text/plain; charset=utf-8", wantBody: "CSRF token validation failed. Please refresh and try again.\n"},
 		{name: "Inertia", headers: map[string]string{"X-Inertia": "true", "Accept": "application/json"}, wantStatus: 419, wantType: "text/plain; charset=utf-8", wantBody: "CSRF token validation failed. Please refresh and try again.\n"},
 		{name: "browser", headers: map[string]string{"Accept": "text/html"}, wantStatus: 419, wantType: "text/plain; charset=utf-8", wantBody: "CSRF token validation failed. Please refresh and try again.\n"},
