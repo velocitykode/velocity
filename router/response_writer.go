@@ -124,6 +124,13 @@ func (rw *responseWriter) BytesWritten() int64 {
 	return rw.bytesWritten
 }
 
+// committed reports whether the response status line (or any body byte,
+// or a flush) has reached the underlying writer, after which no second
+// response may be written.
+func (rw *responseWriter) committed() bool {
+	return rw.wroteHeader || rw.bytesWritten > 0
+}
+
 // Unwrap returns the underlying ResponseWriter (for http.ResponseController)
 func (rw *responseWriter) Unwrap() http.ResponseWriter {
 	return rw.ResponseWriter

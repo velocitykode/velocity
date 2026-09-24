@@ -1,10 +1,13 @@
 package router
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func TestVelocityRouterV2_BasicRouting(t *testing.T) {
@@ -998,14 +1001,14 @@ func TestVelocityRouterV2_CustomErrorHandler(t *testing.T) {
 		router := NewV2()
 		var capturedErr error
 
-		router.ErrorHandler = func(ctx *Context, err error) {
+		router.SetErrorHandler(func(ctx *Context, err error, info ErrorInfo) {
 			capturedErr = err
 			ctx.Response.WriteHeader(http.StatusBadGateway)
 			ctx.Response.Write([]byte("custom error"))
-		}
+		})
 
 		router.Get("/error", func(c *Context) error {
-			return NewHTTPError(http.StatusBadRequest, "bad input")
+			return contract.NewHTTPError(http.StatusBadRequest, "bad input")
 		})
 
 		req := httptest.NewRequest("GET", "/error", nil)
@@ -1015,12 +1018,12 @@ func TestVelocityRouterV2_CustomErrorHandler(t *testing.T) {
 		if capturedErr == nil {
 			t.Fatal("expected error handler to be called")
 		}
-		he, ok := capturedErr.(*HTTPError)
-		if !ok {
-			t.Fatal("expected *HTTPError")
+		var he *contract.HTTPError
+		if !errors.As(capturedErr, &he) {
+			t.Fatal("expected *contract.HTTPError")
 		}
-		if he.Code != http.StatusBadRequest {
-			t.Errorf("expected code 400, got %d", he.Code)
+		if he.StatusCode() != http.StatusBadRequest {
+			t.Errorf("expected code 400, got %d", he.StatusCode())
 		}
 	})
 
@@ -1040,11 +1043,11 @@ func TestVelocityRouterV2_CustomErrorHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("HTTPError uses its code when no custom handler", func(t *testing.T) {
+	t.Run("HTTPError uses its code when no error handler is installed", func(t *testing.T) {
 		router := NewV2()
 
 		router.Get("/forbidden", func(c *Context) error {
-			return NewHTTPError(http.StatusForbidden, "not allowed")
+			return contract.NewHTTPError(http.StatusForbidden, "not allowed")
 		})
 
 		req := httptest.NewRequest("GET", "/forbidden", nil)
@@ -1063,11 +1066,11 @@ func TestVelocityRouterV2_CustomErrorHandler(t *testing.T) {
 		router := NewV2()
 		var capturedErr error
 
-		router.ErrorHandler = func(ctx *Context, err error) {
+		router.SetErrorHandler(func(ctx *Context, err error, info ErrorInfo) {
 			capturedErr = err
 			ctx.Response.WriteHeader(http.StatusInternalServerError)
 			ctx.Response.Write([]byte("panic handled"))
-		}
+		})
 
 		router.Get("/panic", func(c *Context) error {
 			panic("test panic")

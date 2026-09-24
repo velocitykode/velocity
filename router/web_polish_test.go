@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // --- QueryFloat64 parse-error handling ---
@@ -58,12 +59,12 @@ func TestQueryFloat64_ValidValue(t *testing.T) {
 
 // --- Wrap error mapping ---
 
-// Wrap must honor *HTTPError like the router's default handleError
+// Wrap must honor *contract.HTTPError like the router's default error
 // path: 4xx echoes the handler-supplied message (client-facing by
 // design), 5xx and non-HTTPError errors get a generic body.
 func TestWrap_HTTPError4xx_EchoesCodeAndMessage(t *testing.T) {
 	h := Wrap(func(c *Context) error {
-		return NewHTTPError(http.StatusUnprocessableEntity, "name is required")
+		return contract.NewHTTPError(http.StatusUnprocessableEntity, "name is required")
 	})
 
 	w := httptest.NewRecorder()
@@ -79,7 +80,7 @@ func TestWrap_HTTPError4xx_EchoesCodeAndMessage(t *testing.T) {
 
 func TestWrap_WrappedHTTPError_Honored(t *testing.T) {
 	h := Wrap(func(c *Context) error {
-		return fmt.Errorf("lookup failed: %w", NewHTTPError(http.StatusNotFound, "no such user"))
+		return fmt.Errorf("lookup failed: %w", contract.NewHTTPError(http.StatusNotFound, "no such user"))
 	})
 
 	w := httptest.NewRecorder()
@@ -92,7 +93,7 @@ func TestWrap_WrappedHTTPError_Honored(t *testing.T) {
 
 func TestWrap_HTTPError5xx_GenericBody(t *testing.T) {
 	h := Wrap(func(c *Context) error {
-		return NewHTTPError(http.StatusServiceUnavailable, "db password rotation in flight")
+		return contract.NewHTTPError(http.StatusServiceUnavailable, "db password rotation in flight")
 	})
 
 	w := httptest.NewRecorder()

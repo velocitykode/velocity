@@ -14,11 +14,11 @@ import (
 func TestTimeout_RecoversHandlerPanic(t *testing.T) {
 	r := New()
 	r.Use(Timeout(500 * time.Millisecond))
-	// Install a final ErrorHandler so a returned error maps to a 500
+	// Install an error handler so a returned error maps to a 500
 	// response we can assert on.
-	r.ErrorHandler = func(c *Context, err error) {
+	r.SetErrorHandler(func(c *Context, err error, info ErrorInfo) {
 		_ = c.String(http.StatusInternalServerError, err.Error())
-	}
+	})
 	r.Get("/boom", func(c *Context) error {
 		panic("handler boom")
 	})

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -294,7 +295,7 @@ func TestRequestEvents_ParentIDPropagated(t *testing.T) {
 		return c.String(http.StatusOK, "ok")
 	})
 	router.Get("/boom", func(c *Context) error {
-		return &HTTPError{Code: http.StatusInternalServerError, Message: "boom"}
+		return &contract.HTTPError{Status: http.StatusInternalServerError, Message: "boom"}
 	})
 
 	parentSpan := "parent7890123456"

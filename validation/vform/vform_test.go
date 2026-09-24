@@ -292,12 +292,12 @@ func TestForm_Success_ReturnsT(t *testing.T) {
 	}
 }
 
-func TestForm_Failure_ReturnsErrValidationAborted(t *testing.T) {
+func TestForm_Failure_ReturnsErrResponseWritten(t *testing.T) {
 	ctx, _ := jsonCtx(t, `{"email":"bad","password":"x"}`)
 
 	form, err := Form[signupRequest](ctx)
-	if !errors.Is(err, router.ErrValidationAborted) {
-		t.Fatalf("expected router.ErrValidationAborted, got %v", err)
+	if !errors.Is(err, contract.ErrResponseWritten) {
+		t.Fatalf("expected contract.ErrResponseWritten, got %v", err)
 	}
 	if form != nil {
 		t.Errorf("expected nil form on failure, got %+v", form)

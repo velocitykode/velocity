@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/validation"
 )
@@ -76,8 +77,8 @@ func TestValidateCallback_WithoutDatabase(t *testing.T) {
 	t.Run("plain rules fail", func(t *testing.T) {
 		got = nil
 		postJSON(t, v, "/plain", `{"email":"nope"}`)
-		if !errors.Is(got, router.ErrValidationAborted) {
-			t.Fatalf("ctx.Validate error = %v, want ErrValidationAborted", got)
+		if !errors.Is(got, contract.ErrResponseWritten) {
+			t.Fatalf("ctx.Validate error = %v, want ErrResponseWritten", got)
 		}
 	})
 
@@ -90,7 +91,7 @@ func TestValidateCallback_WithoutDatabase(t *testing.T) {
 		if !errors.Is(got, validation.ErrInvalidRule) {
 			t.Fatalf("error does not wrap ErrInvalidRule: %v", got)
 		}
-		if errors.Is(got, router.ErrValidationAborted) {
+		if errors.Is(got, contract.ErrResponseWritten) {
 			t.Error("a missing database must not read as a field failure")
 		}
 	})

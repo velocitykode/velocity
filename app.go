@@ -662,10 +662,11 @@ func New(opts ...Option) (*App, error) {
 	// recovered panic vanished. Wire the app logger so the default path
 	// emits exactly one error-level entry per 500-class failure (panics
 	// include the stack). Logging ownership is documented on
-	// router.SetErrorLogger: a consumer-installed Router.ErrorHandler
-	// suppresses this default and owns reporting itself (typically by
-	// routing to ctx.Exceptions(), whose LogReporter is wired to a.Log
-	// above); the two paths never both fire for the same request.
+	// router.SetErrorLogger: an error handler installed with
+	// Router.SetErrorHandler suppresses this default and owns reporting
+	// itself (typically by routing to ctx.Exceptions(), whose LogReporter
+	// is wired to a.Log above); the two paths never both fire for the
+	// same request.
 	// Closure (not a.Log.Error method value) so tests that swap a.Log
 	// after New() observe the replacement.
 	a.Router.SetErrorLogger(func(msg string, kvs ...any) {
@@ -744,11 +745,12 @@ func New(opts ...Option) (*App, error) {
 		// Redirect back when a view engine is installed. c.View() is fatal
 		// when the service is unset, and an app without one is supported
 		// (API-only), so the container is read directly: the caller already
-		// receives ErrValidationAborted and can render its own response.
+		// receives contract.ErrResponseWritten and can render its own
+		// response.
 		if s := c.ServicesIfSet(); s != nil && s.View != nil {
 			s.View.Back(c.Response, c.Request)
 		}
-		return router.ErrValidationAborted
+		return contract.ErrResponseWritten
 	})
 
 	// Wire the data validator: ctx.BindValid validates an already-bound

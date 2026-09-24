@@ -211,14 +211,18 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 			clone.applyWiring(c.snapshotWiring())
 
 			done := make(chan error, 1)
-			// Not async.Go: must forward a recovered panic value through
-			// `done` so the outer select returns the handler's panic as
-			// the request error instead of dropping it into the package
-			// logger only. The goroutine is bound to the request lifetime.
+			// Not async.Go: must forward a recovered panic through `done`
+			// as a *PanicError (stack captured here, inside the deferred
+			// recover, on the goroutine that panicked) so the router
+			// boundary reports it as a recovered panic instead of the
+			// panic being dropped into the package logger only. The
+			// goroutine is bound to the request lifetime.
 			go func() { //safe-goroutine: forwards panic via done as request error, see comment above
 				defer func() {
 					if r := recover(); r != nil {
-						done <- fmt.Errorf("velocity/router: timeout handler panic: %w", panicerr.FromRecovered(r))
+						// Skip the deferred function so the trace starts
+						// at the panic site.
+						done <- newPanicError(fmt.Errorf("velocity/router: timeout handler panic: %w", panicerr.FromRecovered(r)), 1)
 					}
 				}()
 				done <- next(clone)

@@ -26,6 +26,7 @@ import (
 	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/resource"
 	"github.com/velocitykode/velocity/scheduler"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // HandlerFunc is the Velocity handler function signature
@@ -623,65 +624,141 @@ func (c *Context) IsAjax() bool {
 	return c.Request.Header.Get("X-Requested-With") == "XMLHttpRequest"
 }
 
-// WantsJSON returns true if the client expects a JSON response
+// WantsJSON reports whether the client asks for a JSON response (see
+// contract.WantsJSON). An Inertia request never wants JSON.
 func (c *Context) WantsJSON() bool {
-	accept := c.Request.Header.Get("Accept")
-	return accept == "application/json" || c.Request.Header.Get("X-Inertia") != ""
+	return contract.WantsJSON(c.Request)
 }
 
-// Wrap converts a HandlerFunc to http.HandlerFunc.
-//
-// Error mapping is the router's default handleError mapping
-// (defaultErrorResponse): a *HTTPError (direct or wrapped) responds with
-// its code, echoing its message only for 4xx (client-facing by design);
-// 5xx and non-HTTPError errors produce a generic body so server-side
-// detail never reaches the client.
+// IsInertia reports whether the request is an Inertia request (see
+// contract.IsInertia).
+func (c *Context) IsInertia() bool {
+	return contract.IsInertia(c.Request)
+}
+
+// Wrap converts a HandlerFunc to http.HandlerFunc. A returned error is
+// answered by DefaultErrorHandler through a fresh Context over w, with
+// ErrorInfo.Committed set when the handler already wrote to w (so a
+// partial response never gets a second one). Wrap does not recover
+// panics.
 func Wrap(h HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		c := NewContext(w, r)
-		if err := h(c); err != nil {
-			code, body := defaultErrorResponse(err)
-			http.Error(w, body, code)
+		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
+		if err := h(NewContext(rw, r)); err != nil {
+			DefaultErrorHandler(NewContext(rw, r), err, ErrorInfo{Committed: rw.committed()})
 		}
 	}
 }
 
-// Error represents an HTTP error response
-type Error struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+// RenderContext returns a contract.RenderContext over this context's
+// response writer and request, for an error pipeline rendering one
+// response. Written reflects the router's response writer, so a response
+// a handler already started counts. Redirect goes through c.Redirect and
+// its host allowlist: a target the allowlist would rewrite, a non-3xx
+// status, or a response already written returns an error matching
+// contract.ErrInvalidRedirect and writes nothing. Each call returns a new
+// adapter; use one per error.
+func (c *Context) RenderContext() contract.RenderContext {
+	return &ctxRenderContext{c: c}
 }
 
-// Error sends a JSON error response
-func (c *Context) Error(status int, message string) error {
-	return c.JSON(status, Error{
-		Code:    status,
-		Message: message,
-	})
+// ctxRenderContext is the router's contract.RenderContext. written covers
+// writers that do not report their own state (anything but the router's
+// responseWriter).
+type ctxRenderContext struct {
+	c       *Context
+	written bool
 }
 
-// httpError is a shared helper for error response methods.
-func (c *Context) httpError(status int, defaultMsg string, message []string) error {
-	msg := defaultMsg
-	if len(message) > 0 {
-		msg = message[0]
+func (rc *ctxRenderContext) Request() *http.Request      { return rc.c.Request }
+func (rc *ctxRenderContext) Writer() http.ResponseWriter { return rc.c.Response }
+func (rc *ctxRenderContext) WantsJSON() bool             { return rc.c.WantsJSON() }
+func (rc *ctxRenderContext) IsInertia() bool             { return rc.c.IsInertia() }
+
+// Written reports whether the status line has been written, through this
+// adapter or (for the router's response writer) by anyone.
+func (rc *ctxRenderContext) Written() bool {
+	if rc.written {
+		return true
 	}
-	return c.Error(status, msg)
+	if rw, ok := rc.c.Response.(*responseWriter); ok {
+		return rw.committed()
+	}
+	return false
 }
 
-// NotFound sends a 404 error response
-func (c *Context) NotFound(message ...string) error {
-	return c.httpError(http.StatusNotFound, "Not Found", message)
+// WriteHeader writes status once; a status outside 100-999 is written as
+// 500 because net/http rejects it.
+func (rc *ctxRenderContext) WriteHeader(status int) {
+	if rc.Written() {
+		return
+	}
+	rc.written = true
+	if status < 100 || status > 999 {
+		status = http.StatusInternalServerError
+	}
+	rc.c.Response.WriteHeader(status)
 }
 
-// BadRequest sends a 400 error response
-func (c *Context) BadRequest(message ...string) error {
-	return c.httpError(http.StatusBadRequest, "Bad Request", message)
+// Write writes p, writing a 200 status first when none was written.
+func (rc *ctxRenderContext) Write(p []byte) (int, error) {
+	if !rc.Written() {
+		rc.WriteHeader(http.StatusOK)
+	}
+	return rc.c.Response.Write(p)
 }
 
-// Unauthorized sends a 401 error response
-func (c *Context) Unauthorized(message ...string) error {
-	return c.httpError(http.StatusUnauthorized, "Unauthorized", message)
+// SetHeader sets key to value, dropping an empty key or any CR or LF.
+func (rc *ctxRenderContext) SetHeader(key, value string) {
+	if key == "" || strings.ContainsAny(key, "\r\n") || strings.ContainsAny(value, "\r\n") {
+		return
+	}
+	rc.c.Response.Header().Set(key, value)
+}
+
+// Redirect answers with a redirect to target through c.Redirect. The
+// status must be 3xx and the target must pass the router's redirect
+// allowlist unchanged; otherwise nothing is written and the returned
+// error matches contract.ErrInvalidRedirect.
+func (rc *ctxRenderContext) Redirect(status int, target string) error {
+	if rc.Written() || status < 300 || status > 399 {
+		return contract.NewHTTPError(http.StatusInternalServerError).WithCause(contract.ErrInvalidRedirect)
+	}
+	if target == "" || sanitizeRedirect(target, rc.c.redirectAllowedHosts) != target {
+		return contract.NewHTTPError(http.StatusBadRequest).WithCause(contract.ErrInvalidRedirect)
+	}
+	rc.written = true
+	return rc.c.Redirect(status, target)
+}
+
+// Report sends err to the application error handler (Services.Errors)
+// for reporting without rendering anything, and returns err marked with
+// contract.MarkReported so the router boundary does not report it again
+// when the handler returns it. With no services or no error handler
+// wired, err is returned unchanged. Report(nil) returns nil.
+func (c *Context) Report(err error) error {
+	if err == nil {
+		return nil
+	}
+	s := c.ServicesIfSet()
+	if s == nil || s.Errors == nil {
+		return err
+	}
+	s.Errors.Report(err, c.errorContext())
+	return contract.MarkReported(err)
+}
+
+// errorContext builds the contract.ErrorContext for a report made from
+// this request.
+func (c *Context) errorContext() *contract.ErrorContext {
+	ec := &contract.ErrorContext{Timestamp: time.Now()}
+	if r := c.Request; r != nil {
+		ec.RequestID = GetRequestID(r)
+		ec.TraceID = trace.GetTraceID(r.Context())
+		ec.SpanID = trace.GetSpanID(r.Context())
+		ec.WithRequestInfo(r.Method, r.URL.String(), c.IP(), r.UserAgent())
+	}
+	return ec
 }
 
 // sanitizeRedirect validates a redirect URL against an explicit host
@@ -807,11 +884,6 @@ func hasUnsafeRedirectBytes(target string) bool {
 		}
 	}
 	return target[0] == ' ' || target[len(target)-1] == ' '
-}
-
-// Forbidden sends a 403 error response
-func (c *Context) Forbidden(message ...string) error {
-	return c.httpError(http.StatusForbidden, "Forbidden", message)
 }
 
 // SetServices sets the service container on this context and stashes it
@@ -987,15 +1059,16 @@ func (c *Context) Cannot(ability string, args ...interface{}) bool {
 	return !c.Can(ability, args...)
 }
 
-// Authorize checks if the authenticated user can perform the given ability and
-// returns *HTTPError{403} if denied or auth is not configured. The returned
-// error type is always *HTTPError so callers and error handlers can rely on it.
+// Authorize checks if the authenticated user can perform the given ability.
+// A denial returns a 403 *contract.HTTPError whose Cause is the auth
+// manager's error; with auth not configured it returns a 403 with no
+// cause. The origin recorded on the error is the caller of Authorize.
 func (c *Context) Authorize(ability string, args ...interface{}) error {
 	if c.services == nil || c.services.Auth == nil {
-		return NewHTTPError(http.StatusForbidden)
+		return contract.NewHTTPError(http.StatusForbidden).WithOrigin(1)
 	}
 	if err := c.services.Auth.Authorize(c.Request, ability, args...); err != nil {
-		return NewHTTPError(http.StatusForbidden)
+		return contract.NewHTTPError(http.StatusForbidden).WithCause(err).WithOrigin(1)
 	}
 	return nil
 }
@@ -1869,8 +1942,8 @@ func writeFlashCookie(w http.ResponseWriter, enc contract.Encryptor, name string
 
 // Validate checks the request against rules and automatically redirects back
 // with flashed errors and old input if validation fails. Returns
-// ErrValidationAborted when validation fails, the handler should return
-// this error to the router, which will skip error handling since the
+// contract.ErrResponseWritten when validation fails; the handler should
+// return this error to the router, which will skip error handling since the
 // redirect response has already been written.
 //
 //	func (h *Handler) Store(ctx *router.Context) error {

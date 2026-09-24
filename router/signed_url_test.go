@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // testRouterWithSignedKey returns a router pre-populated with a random
@@ -261,15 +263,15 @@ func TestSignedURL_SignedMiddlewareReturnsForbidden(t *testing.T) {
 	if called {
 		t.Fatal("handler should not be called on signature failure")
 	}
-	httpErr, ok := err.(*HTTPError)
-	if !ok {
-		t.Fatalf("expected *HTTPError, got %T (%v)", err, err)
+	var httpErr *contract.HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected *contract.HTTPError, got %v", err)
 	}
-	if httpErr.Code != http.StatusForbidden {
-		t.Errorf("expected 403, got %d", httpErr.Code)
+	if httpErr.StatusCode() != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", httpErr.StatusCode())
 	}
-	if !errors.Is(httpErr.Internal, ErrSignatureMissing) {
-		t.Errorf("expected Internal to wrap ErrSignatureMissing, got %v", httpErr.Internal)
+	if !errors.Is(httpErr.Cause, ErrSignatureMissing) {
+		t.Errorf("expected Cause to wrap ErrSignatureMissing, got %v", httpErr.Cause)
 	}
 }
 
@@ -327,15 +329,15 @@ func TestSignedURL_SignedMiddlewareFailsClosedNoKey_Unsigned(t *testing.T) {
 	if called {
 		t.Fatal("handler must not be called when signed-URL key is missing")
 	}
-	httpErr, ok := err.(*HTTPError)
-	if !ok {
-		t.Fatalf("expected *HTTPError, got %T (%v)", err, err)
+	var httpErr *contract.HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected *contract.HTTPError, got %v", err)
 	}
-	if httpErr.Code != http.StatusForbidden {
-		t.Errorf("expected 403 when key missing, got %d", httpErr.Code)
+	if httpErr.StatusCode() != http.StatusForbidden {
+		t.Errorf("expected 403 when key missing, got %d", httpErr.StatusCode())
 	}
-	if !errors.Is(httpErr.Internal, ErrSignedURLKeyMissing) {
-		t.Errorf("expected Internal to wrap ErrSignedURLKeyMissing, got %v", httpErr.Internal)
+	if !errors.Is(httpErr.Cause, ErrSignedURLKeyMissing) {
+		t.Errorf("expected Cause to wrap ErrSignedURLKeyMissing, got %v", httpErr.Cause)
 	}
 }
 
@@ -377,15 +379,15 @@ func TestSignedURL_SignedMiddlewareFailsClosedNoKey_ValidSig(t *testing.T) {
 	if called {
 		t.Fatal("handler must not be called when signed-URL key is missing, even with a syntactically valid signature")
 	}
-	httpErr, ok := err.(*HTTPError)
-	if !ok {
-		t.Fatalf("expected *HTTPError, got %T (%v)", err, err)
+	var httpErr *contract.HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected *contract.HTTPError, got %v", err)
 	}
-	if httpErr.Code != http.StatusForbidden {
-		t.Errorf("expected 403 when key missing, got %d", httpErr.Code)
+	if httpErr.StatusCode() != http.StatusForbidden {
+		t.Errorf("expected 403 when key missing, got %d", httpErr.StatusCode())
 	}
-	if !errors.Is(httpErr.Internal, ErrSignedURLKeyMissing) {
-		t.Errorf("expected Internal to wrap ErrSignedURLKeyMissing, got %v", httpErr.Internal)
+	if !errors.Is(httpErr.Cause, ErrSignedURLKeyMissing) {
+		t.Errorf("expected Cause to wrap ErrSignedURLKeyMissing, got %v", httpErr.Cause)
 	}
 }
 

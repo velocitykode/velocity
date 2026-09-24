@@ -6,13 +6,15 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func TestBodyLimit_UnderLimit(t *testing.T) {
 	handler := BodyLimit(1024)(func(c *Context) error {
 		var data map[string]string
 		if err := c.Bind(&data); err != nil {
-			return c.Error(http.StatusBadRequest, err.Error())
+			return contract.NewHTTPError(http.StatusBadRequest, err.Error())
 		}
 		return c.JSON(http.StatusOK, data)
 	})

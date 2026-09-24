@@ -50,9 +50,9 @@ func ContentType(allowed ...string) MiddlewareFunc {
 			ct := c.Request.Header.Get("Content-Type")
 			if ct == "" {
 				if c.Request.ContentLength != 0 {
-					return c.JSON(http.StatusUnsupportedMediaType, Error{
-						Code:    http.StatusUnsupportedMediaType,
-						Message: "Unsupported Media Type",
+					return c.JSON(http.StatusUnsupportedMediaType, map[string]any{
+						"code":    http.StatusUnsupportedMediaType,
+						"message": "Unsupported Media Type",
 					})
 				}
 				// No body, no content-type — let it through
@@ -69,9 +69,9 @@ func ContentType(allowed ...string) MiddlewareFunc {
 				}
 			}
 
-			return c.JSON(http.StatusUnsupportedMediaType, Error{
-				Code:    http.StatusUnsupportedMediaType,
-				Message: "Unsupported Media Type",
+			return c.JSON(http.StatusUnsupportedMediaType, map[string]any{
+				"code":    http.StatusUnsupportedMediaType,
+				"message": "Unsupported Media Type",
 			})
 		}
 	}

@@ -810,10 +810,10 @@ func TestRouterMiddleware_RejectionDoesNotAppendInternalServerError(t *testing.T
 	// error path fires (it must not, because RouterMiddleware should
 	// return nil after the 419 has been written).
 	errorHandlerFired := false
-	r.ErrorHandler = func(ctx *router.Context, err error) {
+	r.SetErrorHandler(func(ctx *router.Context, err error, info router.ErrorInfo) {
 		errorHandlerFired = true
 		http.Error(ctx.Response, "Internal Server Error", http.StatusInternalServerError)
-	}
+	})
 	r.Use(c.RouterMiddleware())
 	r.Post("/submit", func(ctx *router.Context) error {
 		t.Fatal("inner handler must not be called on CSRF rejection")
@@ -834,7 +834,7 @@ func TestRouterMiddleware_RejectionDoesNotAppendInternalServerError(t *testing.T
 	}
 
 	if errorHandlerFired {
-		t.Error("router ErrorHandler must not fire after CSRF middleware writes 419")
+		t.Error("router error handler must not fire after CSRF middleware writes 419")
 	}
 
 	// Body must be exactly the configured CSRF error message followed by a

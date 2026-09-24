@@ -387,7 +387,9 @@ func TestContext_WantsJSON(t *testing.T) {
 		expected bool
 	}{
 		{"Accept application/json", "application/json", "", true},
-		{"Inertia request", "", "true", true},
+		{"Accept problem+json", "application/problem+json", "", true},
+		{"Inertia request", "", "true", false},
+		{"Inertia request accepting JSON", "application/json", "true", false},
 		{"HTML request", "text/html", "", false},
 		{"No headers", "", "", false},
 	}
@@ -449,122 +451,6 @@ func TestWrap_WithError(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("Expected status 500, got %d", w.Code)
-	}
-}
-
-func TestContext_Error(t *testing.T) {
-	req := httptest.NewRequest("GET", "/test", nil)
-	w := httptest.NewRecorder()
-
-	c := NewContext(w, req)
-	err := c.Error(http.StatusBadRequest, "Invalid input")
-
-	if err != nil {
-		t.Errorf("Expected no error, got %v", err)
-	}
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Expected status 400, got %d", w.Code)
-	}
-
-	var result Error
-	json.Unmarshal(w.Body.Bytes(), &result)
-	if result.Code != http.StatusBadRequest {
-		t.Error("Expected error code in response")
-	}
-	if result.Message != "Invalid input" {
-		t.Error("Expected error message in response")
-	}
-}
-
-func TestContext_NotFound(t *testing.T) {
-	req := httptest.NewRequest("GET", "/test", nil)
-	w := httptest.NewRecorder()
-
-	c := NewContext(w, req)
-	c.NotFound()
-
-	if w.Code != http.StatusNotFound {
-		t.Errorf("Expected status 404, got %d", w.Code)
-	}
-
-	// Test with custom message
-	w2 := httptest.NewRecorder()
-	c2 := NewContext(w2, req)
-	c2.NotFound("User not found")
-
-	var result Error
-	json.Unmarshal(w2.Body.Bytes(), &result)
-	if result.Message != "User not found" {
-		t.Errorf("Expected custom message, got '%s'", result.Message)
-	}
-}
-
-func TestContext_BadRequest(t *testing.T) {
-	req := httptest.NewRequest("GET", "/test", nil)
-	w := httptest.NewRecorder()
-
-	c := NewContext(w, req)
-	c.BadRequest()
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Expected status 400, got %d", w.Code)
-	}
-
-	// Test with custom message
-	w2 := httptest.NewRecorder()
-	c2 := NewContext(w2, req)
-	c2.BadRequest("Invalid email format")
-
-	var result Error
-	json.Unmarshal(w2.Body.Bytes(), &result)
-	if result.Message != "Invalid email format" {
-		t.Errorf("Expected custom message, got '%s'", result.Message)
-	}
-}
-
-func TestContext_Unauthorized(t *testing.T) {
-	req := httptest.NewRequest("GET", "/test", nil)
-	w := httptest.NewRecorder()
-
-	c := NewContext(w, req)
-	c.Unauthorized()
-
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("Expected status 401, got %d", w.Code)
-	}
-
-	// Test with custom message
-	w2 := httptest.NewRecorder()
-	c2 := NewContext(w2, req)
-	c2.Unauthorized("Token expired")
-
-	var result Error
-	json.Unmarshal(w2.Body.Bytes(), &result)
-	if result.Message != "Token expired" {
-		t.Errorf("Expected custom message, got '%s'", result.Message)
-	}
-}
-
-func TestContext_Forbidden(t *testing.T) {
-	req := httptest.NewRequest("GET", "/test", nil)
-	w := httptest.NewRecorder()
-
-	c := NewContext(w, req)
-	c.Forbidden()
-
-	if w.Code != http.StatusForbidden {
-		t.Errorf("Expected status 403, got %d", w.Code)
-	}
-
-	// Test with custom message
-	w2 := httptest.NewRecorder()
-	c2 := NewContext(w2, req)
-	c2.Forbidden("Admin access required")
-
-	var result Error
-	json.Unmarshal(w2.Body.Bytes(), &result)
-	if result.Message != "Admin access required" {
-		t.Errorf("Expected custom message, got '%s'", result.Message)
 	}
 }
 
@@ -2028,11 +1914,12 @@ func TestContext_Cannot(t *testing.T) {
 
 func TestContext_Authorize(t *testing.T) {
 	tests := []struct {
-		name     string
-		services *app.Services
-		ability  string
-		wantErr  bool
-		wantCode int
+		name      string
+		services  *app.Services
+		ability   string
+		wantErr   bool
+		wantCode  int
+		wantCause bool
 	}{
 		{
 			name:     "allowed ability returns nil",
@@ -2041,11 +1928,12 @@ func TestContext_Authorize(t *testing.T) {
 			wantErr:  false,
 		},
 		{
-			name:     "denied ability returns 403",
-			services: &app.Services{Auth: &mockAuthAccessChecker{allows: map[string]bool{"delete": false}}},
-			ability:  "delete",
-			wantErr:  true,
-			wantCode: http.StatusForbidden,
+			name:      "denied ability returns 403",
+			services:  &app.Services{Auth: &mockAuthAccessChecker{allows: map[string]bool{"delete": false}}},
+			ability:   "delete",
+			wantErr:   true,
+			wantCode:  http.StatusForbidden,
+			wantCause: true,
 		},
 		{
 			name:     "nil auth returns 403",
@@ -2075,12 +1963,18 @@ func TestContext_Authorize(t *testing.T) {
 				t.Fatalf("Authorize(%q) error = %v, wantErr %v", tt.ability, err, tt.wantErr)
 			}
 			if tt.wantCode != 0 {
-				httpErr, ok := err.(*HTTPError)
-				if !ok {
-					t.Fatalf("expected *HTTPError, got %T", err)
+				var httpErr *contract.HTTPError
+				if !errors.As(err, &httpErr) {
+					t.Fatalf("expected *contract.HTTPError, got %v", err)
 				}
-				if httpErr.Code != tt.wantCode {
-					t.Errorf("expected status %d, got %d", tt.wantCode, httpErr.Code)
+				if httpErr.StatusCode() != tt.wantCode {
+					t.Errorf("expected status %d, got %d", tt.wantCode, httpErr.StatusCode())
+				}
+				if (httpErr.Cause != nil) != tt.wantCause {
+					t.Errorf("cause = %v, wantCause %v", httpErr.Cause, tt.wantCause)
+				}
+				if !strings.Contains(httpErr.Origin(), "context_test.go") {
+					t.Errorf("origin = %q, want the caller of Authorize", httpErr.Origin())
 				}
 			}
 		})

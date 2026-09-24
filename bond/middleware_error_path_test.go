@@ -11,8 +11,9 @@ import (
 )
 
 // These tests drive bond's MiddlewareFunc through a real V2 router so
-// the full error pipeline (router responseWriter, handleError, custom
-// ErrorHandler) is exercised, not just the middleware in isolation.
+// the full error pipeline (router responseWriter, error boundary, an
+// installed error handler) is exercised, not just the middleware in
+// isolation.
 
 func newBondRouter(t *testing.T) (*Bond, *router.VelocityRouterV2) {
 	t.Helper()
@@ -44,10 +45,10 @@ func TestMiddlewareFunc_HandlerError_DefaultPathReturns500(t *testing.T) {
 
 func TestMiddlewareFunc_HandlerError_CustomErrorHandlerOwnsResponse(t *testing.T) {
 	_, rt := newBondRouter(t)
-	rt.ErrorHandler = func(c *router.Context, err error) {
+	rt.SetErrorHandler(func(c *router.Context, err error, info router.ErrorInfo) {
 		c.Response.WriteHeader(http.StatusTeapot)
 		c.Response.Write([]byte("custom-error-page"))
-	}
+	})
 	rt.Get("/boom", func(c *router.Context) error {
 		return errors.New("boom")
 	})

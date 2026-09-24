@@ -63,8 +63,8 @@ func TestCustomRule_ThroughVformForm(t *testing.T) {
 			}
 
 			if tc.wantFail {
-				if !errors.Is(err, router.ErrValidationAborted) {
-					t.Fatalf("error = %v, want router.ErrValidationAborted", err)
+				if !errors.Is(err, contract.ErrResponseWritten) {
+					t.Fatalf("error = %v, want contract.ErrResponseWritten", err)
 				}
 				if req != nil {
 					t.Error("no form should be returned on failure")

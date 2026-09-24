@@ -137,7 +137,7 @@ func safeDB(ctx *router.Context) orm.Database {
 // Form binds the request body into a fresh *T, validates using T.Rules() if
 // T implements FormRequest, and returns *T on success. On validation failure
 // it flashes errors plus old input, redirects back, and returns
-// router.ErrValidationAborted so the handler can return early without the
+// contract.ErrResponseWritten so the handler can return early without the
 // router emitting an error response.
 //
 // Adopters that want to render a custom error view instead of redirecting
@@ -158,7 +158,7 @@ func Form[T any](ctx *router.Context) (*T, error) {
 		v.Back(ctx.Response, ctx.Request)
 	}
 
-	return nil, router.ErrValidationAborted
+	return nil, contract.ErrResponseWritten
 }
 
 // mismatchedRulesMethod inspects req for a method literally named "Rules"
@@ -189,8 +189,8 @@ func mismatchedRulesMethod(req any) (string, bool) {
 // safeView mirrors safeDB: returns the view engine without panicking when
 // the services container or View field is unset. View.Back is the
 // redirect-back hook used by Form[T] on validation failure; when no view
-// engine is wired, the caller already received ErrValidationAborted and
-// can render its own response.
+// engine is wired, the caller already received contract.ErrResponseWritten
+// and can render its own response.
 func safeView(ctx *router.Context) contract.ViewEngine {
 	s := ctx.ServicesIfSet()
 	if s == nil || s.View == nil {

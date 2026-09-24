@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/hkdf"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // Signed URL primitives.
@@ -61,8 +63,8 @@ const (
 // Signed URL error sentinels. Callers branch on errors.Is to distinguish
 // the rejection cause (e.g. issue a refresh link on ErrSignatureExpired
 // versus a tamper-tripwire alert on ErrSignatureInvalid). The middleware
-// collapses every sentinel into a 403 *HTTPError so clients see a
-// uniform response; the underlying cause is preserved via Unwrap for
+// collapses every sentinel into a 403 *contract.HTTPError so clients see
+// a uniform response; the underlying cause is preserved via Unwrap for
 // server-side logging.
 var (
 	// ErrSignatureMissing is returned when a request carries no
@@ -276,8 +278,8 @@ func (r *VelocityRouterV2) ValidateSignature(req *http.Request) error {
 }
 
 // SignedMiddleware returns a MiddlewareFunc that rejects requests
-// failing ValidateSignature with a 403 *HTTPError. The underlying
-// signature error is preserved via Internal so server-side logs see
+// failing ValidateSignature with a 403 *contract.HTTPError. The underlying
+// signature error is preserved as its Cause so server-side logs see
 // the real cause; clients see a generic "Forbidden" body per CLAUDE.md
 // rule 6 (no error leakage).
 //
@@ -300,14 +302,10 @@ func (r *VelocityRouterV2) SignedMiddleware() MiddlewareFunc {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
 			if len(r.signedURLKey.get()) == 0 {
-				httpErr := NewHTTPError(http.StatusForbidden)
-				httpErr.Internal = ErrSignedURLKeyMissing
-				return httpErr
+				return contract.NewHTTPError(http.StatusForbidden).WithCause(ErrSignedURLKeyMissing)
 			}
 			if err := r.ValidateSignature(c.Request); err != nil {
-				httpErr := NewHTTPError(http.StatusForbidden)
-				httpErr.Internal = err
-				return httpErr
+				return contract.NewHTTPError(http.StatusForbidden).WithCause(err)
 			}
 			return next(c)
 		}

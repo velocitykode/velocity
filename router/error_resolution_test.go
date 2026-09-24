@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // httpErrorWrapper is a typed wrapper (not fmt.Errorf) around an error, so
@@ -30,37 +32,37 @@ var errorResolutionCases = []struct {
 }{
 	{
 		name:     "direct 4xx HTTPError echoes its message",
-		err:      NewHTTPError(http.StatusNotFound, "no such user"),
+		err:      contract.NewHTTPError(http.StatusNotFound, "no such user"),
 		wantCode: http.StatusNotFound,
 		wantBody: "no such user",
 	},
 	{
 		name:     "fmt wrapped 4xx HTTPError keeps status and message",
-		err:      fmt.Errorf("load user: %w", NewHTTPError(http.StatusNotFound, "no such user")),
+		err:      fmt.Errorf("load user: %w", contract.NewHTTPError(http.StatusNotFound, "no such user")),
 		wantCode: http.StatusNotFound,
 		wantBody: "no such user",
 	},
 	{
 		name:     "double wrapped 4xx HTTPError keeps status and message",
-		err:      fmt.Errorf("handler: %w", fmt.Errorf("service: %w", NewHTTPError(http.StatusUnprocessableEntity, "name is required"))),
+		err:      fmt.Errorf("handler: %w", fmt.Errorf("service: %w", contract.NewHTTPError(http.StatusUnprocessableEntity, "name is required"))),
 		wantCode: http.StatusUnprocessableEntity,
 		wantBody: "name is required",
 	},
 	{
 		name:     "typed wrapper around 4xx HTTPError keeps status",
-		err:      &httpErrorWrapper{op: "authorize", err: NewHTTPError(http.StatusForbidden)},
+		err:      &httpErrorWrapper{op: "authorize", err: contract.NewHTTPError(http.StatusForbidden)},
 		wantCode: http.StatusForbidden,
 		wantBody: http.StatusText(http.StatusForbidden),
 	},
 	{
 		name:     "HTTPError carrying an internal cause keeps its own status",
-		err:      &HTTPError{Code: http.StatusConflict, Message: "version conflict", Internal: errors.New("row changed")},
+		err:      &contract.HTTPError{Status: http.StatusConflict, Message: "version conflict", Cause: errors.New("row changed")},
 		wantCode: http.StatusConflict,
 		wantBody: "version conflict",
 	},
 	{
 		name:     "wrapped 5xx HTTPError keeps status, hides message, logs",
-		err:      fmt.Errorf("upstream: %w", NewHTTPError(http.StatusServiceUnavailable, "db password rotation in flight")),
+		err:      fmt.Errorf("upstream: %w", contract.NewHTTPError(http.StatusServiceUnavailable, "db password rotation in flight")),
 		wantCode: http.StatusServiceUnavailable,
 		wantBody: http.StatusText(http.StatusServiceUnavailable),
 		wantLog:  true,
@@ -134,9 +136,9 @@ func TestHandleError_PanicWithHTTPErrorValueIs500(t *testing.T) {
 		name  string
 		value any
 	}{
-		{"direct 4xx HTTPError", NewHTTPError(http.StatusNotFound, "no such user")},
-		{"wrapped 4xx HTTPError", fmt.Errorf("load: %w", NewHTTPError(http.StatusForbidden, "denied"))},
-		{"5xx HTTPError", NewHTTPError(http.StatusServiceUnavailable, "down")},
+		{"direct 4xx HTTPError", contract.NewHTTPError(http.StatusNotFound, "no such user")},
+		{"wrapped 4xx HTTPError", fmt.Errorf("load: %w", contract.NewHTTPError(http.StatusForbidden, "denied"))},
+		{"5xx HTTPError", contract.NewHTTPError(http.StatusServiceUnavailable, "down")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

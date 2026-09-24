@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // logCapture records every call made through the wired error logger.
@@ -111,7 +113,7 @@ func TestVelocityRouterV2_DefaultErrorLogging(t *testing.T) {
 		capture := &logCapture{}
 		r.SetErrorLogger(capture.fn)
 		r.Get("/unavailable", func(c *Context) error {
-			return NewHTTPError(http.StatusServiceUnavailable, "down")
+			return contract.NewHTTPError(http.StatusServiceUnavailable, "down")
 		})
 
 		w := serveErrLogReq(r, "GET", "/unavailable")
@@ -139,7 +141,7 @@ func TestVelocityRouterV2_DefaultErrorLogging(t *testing.T) {
 		capture := &logCapture{}
 		r.SetErrorLogger(capture.fn)
 		r.Get("/missing", func(c *Context) error {
-			return NewHTTPError(http.StatusNotFound, "nope")
+			return contract.NewHTTPError(http.StatusNotFound, "nope")
 		})
 
 		w := serveErrLogReq(r, "GET", "/missing")
@@ -157,13 +159,13 @@ func TestVelocityRouterV2_DefaultErrorLogging(t *testing.T) {
 		}
 	})
 
-	t.Run("custom ErrorHandler suppresses default logging", func(t *testing.T) {
+	t.Run("error handler seam suppresses default logging", func(t *testing.T) {
 		r := NewV2()
 		capture := &logCapture{}
 		r.SetErrorLogger(capture.fn)
-		r.ErrorHandler = func(ctx *Context, err error) {
+		r.SetErrorHandler(func(ctx *Context, err error, info ErrorInfo) {
 			ctx.Response.WriteHeader(http.StatusBadGateway)
-		}
+		})
 		r.Get("/boom", func(c *Context) error {
 			return errors.New("handled by consumer")
 		})
@@ -175,23 +177,23 @@ func TestVelocityRouterV2_DefaultErrorLogging(t *testing.T) {
 		serveErrLogReq(r, "GET", "/panic")
 
 		if capture.count() != 0 {
-			t.Fatalf("custom ErrorHandler owns reporting; expected 0 entries, got %d", capture.count())
+			t.Fatalf("the error handler owns reporting; expected 0 entries, got %d", capture.count())
 		}
 	})
 
-	t.Run("ErrValidationAborted is not logged", func(t *testing.T) {
+	t.Run("ErrResponseWritten is not logged", func(t *testing.T) {
 		r := NewV2()
 		capture := &logCapture{}
 		r.SetErrorLogger(capture.fn)
 		r.Get("/invalid", func(c *Context) error {
 			c.Response.WriteHeader(http.StatusSeeOther)
-			return ErrValidationAborted
+			return contract.ErrResponseWritten
 		})
 
 		serveErrLogReq(r, "GET", "/invalid")
 
 		if capture.count() != 0 {
-			t.Fatalf("validation abort is not a failure; expected 0 entries, got %d", capture.count())
+			t.Fatalf("a written response is not a failure; expected 0 entries, got %d", capture.count())
 		}
 	})
 

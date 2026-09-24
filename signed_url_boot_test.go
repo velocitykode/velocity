@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
@@ -140,15 +141,15 @@ func TestNew_DevelopmentBootsWithoutAppKey(t *testing.T) {
 	c, _ := router.NewTestContext("GET", "/anything")
 	c.Request = req
 	err = wrapped(c)
-	httpErr, ok := err.(*router.HTTPError)
-	if !ok {
-		t.Fatalf("expected *router.HTTPError when key missing, got %T (%v)", err, err)
+	var httpErr *contract.HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected *contract.HTTPError when key missing, got %v", err)
 	}
-	if httpErr.Code != http.StatusForbidden {
-		t.Errorf("expected 403, got %d", httpErr.Code)
+	if httpErr.StatusCode() != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", httpErr.StatusCode())
 	}
-	if !errors.Is(httpErr.Internal, router.ErrSignedURLKeyMissing) {
-		t.Errorf("expected Internal to wrap router.ErrSignedURLKeyMissing, got %v", httpErr.Internal)
+	if !errors.Is(httpErr.Cause, router.ErrSignedURLKeyMissing) {
+		t.Errorf("expected Cause to wrap router.ErrSignedURLKeyMissing, got %v", httpErr.Cause)
 	}
 }
 

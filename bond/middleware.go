@@ -104,7 +104,7 @@ func (b *Bond) MiddlewareFunc() router.MiddlewareFunc {
 			// Restore the real writer on every exit, including a
 			// panic in next: the closure below points c.Response at
 			// the response buffer, and the router's error path
-			// (default or custom ErrorHandler, panic recovery
+			// (default or installed error handler, panic recovery
 			// included) must write to the real connection, not an
 			// abandoned buffer. The possibly-augmented c.Request is
 			// kept.

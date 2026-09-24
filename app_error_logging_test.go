@@ -133,14 +133,14 @@ func TestNew_RouterDefaultErrorPathLogs(t *testing.T) {
 	}
 }
 
-// V2-15: a consumer-installed ErrorHandler fully replaces the default error
-// pipeline, including the default logging.
+// V2-15: a consumer-installed error handler fully replaces the default
+// error pipeline, including the default logging.
 func TestNew_RouterCustomErrorHandlerSuppressesDefaultLogging(t *testing.T) {
 	a, capture := newCaptureApp(t)
 
-	a.Router.ErrorHandler = func(c *router.Context, err error) {
+	a.Router.SetErrorHandler(func(c *router.Context, err error, info router.ErrorInfo) {
 		c.Response.WriteHeader(502)
-	}
+	})
 	a.Router.Get("/boom", func(c *router.Context) error {
 		return errors.New("consumer owns this")
 	})
@@ -152,6 +152,6 @@ func TestNew_RouterCustomErrorHandlerSuppressesDefaultLogging(t *testing.T) {
 		t.Errorf("expected 502 from custom handler, got %d", w.Code)
 	}
 	if capture.errorCount() != 0 {
-		t.Fatalf("custom ErrorHandler must suppress default logging, got %d entries", capture.errorCount())
+		t.Fatalf("the error handler must suppress default logging, got %d entries", capture.errorCount())
 	}
 }
