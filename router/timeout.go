@@ -176,6 +176,15 @@ func (tw *timeoutWriter) Push(target string, opts *http.PushOptions) error {
 // middleware returns, without racing with a misbehaving handler that
 // keeps running in the background.
 //
+// When the handler finishes in time, the caller's Context takes back the
+// values the handler set and the request the inner chain ended with
+// (context values inner middleware added, such as CSRF token state), so
+// outer middleware and the error boundary see them. That request's
+// context answers values from the inner request and its deadline,
+// cancellation and error from the caller's request, never from the
+// timeout context. After a timeout the caller's request is left as it
+// was: the handler may still own the clone.
+//
 // Streaming (http.Flusher), Hijack, and Push are not supported under
 // this middleware. Handlers that need any of those should not be
 // wrapped by Timeout. This matches the stdlib net/http.TimeoutHandler
@@ -235,6 +244,18 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 				// observes them.
 				tw.flushBuffered()
 				mergeValues(c.values, clone.values)
+				// Hand the request the inner chain ended with back
+				// to the parent, so outer middleware and the error
+				// boundary see what inner middleware added (context
+				// values, a replaced request). Its context takes
+				// values from the inner request and its lifetime
+				// from the parent's: the timeout context is
+				// cancelled when Timeout returns. The handler
+				// goroutine has returned, so reading the clone is
+				// safe.
+				if inner := clone.Request; inner != nil {
+					c.Request = inner.WithContext(handoffContext{Context: c.Request.Context(), values: inner.Context()})
+				}
 				return err
 			case <-ctx.Done():
 				// Mark the writer timed out and return the 503
@@ -249,6 +270,23 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 			}
 		}
 	}
+}
+
+// handoffContext is the request context Timeout hands back to the parent
+// Context when the handler finished in time: Value answers from values,
+// the inner request's context (the inner middleware's additions and,
+// through the timeout context, every parent value), while Deadline, Done
+// and Err come from the embedded parent request context, because the
+// timeout context is cancelled when Timeout returns and must not end the
+// rest of the request.
+type handoffContext struct {
+	context.Context
+	values context.Context
+}
+
+// Value returns the value for key from the inner request's context.
+func (h handoffContext) Value(key any) any {
+	return h.values.Value(key)
 }
 
 func cloneValues(src map[string]interface{}) map[string]interface{} {

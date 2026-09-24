@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -379,5 +380,104 @@ func TestTimeout_HandlerSet_DoesNotLeakToPool(t *testing.T) {
 	case <-finished:
 	case <-time.After(2 * time.Second):
 		t.Fatal("slow handler never finished")
+	}
+}
+
+// handoffKey is the context key inner middleware sets in the handoff
+// tests.
+type handoffKey struct{}
+
+// TestTimeout_HandsBackTheInnerRequest asserts that when the handler
+// finishes in time, the caller's Context sees the request the inner chain
+// ended with (a value inner middleware added, the handler's error), with a
+// live context although the timeout context was cancelled, and that the
+// error boundary receives that request.
+func TestTimeout_HandsBackTheInnerRequest(t *testing.T) {
+	var (
+		innerCtx    context.Context
+		outerValue  any
+		outerErr    error
+		outerDL     bool
+		boundaryVal any
+	)
+	r := New()
+	r.SetErrorHandler(func(c *Context, _ error, _ ErrorInfo) {
+		boundaryVal = c.Request.Context().Value(handoffKey{})
+		c.Response.WriteHeader(http.StatusTeapot)
+	})
+	r.Use(func(next HandlerFunc) HandlerFunc {
+		return func(c *Context) error {
+			err := next(c)
+			outerValue = c.Request.Context().Value(handoffKey{})
+			outerErr = c.Request.Context().Err()
+			_, outerDL = c.Request.Context().Deadline()
+			return err
+		}
+	})
+	r.Use(Timeout(time.Minute))
+	r.Use(func(next HandlerFunc) HandlerFunc {
+		return func(c *Context) error {
+			c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), handoffKey{}, "inner"))
+			return next(c)
+		}
+	})
+	r.Get("/x", func(c *Context) error {
+		innerCtx = c.Request.Context()
+		return errors.New("boom")
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil))
+
+	if w.Code != http.StatusTeapot {
+		t.Fatalf("status = %d, want 418 from the error handler", w.Code)
+	}
+	if outerValue != "inner" || boundaryVal != "inner" {
+		t.Errorf("value after Timeout = %v, at the boundary = %v; want inner for both", outerValue, boundaryVal)
+	}
+	if outerErr != nil || outerDL {
+		t.Errorf("request context after Timeout: Err = %v, has deadline = %v; want nil, false", outerErr, outerDL)
+	}
+	if innerCtx == nil || innerCtx.Err() == nil {
+		t.Error("the handler's timeout context must be cancelled once Timeout returns")
+	}
+}
+
+// TestTimeout_TimedOutLeavesTheRequestUntouched asserts the timeout branch
+// answers 503 and never hands back the clone's request: the handler may
+// still own it.
+func TestTimeout_TimedOutLeavesTheRequestUntouched(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	var before, after *http.Request
+	r := New()
+	r.Use(func(next HandlerFunc) HandlerFunc {
+		return func(c *Context) error {
+			before = c.Request
+			err := next(c)
+			after = c.Request
+			return err
+		}
+	})
+	r.Use(Timeout(20 * time.Millisecond))
+	r.Use(func(next HandlerFunc) HandlerFunc {
+		return func(c *Context) error {
+			c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), handoffKey{}, "inner"))
+			return next(c)
+		}
+	})
+	r.Get("/slow", func(*Context) error {
+		<-release
+		return nil
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/slow", nil))
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", w.Code)
+	}
+	if before == nil || after != before {
+		t.Error("the timeout branch replaced the caller's request")
 	}
 }

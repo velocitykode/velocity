@@ -16,6 +16,7 @@ import (
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf"
+	"github.com/velocitykode/velocity/csrf/stores"
 	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/validation"
@@ -475,6 +476,94 @@ func TestInstall_MiddlewareReportsAMarkedPanicOnce(t *testing.T) {
 	}
 	if rec.count() != 1 {
 		t.Errorf("reports = %d, want exactly 1", rec.count())
+	}
+}
+
+// timeoutHandoffKey is the context key inner middleware sets in the
+// Timeout handoff tests.
+type timeoutHandoffKey struct{}
+
+// handoffErr is the error the Timeout CSRF handoff test renders itself.
+type handoffErr struct{}
+
+func (handoffErr) Error() string { return "handoff" }
+
+// TestInstall_TimeoutHandsTheInnerRequestToThePipeline asserts a JSONWhen
+// predicate sees a context value middleware inside Timeout added when the
+// handler returns an error in time.
+func TestInstall_TimeoutHandsTheInnerRequestToThePipeline(t *testing.T) {
+	h := problem.NewHandler(problem.WithReporters())
+	h.SetDebug(false)
+	h.JSONWhen(func(r *http.Request, _ error) bool {
+		return r.Context().Value(timeoutHandoffKey{}) == "api"
+	})
+	r := router.New()
+	Install(r, WithHandler(func() contract.ErrorHandler { return h }))
+	r.Use(router.Timeout(time.Minute))
+	r.Use(func(next router.HandlerFunc) router.HandlerFunc {
+		return func(c *router.Context) error {
+			c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), timeoutHandoffKey{}, "api"))
+			return next(c)
+		}
+	})
+	r.Get("/x", func(*router.Context) error { return errors.New("db down") })
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.Header.Set("Accept", "text/html")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError || !strings.HasPrefix(w.Header().Get("Content-Type"), problem.ProblemTypeContent) {
+		t.Errorf("response = %d %q, want 500 %s (body %q)", w.Code, w.Header().Get("Content-Type"), problem.ProblemTypeContent, w.Body.String())
+	}
+}
+
+// TestInstall_TimeoutKeepsCSRFTokenStateForTheErrorPage asserts a render
+// rule reading csrf.TokenForRequest gets a token when CSRFMiddleware runs
+// inside Timeout and the handler returns an error in time.
+func TestInstall_TimeoutKeepsCSRFTokenStateForTheErrorPage(t *testing.T) {
+	cfg := csrf.DefaultConfig()
+	cfg.Store = stores.NewSessionStore()
+	cfg.SessionIDResolver = func(r *http.Request) (string, error) {
+		ck, err := r.Cookie("session_id")
+		if err != nil || ck.Value == "" {
+			return "", csrf.ErrNoSession
+		}
+		return ck.Value, nil
+	}
+	c, err := csrf.NewE(cfg)
+	if err != nil {
+		t.Fatalf("csrf.NewE: %v", err)
+	}
+	if err := c.RotateToken("", "s1"); err != nil {
+		t.Fatalf("RotateToken: %v", err)
+	}
+
+	var tokenErr error
+	h := problem.NewHandler(problem.WithReporters())
+	problem.RenderFor(h, func(rc problem.RenderContext, _ handoffErr, _ *problem.ErrorContext) bool {
+		token, err := csrf.TokenForRequest(rc.Request())
+		tokenErr = err
+		rc.WriteHeader(http.StatusTeapot)
+		_, _ = rc.Write([]byte(token))
+		return true
+	})
+	r := router.New()
+	Install(r, WithHandler(func() contract.ErrorHandler { return h }))
+	r.Use(router.Timeout(time.Minute))
+	r.Use(router.CSRFMiddleware(c))
+	r.Get("/x", func(*router.Context) error { return handoffErr{} })
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: "s1"})
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTeapot {
+		t.Fatalf("status = %d, want 418 from the render rule (body %q)", w.Code, w.Body.String())
+	}
+	if tokenErr != nil || w.Body.Len() == 0 {
+		t.Errorf("csrf.TokenForRequest = %q, %v; want a token", w.Body.String(), tokenErr)
 	}
 }
 
