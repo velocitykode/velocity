@@ -340,21 +340,107 @@ type ExitCoder interface {
 // first HeaderError in the chain, so an error that names only a status
 // still resolves. A status outside 100-999 resolves to 500. StatusOf(nil)
 // returns 0, nil, false.
+//
+// The chain is walked by hand in the order errors.As visits it, so the
+// common case (no node with an As method) allocates nothing; a node that
+// has an As method, or one deeper than the walk's limit, is handed to
+// errors.As, which keeps the answer identical to errors.As for any chain.
 func StatusOf(err error) (status int, headers http.Header, ok bool) {
 	if err == nil {
 		return 0, nil, false
 	}
+	var f statusFinder
+	f.walk(err, 0)
 	status = http.StatusInternalServerError
-	var se StatusError
-	if errors.As(err, &se) {
-		status = validStatus(se.StatusCode())
+	if f.haveStatus {
+		status = validStatus(f.status.StatusCode())
 		ok = true
 	}
-	var he HeaderError
-	if errors.As(err, &he) {
-		headers = he.Headers()
+	if f.haveHeader {
+		headers = f.header.Headers()
 	}
 	return status, headers, ok
+}
+
+// chainWalkLimit bounds how many nodes deep a hand walk of an error chain
+// goes before it hands the rest of that branch to the errors package, whose
+// answer is the same at any depth.
+const chainWalkLimit = 64
+
+// statusFinder collects the first StatusError and the first HeaderError of
+// an error chain in one walk.
+type statusFinder struct {
+	status     StatusError
+	header     HeaderError
+	haveStatus bool
+	haveHeader bool
+}
+
+// done reports whether both targets were found.
+func (f *statusFinder) done() bool {
+	return f.haveStatus && f.haveHeader
+}
+
+// walk visits err's chain depth-first in errors.As order (the node, its
+// As method, then Unwrap() error or each Unwrap() []error branch) and
+// records the first match for each target. It returns true once both
+// targets are found.
+func (f *statusFinder) walk(err error, depth int) bool {
+	for err != nil {
+		if depth >= chainWalkLimit {
+			f.fallback(err)
+			return f.done()
+		}
+		if !f.haveStatus {
+			if se, ok := err.(StatusError); ok {
+				f.status, f.haveStatus = se, true
+			}
+		}
+		if !f.haveHeader {
+			if he, ok := err.(HeaderError); ok {
+				f.header, f.haveHeader = he, true
+			}
+		}
+		if f.done() {
+			return true
+		}
+		if _, ok := err.(interface{ As(any) bool }); ok {
+			f.fallback(err)
+			return f.done()
+		}
+		switch x := err.(type) {
+		case interface{ Unwrap() error }:
+			err = x.Unwrap()
+			depth++
+		case interface{ Unwrap() []error }:
+			for _, e := range x.Unwrap() {
+				if e != nil && f.walk(e, depth+1) {
+					return true
+				}
+			}
+			return false
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// fallback resolves the targets still missing over err's whole branch
+// through errors.As.
+func (f *statusFinder) fallback(err error) {
+	if !f.haveStatus {
+		var se StatusError
+		if errors.As(err, &se) {
+			f.status, f.haveStatus = se, true
+		}
+	}
+	if !f.haveHeader {
+		var he HeaderError
+		if errors.As(err, &he) {
+			f.header, f.haveHeader = he, true
+		}
+	}
 }
 
 // ErrResponseWritten reports that the response was already written, so the
