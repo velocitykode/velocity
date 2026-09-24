@@ -2,6 +2,7 @@ package exceptions
 
 import (
 	"errors"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -13,12 +14,8 @@ import (
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
-// ExceptionHandler is the interface satisfied by *Handler. It covers the
-// methods used through app.Services and router.Context.
-type ExceptionHandler = contract.ExceptionHandler
-
-// Verify *Handler implements ExceptionHandler at compile time.
-var _ contract.ExceptionHandler = (*Handler)(nil)
+// Verify *Handler implements contract.ErrorHandler at compile time.
+var _ contract.ErrorHandler = (*Handler)(nil)
 
 // Logger is the logging interface for the exception handler.
 type Logger interface {
@@ -42,12 +39,25 @@ type Handler struct {
 	logger      Logger
 
 	// Custom handlers for specific exception types
-	customHandlers map[reflect.Type]func(RenderContext, error, *ExceptionContext)
+	customHandlers map[reflect.Type]func(RenderContext, error, *ErrorContext)
+
+	// Rules and hooks registered through contract.ErrorHandler.
+	mapRules          []contract.MapRule
+	renderRules       []contract.RenderRule
+	reportRules       []contract.ReportRule
+	ignoreRules       []contract.IgnoreRule
+	levelRules        []contract.LevelRule
+	throttleRules     []contract.ThrottleRule
+	ignorePredicates  []func(error, *ErrorContext) bool
+	contextProviders  []func(error, *ErrorContext) map[string]any
+	jsonWhen          func(*http.Request, error) bool
+	beforeRender      []func(RenderContext, error, int) int
+	errorPageRenderer contract.ErrorPageRenderer
 
 	// trustedProxies is the parsed list of proxy networks whose
 	// forwarded headers (Forwarded, X-Forwarded-For, X-Real-IP) may
 	// be honoured when capturing the client IP for the
-	// ExceptionContext. Nil means "no proxies trusted" (the secure
+	// ErrorContext. Nil means "no proxies trusted" (the secure
 	// default): forwarded headers are ignored and the RemoteAddr IP
 	// is recorded. Set via SetTrustedProxies during boot.
 	//
@@ -66,7 +76,7 @@ func NewHandler(opts ...Option) *Handler {
 		reporters:      []Reporter{NewLogReporter()},
 		renderers:      make(map[string]Renderer),
 		dontReport:     make(map[string]bool),
-		customHandlers: make(map[reflect.Type]func(RenderContext, error, *ExceptionContext)),
+		customHandlers: make(map[reflect.Type]func(RenderContext, error, *ErrorContext)),
 		debug:          false,
 		environment:    "production",
 		logger:         stdLogger{},
@@ -150,7 +160,7 @@ func WithAPIMode(enabled bool) Option {
 }
 
 // WithTrustedProxies installs the parsed proxy-network list used to
-// resolve the client IP recorded on the ExceptionContext. Pass nil to
+// resolve the client IP recorded on the ErrorContext. Pass nil to
 // disable XFF/Forwarded resolution (secure default; the RemoteAddr IP
 // is logged). Safe for use at construction time; SetTrustedProxies is
 // the runtime equivalent.
@@ -252,7 +262,7 @@ func (h *Handler) IsAPIMode() bool {
 
 // SetTrustedProxies installs the parsed proxy-network list used by
 // ErrorHandler (and any other client-IP-sensitive surface on this
-// handler) when capturing the IP onto the ExceptionContext. Pass nil
+// handler) when capturing the IP onto the ErrorContext. Pass nil
 // to disable XFF/Forwarded resolution (the secure default; the
 // RemoteAddr IP is logged verbatim).
 //
@@ -303,7 +313,7 @@ func (h *Handler) isAPIRequest(ctx RenderContext) bool {
 	}
 
 	// Check if path matches API prefixes
-	path := ctx.RequestPath()
+	path := requestPath(ctx)
 	for _, prefix := range h.apiPrefixes {
 		if len(path) >= len(prefix) && path[:len(prefix)] == prefix {
 			return true
@@ -336,7 +346,7 @@ func (h *Handler) ShouldReport(err error) bool {
 
 // Report reports an exception to all configured reporters.
 // Exceptions in the dontReport list are silently skipped.
-func (h *Handler) Report(err error, ctx *ExceptionContext) {
+func (h *Handler) Report(err error, ctx *ErrorContext) {
 	if !h.ShouldReport(err) {
 		return
 	}
@@ -344,7 +354,7 @@ func (h *Handler) Report(err error, ctx *ExceptionContext) {
 }
 
 // reportToAll sends an error to every configured reporter unconditionally.
-func (h *Handler) reportToAll(err error, ctx *ExceptionContext) {
+func (h *Handler) reportToAll(err error, ctx *ErrorContext) {
 	h.mu.RLock()
 	reporters := make([]Reporter, len(h.reporters))
 	copy(reporters, h.reporters)
@@ -356,7 +366,7 @@ func (h *Handler) reportToAll(err error, ctx *ExceptionContext) {
 }
 
 // Render renders an exception response.
-func (h *Handler) Render(ctx RenderContext, err error, exCtx *ExceptionContext) {
+func (h *Handler) Render(ctx RenderContext, err error, exCtx *ErrorContext) {
 	// Check if the error, or any error it wraps, implements Renderable
 	var renderable Renderable
 	if errors.As(err, &renderable) {
@@ -408,32 +418,112 @@ func (h *Handler) Render(ctx RenderContext, err error, exCtx *ExceptionContext) 
 	}
 }
 
-// Handle is a convenience method that reports and renders an exception.
-func (h *Handler) Handle(ctx RenderContext, err error) {
-	exCtx := NewExceptionContext()
-	exCtx.WithStackTrace(CaptureStackTrace(1))
-	exCtx.URL = ctx.RequestPath()
-	exCtx.Method = ctx.RequestMethod()
+// HandleRequest reports and renders err. A nil exCtx is replaced by a new
+// one carrying the request path and method; a missing stack trace is
+// captured here.
+func (h *Handler) HandleRequest(ctx RenderContext, err error, exCtx *ErrorContext) {
+	if exCtx == nil {
+		exCtx = NewErrorContext()
+		exCtx.URL = requestPath(ctx)
+		exCtx.Method = requestMethod(ctx)
+	}
+	if exCtx.StackTrace == nil {
+		exCtx.WithStackTrace(contract.CaptureStackTrace(1))
+	}
 
 	h.Report(err, exCtx)
 	h.Render(ctx, err, exCtx)
 }
 
-// HandleWithContext reports and renders with a provided context.
-func (h *Handler) HandleWithContext(ctx RenderContext, err error, exCtx *ExceptionContext) {
-	if exCtx == nil {
-		exCtx = NewExceptionContext()
+// HandleConsole reports err for a console command and returns exit code 1,
+// or 0 for a nil err.
+func (h *Handler) HandleConsole(_ io.Writer, err error) int {
+	if err == nil {
+		return 0
 	}
-	if exCtx.StackTrace == nil {
-		exCtx.WithStackTrace(CaptureStackTrace(1))
-	}
+	h.Report(err, NewErrorContext())
+	return 1
+}
 
-	h.Report(err, exCtx)
-	h.Render(ctx, err, exCtx)
+// AddMapRule stores a map rule.
+func (h *Handler) AddMapRule(rule contract.MapRule) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.mapRules = append(h.mapRules, rule)
+}
+
+// AddRenderRule stores a render rule.
+func (h *Handler) AddRenderRule(rule contract.RenderRule) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.renderRules = append(h.renderRules, rule)
+}
+
+// AddReportRule stores a report rule.
+func (h *Handler) AddReportRule(rule contract.ReportRule) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.reportRules = append(h.reportRules, rule)
+}
+
+// AddIgnoreRule stores an ignore rule.
+func (h *Handler) AddIgnoreRule(rule contract.IgnoreRule) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.ignoreRules = append(h.ignoreRules, rule)
+}
+
+// AddLevelRule stores a level rule.
+func (h *Handler) AddLevelRule(rule contract.LevelRule) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.levelRules = append(h.levelRules, rule)
+}
+
+// AddThrottleRule stores a throttle rule.
+func (h *Handler) AddThrottleRule(rule contract.ThrottleRule) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.throttleRules = append(h.throttleRules, rule)
+}
+
+// IgnoreIf stores an ignore predicate.
+func (h *Handler) IgnoreIf(pred func(err error, ctx *ErrorContext) bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.ignorePredicates = append(h.ignorePredicates, pred)
+}
+
+// ContextUsing stores a report context provider.
+func (h *Handler) ContextUsing(fn func(err error, ctx *ErrorContext) map[string]any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.contextProviders = append(h.contextProviders, fn)
+}
+
+// JSONWhen stores the JSON negotiation predicate.
+func (h *Handler) JSONWhen(fn func(r *http.Request, err error) bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.jsonWhen = fn
+}
+
+// BeforeRender stores a pre-write hook.
+func (h *Handler) BeforeRender(fn func(rc RenderContext, err error, status int) int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.beforeRender = append(h.beforeRender, fn)
+}
+
+// SetErrorPageRenderer stores the Inertia error page renderer.
+func (h *Handler) SetErrorPageRenderer(r contract.ErrorPageRenderer) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.errorPageRenderer = r
 }
 
 // RegisterCustomHandler registers a custom handler for a specific exception type.
-func (h *Handler) RegisterCustomHandler(exceptionType any, handler func(RenderContext, error, *ExceptionContext)) {
+func (h *Handler) RegisterCustomHandler(exceptionType any, handler func(RenderContext, error, *ErrorContext)) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.customHandlers[reflect.TypeOf(exceptionType)] = handler
@@ -443,11 +533,11 @@ func (h *Handler) RegisterCustomHandler(exceptionType any, handler func(RenderCo
 func (h *Handler) HandlePanic(ctx RenderContext, recovered any) {
 	err := panicerr.FromRecovered(recovered)
 
-	exCtx := NewExceptionContext()
+	exCtx := NewErrorContext()
 	// Skip more frames for panic recovery path
-	exCtx.WithStackTrace(CaptureStackTrace(3))
-	exCtx.URL = ctx.RequestPath()
-	exCtx.Method = ctx.RequestMethod()
+	exCtx.WithStackTrace(contract.CaptureStackTrace(3))
+	exCtx.URL = requestPath(ctx)
+	exCtx.Method = requestMethod(ctx)
 
 	// Always report panics (bypasses ShouldReport)
 	h.reportToAll(err, exCtx)
@@ -457,4 +547,28 @@ func (h *Handler) HandlePanic(ctx RenderContext, recovered any) {
 	// the panic value is an HTTP exception or Renderable that errors.As would
 	// otherwise resolve through the recovered-panic wrapper.
 	h.Render(ctx, NewInternalServerErrorException(err.Error()).WithPrevious(errors.New(err.Error())), exCtx)
+}
+
+// requestPath returns the path of the request behind ctx, or "".
+func requestPath(ctx RenderContext) string {
+	if r := ctx.Request(); r != nil && r.URL != nil {
+		return r.URL.Path
+	}
+	return ""
+}
+
+// requestMethod returns the method of the request behind ctx, or "".
+func requestMethod(ctx RenderContext) string {
+	if r := ctx.Request(); r != nil {
+		return r.Method
+	}
+	return ""
+}
+
+// requestHeader returns a header of the request behind ctx, or "".
+func requestHeader(ctx RenderContext, key string) string {
+	if r := ctx.Request(); r != nil {
+		return r.Header.Get(key)
+	}
+	return ""
 }

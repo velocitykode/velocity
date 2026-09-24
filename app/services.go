@@ -25,13 +25,13 @@ import (
 // registration, duplicate detection, and registry-owned shutdown, with no
 // string keys to collide on.
 type Services struct {
-	Log        contract.Logger
-	Exceptions contract.ExceptionHandler
-	Crypto     contract.Encryptor
-	DB         contract.Database
-	Auth       contract.AuthManager
-	CSRF       contract.CSRFProtector
-	View       contract.ViewEngine
+	Log    contract.Logger
+	Errors contract.ErrorHandler
+	Crypto contract.Encryptor
+	DB     contract.Database
+	Auth   contract.AuthManager
+	CSRF   contract.CSRFProtector
+	View   contract.ViewEngine
 
 	Cache        contract.CacheManager
 	Events       contract.Dispatcher

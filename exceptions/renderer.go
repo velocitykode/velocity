@@ -90,7 +90,7 @@ func (r *JSONRenderer) ContentType() string {
 }
 
 // Render renders the exception as JSON.
-func (r *JSONRenderer) Render(ctx RenderContext, err error, exCtx *ExceptionContext, debug bool) error {
+func (r *JSONRenderer) Render(ctx RenderContext, err error, exCtx *ErrorContext, debug bool) error {
 	response := make(map[string]any)
 
 	statusCode, headers := resolveHTTPStatus(err)
@@ -176,7 +176,7 @@ func (r *HTMLRenderer) ContentType() string {
 }
 
 // Render renders the exception as HTML.
-func (r *HTMLRenderer) Render(ctx RenderContext, err error, exCtx *ExceptionContext, debug bool) error {
+func (r *HTMLRenderer) Render(ctx RenderContext, err error, exCtx *ErrorContext, debug bool) error {
 	statusCode, headers := resolveHTTPStatus(err)
 	setExceptionHeaders(ctx, headers)
 
@@ -301,7 +301,7 @@ func getExceptionType(err error) string {
 
 // NegotiateRenderer selects the appropriate renderer based on content negotiation.
 func NegotiateRenderer(ctx RenderContext, renderers map[string]Renderer) Renderer {
-	accept := ctx.GetHeader("Accept")
+	accept := requestHeader(ctx, "Accept")
 
 	// Check for JSON preference in Accept header
 	if strings.Contains(accept, "application/json") {

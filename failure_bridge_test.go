@@ -16,10 +16,10 @@ import (
 type recordingReporter struct {
 	mu    sync.Mutex
 	errs  []error
-	exCtx []*contract.ExceptionContext
+	exCtx []*contract.ErrorContext
 }
 
-func (r *recordingReporter) Report(err error, ctx *contract.ExceptionContext) {
+func (r *recordingReporter) Report(err error, ctx *contract.ErrorContext) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.errs = append(r.errs, err)
@@ -45,7 +45,7 @@ func TestFailureBridge_BackgroundFailuresReachReporters(t *testing.T) {
 	defer app.Shutdown(context.Background())
 
 	rec := &recordingReporter{}
-	app.Services.Exceptions.AddReporter(rec)
+	app.Services.Errors.AddReporter(rec)
 
 	// Background failures: bridged.
 	if err := app.Services.Events.Dispatch(context.Background(), &queue.JobFailed{

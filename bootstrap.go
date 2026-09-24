@@ -170,7 +170,7 @@ func (a *App) runBootstrap() error {
 
 	// 8. Configure exceptions
 	if a.exceptionsFn != nil {
-		a.exceptionsFn(a.Services.Exceptions)
+		a.exceptionsFn(a.Services.Errors)
 	}
 
 	// 9. Refuse to run with CookieStore-only sessions in production
@@ -240,17 +240,17 @@ func wireInstanceEvents(a *App) {
 }
 
 // buildFailureReporter returns the bridge target for FailureEvent
-// dispatches: it forwards the failure to ExceptionHandler.Report with an
-// ExceptionContext carrying the trace ID and event name. It reads
-// a.Services.Exceptions at call time, so a handler swapped in during a
+// dispatches: it forwards the failure to ErrorHandler.Report with an
+// ErrorContext carrying the trace ID and event name. It reads
+// a.Services.Errors at call time, so a handler swapped in during a
 // module Start phase wins.
 func buildFailureReporter(a *App) func(ctx context.Context, event interface{}, err error) {
 	return func(ctx context.Context, event interface{}, err error) {
-		h := a.Services.Exceptions
+		h := a.Services.Errors
 		if h == nil {
 			return
 		}
-		exCtx := &contract.ExceptionContext{
+		exCtx := &contract.ErrorContext{
 			Timestamp: time.Now(),
 			TraceID:   trace.GetTraceID(ctx),
 			Extra:     map[string]any{},

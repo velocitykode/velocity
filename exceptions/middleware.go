@@ -5,59 +5,27 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
 )
 
-// httpRenderContext adapts http.ResponseWriter to RenderContext.
+// httpRenderContext is contract.NewRenderContext with this package's JSON
+// heuristic (Accept, Content-Type, XHR, /api path).
 type httpRenderContext struct {
-	w       http.ResponseWriter
-	r       *http.Request
-	written bool
+	contract.RenderContext
 }
 
 // newHTTPRenderContext creates a new httpRenderContext.
 func newHTTPRenderContext(w http.ResponseWriter, r *http.Request) *httpRenderContext {
-	return &httpRenderContext{w: w, r: r}
-}
-
-// WriteHeader writes the HTTP status code.
-func (c *httpRenderContext) WriteHeader(statusCode int) {
-	if !c.written {
-		c.w.WriteHeader(statusCode)
-		c.written = true
-	}
-}
-
-// Write writes data to the response.
-func (c *httpRenderContext) Write(data []byte) (int, error) {
-	return c.w.Write(data)
-}
-
-// SetHeader sets a response header.
-func (c *httpRenderContext) SetHeader(key, value string) {
-	c.w.Header().Set(key, value)
-}
-
-// GetHeader gets a request header.
-func (c *httpRenderContext) GetHeader(key string) string {
-	return c.r.Header.Get(key)
-}
-
-// RequestPath returns the request path.
-func (c *httpRenderContext) RequestPath() string {
-	return c.r.URL.Path
-}
-
-// RequestMethod returns the request method.
-func (c *httpRenderContext) RequestMethod() string {
-	return c.r.Method
+	return &httpRenderContext{RenderContext: contract.NewRenderContext(w, r)}
 }
 
 // WantsJSON returns true if the request prefers JSON response.
 func (c *httpRenderContext) WantsJSON() bool {
-	accept := c.r.Header.Get("Accept")
-	contentType := c.r.Header.Get("Content-Type")
-	xRequestedWith := c.r.Header.Get("X-Requested-With")
+	r := c.Request()
+	accept := r.Header.Get("Accept")
+	contentType := r.Header.Get("Content-Type")
+	xRequestedWith := r.Header.Get("X-Requested-With")
 
 	// Check Accept header
 	if strings.Contains(accept, "application/json") {
@@ -75,7 +43,7 @@ func (c *httpRenderContext) WantsJSON() bool {
 	}
 
 	// Check if path starts with /api
-	if strings.HasPrefix(c.r.URL.Path, "/api") {
+	if strings.HasPrefix(r.URL.Path, "/api") {
 		return true
 	}
 
@@ -121,8 +89,8 @@ func ErrorHandler(handler *Handler) func(http.ResponseWriter, *http.Request, err
 	return func(w http.ResponseWriter, r *http.Request, err error) {
 		ctx := newHTTPRenderContext(w, r)
 
-		exCtx := NewExceptionContext()
-		exCtx.WithStackTrace(CaptureStackTrace(1))
+		exCtx := NewErrorContext()
+		exCtx.WithStackTrace(contract.CaptureStackTrace(1))
 		exCtx.URL = r.URL.Path
 		exCtx.Method = r.Method
 		exCtx.IP = getClientIP(r, handler.getTrustedProxies())

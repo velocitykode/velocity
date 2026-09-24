@@ -5,13 +5,15 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
-func TestNewExceptionContext(t *testing.T) {
-	ctx := NewExceptionContext()
+func TestNewErrorContext(t *testing.T) {
+	ctx := NewErrorContext()
 
 	if ctx == nil {
-		t.Fatal("NewExceptionContext returned nil")
+		t.Fatal("NewErrorContext returned nil")
 	}
 	if ctx.Timestamp.IsZero() {
 		t.Error("Timestamp should be set")
@@ -21,8 +23,8 @@ func TestNewExceptionContext(t *testing.T) {
 	}
 }
 
-func TestExceptionContext_WithRequestInfo(t *testing.T) {
-	ctx := NewExceptionContext().WithRequestInfo("POST", "/api/users", "192.168.1.1", "Mozilla/5.0")
+func TestErrorContext_WithRequestInfo(t *testing.T) {
+	ctx := NewErrorContext().WithRequestInfo("POST", "/api/users", "192.168.1.1", "Mozilla/5.0")
 
 	if ctx.Method != "POST" {
 		t.Errorf("Method = %q, want %q", ctx.Method, "POST")
@@ -38,8 +40,8 @@ func TestExceptionContext_WithRequestInfo(t *testing.T) {
 	}
 }
 
-func TestExceptionContext_WithIDs(t *testing.T) {
-	ctx := NewExceptionContext().WithIDs("req-123", "trace-456")
+func TestErrorContext_WithIDs(t *testing.T) {
+	ctx := NewErrorContext().WithIDs("req-123", "trace-456")
 
 	if ctx.RequestID != "req-123" {
 		t.Errorf("RequestID = %q, want %q", ctx.RequestID, "req-123")
@@ -49,25 +51,25 @@ func TestExceptionContext_WithIDs(t *testing.T) {
 	}
 }
 
-func TestExceptionContext_WithUserID(t *testing.T) {
-	ctx := NewExceptionContext().WithUserID("user-789")
+func TestErrorContext_WithUserID(t *testing.T) {
+	ctx := NewErrorContext().WithUserID("user-789")
 
 	if ctx.UserID != "user-789" {
 		t.Errorf("UserID = %q, want %q", ctx.UserID, "user-789")
 	}
 }
 
-func TestExceptionContext_WithStackTrace(t *testing.T) {
-	st := CaptureStackTrace(0)
-	ctx := NewExceptionContext().WithStackTrace(st)
+func TestErrorContext_WithStackTrace(t *testing.T) {
+	st := contract.CaptureStackTrace(0)
+	ctx := NewErrorContext().WithStackTrace(st)
 
 	if ctx.StackTrace != st {
 		t.Error("StackTrace not set correctly")
 	}
 }
 
-func TestExceptionContext_WithExtra(t *testing.T) {
-	ctx := NewExceptionContext().
+func TestErrorContext_WithExtra(t *testing.T) {
+	ctx := NewErrorContext().
 		WithExtra("key1", "value1").
 		WithExtra("key2", 42)
 
@@ -79,8 +81,8 @@ func TestExceptionContext_WithExtra(t *testing.T) {
 	}
 }
 
-func TestExceptionContext_WithExtra_NilExtra(t *testing.T) {
-	ctx := &ExceptionContext{}
+func TestErrorContext_WithExtra_NilExtra(t *testing.T) {
+	ctx := &ErrorContext{}
 	ctx.Extra = nil
 
 	ctx.WithExtra("key", "value")
@@ -124,11 +126,11 @@ func TestLogReporter_Report(t *testing.T) {
 	reporter := NewLogReporter(WithLogger(mockLogger))
 
 	err := NewHttpException(500, "test error")
-	ctx := NewExceptionContext().
+	ctx := NewErrorContext().
 		WithIDs("req-1", "trace-1").
 		WithUserID("user-1").
 		WithRequestInfo("GET", "/test", "1.2.3.4", "TestAgent").
-		WithStackTrace(CaptureStackTrace(0)).
+		WithStackTrace(contract.CaptureStackTrace(0)).
 		WithExtra("custom", "value")
 
 	reporter.Report(err, ctx)
@@ -160,7 +162,7 @@ func TestLogReporter_Report_WithoutContext(t *testing.T) {
 	reporter := NewLogReporter(WithLogger(mockLogger), WithoutContext())
 
 	err := NewHttpException(500, "test")
-	ctx := NewExceptionContext().WithIDs("req-1", "trace-1")
+	ctx := NewErrorContext().WithIDs("req-1", "trace-1")
 
 	reporter.Report(err, ctx)
 
@@ -210,16 +212,16 @@ func TestLogReporter_Report_NilLogger(t *testing.T) {
 func TestNewCallbackReporter(t *testing.T) {
 	var called bool
 	var capturedErr error
-	var capturedCtx *ExceptionContext
+	var capturedCtx *ErrorContext
 
-	reporter := NewCallbackReporter(func(err error, ctx *ExceptionContext) {
+	reporter := NewCallbackReporter(func(err error, ctx *ErrorContext) {
 		called = true
 		capturedErr = err
 		capturedCtx = ctx
 	})
 
 	testErr := errors.New("test error")
-	testCtx := NewExceptionContext()
+	testCtx := NewErrorContext()
 
 	reporter.Report(testErr, testCtx)
 
@@ -242,8 +244,8 @@ func TestCallbackReporter_NilCallback(t *testing.T) {
 }
 
 func TestNewMultiReporter(t *testing.T) {
-	r1 := NewCallbackReporter(func(err error, ctx *ExceptionContext) {})
-	r2 := NewCallbackReporter(func(err error, ctx *ExceptionContext) {})
+	r1 := NewCallbackReporter(func(err error, ctx *ErrorContext) {})
+	r2 := NewCallbackReporter(func(err error, ctx *ErrorContext) {})
 
 	multi := NewMultiReporter(r1, r2)
 
@@ -256,12 +258,12 @@ func TestMultiReporter_Report(t *testing.T) {
 	callCount := 0
 	var mu sync.Mutex
 
-	r1 := NewCallbackReporter(func(err error, ctx *ExceptionContext) {
+	r1 := NewCallbackReporter(func(err error, ctx *ErrorContext) {
 		mu.Lock()
 		callCount++
 		mu.Unlock()
 	})
-	r2 := NewCallbackReporter(func(err error, ctx *ExceptionContext) {
+	r2 := NewCallbackReporter(func(err error, ctx *ErrorContext) {
 		mu.Lock()
 		callCount++
 		mu.Unlock()
@@ -282,7 +284,7 @@ func TestMultiReporter_AddReporter(t *testing.T) {
 		t.Error("Should start empty")
 	}
 
-	r := NewCallbackReporter(func(err error, ctx *ExceptionContext) {})
+	r := NewCallbackReporter(func(err error, ctx *ErrorContext) {})
 	multi.AddReporter(r)
 
 	if len(multi.reporters) != 1 {
@@ -325,7 +327,7 @@ func TestLogReporter_buildFields_PartialContext(t *testing.T) {
 	reporter := NewLogReporter(WithLogger(mockLogger))
 
 	// Context with only some fields set
-	ctx := NewExceptionContext()
+	ctx := NewErrorContext()
 	ctx.RequestID = "req-123"
 	// Leave other fields empty
 
@@ -337,13 +339,13 @@ func TestLogReporter_buildFields_PartialContext(t *testing.T) {
 	}
 }
 
-func TestExceptionContext_Chaining(t *testing.T) {
+func TestErrorContext_Chaining(t *testing.T) {
 	// Test that all methods return the context for chaining
-	ctx := NewExceptionContext().
+	ctx := NewErrorContext().
 		WithRequestInfo("GET", "/test", "1.2.3.4", "Agent").
 		WithIDs("req", "trace").
 		WithUserID("user").
-		WithStackTrace(CaptureStackTrace(0)).
+		WithStackTrace(contract.CaptureStackTrace(0)).
 		WithExtra("key", "value")
 
 	if ctx.Method != "GET" {
@@ -363,9 +365,9 @@ func TestExceptionContext_Chaining(t *testing.T) {
 	}
 }
 
-func TestExceptionContext_Timestamp(t *testing.T) {
+func TestErrorContext_Timestamp(t *testing.T) {
 	before := time.Now()
-	ctx := NewExceptionContext()
+	ctx := NewErrorContext()
 	after := time.Now()
 
 	if ctx.Timestamp.Before(before) || ctx.Timestamp.After(after) {

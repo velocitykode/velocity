@@ -3,10 +3,13 @@ package exceptions
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"sync"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func TestNewHandler(t *testing.T) {
@@ -33,7 +36,7 @@ func TestNewHandler(t *testing.T) {
 }
 
 func TestNewHandler_WithOptions(t *testing.T) {
-	mockReporter := NewCallbackReporter(func(err error, ctx *ExceptionContext) {})
+	mockReporter := NewCallbackReporter(func(err error, ctx *ErrorContext) {})
 
 	h := NewHandler(
 		WithDebug(true),
@@ -107,7 +110,7 @@ func TestHandler_AddReporter(t *testing.T) {
 	h := NewHandler()
 	initialCount := len(h.reporters)
 
-	mockReporter := NewCallbackReporter(func(err error, ctx *ExceptionContext) {})
+	mockReporter := NewCallbackReporter(func(err error, ctx *ErrorContext) {})
 	h.AddReporter(mockReporter)
 
 	if len(h.reporters) != initialCount+1 {
@@ -118,7 +121,7 @@ func TestHandler_AddReporter(t *testing.T) {
 func TestHandler_SetReporters(t *testing.T) {
 	h := NewHandler()
 
-	mockReporter := NewCallbackReporter(func(err error, ctx *ExceptionContext) {})
+	mockReporter := NewCallbackReporter(func(err error, ctx *ErrorContext) {})
 	h.SetReporters(mockReporter)
 
 	if len(h.reporters) != 1 {
@@ -172,7 +175,7 @@ func TestHandler_ShouldReport(t *testing.T) {
 
 func TestHandler_Report(t *testing.T) {
 	var reported bool
-	mockReporter := NewCallbackReporter(func(err error, ctx *ExceptionContext) {
+	mockReporter := NewCallbackReporter(func(err error, ctx *ErrorContext) {
 		reported = true
 	})
 
@@ -187,7 +190,7 @@ func TestHandler_Report(t *testing.T) {
 
 func TestHandler_Report_ShouldNotReport(t *testing.T) {
 	var reported bool
-	mockReporter := NewCallbackReporter(func(err error, ctx *ExceptionContext) {
+	mockReporter := NewCallbackReporter(func(err error, ctx *ErrorContext) {
 		reported = true
 	})
 
@@ -242,10 +245,12 @@ func TestHandler_Render_ContentNegotiation(t *testing.T) {
 	}
 }
 
-func TestHandler_Handle(t *testing.T) {
+func TestHandler_HandleRequest_NilContextFromRequest(t *testing.T) {
 	var reportedErr error
-	mockReporter := NewCallbackReporter(func(err error, ctx *ExceptionContext) {
+	var reportedCtx *ErrorContext
+	mockReporter := NewCallbackReporter(func(err error, ctx *ErrorContext) {
 		reportedErr = err
+		reportedCtx = ctx
 	})
 
 	h := NewHandler(WithReporters(mockReporter))
@@ -257,19 +262,22 @@ func TestHandler_Handle(t *testing.T) {
 	}
 
 	testErr := errors.New("test error")
-	h.Handle(ctx, testErr)
+	h.HandleRequest(ctx, testErr, nil)
 
 	if reportedErr == nil {
-		t.Error("Error was not reported")
+		t.Fatal("Error was not reported")
+	}
+	if reportedCtx.URL != "/test" || reportedCtx.Method != "GET" {
+		t.Errorf("context URL/Method = %q/%q, want /test/GET", reportedCtx.URL, reportedCtx.Method)
 	}
 	if ctx.statusCode == 0 {
 		t.Error("Response was not rendered")
 	}
 }
 
-func TestHandler_HandleWithContext(t *testing.T) {
-	var reportedCtx *ExceptionContext
-	mockReporter := NewCallbackReporter(func(err error, ctx *ExceptionContext) {
+func TestHandler_HandleRequest(t *testing.T) {
+	var reportedCtx *ErrorContext
+	mockReporter := NewCallbackReporter(func(err error, ctx *ErrorContext) {
 		reportedCtx = ctx
 	})
 
@@ -279,37 +287,37 @@ func TestHandler_HandleWithContext(t *testing.T) {
 		accept:  "application/json",
 	}
 
-	exCtx := NewExceptionContext().WithIDs("req-123", "trace-456")
-	h.HandleWithContext(ctx, errors.New("test"), exCtx)
+	exCtx := NewErrorContext().WithIDs("req-123", "trace-456")
+	h.HandleRequest(ctx, errors.New("test"), exCtx)
 
 	if reportedCtx.RequestID != "req-123" {
 		t.Error("Context not passed to reporter")
 	}
 }
 
-func TestHandler_HandleWithContext_NilContext(t *testing.T) {
+func TestHandler_HandleRequest_NilContext(t *testing.T) {
 	h := NewHandler()
 	ctx := &mockRenderContext{headers: make(map[string]string), accept: "application/json"}
 
 	// Should not panic with nil context
-	h.HandleWithContext(ctx, errors.New("test"), nil)
+	h.HandleRequest(ctx, errors.New("test"), nil)
 
 	if ctx.statusCode == 0 {
 		t.Error("Response was not rendered")
 	}
 }
 
-func TestHandler_HandleWithContext_NilStackTrace(t *testing.T) {
-	var reportedCtx *ExceptionContext
-	mockReporter := NewCallbackReporter(func(err error, ctx *ExceptionContext) {
+func TestHandler_HandleRequest_NilStackTrace(t *testing.T) {
+	var reportedCtx *ErrorContext
+	mockReporter := NewCallbackReporter(func(err error, ctx *ErrorContext) {
 		reportedCtx = ctx
 	})
 
 	h := NewHandler(WithReporters(mockReporter))
 	ctx := &mockRenderContext{headers: make(map[string]string), accept: "application/json"}
 
-	exCtx := NewExceptionContext() // No stack trace set
-	h.HandleWithContext(ctx, errors.New("test"), exCtx)
+	exCtx := NewErrorContext() // No stack trace set
+	h.HandleRequest(ctx, errors.New("test"), exCtx)
 
 	if reportedCtx.StackTrace == nil {
 		t.Error("Stack trace should be captured")
@@ -320,7 +328,7 @@ func TestHandler_RegisterCustomHandler(t *testing.T) {
 	h := NewHandler()
 
 	var customHandled bool
-	h.RegisterCustomHandler((*NotFoundHttpException)(nil), func(ctx RenderContext, err error, exCtx *ExceptionContext) {
+	h.RegisterCustomHandler((*NotFoundHttpException)(nil), func(ctx RenderContext, err error, exCtx *ErrorContext) {
 		customHandled = true
 		ctx.WriteHeader(http.StatusNotFound)
 		ctx.Write([]byte("custom not found"))
@@ -339,7 +347,7 @@ func TestHandler_RegisterCustomHandler(t *testing.T) {
 
 func TestHandler_HandlePanic_Error(t *testing.T) {
 	var reportedErr error
-	mockReporter := NewCallbackReporter(func(err error, ctx *ExceptionContext) {
+	mockReporter := NewCallbackReporter(func(err error, ctx *ErrorContext) {
 		reportedErr = err
 	})
 
@@ -364,7 +372,7 @@ func TestHandler_HandlePanic_Error(t *testing.T) {
 
 func TestHandler_HandlePanic_String(t *testing.T) {
 	var reportedErr error
-	mockReporter := NewCallbackReporter(func(err error, ctx *ExceptionContext) {
+	mockReporter := NewCallbackReporter(func(err error, ctx *ErrorContext) {
 		reportedErr = err
 	})
 
@@ -380,7 +388,7 @@ func TestHandler_HandlePanic_String(t *testing.T) {
 
 func TestHandler_HandlePanic_Other(t *testing.T) {
 	var reportedErr error
-	mockReporter := NewCallbackReporter(func(err error, ctx *ExceptionContext) {
+	mockReporter := NewCallbackReporter(func(err error, ctx *ErrorContext) {
 		reportedErr = err
 	})
 
@@ -554,7 +562,7 @@ func (dontReportCustomError) Error() string { return "custom boom" }
 
 func TestWithDontReport_CustomTypeSuppressed(t *testing.T) {
 	var reported bool
-	rec := NewCallbackReporter(func(error, *ExceptionContext) { reported = true })
+	rec := NewCallbackReporter(func(error, *ErrorContext) { reported = true })
 
 	// A pointer error from a non-framework package: its real %T name is
 	// "*url.Error", and WithDontReport must suppress it using exactly that
@@ -565,7 +573,7 @@ func TestWithDontReport_CustomTypeSuppressed(t *testing.T) {
 	if h.ShouldReport(err) {
 		t.Error("ShouldReport should be false for a dont-report custom type")
 	}
-	h.Report(err, NewExceptionContext())
+	h.Report(err, NewErrorContext())
 	if reported {
 		t.Error("custom error in dontReport list must not be reported")
 	}
@@ -573,7 +581,7 @@ func TestWithDontReport_CustomTypeSuppressed(t *testing.T) {
 
 func TestWithDontReport_LiteralErrorNoLongerSuppresses(t *testing.T) {
 	var reported bool
-	rec := NewCallbackReporter(func(error, *ExceptionContext) { reported = true })
+	rec := NewCallbackReporter(func(error, *ErrorContext) { reported = true })
 
 	// Pre-fix every non-builtin error collapsed to "error", so this would have
 	// suppressed the custom type. It must no longer match.
@@ -583,8 +591,73 @@ func TestWithDontReport_LiteralErrorNoLongerSuppresses(t *testing.T) {
 	if !h.ShouldReport(err) {
 		t.Error("ShouldReport should be true: \"error\" must not match a real type name")
 	}
-	h.Report(err, NewExceptionContext())
+	h.Report(err, NewErrorContext())
 	if !reported {
 		t.Error("custom error must be reported when only \"error\" is in dontReport")
+	}
+}
+
+func TestHandler_RuleSetters_Store(t *testing.T) {
+	h := NewHandler()
+	match := func(error) bool { return true }
+	h.AddMapRule(contract.MapRule{Match: match})
+	h.AddRenderRule(contract.RenderRule{Match: match, Status: 418})
+	h.AddReportRule(contract.ReportRule{Match: match})
+	h.AddIgnoreRule(contract.IgnoreRule{Match: match})
+	h.AddLevelRule(contract.LevelRule{Match: match, Level: contract.LogLevelWarn})
+	h.AddThrottleRule(contract.ThrottleRule{Match: match})
+	h.IgnoreIf(func(error, *ErrorContext) bool { return false })
+	h.ContextUsing(func(error, *ErrorContext) map[string]any { return nil })
+	h.JSONWhen(func(*http.Request, error) bool { return true })
+	h.BeforeRender(func(_ RenderContext, _ error, status int) int { return status })
+	h.SetErrorPageRenderer(nil)
+
+	tests := []struct {
+		name string
+		got  int
+	}{
+		{"map", len(h.mapRules)},
+		{"render", len(h.renderRules)},
+		{"report", len(h.reportRules)},
+		{"ignore", len(h.ignoreRules)},
+		{"level", len(h.levelRules)},
+		{"throttle", len(h.throttleRules)},
+		{"ignore predicates", len(h.ignorePredicates)},
+		{"context providers", len(h.contextProviders)},
+		{"before render", len(h.beforeRender)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != 1 {
+				t.Errorf("stored %d, want 1", tt.got)
+			}
+		})
+	}
+	if h.jsonWhen == nil {
+		t.Error("JSONWhen predicate not stored")
+	}
+}
+
+func TestHandler_HandleConsole(t *testing.T) {
+	tests := []struct {
+		name         string
+		err          error
+		wantCode     int
+		wantReported bool
+	}{
+		{"nil error", nil, 0, false},
+		{"error reports", errors.New("command failed"), 1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reported := false
+			h := NewHandler(WithReporters(NewCallbackReporter(func(error, *ErrorContext) { reported = true })))
+			if got := h.HandleConsole(io.Discard, tt.err); got != tt.wantCode {
+				t.Errorf("HandleConsole() = %d, want %d", got, tt.wantCode)
+			}
+			if reported != tt.wantReported {
+				t.Errorf("reported = %v, want %v", reported, tt.wantReported)
+			}
+		})
 	}
 }

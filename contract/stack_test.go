@@ -1,4 +1,4 @@
-package exceptions
+package contract
 
 import (
 	"os"
@@ -91,7 +91,7 @@ func TestExtractPackageName(t *testing.T) {
 		want     string
 	}{
 		{"main.main", "main"},
-		{"velocity/exceptions.Function", "velocity/exceptions"},
+		{"velocity/contract.Function", "velocity/contract"},
 		{"simple", ""},
 	}
 
@@ -188,7 +188,7 @@ func TestGetFramesWithSource(t *testing.T) {
 
 func TestGetFramesWithSource_NonexistentFile(t *testing.T) {
 	st := &StackTrace{
-		Frames: []Frame{
+		Frames: []StackFrame{
 			{File: "/nonexistent/file.go", Line: 10, Function: "Test", Package: "test"},
 		},
 	}
@@ -203,7 +203,7 @@ func TestGetFramesWithSource_NonexistentFile(t *testing.T) {
 	}
 }
 
-func TestFrame_ShortFile(t *testing.T) {
+func TestStackFrame_ShortFile(t *testing.T) {
 	tests := []struct {
 		name string
 		file string
@@ -219,7 +219,7 @@ func TestFrame_ShortFile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := Frame{File: tt.file}
+			f := StackFrame{File: tt.file}
 			got := f.ShortFile()
 			if got != tt.want {
 				t.Errorf("ShortFile() = %q, want %q", got, tt.want)
@@ -240,5 +240,38 @@ func TestFileExists(t *testing.T) {
 
 	if fileExists(filepath.Join(tmpDir, "nonexistent.txt")) {
 		t.Error("fileExists should return false for nonexistent file")
+	}
+}
+
+func TestCaptureStackTrace_Empty(t *testing.T) {
+	// Skip a very large number of frames to get empty result
+	st := CaptureStackTrace(1000)
+	if st == nil {
+		t.Fatal("Should return non-nil StackTrace")
+	}
+	// May have empty frames depending on call depth
+}
+
+func TestCaptureStackTrace_WithRuntimeFrames(t *testing.T) {
+	// Capture with skip 0 should include this function
+	st := CaptureStackTrace(0)
+
+	if st == nil {
+		t.Fatal("StackTrace should not be nil")
+	}
+	if len(st.Frames) == 0 {
+		t.Fatal("Should have at least one frame")
+	}
+
+	// First frame should be this test function
+	found := false
+	for _, frame := range st.Frames {
+		if frame.Function == "TestCaptureStackTrace_WithRuntimeFrames" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Should find test function in stack")
 	}
 }

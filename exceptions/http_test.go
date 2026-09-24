@@ -2,6 +2,7 @@ package exceptions
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -480,25 +481,39 @@ func (m *mockRenderContext) SetHeader(key, value string) {
 	m.headers[key] = value
 }
 
-func (m *mockRenderContext) GetHeader(key string) string {
-	switch key {
-	case "Accept":
-		return m.accept
-	case "Content-Type":
-		return m.contentType
-	case "X-Requested-With":
-		return m.xRequestWith
-	default:
-		return m.headers[key]
+// Request builds the request the mock stands for from its fields.
+func (m *mockRenderContext) Request() *http.Request {
+	method := m.method
+	if method == "" {
+		method = http.MethodGet
 	}
+	path := m.requestPath
+	if path == "" {
+		path = "/"
+	}
+	r := httptest.NewRequest(method, path, nil)
+	for k, v := range map[string]string{
+		"Accept":           m.accept,
+		"Content-Type":     m.contentType,
+		"X-Requested-With": m.xRequestWith,
+	} {
+		if v != "" {
+			r.Header.Set(k, v)
+		}
+	}
+	return r
 }
 
-func (m *mockRenderContext) RequestPath() string {
-	return m.requestPath
-}
+func (m *mockRenderContext) Writer() http.ResponseWriter { return nil }
 
-func (m *mockRenderContext) RequestMethod() string {
-	return m.method
+func (m *mockRenderContext) Written() bool { return m.statusCode != 0 }
+
+func (m *mockRenderContext) IsInertia() bool { return false }
+
+func (m *mockRenderContext) Redirect(status int, target string) error {
+	m.SetHeader("Location", target)
+	m.WriteHeader(status)
+	return nil
 }
 
 func (m *mockRenderContext) WantsJSON() bool {

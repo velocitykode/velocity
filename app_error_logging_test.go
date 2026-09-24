@@ -82,7 +82,7 @@ func newCaptureApp(t *testing.T) (*App, *errCaptureLogger) {
 func TestNew_ExceptionsReporterLogsViaAppLogger(t *testing.T) {
 	a, capture := newCaptureApp(t)
 
-	a.Services.Exceptions.Report(errors.New("reported failure"), nil)
+	a.Services.Errors.Report(errors.New("reported failure"), nil)
 
 	if capture.errorCount() != 1 {
 		t.Fatalf("expected exactly 1 error log entry, got %d", capture.errorCount())

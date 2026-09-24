@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/chain"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/events"
-	"github.com/velocitykode/velocity/exceptions"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/scheduler"
 )
@@ -102,7 +102,7 @@ func TestBootstrap_FullChain(t *testing.T) {
 		scheduleCalled = true
 	}).Commands(func(r *chain.Commands) {
 		commandsCalled = true
-	}).Exceptions(func(h exceptions.ExceptionHandler) {
+	}).Exceptions(func(h contract.ErrorHandler) {
 		exceptionsCalled = true
 	})
 
@@ -142,7 +142,7 @@ func TestBootstrap_ChainOrderIndependent(t *testing.T) {
 	var order []string
 
 	// Register in reverse order
-	a.Exceptions(func(h exceptions.ExceptionHandler) {
+	a.Exceptions(func(h contract.ErrorHandler) {
 		order = append(order, "exceptions")
 	}).Commands(func(r *chain.Commands) {
 		order = append(order, "commands")
@@ -518,9 +518,9 @@ func TestBootstrap_ExceptionsConfigured(t *testing.T) {
 		t.Fatalf("NewTestApp() error: %v", err)
 	}
 
-	var handlerRef exceptions.ExceptionHandler
+	var handlerRef contract.ErrorHandler
 
-	a.Exceptions(func(h exceptions.ExceptionHandler) {
+	a.Exceptions(func(h contract.ErrorHandler) {
 		handlerRef = h
 	})
 
@@ -531,8 +531,8 @@ func TestBootstrap_ExceptionsConfigured(t *testing.T) {
 	if handlerRef == nil {
 		t.Fatal("exceptions handler is nil")
 	}
-	if handlerRef != a.Services.Exceptions {
-		t.Error("exceptions handler does not match a.Services.Exceptions")
+	if handlerRef != a.Services.Errors {
+		t.Error("exceptions handler does not match a.Services.Errors")
 	}
 }
 
@@ -572,7 +572,7 @@ func TestBootstrap_ChainReturnsSameApp(t *testing.T) {
 		t.Error("Commands() did not return same *App")
 	}
 
-	got = a.Exceptions(func(exceptions.ExceptionHandler) {})
+	got = a.Exceptions(func(contract.ErrorHandler) {})
 	if got != a {
 		t.Error("Exceptions() did not return same *App")
 	}

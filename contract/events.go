@@ -98,7 +98,7 @@ type Dispatcher interface {
 
 // FailureEvent is implemented by events that represent a terminal failure
 // which should reach the exception Reporter chain in addition to event
-// listeners. The dispatcher bridges such events to ExceptionHandler.Report
+// listeners. The dispatcher bridges such events to ErrorHandler.Report
 // synchronously at dispatch time, so reporting stays reliable even when
 // listener delivery is asynchronous or best-effort.
 //

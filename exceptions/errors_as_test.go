@@ -287,7 +287,7 @@ func TestHandler_HandlePanic_HTTPShapedValueIs500(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var reported error
-			h := NewHandler(WithReporters(NewCallbackReporter(func(err error, _ *ExceptionContext) {
+			h := NewHandler(WithReporters(NewCallbackReporter(func(err error, _ *ErrorContext) {
 				reported = err
 			})))
 			ctx := &mockRenderContext{headers: make(map[string]string), accept: "application/json"}

@@ -53,7 +53,7 @@ type DefaultDispatcher struct {
 
 	// failureReporter, when set, receives every dispatched event that
 	// implements contract.FailureEvent, synchronously, before listener
-	// fan-out. The framework wires it to ExceptionHandler.Report at
+	// fan-out. The framework wires it to ErrorHandler.Report at
 	// bootstrap so background failures (failed jobs, scheduled tasks,
 	// async listeners) reach the Reporter chain reliably even though
 	// listener delivery may be asynchronous or best-effort.

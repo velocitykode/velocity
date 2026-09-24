@@ -9,12 +9,12 @@ import (
 	"github.com/velocitykode/velocity/log"
 )
 
-// ExceptionContext contains contextual information about where an exception occurred.
-type ExceptionContext = contract.ExceptionContext
+// ErrorContext contains contextual information about where an exception occurred.
+type ErrorContext = contract.ErrorContext
 
-// NewExceptionContext creates a new ExceptionContext with the current timestamp.
-func NewExceptionContext() *ExceptionContext {
-	return &ExceptionContext{
+// NewErrorContext creates a new ErrorContext with the current timestamp.
+func NewErrorContext() *ErrorContext {
+	return &ErrorContext{
 		Timestamp: time.Now(),
 		Extra:     make(map[string]any),
 	}
@@ -73,7 +73,7 @@ func WithoutContext() LogReporterOption {
 }
 
 // Report logs an exception with its context.
-func (r *LogReporter) Report(err error, ctx *ExceptionContext) {
+func (r *LogReporter) Report(err error, ctx *ErrorContext) {
 	logger := r.logger
 	if logger == nil {
 		return // No logger configured, skip reporting
@@ -84,7 +84,7 @@ func (r *LogReporter) Report(err error, ctx *ExceptionContext) {
 }
 
 // buildFields builds log fields from the error and context.
-func (r *LogReporter) buildFields(err error, ctx *ExceptionContext) []any {
+func (r *LogReporter) buildFields(err error, ctx *ErrorContext) []any {
 	var fields []any
 
 	// Add exception-specific fields
@@ -150,16 +150,16 @@ func (r *LogReporter) buildFields(err error, ctx *ExceptionContext) []any {
 
 // CallbackReporter reports exceptions using a callback function.
 type CallbackReporter struct {
-	callback func(err error, ctx *ExceptionContext)
+	callback func(err error, ctx *ErrorContext)
 }
 
 // NewCallbackReporter creates a new CallbackReporter.
-func NewCallbackReporter(callback func(err error, ctx *ExceptionContext)) *CallbackReporter {
+func NewCallbackReporter(callback func(err error, ctx *ErrorContext)) *CallbackReporter {
 	return &CallbackReporter{callback: callback}
 }
 
 // Report calls the callback function with the error and context.
-func (r *CallbackReporter) Report(err error, ctx *ExceptionContext) {
+func (r *CallbackReporter) Report(err error, ctx *ErrorContext) {
 	if r.callback != nil {
 		r.callback(err, ctx)
 	}
@@ -176,7 +176,7 @@ func NewMultiReporter(reporters ...Reporter) *MultiReporter {
 }
 
 // Report sends the error to all reporters.
-func (r *MultiReporter) Report(err error, ctx *ExceptionContext) {
+func (r *MultiReporter) Report(err error, ctx *ErrorContext) {
 	for _, reporter := range r.reporters {
 		reporter.Report(err, ctx)
 	}

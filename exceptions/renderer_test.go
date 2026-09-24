@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func TestNewJSONRenderer(t *testing.T) {
@@ -25,7 +27,7 @@ func TestJSONRenderer_ContentType(t *testing.T) {
 func TestJSONRenderer_Render_HttpException(t *testing.T) {
 	r := NewJSONRenderer()
 	ctx := &mockRenderContext{headers: make(map[string]string)}
-	exCtx := NewExceptionContext().WithIDs("req-123", "trace-456")
+	exCtx := NewErrorContext().WithIDs("req-123", "trace-456")
 
 	err := NewHttpException(http.StatusBadRequest, "Bad request").
 		WithHeader("X-Custom", "value")
@@ -60,7 +62,7 @@ func TestJSONRenderer_Render_HttpException(t *testing.T) {
 func TestJSONRenderer_Render_DebugMode(t *testing.T) {
 	r := NewJSONRenderer()
 	ctx := &mockRenderContext{headers: make(map[string]string)}
-	exCtx := NewExceptionContext().WithStackTrace(CaptureStackTrace(0))
+	exCtx := NewErrorContext().WithStackTrace(contract.CaptureStackTrace(0))
 
 	prev := errors.New("previous error")
 	err := NewBaseException("test error", 500).
@@ -157,7 +159,7 @@ func TestHTMLRenderer_ContentType(t *testing.T) {
 func TestHTMLRenderer_Render_Production(t *testing.T) {
 	r := NewHTMLRenderer()
 	ctx := &mockRenderContext{headers: make(map[string]string)}
-	exCtx := NewExceptionContext().WithIDs("req-123", "trace-456")
+	exCtx := NewErrorContext().WithIDs("req-123", "trace-456")
 
 	err := NewHttpException(http.StatusNotFound, "Page not found")
 
@@ -182,8 +184,8 @@ func TestHTMLRenderer_Render_Production(t *testing.T) {
 func TestHTMLRenderer_Render_Debug(t *testing.T) {
 	r := NewHTMLRenderer()
 	ctx := &mockRenderContext{headers: make(map[string]string)}
-	exCtx := NewExceptionContext().
-		WithStackTrace(CaptureStackTrace(0)).
+	exCtx := NewErrorContext().
+		WithStackTrace(contract.CaptureStackTrace(0)).
 		WithRequestInfo("GET", "/test", "1.2.3.4", "TestAgent").
 		WithIDs("req-123", "trace-456")
 

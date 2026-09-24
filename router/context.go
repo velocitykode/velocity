@@ -937,11 +937,11 @@ func (c *Context) Validator() contract.Validator {
 	return s.Validator
 }
 
-// Exceptions returns the exception handler interface.
-func (c *Context) Exceptions() contract.ExceptionHandler {
+// Exceptions returns the error handler.
+func (c *Context) Exceptions() contract.ErrorHandler {
 	s := c.mustServices()
-	requireService(c, s.Exceptions, "exceptions")
-	return s.Exceptions
+	requireService(c, s.Errors, "errors")
+	return s.Errors
 }
 
 // Scheduler returns the task scheduler interface.

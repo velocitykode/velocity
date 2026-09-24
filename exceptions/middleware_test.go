@@ -18,10 +18,10 @@ func TestNewHTTPRenderContext(t *testing.T) {
 	if ctx == nil {
 		t.Fatal("newHTTPRenderContext returned nil")
 	}
-	if ctx.w != w {
+	if ctx.Writer() != w {
 		t.Error("ResponseWriter not set")
 	}
-	if ctx.r != r {
+	if ctx.Request() != r {
 		t.Error("Request not set")
 	}
 }
@@ -71,37 +71,6 @@ func TestHTTPRenderContext_SetHeader(t *testing.T) {
 
 	if w.Header().Get("X-Custom") != "value" {
 		t.Error("Header not set")
-	}
-}
-
-func TestHTTPRenderContext_GetHeader(t *testing.T) {
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/test", nil)
-	r.Header.Set("Accept", "application/json")
-	ctx := newHTTPRenderContext(w, r)
-
-	if ctx.GetHeader("Accept") != "application/json" {
-		t.Error("GetHeader did not return correct value")
-	}
-}
-
-func TestHTTPRenderContext_RequestPath(t *testing.T) {
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/api/users", nil)
-	ctx := newHTTPRenderContext(w, r)
-
-	if ctx.RequestPath() != "/api/users" {
-		t.Errorf("RequestPath() = %q, want /api/users", ctx.RequestPath())
-	}
-}
-
-func TestHTTPRenderContext_RequestMethod(t *testing.T) {
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "/test", nil)
-	ctx := newHTTPRenderContext(w, r)
-
-	if ctx.RequestMethod() != "POST" {
-		t.Errorf("RequestMethod() = %q, want POST", ctx.RequestMethod())
 	}
 }
 
@@ -256,7 +225,7 @@ func TestRecoverMiddleware(t *testing.T) {
 
 func TestErrorHandler(t *testing.T) {
 	var reportedErr error
-	mockReporter := NewCallbackReporter(func(err error, ctx *ExceptionContext) {
+	mockReporter := NewCallbackReporter(func(err error, ctx *ErrorContext) {
 		reportedErr = err
 	})
 
@@ -381,12 +350,12 @@ func TestGetClientIP_HonorsTrustedProxies(t *testing.T) {
 // TestErrorHandler_RecordsRealClientIP_NotSpoofedXFF wires the
 // Handler-side setter end-to-end: a deployment with NO trusted proxies
 // (the default after `velocity.New` on a direct-internet host) must
-// record RemoteAddr on the ExceptionContext, even when the attacker
+// record RemoteAddr on the ErrorContext, even when the attacker
 // sends X-Forwarded-For. This is the regression pin for the audit
 // finding (log poisoning / forensics evasion).
 func TestErrorHandler_RecordsRealClientIP_NotSpoofedXFF(t *testing.T) {
-	var captured *ExceptionContext
-	h := NewHandler(WithReporters(NewCallbackReporter(func(_ error, exCtx *ExceptionContext) {
+	var captured *ErrorContext
+	h := NewHandler(WithReporters(NewCallbackReporter(func(_ error, exCtx *ErrorContext) {
 		captured = exCtx
 	})))
 
@@ -401,10 +370,10 @@ func TestErrorHandler_RecordsRealClientIP_NotSpoofedXFF(t *testing.T) {
 	eh(w, r, NewInternalServerErrorException("boom"))
 
 	if captured == nil {
-		t.Fatal("no exception context captured")
+		t.Fatal("no error context captured")
 	}
 	if captured.IP != "203.0.113.9" {
-		t.Fatalf("ExceptionContext.IP = %q, want %q (spoofed XFF/X-Real-IP leaked into audit log)", captured.IP, "203.0.113.9")
+		t.Fatalf("ErrorContext.IP = %q, want %q (spoofed XFF/X-Real-IP leaked into audit log)", captured.IP, "203.0.113.9")
 	}
 }
 

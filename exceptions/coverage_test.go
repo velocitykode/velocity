@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // Additional tests for 100% coverage
@@ -117,12 +119,16 @@ func (f *failingWriteContext) Write(data []byte) (int, error) {
 	return 0, errors.New("write failed")
 }
 func (f *failingWriteContext) SetHeader(key, value string) {}
-func (f *failingWriteContext) GetHeader(key string) string { return "" }
-func (f *failingWriteContext) RequestPath() string         { return "/" }
-func (f *failingWriteContext) RequestMethod() string       { return "GET" }
+func (f *failingWriteContext) Request() *http.Request {
+	return httptest.NewRequest(http.MethodGet, "/", nil)
+}
+func (f *failingWriteContext) Writer() http.ResponseWriter { return nil }
+func (f *failingWriteContext) Written() bool               { return f.statusCode != 0 }
+func (f *failingWriteContext) IsInertia() bool             { return false }
+func (f *failingWriteContext) Redirect(int, string) error  { return nil }
 func (f *failingWriteContext) WantsJSON() bool             { return true }
 
-func TestHTMLRenderer_Render_NilExceptionContext(t *testing.T) {
+func TestHTMLRenderer_Render_NilErrorContext(t *testing.T) {
 	r := NewHTMLRenderer()
 	ctx := &mockRenderContext{headers: make(map[string]string)}
 
@@ -147,15 +153,6 @@ func TestGetFramesWithSource_EmptyFile(t *testing.T) {
 	if len(frames[0].Source) > 0 {
 		t.Error("Empty file should not have source")
 	}
-}
-
-func TestCaptureStackTrace_Empty(t *testing.T) {
-	// Skip a very large number of frames to get empty result
-	st := CaptureStackTrace(1000)
-	if st == nil {
-		t.Fatal("Should return non-nil StackTrace")
-	}
-	// May have empty frames depending on call depth
 }
 
 func TestGetSourceContext_ScannerError(t *testing.T) {
@@ -241,7 +238,7 @@ func TestMiddlewareFunc_NoPanic(t *testing.T) {
 
 func TestErrorHandler_ReportableError(t *testing.T) {
 	var reported bool
-	mockReporter := NewCallbackReporter(func(err error, ctx *ExceptionContext) {
+	mockReporter := NewCallbackReporter(func(err error, ctx *ErrorContext) {
 		reported = true
 	})
 
@@ -274,8 +271,8 @@ func TestHTMLRenderer_Render_DebugWithAllData(t *testing.T) {
 		WithPrevious(prev).
 		WithContext("key", "value")
 
-	exCtx := NewExceptionContext().
-		WithStackTrace(CaptureStackTrace(0)).
+	exCtx := NewErrorContext().
+		WithStackTrace(contract.CaptureStackTrace(0)).
 		WithRequestInfo("POST", "/api/test", "1.2.3.4", "TestAgent").
 		WithIDs("req-123", "trace-456")
 
@@ -294,8 +291,8 @@ func TestJSONRenderer_Render_DebugWithAllData(t *testing.T) {
 		WithPrevious(prev).
 		WithContext("key", "value")
 
-	exCtx := NewExceptionContext().
-		WithStackTrace(CaptureStackTrace(0)).
+	exCtx := NewErrorContext().
+		WithStackTrace(contract.CaptureStackTrace(0)).
 		WithRequestInfo("POST", "/api/test", "1.2.3.4", "TestAgent").
 		WithIDs("req-123", "trace-456")
 
@@ -310,7 +307,7 @@ func TestJSONRenderer_Render_EmptyContext(t *testing.T) {
 	ctx := &mockRenderContext{headers: make(map[string]string)}
 
 	// Test with empty exception context (no request/trace IDs)
-	exCtx := &ExceptionContext{}
+	exCtx := &ErrorContext{}
 
 	err := r.Render(ctx, errors.New("test"), exCtx, false)
 	if err != nil {
@@ -323,7 +320,7 @@ func TestHTMLRenderer_Render_EmptyContext(t *testing.T) {
 	ctx := &mockRenderContext{headers: make(map[string]string)}
 
 	// Test with empty exception context
-	exCtx := &ExceptionContext{}
+	exCtx := &ErrorContext{}
 
 	err := r.Render(ctx, errors.New("test"), exCtx, false)
 	if err != nil {
@@ -396,30 +393,6 @@ func TestValidationException_Render_WriteSuccess(t *testing.T) {
 	}
 }
 
-func TestCaptureStackTrace_WithRuntimeFrames(t *testing.T) {
-	// Capture with skip 0 should include this function
-	st := CaptureStackTrace(0)
-
-	if st == nil {
-		t.Fatal("StackTrace should not be nil")
-	}
-	if len(st.Frames) == 0 {
-		t.Fatal("Should have at least one frame")
-	}
-
-	// First frame should be this test function
-	found := false
-	for _, frame := range st.Frames {
-		if frame.Function == "TestCaptureStackTrace_WithRuntimeFrames" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("Should find test function in stack")
-	}
-}
-
 func TestJSONRenderer_Render_LastResortError(t *testing.T) {
 	r := NewJSONRenderer()
 
@@ -449,9 +422,13 @@ func (w *writeFailContext) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 func (w *writeFailContext) SetHeader(key, value string) {}
-func (w *writeFailContext) GetHeader(key string) string { return "" }
-func (w *writeFailContext) RequestPath() string         { return "/" }
-func (w *writeFailContext) RequestMethod() string       { return "GET" }
+func (w *writeFailContext) Request() *http.Request {
+	return httptest.NewRequest(http.MethodGet, "/", nil)
+}
+func (w *writeFailContext) Writer() http.ResponseWriter { return nil }
+func (w *writeFailContext) Written() bool               { return w.statusCode != 0 }
+func (w *writeFailContext) IsInertia() bool             { return false }
+func (w *writeFailContext) Redirect(int, string) error  { return nil }
 func (w *writeFailContext) WantsJSON() bool             { return true }
 
 func TestHTMLRenderer_Render_TemplateExecuteSuccess(t *testing.T) {
@@ -460,7 +437,7 @@ func TestHTMLRenderer_Render_TemplateExecuteSuccess(t *testing.T) {
 
 	// Test production render with all data
 	err := NewNotFoundHttpException("Not found")
-	exCtx := NewExceptionContext().WithIDs("req-1", "trace-1")
+	exCtx := NewErrorContext().WithIDs("req-1", "trace-1")
 
 	renderErr := r.Render(ctx, err, exCtx, false)
 	if renderErr != nil {
@@ -491,7 +468,7 @@ func TestHandler_Render_FallbackToPlainText(t *testing.T) {
 
 type failingRenderer struct{}
 
-func (f *failingRenderer) Render(ctx RenderContext, err error, exCtx *ExceptionContext, debug bool) error {
+func (f *failingRenderer) Render(ctx RenderContext, err error, exCtx *ErrorContext, debug bool) error {
 	return errors.New("renderer failed")
 }
 
@@ -543,7 +520,7 @@ func TestJSONRenderer_Render_MarshalError(t *testing.T) {
 	err := NewBaseException("test", 500).
 		WithContext("channel", make(chan int))
 
-	exCtx := NewExceptionContext()
+	exCtx := NewErrorContext()
 
 	// Render in debug mode to include context
 	renderErr := r.Render(ctx, err, exCtx, true)
@@ -590,7 +567,7 @@ func TestHTMLRenderer_Render_ExceptionWithContext(t *testing.T) {
 		WithPrevious(prev).
 		WithContext("key", "value")
 
-	exCtx := NewExceptionContext().WithStackTrace(CaptureStackTrace(0))
+	exCtx := NewErrorContext().WithStackTrace(contract.CaptureStackTrace(0))
 
 	renderErr := r.Render(ctx, err, exCtx, true)
 	if renderErr != nil {

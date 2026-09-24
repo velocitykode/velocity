@@ -87,7 +87,7 @@ type App struct {
 	commands     *chain.Commands
 	seedersFn    func(*chain.Seeders)
 	seeders      *chain.Seeders
-	exceptionsFn func(exceptions.ExceptionHandler)
+	exceptionsFn func(contract.ErrorHandler)
 	bootstrapped bool
 	// bootstrapErr is the sticky result of the first bootstrap() run.
 	// A failed bootstrap must NOT be re-run (modules, middleware and
@@ -247,7 +247,7 @@ func New(opts ...Option) (*App, error) {
 	// fully replace it via the Exceptions() chain method (SetReporters).
 	// WithHandlerLogger routes the handler's own boot-time warnings
 	// (debug-mode notices) through a.Log as well.
-	a.Services.Exceptions = exceptions.NewHandler(
+	a.Services.Errors = exceptions.NewHandler(
 		exceptions.WithDebug(a.config.Debug),
 		exceptions.WithEnvironment(a.config.Env),
 		exceptions.WithTrustedProxies(clientip.CloneIPNets(trustedProxyNets)),
@@ -500,7 +500,7 @@ func New(opts ...Option) (*App, error) {
 		queue.SetBatchCallbackQueue(nil, "")
 		// H-22: clear the queued-listener failure reporter so a new
 		// app instance does not inherit a stale callback bound to the
-		// previous Exceptions handler.
+		// previous error handler.
 		eventqueue.InitializeQueueIntegration(nil, nil, nil)
 		// Drop the queue signing logger installed by initQueue so it
 		// does not retain the torn-down logger (nil-safe setter), and
@@ -513,7 +513,7 @@ func New(opts ...Option) (*App, error) {
 
 	// H-22: register the EventListenerJob factory with the queue's typed
 	// job registry, and wire the failure reporter to the framework's
-	// exceptions handler so queued listeners that exhaust retries surface
+	// error handler so queued listeners that exhaust retries surface
 	// to the configured reporters instead of being silently dropped.
 	// Idempotent on repeated calls. The dispatcher argument is nil because
 	// the default events.Dispatcher is *DefaultDispatcher, not
@@ -522,10 +522,10 @@ func New(opts ...Option) (*App, error) {
 	// InitializeQueueIntegration themselves with their dispatcher to bind
 	// the queue driver.
 	var reporter events.FailureReporter
-	if a.Services.Exceptions != nil {
-		exHandler := a.Services.Exceptions
+	if a.Services.Errors != nil {
+		exHandler := a.Services.Errors
 		reporter = func(job *events.EventListenerJob, jobErr error) {
-			exCtx := exceptions.NewExceptionContext().
+			exCtx := exceptions.NewErrorContext().
 				WithExtra("subsystem", "events").
 				WithExtra("job", "EventListenerJob").
 				WithExtra("listener_type", job.ListenerType).
@@ -959,7 +959,7 @@ func (a *App) Seeders(fn func(*chain.Seeders)) *App {
 }
 
 // Exceptions registers a callback that configures the exception handler.
-func (a *App) Exceptions(fn func(exceptions.ExceptionHandler)) *App {
+func (a *App) Exceptions(fn func(contract.ErrorHandler)) *App {
 	a.exceptionsFn = fn
 	return a
 }

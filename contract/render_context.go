@@ -1,0 +1,132 @@
+package contract
+
+import (
+	"errors"
+	"net/http"
+	"strings"
+)
+
+// RenderContext is the surface the error pipeline renders through. The
+// router supplies its own implementation; NewRenderContext is the bare
+// net/http one.
+type RenderContext interface {
+	// Request returns the request being answered.
+	Request() *http.Request
+	// Writer returns the underlying response writer.
+	Writer() http.ResponseWriter
+	// WriteHeader writes the status line once; later calls are no-ops.
+	WriteHeader(status int)
+	// Write writes body bytes, writing a 200 status first when none was
+	// written.
+	Write(p []byte) (int, error)
+	// SetHeader sets a response header. A key or value containing CR or
+	// LF is dropped.
+	SetHeader(key, value string)
+	// Written reports whether the status line has been written.
+	Written() bool
+	// WantsJSON reports whether the request asks for JSON (see WantsJSON).
+	WantsJSON() bool
+	// IsInertia reports whether the request is an Inertia request.
+	IsInertia() bool
+	// Redirect answers with a redirect to target. An unsafe target or a
+	// non-3xx status writes nothing and returns an error.
+	Redirect(status int, target string) error
+}
+
+// ErrInvalidRedirect is matched (errors.Is) by the error a RenderContext
+// returns from Redirect for an unsafe target, a non-3xx status, or a
+// response already written.
+var ErrInvalidRedirect = errors.New("velocity: invalid redirect")
+
+// NewRenderContext returns the net/http RenderContext for w and r.
+// WriteHeader is idempotent, SetHeader drops CR/LF, and Redirect accepts
+// only a relative target (single leading slash, no scheme, no "//", no
+// backslash or slash lookalike, no control bytes).
+func NewRenderContext(w http.ResponseWriter, r *http.Request) RenderContext {
+	return &httpRenderContext{w: w, r: r}
+}
+
+// httpRenderContext is the RenderContext over a bare ResponseWriter. It is
+// used by one goroutine for one error, like the ResponseWriter it wraps.
+type httpRenderContext struct {
+	w       http.ResponseWriter
+	r       *http.Request
+	written bool
+}
+
+func (c *httpRenderContext) Request() *http.Request      { return c.r }
+func (c *httpRenderContext) Writer() http.ResponseWriter { return c.w }
+func (c *httpRenderContext) Written() bool               { return c.written }
+func (c *httpRenderContext) WantsJSON() bool             { return WantsJSON(c.r) }
+func (c *httpRenderContext) IsInertia() bool             { return IsInertia(c.r) }
+
+// WriteHeader writes status once. A status outside 100-999 is written as
+// 500 because net/http rejects it.
+func (c *httpRenderContext) WriteHeader(status int) {
+	if c.written {
+		return
+	}
+	c.written = true
+	c.w.WriteHeader(validStatus(status))
+}
+
+// Write writes p, writing a 200 status first when none was written.
+func (c *httpRenderContext) Write(p []byte) (int, error) {
+	if !c.written {
+		c.WriteHeader(http.StatusOK)
+	}
+	return c.w.Write(p)
+}
+
+// SetHeader sets key to value, dropping an empty key or any CR or LF.
+func (c *httpRenderContext) SetHeader(key, value string) {
+	if key == "" || hasCRLF(key) || hasCRLF(value) {
+		return
+	}
+	c.w.Header().Set(key, value)
+}
+
+// Redirect writes a Location header and status. The status must be 3xx
+// (else a 500 HTTPError) and the target must pass isRelativeRedirect (else
+// a 400 HTTPError); both wrap ErrInvalidRedirect and write nothing, as does
+// a call after the response was written.
+func (c *httpRenderContext) Redirect(status int, target string) error {
+	if c.written {
+		return &HTTPError{Status: http.StatusInternalServerError, Cause: ErrInvalidRedirect}
+	}
+	if status < 300 || status > 399 {
+		return &HTTPError{Status: http.StatusInternalServerError, Cause: ErrInvalidRedirect}
+	}
+	if !isRelativeRedirect(target) {
+		return &HTTPError{Status: http.StatusBadRequest, Cause: ErrInvalidRedirect}
+	}
+	c.w.Header().Set("Location", target)
+	c.WriteHeader(status)
+	return nil
+}
+
+// isRelativeRedirect reports whether target is a same-origin path safe to
+// send as a Location header: it starts with exactly one "/", and contains
+// no control byte, no edge space, no backslash and no Unicode slash
+// lookalike, any of which a browser or intermediary could normalise into a
+// network-path reference ("//host").
+func isRelativeRedirect(target string) bool {
+	if len(target) == 0 || target[0] != '/' || strings.HasPrefix(target, "//") {
+		return false
+	}
+	if target[len(target)-1] == ' ' {
+		return false
+	}
+	for i := 0; i < len(target); i++ {
+		if b := target[i]; b < 0x20 || b == 0x7f {
+			return false
+		}
+	}
+	for _, r := range target {
+		switch r {
+		case '\\', '／', '⧸', '⁄', '∕':
+			return false
+		}
+	}
+	return true
+}
