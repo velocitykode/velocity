@@ -91,12 +91,16 @@ func NewHandler(opts ...Option) *Handler {
 
 	if h.debug && contract.IsProductionEnv(h.environment) {
 		h.debug = false
-		h.logger.Warn("APP_DEBUG=true is ignored in production: debug rendering is force-disabled so stack traces and source never reach clients")
+		h.logger.Warn(debugForcedOffWarning)
 	} else if h.debug {
 		h.logger.Warn("error handler running in debug mode: stack traces and source are exposed in error responses; never enable APP_DEBUG in production")
 	}
 	return h
 }
+
+// debugForcedOffWarning is logged when debug rendering is turned off
+// because the environment is production.
+const debugForcedOffWarning = "APP_DEBUG=true is ignored in production: debug rendering is force-disabled so stack traces and source never reach clients"
 
 // WithHandlerLogger sets the logger for the handler's own messages (debug
 // notices, renderer and reporter failures) and for the default LogReporter.
@@ -174,11 +178,21 @@ func (h *Handler) IsDebug() bool {
 	return h.debug
 }
 
-// SetEnvironment sets the environment name.
+// SetEnvironment sets the environment name. Moving a debug handler to a
+// production environment turns debug rendering off and logs it, the same
+// guard NewHandler applies.
 func (h *Handler) SetEnvironment(env string) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.environment = env
+	forced := h.debug && contract.IsProductionEnv(env)
+	if forced {
+		h.debug = false
+	}
+	logger := h.logger
+	h.mu.Unlock()
+	if forced {
+		logger.Warn(debugForcedOffWarning)
+	}
 }
 
 // GetEnvironment returns the environment name.

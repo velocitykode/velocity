@@ -99,6 +99,41 @@ func TestHandler_SetDebug(t *testing.T) {
 	}
 }
 
+func TestHandler_SetEnvironment(t *testing.T) {
+	tests := []struct {
+		name      string
+		debug     bool
+		env       string
+		wantDebug bool
+		wantWarn  bool
+	}{
+		{"DebugMovedToProductionForcedOff", true, "production", false, true},
+		{"DebugMovedToStagingForcedOff", true, "staging", false, true},
+		{"DebugMovedToLocalKept", true, "local", true, false},
+		{"OffMovedToProductionSilent", false, "production", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := &recLogger{}
+			h := NewHandler(WithHandlerLogger(logger), WithEnvironment("local"), WithDebug(tt.debug))
+			before := len(logger.all())
+			h.SetEnvironment(tt.env)
+			if h.GetEnvironment() != tt.env {
+				t.Errorf("GetEnvironment = %q, want %q", h.GetEnvironment(), tt.env)
+			}
+			if h.IsDebug() != tt.wantDebug {
+				t.Errorf("IsDebug = %v, want %v", h.IsDebug(), tt.wantDebug)
+			}
+			if got := logger.has("warn", debugForcedOffWarning); got != tt.wantWarn {
+				t.Errorf("forced-off warning = %v, want %v", got, tt.wantWarn)
+			}
+			if !tt.wantWarn && len(logger.all()) != before {
+				t.Errorf("SetEnvironment logged %v, want nothing", logger.all()[before:])
+			}
+		})
+	}
+}
+
 func TestHandler_Settings(t *testing.T) {
 	h, rep, _ := newTestHandler(WithAPIPrefixes("/a"), WithAPIMode(true))
 	if !h.IsAPIMode() || h.GetAPIPrefixes()[0] != "/a" {

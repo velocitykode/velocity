@@ -71,7 +71,8 @@ type ErrorHandler interface {
 	SetDebug(debug bool)
 	// IsDebug reports whether debug rendering is on.
 	IsDebug() bool
-	// SetEnvironment sets the environment name.
+	// SetEnvironment sets the environment name; a production name turns
+	// debug rendering off.
 	SetEnvironment(env string)
 	// GetEnvironment returns the environment name.
 	GetEnvironment() string
