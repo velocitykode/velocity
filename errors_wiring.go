@@ -33,6 +33,7 @@ func installErrorPipeline(a *App) {
 func installFrameworkErrorRules(h *problem.Handler) {
 	installSentinelErrorRules(h)
 	installValidationErrorRules(h)
+	installAuthErrorRules(h)
 	installCSRFErrorRules(h)
 }
 

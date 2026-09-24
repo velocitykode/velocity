@@ -314,6 +314,12 @@ type Manager struct {
 	// no dispatcher has been wired (auth events become no-ops).
 	eventDispatcher atomic.Pointer[authEventDispatcherHolder]
 
+	// loginRedirect names the login target an unauthenticated browser
+	// request is redirected to. Stored atomically so the deny and render
+	// paths read it without contending with the scheme-map mutex. Nil
+	// means defaultLoginPath.
+	loginRedirect atomic.Pointer[loginRedirectHolder]
+
 	mu sync.RWMutex
 }
 

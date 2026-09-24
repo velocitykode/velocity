@@ -7,12 +7,13 @@ import (
 	"encoding/hex"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -85,44 +86,24 @@ func hashClientIP(manager *Manager, r *http.Request) string {
 	return hashRemoteAddr(r.RemoteAddr)
 }
 
-// wantsJSON returns true if the request negotiates a JSON response via its
-// Accept header. We deliberately do NOT key on X-Requested-With:
-// XMLHttpRequest: that is a legacy, client-spoofable jQuery convention, not
-// content negotiation, and it would misclassify Inertia.js visits (which
-// are XHR but expect an HTML/redirect response). An API client that wants
-// JSON must say so with Accept: application/json.
-func wantsJSON(r *http.Request) bool {
-	return strings.Contains(r.Header.Get("Accept"), "application/json")
-}
-
-// isInertia reports whether the request is an Inertia.js XHR visit. Used
-// only by denyForbidden: a forbidden response has no redirect target, and a
-// bare 403 body would make the Inertia client throw "All Inertia requests
-// must receive a valid Inertia response", so that path emits an
-// X-Inertia-Location full reload instead. The redirecting deny paths
-// (guest, unauthenticated) need no Inertia check: Inertia sends
-// Accept: text/html, so wantsJSON is already false and they redirect.
-func isInertia(r *http.Request) bool {
-	return r.Header.Get("X-Inertia") == "true"
-}
-
-// denyUnauthenticated returns a 401 JSON response for API requests or redirects
-// to /login for HTML requests. Shared by all auth-requiring middleware.
-// The manager's logger records the denial when installed.
+// denyUnauthenticated returns an *UnauthenticatedError naming the default
+// scheme and the manager's login target, and writes nothing: the error
+// pipeline answers it (see Manager.RenderUnauthenticated). Shared by all
+// auth-requiring middleware. The manager's logger records the denial when
+// installed.
 func denyUnauthenticated(manager *Manager, c *router.Context) error {
 	manager.logWarn("velocity/auth: authentication required", "method", c.Request.Method, "path", c.Request.URL.Path, "ip_hash", hashClientIP(manager, c.Request))
-	if wantsJSON(c.Request) {
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthenticated."})
-	}
 	// Intended stash: remember the originally requested URL server-side in
-	// the session, then bounce to a clean /login. The URL bar never exposes
-	// the destination and an attacker cannot inject one via ?redirect=.
-	// ctx.RedirectToIntended pulls it back after login.
+	// the session, so the browser is bounced to a clean login target. The
+	// URL bar never exposes the destination and an attacker cannot inject
+	// one via ?redirect=. ctx.RedirectToIntended pulls it back after login.
 	//
-	// Only stash safe GET navigations (Inertia visits are GET). A POST/PUT
-	// that lands here lost its body to the redirect anyway, and stashing it
-	// would replay the wrong intent after login.
-	if c.Request.Method == http.MethodGet {
+	// Only stash safe GET navigations that are not JSON requests (Inertia
+	// visits are GET). A POST/PUT that lands here lost its body to the
+	// redirect anyway, and stashing it would replay the wrong intent after
+	// login. The session cookie is set now, before anything is written, so
+	// it rides on whatever response the pipeline renders.
+	if c.Request.Method == http.MethodGet && !c.WantsJSON() {
 		if sess := manager.Session(c.Request); sess != nil {
 			redirectURL := c.Request.URL.Path
 			if c.Request.URL.RawQuery != "" {
@@ -132,28 +113,18 @@ func denyUnauthenticated(manager *Manager, c *router.Context) error {
 			_ = sess.Save(c.Response)
 		}
 	}
-	return c.Redirect(http.StatusSeeOther, "/login")
+	return &UnauthenticatedError{
+		Schemes:    []string{manager.defaultSchemeName()},
+		RedirectTo: manager.loginTarget(c.Request),
+	}
 }
 
-// denyForbidden returns a 403 JSON response for API requests or a plain 403
-// status for HTML requests. The manager's logger records the denial when
-// installed.
+// denyForbidden returns a *ForbiddenError and writes nothing: the error
+// pipeline answers it with a 403 (an Inertia request gets the pipeline's
+// Inertia answer). The manager's logger records the denial when installed.
 func denyForbidden(manager *Manager, c *router.Context) error {
 	manager.logWarn("velocity/auth: authorization denied", "method", c.Request.Method, "path", c.Request.URL.Path, "ip_hash", hashClientIP(manager, c.Request))
-	if isInertia(c.Request) {
-		// No redirect target fits a forbidden response, and a bare 403
-		// body would make the Inertia client throw. Force a full-page
-		// reload of the current URL (bond's X-Inertia-Location idiom) so
-		// the browser renders the real 403 as a document instead.
-		c.Response.Header().Set("X-Inertia-Location", c.Request.URL.String())
-		c.Response.WriteHeader(http.StatusConflict)
-		return nil
-	}
-	if wantsJSON(c.Request) {
-		return c.JSON(http.StatusForbidden, map[string]string{"error": "Forbidden."})
-	}
-	c.Response.WriteHeader(http.StatusForbidden)
-	return nil
+	return &ForbiddenError{}
 }
 
 // FromContext extracts the *Manager from a router.Context.
@@ -288,24 +259,29 @@ func AuthorizeMiddleware(manager *Manager, ability string, resourceFunc ...func(
 }
 
 // GuestMiddleware returns middleware that only allows unauthenticated users.
-// Authenticated users receive a 403 JSON response for API requests or are
-// redirected to "/" for HTML requests.
+// For an authenticated user it returns a 403 error for a request that
+// wants JSON, and redirects any other request to "/".
 func GuestMiddleware(manager *Manager) router.MiddlewareFunc {
 	return GuestMiddlewareWithRedirect(manager, "/")
 }
 
 // GuestMiddlewareWithRedirect returns middleware that only allows
-// unauthenticated users. Authenticated users receive a 403 JSON response for
-// API requests or are redirected to the given URL for HTML requests.
+// unauthenticated users. For an authenticated user it returns a 403 error
+// ("Already authenticated.") for a request that wants JSON, rendered by the
+// error pipeline; any other request, Inertia included, is redirected (303)
+// to redirectTo and contract.ErrResponseWritten is returned.
 func GuestMiddlewareWithRedirect(manager *Manager, redirectTo string) router.MiddlewareFunc {
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
 			if manager.Check(c.Request) {
-				if wantsJSON(c.Request) {
-					return c.JSON(http.StatusForbidden, map[string]string{"error": "Already authenticated."})
+				if c.WantsJSON() {
+					return problem.Forbidden("Already authenticated.")
 				}
 				// Browser/Inertia: redirect (Inertia follows as a fresh visit).
-				return c.Redirect(http.StatusSeeOther, redirectTo)
+				if err := c.Redirect(http.StatusSeeOther, redirectTo); err != nil {
+					return err
+				}
+				return contract.ErrResponseWritten
 			}
 			return next(c)
 		}
