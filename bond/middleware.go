@@ -49,9 +49,9 @@ func (b *Bond) serveBuffered(w http.ResponseWriter, r *http.Request, next http.H
 			// Defence-in-depth: a hostile or fuzzed request URI
 			// carrying control bytes never reaches the header-set
 			// sink; it is rejected, not stripped. See
-			// hasUnsafeTargetBytes.
+			// contract.HasUnsafeRedirectBytes.
 			reload := r.URL.String()
-			if hasUnsafeTargetBytes(reload) {
+			if contract.HasUnsafeRedirectBytes(reload) {
 				reload = "/"
 			}
 			w.Header().Set(HeaderLocation, reload)

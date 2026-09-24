@@ -117,7 +117,7 @@ func TestIntended_LegitimateRootSlashPreserved(t *testing.T) {
 // TestIntended_FallbackAlsoSanitised confirms that a buggy caller who
 // passes an attacker-controlled string as fallback cannot smuggle an
 // open redirect through Intended. The fallback string is also validated
-// through sanitizeRedirect.
+// through contract.SanitizeRedirect.
 func TestIntended_FallbackAlsoSanitised(t *testing.T) {
 	c, _ := NewTestContext("GET", "/login")
 	// No stash; default empty allowlist collapses the malicious fallback.

@@ -47,8 +47,9 @@ type CommitReporter interface {
 
 // NewRenderContext returns the net/http RenderContext for w and r.
 // WriteHeader is idempotent, SetHeader drops CR/LF, and Redirect accepts
-// only a relative target (single leading slash, no scheme, no "//", no
-// backslash or slash lookalike, no control bytes).
+// only a path with a single leading slash that SanitizeRedirect accepts
+// with no allowed hosts (no "//", no backslash or slash lookalike, no
+// control bytes, no edge space).
 //
 // When w implements CommitReporter, Written also reports true while
 // w.Committed does, so a response the handler already committed through w
@@ -112,8 +113,9 @@ func (c *httpRenderContext) SetHeader(key, value string) {
 }
 
 // Redirect writes a Location header and status. The status must be 3xx
-// (else a 500 HTTPError) and the target must pass isRelativeRedirect (else
-// a 400 HTTPError); both wrap ErrInvalidRedirect and write nothing, as does
+// (else a 500 HTTPError) and the target must be a path starting with "/"
+// that SanitizeRedirect returns unchanged with no allowed hosts (else a
+// 400 HTTPError); both wrap ErrInvalidRedirect and write nothing, as does
 // a call after the response was written. The Location header stays only
 // once the status write is recorded: a status write that panics before
 // committing restores the header as it was, so a fallback response never
@@ -125,7 +127,7 @@ func (c *httpRenderContext) Redirect(status int, target string) error {
 	if status < 300 || status > 399 {
 		return &HTTPError{Status: http.StatusInternalServerError, Cause: ErrInvalidRedirect}
 	}
-	if !isRelativeRedirect(target) {
+	if !strings.HasPrefix(target, "/") || SanitizeRedirect(target, nil) != target {
 		return &HTTPError{Status: http.StatusBadRequest, Cause: ErrInvalidRedirect}
 	}
 	h := c.w.Header()
@@ -148,30 +150,4 @@ func restoreLocation(h http.Header, prior []string, hadPrior bool) {
 		return
 	}
 	h.Del("Location")
-}
-
-// isRelativeRedirect reports whether target is a same-origin path safe to
-// send as a Location header: it starts with exactly one "/", and contains
-// no control byte, no edge space, no backslash and no Unicode slash
-// lookalike, any of which a browser or intermediary could normalise into a
-// network-path reference ("//host").
-func isRelativeRedirect(target string) bool {
-	if len(target) == 0 || target[0] != '/' || strings.HasPrefix(target, "//") {
-		return false
-	}
-	if target[len(target)-1] == ' ' {
-		return false
-	}
-	for i := 0; i < len(target); i++ {
-		if b := target[i]; b < 0x20 || b == 0x7f {
-			return false
-		}
-	}
-	for _, r := range target {
-		switch r {
-		case '\\', '／', '⧸', '⁄', '∕':
-			return false
-		}
-	}
-	return true
 }

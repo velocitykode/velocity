@@ -51,8 +51,9 @@ func TestRedirect_ExplicitAllowlist(t *testing.T) {
 	}
 }
 
-// Catches the mutation "&& → ||" in sanitizeRedirect's allowlist loop, which
-// would let any host through as long as some allowlist entry is non-empty.
+// Catches the mutation "&& → ||" in contract.SanitizeRedirect's allowlist
+// loop, which would let any host through as long as some allowlist entry
+// is non-empty.
 func TestRedirect_AllowlistDoesNotLeakToOtherHosts(t *testing.T) {
 	c, rec := NewTestContext("GET", "/")
 	c.redirectAllowedHosts = []string{"trusted.example"}
@@ -486,7 +487,7 @@ func TestTypedEvent_OnEventDispatchError(t *testing.T) {
 // Ensures the redirect sanitizer emits a legitimate URL even for a
 // passthrough — catch an accidental nil/empty-string regression.
 func TestSanitizeRedirect_PassthroughReturnsURL(t *testing.T) {
-	got := sanitizeRedirect("https://trusted.example/x", []string{"trusted.example"})
+	got := SanitizeRedirect("https://trusted.example/x", []string{"trusted.example"})
 	u, err := url.Parse(got)
 	if err != nil || u.Host != "trusted.example" {
 		t.Fatalf("got %q, err %v", got, err)

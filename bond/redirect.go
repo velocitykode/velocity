@@ -94,27 +94,6 @@ func (b *Bond) emitLocation(w http.ResponseWriter, r *http.Request, url string) 
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
-// hasUnsafeTargetBytes reports whether s contains a byte that is dropped
-// between validation and the browser's URL parser: any C0 control or DEL
-// anywhere, or a space at either end (WHATWG URL preprocessing removes
-// TAB/LF/CR and trims edge C0-control-or-space; net/http trims header
-// values). It is the same rule router.SanitizeRedirect applies, kept
-// here for the sinks that cannot delegate to it (LocationExternal allows
-// external hosts; the version-mismatch 409 echoes the request URL).
-// Such values are REJECTED, never stripped: stripping after validation
-// changes the bytes that were validated ("/\n/evil" becomes "//evil").
-func hasUnsafeTargetBytes(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if b := s[i]; b < 0x20 || b == 0x7f {
-			return true
-		}
-	}
-	return s[0] == ' ' || s[len(s)-1] == ' '
-}
-
 // Back redirects to the previous page using the Referer header.
 // Only allows relative URLs or URLs matching the request host.
 // Falls back to "/" if no Referer is present or if it points to an external domain.
@@ -181,7 +160,7 @@ func sanitizeLocationScheme(target string) string {
 
 	// Checked before the leading-"/" shortcut below, which would
 	// otherwise return the target without any byte-level validation.
-	if hasUnsafeTargetBytes(target) {
+	if contract.HasUnsafeRedirectBytes(target) {
 		return "/"
 	}
 
@@ -207,9 +186,9 @@ func sanitizeLocationScheme(target string) string {
 }
 
 // sanitizeRedirectURL validates a redirect URL to prevent open redirects.
-// It delegates the shared checks (empty input, slash lookalikes,
-// protocol-relative references, scheme-without-host, host allowlist) to
-// the canonical router.SanitizeRedirect, then layers two bond-specific
+// It delegates the shared checks (empty input, unsafe bytes, slash
+// lookalikes, protocol-relative references, scheme-without-host, host
+// allowlist) to contract.SanitizeRedirect, then layers two bond-specific
 // STRICTER rules on absolute URLs:
 //
 //   - only http/https schemes are accepted even for allowlisted hosts
@@ -220,10 +199,10 @@ func sanitizeLocationScheme(target string) string {
 // Returns "/" for anything rejected. An empty allowedHosts list rejects
 // every absolute URL (relative paths still flow through).
 func sanitizeRedirectURL(target string, allowedHosts []string) string {
-	// router.SanitizeRedirect returns target verbatim when accepted and
+	// contract.SanitizeRedirect returns target verbatim when accepted and
 	// "/" when rejected, so any change means rejection ("/" itself is
 	// accepted unchanged).
-	if router.SanitizeRedirect(target, allowedHosts) != target {
+	if contract.SanitizeRedirect(target, allowedHosts) != target {
 		return "/"
 	}
 

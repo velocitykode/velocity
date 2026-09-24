@@ -1,67 +1,53 @@
 package router
 
 import (
+	"errors"
 	"net/http"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
-// Backslash and Unicode-similar slash characters can be folded into "/"
-// by browsers or intermediaries. A target like "/\evil.com" then turns
-// into "//evil.com", a protocol-relative redirect to attacker-controlled
-// hosts. The router's sanitizer must reject these up front.
-//
-// Mirrors bond/redirect.go's backslash treatment and extends it with the
-// most common Unicode slash lookalikes (U+FF0F, U+29F8, U+2044, U+2215).
-func TestSanitizeRedirect_SlashLookalikesRewritten(t *testing.T) {
-	cases := []struct {
-		name   string
-		target string
-	}{
-		{"ascii backslash leading", `/\evil.com/pwned`},
-		{"ascii backslash double", `\\evil.com/pwned`},
-		{"ascii backslash mid", `/path\evil.com`},
-		{"fullwidth solidus leading", "/／evil.com/pwned"},
-		{"big solidus leading", "/⧸evil.com/pwned"},
-		{"fraction slash leading", "/⁄evil.com/pwned"},
-		{"division slash leading", "/∕evil.com/pwned"},
-		{"fullwidth solidus only", "／／evil.com/pwned"},
+// TestRedirectSinks_MatchContract asserts the router's redirect surfaces
+// give contract.SanitizeRedirect's answer, with and without an allowlist:
+// the public SanitizeRedirect returns it, Context.Redirect writes "/" for
+// every target it rewrites, and the Context's RenderContext refuses
+// exactly those targets.
+func TestRedirectSinks_MatchContract(t *testing.T) {
+	targets := []string{
+		"", "/", "/dashboard", "/dashboard?x=1", "foo.html",
+		"//evil.com", "///evil", `/\evil.com/pwned`, `\\evil.com/pwned`,
+		"/／evil.com", "/⧸evil.com", "/⁄evil.com", "/∕evil.com",
+		"javascript:alert(1)", "data:text/html,x", "http:evil",
+		"https://trusted.example/x", "https://evil.com/x",
+		"https://trusted.example@evil.com", "http://[::1",
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := sanitizeRedirect(tc.target, []string{"trusted.example"})
-			if got != "/" {
-				t.Errorf("sanitizeRedirect(%q, ...) = %q, want %q",
-					tc.target, got, "/")
+	for _, tc := range controlByteRedirectTargets {
+		targets = append(targets, tc.target)
+	}
+	for _, hosts := range [][]string{nil, {"trusted.example"}} {
+		for _, target := range targets {
+			want := contract.SanitizeRedirect(target, hosts)
+			if got := SanitizeRedirect(target, hosts); got != want {
+				t.Errorf("SanitizeRedirect(%q, %v) = %q, contract says %q", target, hosts, got, want)
 			}
-		})
-	}
-}
 
-// Plain relative paths and allow-listed absolute URLs must still flow
-// through untouched after the slash-lookalike rejection lands. Guards
-// against an over-broad filter that would break legitimate redirects.
-func TestSanitizeRedirect_SlashLookalikesDoNotRegress(t *testing.T) {
-	allowed := []string{"trusted.example"}
-	cases := []struct {
-		name   string
-		target string
-		want   string
-	}{
-		{"plain relative", "/dashboard", "/dashboard"},
-		{"relative with query", "/dashboard?x=1", "/dashboard?x=1"},
-		{"allowed absolute", "https://trusted.example/x", "https://trusted.example/x"},
-		{"schemeless relative", "foo.html", "foo.html"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := sanitizeRedirect(tc.target, allowed)
-			if got != tc.want {
-				t.Errorf("sanitizeRedirect(%q, %v) = %q, want %q",
-					tc.target, allowed, got, tc.want)
+			c, rec := NewTestContext("GET", "/")
+			c.redirectAllowedHosts = hosts
+			if err := c.Redirect(http.StatusFound, target); err != nil {
+				t.Fatal(err)
 			}
-		})
+			if got := rec.Header().Get("Location"); want != target && got != "/" {
+				t.Errorf("Context.Redirect(%q) with %v: Location = %q, want /", target, hosts, got)
+			}
+
+			c, _ = NewTestContext("GET", "/")
+			c.redirectAllowedHosts = hosts
+			err := c.RenderContext().Redirect(http.StatusFound, target)
+			if refused := errors.Is(err, contract.ErrInvalidRedirect); refused != (want != target) {
+				t.Errorf("RenderContext().Redirect(%q) with %v = %v, want refused=%v", target, hosts, err, want != target)
+			}
+		}
 	}
 }
 

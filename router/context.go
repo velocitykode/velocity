@@ -389,7 +389,7 @@ func (c *Context) HTML(status int, html string) error {
 // removes the footgun where a spoofed Host header tricked the router
 // into treating an attacker-supplied destination as "same-origin".
 func (c *Context) Redirect(status int, rawURL string) error {
-	rawURL = sanitizeRedirect(rawURL, c.redirectAllowedHosts)
+	rawURL = contract.SanitizeRedirect(rawURL, c.redirectAllowedHosts)
 	http.Redirect(c.Response, c.Request, rawURL, status)
 	return nil
 }
@@ -417,8 +417,8 @@ const IntendedSessionKey = "url.intended"
 //
 // The returned string is ALWAYS safe to pass straight to ctx.Redirect:
 // it has been validated through the router's allowlist + scheme +
-// slash-lookalike pipeline (see sanitizeRedirect). The canonical caller
-// is ctx.RedirectToIntended.
+// slash-lookalike pipeline (see contract.SanitizeRedirect). The canonical
+// caller is ctx.RedirectToIntended.
 //
 // Contract:
 //   - Safe relative paths ("/dashboard", "/admin/users") pass through.
@@ -430,7 +430,7 @@ const IntendedSessionKey = "url.intended"
 //   - fallback itself is also sanitised so a buggy caller cannot
 //     introduce its own open redirect via the fallback string.
 func (c *Context) Intended(fallback string) string {
-	fallback = sanitizeRedirect(fallback, c.redirectAllowedHosts)
+	fallback = contract.SanitizeRedirect(fallback, c.redirectAllowedHosts)
 	if c.intendedFn == nil {
 		return fallback
 	}
@@ -438,11 +438,12 @@ func (c *Context) Intended(fallback string) string {
 	if raw == "" {
 		return fallback
 	}
-	safe := sanitizeRedirect(raw, c.redirectAllowedHosts)
-	// sanitizeRedirect returns "/" for any rejected input. Distinguish
-	// "stored value rejected" from "stored value was literally /" by
-	// re-comparing: if the raw input was anything other than "/" but
-	// sanitised to "/", treat that as a rejection and prefer fallback.
+	safe := contract.SanitizeRedirect(raw, c.redirectAllowedHosts)
+	// contract.SanitizeRedirect returns "/" for any rejected input.
+	// Distinguish "stored value rejected" from "stored value was
+	// literally /" by re-comparing: if the raw input was anything other
+	// than "/" but sanitised to "/", treat that as a rejection and prefer
+	// fallback.
 	if safe == "/" && raw != "/" {
 		return fallback
 	}
@@ -741,7 +742,7 @@ func (rc *ctxRenderContext) Redirect(status int, target string) error {
 	if rc.Written() || status < 300 || status > 399 {
 		return contract.NewHTTPError(http.StatusInternalServerError).WithCause(contract.ErrInvalidRedirect)
 	}
-	if target == "" || sanitizeRedirect(target, rc.c.redirectAllowedHosts) != target {
+	if target == "" || contract.SanitizeRedirect(target, rc.c.redirectAllowedHosts) != target {
 		return contract.NewHTTPError(http.StatusBadRequest).WithCause(contract.ErrInvalidRedirect)
 	}
 	h := rc.c.Response.Header()
@@ -798,129 +799,11 @@ func (c *Context) errorContext() *contract.ErrorContext {
 	return ec
 }
 
-// sanitizeRedirect validates a redirect URL against an explicit host
-// allowlist. Relative paths ("/foo", but not "//evil.com") are always
-// accepted. Absolute URLs are accepted only when the host matches one
-// of allowedHosts. Everything else is rewritten to "/".
-//
-// Subtle cases that FuzzSanitizeRedirect surfaced and this function must
-// keep rejecting:
-//   - "//evil", "///evil": protocol-relative URLs parse with empty Host
-//     in url.URL, so a bare Host!="" check wasn't enough.
-//   - "javascript:...", "data:...": opaque-scheme URLs have Host=="" but
-//     Scheme!="" and are live XSS vectors; they must be stripped.
-//   - "https://trusted@evil": url.Parse puts "evil" in Host, so the
-//     allowlist check catches this naturally.
-//   - "/\evil.com", "\\evil.com": browsers and intermediaries may
-//     normalise "\" to "/", which would turn a leading "/\" into the
-//     network-path reference "//". Mirrors bond.sanitizeRedirectURL's
-//     backslash rejection (see bond/redirect.go).
-//   - Unicode-similar slashes (U+FF0F FULLWIDTH SOLIDUS, U+29F8 BIG
-//     SOLIDUS, U+2044 FRACTION SLASH, U+2215 DIVISION SLASH): some
-//     normalisers fold these into ASCII "/", which again creates a
-//     network-path reference. Reject conservatively before we trust the
-//     leading character as a path separator.
-//   - Control bytes and edge spaces ("/\t/evil", "/\n/evil", " //evil"):
-//     the WHATWG URL parser removes every TAB, LF and CR and trims
-//     leading/trailing C0-control-or-space before parsing, and net/http
-//     trims header values, so each of these reaches the browser as
-//     "//evil". See hasUnsafeRedirectBytes.
-//
-// An accepted target is returned byte-for-byte. Callers must write that
-// exact value to the response: any transformation applied after this
-// check (stripping, trimming, unescaping) invalidates it.
-func sanitizeRedirect(target string, allowedHosts []string) string {
-	if target == "" {
-		return "/"
-	}
-	// Reject bytes a browser or net/http drops before parsing; what we
-	// validate below must be what the client ends up resolving.
-	if hasUnsafeRedirectBytes(target) {
-		return "/"
-	}
-	// Reject backslash variants and Unicode-similar slash codepoints up
-	// front so a downstream normaliser cannot turn "/\evil" or
-	// "/／evil" into a protocol-relative reference.
-	if containsSlashLookalike(target) {
-		return "/"
-	}
-	// Protocol-relative URLs (//evil.com, ///evil) are unsafe even though
-	// they lack an explicit scheme, the browser resolves them against
-	// the current page's scheme and ends up on attacker-controlled host.
-	if strings.HasPrefix(target, "//") {
-		return "/"
-	}
-	if strings.HasPrefix(target, "/") {
-		return target
-	}
-	u, err := url.Parse(target)
-	if err != nil {
-		return "/"
-	}
-	if u.Host != "" {
-		for _, allowed := range allowedHosts {
-			if allowed != "" && u.Host == allowed {
-				return target
-			}
-		}
-		return "/"
-	}
-	// Scheme without host, javascript:, data:, file:, etc. All unsafe.
-	if u.Scheme != "" {
-		return "/"
-	}
-	// Schemeless, hostless: a bare relative reference like "foo.html".
-	// Same-origin by definition.
-	return target
-}
-
 // SanitizeRedirect validates a redirect URL against an explicit host
-// allowlist, rewriting anything unsafe to "/". It is the canonical
-// open-redirect sanitizer for the framework; packages that perform
-// their own redirects (e.g. bond) delegate to it rather than keeping a
-// parallel copy. See sanitizeRedirect for the exact rules.
+// allowlist, rewriting anything unsafe to "/". It applies
+// contract.SanitizeRedirect; see there for the exact rules.
 func SanitizeRedirect(target string, allowedHosts []string) string {
-	return sanitizeRedirect(target, allowedHosts)
-}
-
-// containsSlashLookalike reports whether target contains a backslash or a
-// Unicode codepoint that some clients or intermediaries normalise to "/".
-// These are rejected before the path-vs-host decision because a leading
-// "/" followed by any of them (e.g. "/\evil", "/／evil") can become the
-// network-path reference "//evil" after normalisation, which is an open
-// redirect.
-//
-// Codepoints covered:
-//   - U+005C  REVERSE SOLIDUS (ASCII backslash)
-//   - U+FF0F  FULLWIDTH SOLIDUS
-//   - U+29F8  BIG SOLIDUS
-//   - U+2044  FRACTION SLASH
-//   - U+2215  DIVISION SLASH
-func containsSlashLookalike(target string) bool {
-	for _, r := range target {
-		switch r {
-		case '\\', '／', '⧸', '⁄', '∕':
-			return true
-		}
-	}
-	return false
-}
-
-// hasUnsafeRedirectBytes reports whether target contains a byte that is
-// dropped between this check and the browser's URL parser: any C0 control
-// or DEL anywhere, or a space at either end. The WHATWG URL standard
-// removes TAB/LF/CR from the whole input and trims leading/trailing
-// C0-control-or-space; net/http additionally trims spaces and tabs from
-// header values on write. Any of them can collapse an accepted "/x" into
-// the network-path reference "//host", so they are rejected outright
-// rather than stripped. target must be non-empty.
-func hasUnsafeRedirectBytes(target string) bool {
-	for i := 0; i < len(target); i++ {
-		if b := target[i]; b < 0x20 || b == 0x7f {
-			return true
-		}
-	}
-	return target[0] == ' ' || target[len(target)-1] == ' '
+	return contract.SanitizeRedirect(target, allowedHosts)
 }
 
 // SetServices sets the service container on this context and stashes it

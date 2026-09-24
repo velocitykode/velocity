@@ -14,7 +14,8 @@ import (
 // to a prefix check but reach the browser as the network-path reference
 // "//evil.test/x": the WHATWG URL parser removes every TAB/LF/CR and
 // trims leading/trailing C0-control-or-space, and net/http trims header
-// values on write. Every one must be rejected, never stripped.
+// values on write. Every one must be rejected, never stripped, by each
+// router sink that writes a redirect target.
 var controlByteRedirectTargets = []struct {
 	name   string
 	target string
@@ -35,30 +36,6 @@ var controlByteRedirectTargets = []struct {
 	{"tab inside scheme", "java\tscript:alert(1)"},
 	{"lf inside scheme", "ht\ntps://evil.test/x"},
 	{"header injection", "/ok\r\nX-Injected: 1"},
-}
-
-func TestSanitizeRedirect_RejectsControlBytes(t *testing.T) {
-	for _, tc := range controlByteRedirectTargets {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := sanitizeRedirect(tc.target, []string{"trusted.example"}); got != "/" {
-				t.Errorf("sanitizeRedirect(%q) = %q, want /", tc.target, got)
-			}
-			if got := SanitizeRedirect(tc.target, nil); got != "/" {
-				t.Errorf("SanitizeRedirect(%q) = %q, want /", tc.target, got)
-			}
-		})
-	}
-}
-
-// TestSanitizeRedirect_InteriorSpaceAllowed pins that only edge spaces
-// are rejected: an interior space is not removed by the browser, so the
-// path stays same-origin.
-func TestSanitizeRedirect_InteriorSpaceAllowed(t *testing.T) {
-	for _, target := range []string{"/path with spaces", "/ /evil.test/x", "/search?q=a b"} {
-		if got := sanitizeRedirect(target, nil); got != target {
-			t.Errorf("sanitizeRedirect(%q) = %q, want unchanged", target, got)
-		}
-	}
 }
 
 // wireHeaders serves h on a real socket and returns the raw response

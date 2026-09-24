@@ -2,6 +2,7 @@ package bond
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -9,6 +10,9 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/router"
 )
 
 // controlByteRedirectTargets are redirect targets that look same-origin
@@ -156,7 +160,7 @@ func TestSanitizeRedirectURL_RejectsControlBytes(t *testing.T) {
 
 // TestSanitizeLocationScheme_RejectsControlBytes covers the leading-"/"
 // shortcut in sanitizeLocationScheme, which returns without consulting
-// the router sanitizer.
+// contract.SanitizeRedirect.
 func TestSanitizeLocationScheme_RejectsControlBytes(t *testing.T) {
 	for _, tc := range controlByteRedirectTargets {
 		t.Run(tc.name, func(t *testing.T) {
@@ -172,27 +176,55 @@ func TestSanitizeLocationScheme_RejectsControlBytes(t *testing.T) {
 	}
 }
 
-func TestHasUnsafeTargetBytes(t *testing.T) {
-	cases := []struct {
-		in   string
-		want bool
-	}{
-		{"", false},
-		{"/", false},
-		{"/clean", false},
-		{"/path with spaces", false},
-		{"/café", false},
-		{"/a\tb", true},
-		{"/a\nb", true},
-		{"/a\rb", true},
-		{"/a\x00b", true},
-		{"/a\x7fb", true},
-		{" /a", true},
-		{"/a ", true},
+// TestUnsafeRedirectTargets_RefusedEverywhere asserts every unsafe
+// target is refused identically by router.SanitizeRedirect, the bare
+// contract RenderContext and bond (its sanitizer and its Redirect,
+// Location and Back sinks, which answer with "/").
+func TestUnsafeRedirectTargets_RefusedEverywhere(t *testing.T) {
+	const host = "trusted.example"
+	targets := []string{
+		"", "//evil.test/x", "///evil.test", `/\evil.test/x`, `\\evil.test/x`,
+		"/／evil.test", "/⧸evil.test", "/⁄evil.test", "/∕evil.test",
+		"javascript:alert(1)", "data:text/html,x", "http:evil.test",
+		"https://evil.test/x", "https://" + host + "@evil.test/x", "http://[::1",
 	}
-	for _, tc := range cases {
-		if got := hasUnsafeTargetBytes(tc.in); got != tc.want {
-			t.Errorf("hasUnsafeTargetBytes(%q) = %v, want %v", tc.in, got, tc.want)
+	for _, tc := range controlByteRedirectTargets {
+		targets = append(targets, tc.target)
+	}
+	b := setupBond(t)
+	sinks := map[string]func(w http.ResponseWriter, r *http.Request, target string){
+		"Redirect": b.Redirect,
+		"Location": b.Location,
+		"Back": func(w http.ResponseWriter, r *http.Request, target string) {
+			r.Header.Set("Referer", target)
+			b.Back(w, r)
+		},
+	}
+	for _, target := range targets {
+		if got := router.SanitizeRedirect(target, []string{host}); got != "/" {
+			t.Errorf("router.SanitizeRedirect(%q) = %q, want /", target, got)
+		}
+		if got := contract.SanitizeRedirect(target, []string{host}); got != "/" {
+			t.Errorf("contract.SanitizeRedirect(%q) = %q, want /", target, got)
+		}
+		if got := sanitizeRedirectURL(target, []string{host}); got != "/" {
+			t.Errorf("sanitizeRedirectURL(%q) = %q, want /", target, got)
+		}
+
+		w := httptest.NewRecorder()
+		rc := contract.NewRenderContext(w, httptest.NewRequest(http.MethodGet, "/", nil))
+		if err := rc.Redirect(http.StatusFound, target); !errors.Is(err, contract.ErrInvalidRedirect) || w.Header().Get("Location") != "" {
+			t.Errorf("NewRenderContext Redirect(%q) = %v, Location %q; want refused, no Location", target, err, w.Header().Get("Location"))
+		}
+
+		for name, sink := range sinks {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.Host = host
+			sink(w, r, target)
+			if got := w.Header().Get("Location"); got != "/" {
+				t.Errorf("bond %s(%q): Location = %q, want /", name, target, got)
+			}
 		}
 	}
 }
