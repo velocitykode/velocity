@@ -28,3 +28,42 @@ func TestMarkdownEngineOutsideDefaultGraph(t *testing.T) {
 		}
 	}
 }
+
+// TestRouterAndProblemImportedTogetherOnlyAtTheBoundary pins that the root
+// package and problem/routerbridge are the only packages whose non-test
+// code imports both router and problem: subsystems build their HTTP errors
+// from the contract vocabulary, never from the error package.
+func TestRouterAndProblemImportedTogetherOnlyAtTheBoundary(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go tool not on PATH")
+	}
+	const (
+		module        = "github.com/velocitykode/velocity"
+		routerPkg     = module + "/router"
+		problemPkg    = module + "/problem"
+		routerbridge  = module + "/problem/routerbridge"
+		importsFormat = `{{.ImportPath}}{{range .Imports}} {{.}}{{end}}`
+	)
+	out, err := exec.Command("go", "list", "-f", importsFormat, "./...").Output()
+	if err != nil {
+		t.Fatalf("go list ./...: %v", err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		pkg, imports := fields[0], fields[1:]
+		if pkg == module || pkg == routerbridge {
+			continue
+		}
+		hasRouter, hasProblem := false, false
+		for _, imp := range imports {
+			hasRouter = hasRouter || imp == routerPkg
+			hasProblem = hasProblem || imp == problemPkg
+		}
+		if hasRouter && hasProblem {
+			t.Errorf("%s imports both router and problem; build the error from contract instead", pkg)
+		}
+	}
+}

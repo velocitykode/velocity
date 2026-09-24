@@ -13,7 +13,6 @@ import (
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
-	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -275,7 +274,7 @@ func GuestMiddlewareWithRedirect(manager *Manager, redirectTo string) router.Mid
 		return func(c *router.Context) error {
 			if manager.Check(c.Request) {
 				if c.WantsJSON() {
-					return problem.Forbidden("Already authenticated.")
+					return contract.NewHTTPError(http.StatusForbidden, "Already authenticated.")
 				}
 				// Browser/Inertia: redirect (Inertia follows as a fresh visit).
 				if err := c.Redirect(http.StatusSeeOther, redirectTo); err != nil {
