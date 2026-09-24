@@ -13,6 +13,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
 )
 
@@ -54,7 +55,8 @@ func WithOnLimitReached(callback func(*Context)) RateLimitOption {
 	}
 }
 
-// WithMessage sets a custom error message for rate limit responses.
+// WithMessage sets the client-facing message of the 429 error a rate
+// limiter returns. The default is "Rate limit exceeded".
 func WithMessage(message string) RateLimitOption {
 	return func(cfg *RateLimitConfig) {
 		cfg.Message = message
@@ -225,22 +227,21 @@ func (krl *keyedRateLimiter) count() int {
 	return len(krl.limiters)
 }
 
-// rateLimitResponse sends a rate limit exceeded response.
-func rateLimitResponse(c *Context, limit int, remaining int, resetTime time.Time, message string) error {
+// rateLimitError builds the 429 a rate limiter returns for a request over
+// its limit. It writes nothing: the error carries Retry-After and the
+// X-RateLimit-* headers, and the error boundary copies them onto the
+// response it renders. message is the client-facing text.
+func rateLimitError(limit int, remaining int, resetTime time.Time, message string) *contract.HTTPError {
 	retryAfter := int(time.Until(resetTime).Seconds())
 	if retryAfter < 1 {
 		retryAfter = 1
 	}
 
-	c.SetHeader("Retry-After", strconv.Itoa(retryAfter))
-	c.SetHeader("X-RateLimit-Limit", strconv.Itoa(limit))
-	c.SetHeader("X-RateLimit-Remaining", strconv.Itoa(remaining))
-	c.SetHeader("X-RateLimit-Reset", strconv.FormatInt(resetTime.Unix(), 10))
-
-	return c.JSON(http.StatusTooManyRequests, map[string]interface{}{
-		"code":    http.StatusTooManyRequests,
-		"message": message,
-	})
+	return contract.NewHTTPError(http.StatusTooManyRequests, message).
+		WithHeader("Retry-After", strconv.Itoa(retryAfter)).
+		WithHeader("X-RateLimit-Limit", strconv.Itoa(limit)).
+		WithHeader("X-RateLimit-Remaining", strconv.Itoa(remaining)).
+		WithHeader("X-RateLimit-Reset", strconv.FormatInt(resetTime.Unix(), 10))
 }
 
 // setRateLimitHeaders sets the rate limit headers on a successful request.
@@ -293,7 +294,7 @@ func RateLimit(requests int, window time.Duration, opts ...RateLimitOption) Midd
 				if cfg.OnLimitReached != nil {
 					cfg.OnLimitReached(c)
 				}
-				return rateLimitResponse(c, requests, 0, resetTime, cfg.Message)
+				return rateLimitError(requests, 0, resetTime, cfg.Message)
 			}
 
 			setRateLimitHeaders(c, requests, tokens, resetTime)
@@ -350,7 +351,7 @@ func newRateLimitByKey(requests int, window time.Duration, keyFunc func(*Context
 				if cfg.OnLimitReached != nil {
 					cfg.OnLimitReached(c)
 				}
-				return rateLimitResponse(c, requests, 0, resetTime, cfg.Message)
+				return rateLimitError(requests, 0, resetTime, cfg.Message)
 			}
 
 			setRateLimitHeaders(c, requests, tokens, resetTime)
@@ -586,7 +587,7 @@ func RateLimitWithStore(store RateLimitStore, keyFunc func(*Context) string, opt
 				if cfg.OnLimitReached != nil {
 					cfg.OnLimitReached(c)
 				}
-				return rateLimitResponse(c, remaining, 0, resetTime, cfg.Message)
+				return rateLimitError(remaining, 0, resetTime, cfg.Message)
 			}
 
 			setRateLimitHeaders(c, remaining, remaining, resetTime)

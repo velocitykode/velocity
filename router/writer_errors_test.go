@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/velocitykode/velocity/contract"
 )
@@ -30,6 +32,9 @@ type writerCase struct {
 	status  int
 	// headers must be present with exactly these values.
 	headers map[string]string
+	// numericHeaders must be present with a non-negative integer value
+	// (time-dependent values such as Retry-After).
+	numericHeaders []string
 	// textBody is the exact plain-text body the default handler writes.
 	textBody string
 	// detail is the problem+json detail the default handler writes.
@@ -58,7 +63,53 @@ func writerCases() []writerCase {
 			textBody: unmatchedMethodNotAllowedBody,
 			detail:   "Method Not Allowed",
 		},
+		{
+			name: "rate limit",
+			setup: func(r *VelocityRouterV2) {
+				r.Use(RateLimit(1, time.Minute, WithBurst(0)))
+				r.Get("/limited", okHandler)
+			},
+			request: func() *http.Request { return httptest.NewRequest(http.MethodGet, "/limited", nil) },
+			status:  http.StatusTooManyRequests,
+			headers: map[string]string{
+				"X-RateLimit-Limit":     "1",
+				"X-RateLimit-Remaining": "0",
+			},
+			numericHeaders: []string{"Retry-After", "X-RateLimit-Reset"},
+			textBody:       "Rate limit exceeded\n",
+			detail:         "Rate limit exceeded",
+		},
 	}
+}
+
+// checkHeaders asserts h carries tc's exact and numeric headers, each
+// exactly once.
+func checkHeaders(t *testing.T, where string, h http.Header, tc writerCase) {
+	t.Helper()
+	for k, v := range tc.headers {
+		if got := h.Values(k); len(got) != 1 || got[0] != v {
+			t.Errorf("%s %s = %q, want exactly [%q]", where, k, got, v)
+		}
+	}
+	for _, k := range tc.numericHeaders {
+		got := h.Values(k)
+		if len(got) != 1 {
+			t.Errorf("%s %s = %q, want exactly one value", where, k, got)
+			continue
+		}
+		if n, err := strconv.ParseInt(got[0], 10, 64); err != nil || n < 0 {
+			t.Errorf("%s %s = %q, want a non-negative integer", where, k, got[0])
+		}
+	}
+}
+
+// caseHeaderKeys returns every header name tc names.
+func caseHeaderKeys(tc writerCase) []string {
+	keys := append([]string(nil), tc.numericHeaders...)
+	for k := range tc.headers {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // serveWriterCase builds a fresh router for tc, lets install adjust it,
@@ -95,11 +146,7 @@ func TestRouterWriters_StandaloneText(t *testing.T) {
 			if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 				t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
 			}
-			for k, v := range tc.headers {
-				if got := w.Header().Values(k); len(got) != 1 || got[0] != v {
-					t.Errorf("%s = %q, want exactly [%q]", k, got, v)
-				}
-			}
+			checkHeaders(t, "response", w.Header(), tc)
 		})
 	}
 }
@@ -122,18 +169,14 @@ func TestRouterWriters_SeamReceivesHTTPError(t *testing.T) {
 			if he.StatusCode() != tc.status {
 				t.Errorf("StatusCode() = %d, want %d", he.StatusCode(), tc.status)
 			}
-			for k, v := range tc.headers {
-				if got := he.Headers().Values(k); len(got) != 1 || got[0] != v {
-					t.Errorf("error header %s = %q, want exactly [%q]", k, got, v)
-				}
-			}
+			checkHeaders(t, "error", he.Headers(), tc)
 			if call.info.Committed || call.info.Recovered {
 				t.Errorf("info = %+v, want neither committed nor recovered", call.info)
 			}
 			if w.Body.Len() != 0 {
 				t.Errorf("router wrote %q with a handler installed, want nothing", w.Body.String())
 			}
-			for k := range tc.headers {
+			for _, k := range caseHeaderKeys(tc) {
 				if got := w.Header().Get(k); got != "" {
 					t.Errorf("router set %s = %q on the response, want it left to the handler", k, got)
 				}
@@ -168,11 +211,7 @@ func TestRouterWriters_JSONProblem(t *testing.T) {
 			if body != want {
 				t.Errorf("problem = %+v, want %+v", body, want)
 			}
-			for k, v := range tc.headers {
-				if got := w.Header().Values(k); len(got) != 1 || got[0] != v {
-					t.Errorf("%s = %q, want exactly [%q]", k, got, v)
-				}
-			}
+			checkHeaders(t, "response", w.Header(), tc)
 		})
 	}
 }

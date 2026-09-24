@@ -3,6 +3,7 @@ package router
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // Helper to create a test context
@@ -35,9 +38,22 @@ func successHandler(c *Context) error {
 	return c.String(http.StatusOK, "OK")
 }
 
+// throughBoundary stands in for the router's error boundary when a test
+// drives a rate-limit middleware directly: an error the chain returns is
+// rendered by DefaultErrorHandler, as the router would, and the test
+// asserts on the recorder.
+func throughBoundary(h HandlerFunc) HandlerFunc {
+	return func(c *Context) error {
+		if err := h(c); err != nil {
+			DefaultErrorHandler(c, err, ErrorInfo{})
+		}
+		return nil
+	}
+}
+
 func TestRateLimit_AllowsRequestsUnderLimit(t *testing.T) {
 	middleware := RateLimit(5, time.Second)
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Should allow 5 requests
 	for i := 0; i < 5; i++ {
@@ -54,7 +70,7 @@ func TestRateLimit_AllowsRequestsUnderLimit(t *testing.T) {
 
 func TestRateLimit_BlocksRequestsOverLimit(t *testing.T) {
 	middleware := RateLimit(3, time.Second)
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Make 3 allowed requests
 	for i := 0; i < 3; i++ {
@@ -73,9 +89,65 @@ func TestRateLimit_BlocksRequestsOverLimit(t *testing.T) {
 	}
 }
 
+// A rejected request comes back from every limiter as a 429
+// *contract.HTTPError carrying Retry-After and X-RateLimit-*, and the
+// middleware itself writes nothing: rendering is the boundary's job.
+func TestRateLimit_RejectionReturnsTooManyRequestsError(t *testing.T) {
+	tests := []struct {
+		name      string
+		mw        MiddlewareFunc
+		wantLimit string
+		wantMsg   string
+	}{
+		{name: "RateLimit", mw: RateLimit(1, time.Minute, WithBurst(0)), wantLimit: "1", wantMsg: "Rate limit exceeded"},
+		{
+			name:      "RateLimitByKey",
+			mw:        RateLimitByKey(2, time.Minute, func(*Context) string { return "k" }, WithBurst(0), WithMessage("slow down")),
+			wantLimit: "2",
+			wantMsg:   "slow down",
+		},
+		{
+			name:      "RateLimitWithStore",
+			mw:        RateLimitWithStore(newMockStore(0), func(*Context) string { return "k" }),
+			wantLimit: "0",
+			wantMsg:   "Rate limit exceeded",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, rec := createTestContext("GET", "/test", nil)
+			err := tt.mw(successHandler)(ctx)
+
+			var he *contract.HTTPError
+			if !errors.As(err, &he) {
+				t.Fatalf("err = %v (%T), want a *contract.HTTPError", err, err)
+			}
+			if he.StatusCode() != http.StatusTooManyRequests || he.Message != tt.wantMsg {
+				t.Errorf("got %d %q, want 429 %q", he.StatusCode(), he.Message, tt.wantMsg)
+			}
+			h := he.Headers()
+			if got := h.Get("X-RateLimit-Limit"); got != tt.wantLimit {
+				t.Errorf("X-RateLimit-Limit = %q, want %q", got, tt.wantLimit)
+			}
+			if got := h.Get("X-RateLimit-Remaining"); got != "0" {
+				t.Errorf("X-RateLimit-Remaining = %q, want 0", got)
+			}
+			if secs, err := strconv.Atoi(h.Get("Retry-After")); err != nil || secs < 1 {
+				t.Errorf("Retry-After = %q, want a positive number of seconds", h.Get("Retry-After"))
+			}
+			if _, err := strconv.ParseInt(h.Get("X-RateLimit-Reset"), 10, 64); err != nil {
+				t.Errorf("X-RateLimit-Reset = %q, want a unix time", h.Get("X-RateLimit-Reset"))
+			}
+			if rec.Body.Len() != 0 || len(rec.Header()) != 0 {
+				t.Errorf("middleware wrote body %q headers %v, want nothing", rec.Body.String(), rec.Header())
+			}
+		})
+	}
+}
+
 func TestRateLimitByIP_TracksSeparateIPs(t *testing.T) {
 	middleware := RateLimitByIP(2, time.Second)
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Helper to create context with specific RemoteAddr
 	ctxWithIP := func(ip string) (*Context, *httptest.ResponseRecorder) {
@@ -113,7 +185,7 @@ func TestRateLimitByKey_CustomKeyFunction(t *testing.T) {
 	middleware := RateLimitByKey(2, time.Second, func(c *Context) string {
 		return c.Header("X-API-Key")
 	})
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Key1 makes 2 requests (allowed)
 	for i := 0; i < 2; i++ {
@@ -141,7 +213,7 @@ func TestRateLimitByKey_CustomKeyFunction(t *testing.T) {
 
 func TestRateLimit_RetryAfterHeader(t *testing.T) {
 	middleware := RateLimit(1, 10*time.Second)
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// First request - allowed
 	ctx, _ := createTestContext("GET", "/test", nil)
@@ -167,7 +239,7 @@ func TestRateLimit_RetryAfterHeader(t *testing.T) {
 
 func TestRateLimit_XRateLimitHeaders(t *testing.T) {
 	middleware := RateLimit(5, time.Minute)
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	ctx, rec := createTestContext("GET", "/test", nil)
 	_ = handler(ctx)
@@ -201,7 +273,7 @@ func TestRateLimit_XRateLimitHeaders(t *testing.T) {
 func TestRateLimit_WithBurst(t *testing.T) {
 	// Rate: 2 requests per second with burst of 5
 	middleware := RateLimit(2, time.Second, WithBurst(5))
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Should allow 5 requests in burst
 	for i := 0; i < 5; i++ {
@@ -227,7 +299,7 @@ func TestRateLimit_WithSkip(t *testing.T) {
 	middleware := RateLimit(1, time.Second, WithSkip(func(c *Context) bool {
 		return c.Path() == "/health"
 	}))
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// First normal request - allowed
 	ctx, rec := createTestContext("GET", "/test", nil)
@@ -259,7 +331,7 @@ func TestRateLimit_WithOnLimitReached(t *testing.T) {
 		callbackCalled = true
 		callbackContext = c
 	}))
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// First request - allowed (callback not called)
 	ctx, _ := createTestContext("GET", "/test", nil)
@@ -282,23 +354,23 @@ func TestRateLimit_WithOnLimitReached(t *testing.T) {
 func TestRateLimit_WithMessage(t *testing.T) {
 	customMessage := "Slow down there, partner!"
 	middleware := RateLimit(1, time.Second, WithMessage(customMessage))
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// First request - allowed
 	ctx, _ := createTestContext("GET", "/test", nil)
 	_ = handler(ctx)
 
 	// Second request - blocked
-	ctx, rec := createTestContext("GET", "/test", nil)
+	ctx, rec := createTestContext("GET", "/test", map[string]string{"Accept": "application/json"})
 	_ = handler(ctx)
 
-	var response map[string]interface{}
+	var response problemBody
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("Failed to parse response: %v", err)
 	}
 
-	if msg, ok := response["message"].(string); !ok || msg != customMessage {
-		t.Errorf("Expected message %q, got %v", customMessage, response["message"])
+	if response.Detail != customMessage {
+		t.Errorf("Expected detail %q, got %q", customMessage, response.Detail)
 	}
 }
 
@@ -404,7 +476,7 @@ func TestRateLimitByKey_CleanupRemovesExpiredLimiters(t *testing.T) {
 	}, WithCleanupInterval(cleanupInterval))
 	defer rlc.Stop()
 
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Create limiters for 3 keys
 	for _, key := range []string{"key1", "key2", "key3"} {
@@ -443,7 +515,7 @@ func TestRateLimitByKey_WindowStatePrunedWithLimiter(t *testing.T) {
 	}, WithCleanupInterval(cleanupInterval))
 	defer rlc.Stop()
 
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Seed window state for many keys.
 	const numKeys = 50
@@ -494,7 +566,7 @@ func TestRateLimitByKey_WindowStatePrunedWithLimiter(t *testing.T) {
 
 func TestRateLimit_ConcurrentRequests(t *testing.T) {
 	middleware := RateLimit(100, time.Second)
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	var wg sync.WaitGroup
 	var allowed, blocked int64
@@ -528,7 +600,7 @@ func TestRateLimit_ConcurrentRequests(t *testing.T) {
 
 func TestRateLimitByIP_ConcurrentRequests(t *testing.T) {
 	middleware := RateLimitByIP(10, time.Second)
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	var wg sync.WaitGroup
 	results := make(map[string]*struct{ allowed, blocked int64 })
@@ -580,7 +652,7 @@ func TestMultipleLimitersOnRoute(t *testing.T) {
 	limiter2 := RateLimit(10, time.Minute)
 
 	// Stack them
-	handler := limiter1(limiter2(successHandler))
+	handler := throughBoundary(limiter1(limiter2(successHandler)))
 
 	// Should allow first 5 (limited by per-second limiter)
 	for i := 0; i < 5; i++ {
@@ -605,7 +677,7 @@ func TestNewRateLimitGroup(t *testing.T) {
 		RateLimit(3, time.Second),
 		RateLimit(5, time.Minute),
 	)
-	handler := group(successHandler)
+	handler := throughBoundary(group(successHandler))
 
 	// Should allow 3 requests (limited by stricter per-second limiter)
 	for i := 0; i < 3; i++ {
@@ -627,7 +699,7 @@ func TestNewRateLimitGroup(t *testing.T) {
 func TestThrottle_Alias(t *testing.T) {
 	// Throttle is just an alias for RateLimitByIP
 	middleware := Throttle(2, time.Second)
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Make 2 requests from same IP - should be allowed
 	for i := 0; i < 2; i++ {
@@ -661,36 +733,39 @@ func TestRateLimitConfig_String(t *testing.T) {
 
 func TestRateLimit_ResponseBody(t *testing.T) {
 	middleware := RateLimit(1, time.Second)
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Exhaust limit
 	ctx, _ := createTestContext("GET", "/test", nil)
 	_ = handler(ctx)
 
 	// Get blocked response
-	ctx, rec := createTestContext("GET", "/test", nil)
+	ctx, rec := createTestContext("GET", "/test", map[string]string{"Accept": "application/json"})
 	_ = handler(ctx)
 
-	var response map[string]interface{}
+	if got := rec.Header().Get("Content-Type"); got != "application/problem+json" {
+		t.Fatalf("Content-Type = %q, want application/problem+json", got)
+	}
+	var response problemBody
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("Failed to parse response body: %v", err)
 	}
 
-	// Check code
-	if code, ok := response["code"].(float64); !ok || int(code) != 429 {
-		t.Errorf("Expected code 429, got %v", response["code"])
+	// Check status
+	if response.Status != http.StatusTooManyRequests || response.Title != "Too Many Requests" {
+		t.Errorf("Expected status 429 Too Many Requests, got %d %q", response.Status, response.Title)
 	}
 
 	// Check message
-	if msg, ok := response["message"].(string); !ok || msg == "" {
-		t.Errorf("Expected non-empty message, got %v", response["message"])
+	if response.Detail != "Rate limit exceeded" {
+		t.Errorf("Expected detail %q, got %q", "Rate limit exceeded", response.Detail)
 	}
 }
 
 func TestRateLimitByIP_EmptyHeaders(t *testing.T) {
 	// No X-Forwarded-For or X-Real-IP, should use RemoteAddr
 	middleware := RateLimitByIP(2, time.Second)
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Create request without proxy headers
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -724,7 +799,7 @@ func TestRateLimitByKey_WindowReset(t *testing.T) {
 	middleware := RateLimitByKey(2, window, func(c *Context) string {
 		return "test-key"
 	})
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Make 2 requests (exhausts limit)
 	for i := 0; i < 2; i++ {
@@ -756,7 +831,7 @@ func TestRateLimitByKey_WindowReset(t *testing.T) {
 func TestRateLimit_ZeroBurst(t *testing.T) {
 	// Burst of 0 means no burst allowed
 	middleware := RateLimit(10, time.Second, WithBurst(0))
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// With burst 0, no requests should be allowed immediately
 	ctx, rec := createTestContext("GET", "/test", nil)
@@ -779,7 +854,7 @@ func TestRateLimitByIP_MultipleOptionsComposed(t *testing.T) {
 		}),
 		WithCleanupInterval(time.Minute),
 	)
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Make 2 requests
 	for i := 0; i < 2; i++ {
@@ -788,17 +863,17 @@ func TestRateLimitByIP_MultipleOptionsComposed(t *testing.T) {
 	}
 
 	// 3rd request should trigger callback and use custom message
-	ctx, rec := createTestContext("GET", "/test", map[string]string{"X-Real-IP": "1.1.1.1"})
+	ctx, rec := createTestContext("GET", "/test", map[string]string{"X-Real-IP": "1.1.1.1", "Accept": "application/json"})
 	_ = handler(ctx)
 
 	if callbackCount != 1 {
 		t.Errorf("Expected callback to be called once, got %d", callbackCount)
 	}
 
-	var response map[string]interface{}
-	json.Unmarshal(rec.Body.Bytes(), &response)
-	if msg := response["message"]; msg != "Custom limit message" {
-		t.Errorf("Expected custom message, got %v", msg)
+	var response problemBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &response)
+	if response.Detail != "Custom limit message" {
+		t.Errorf("Expected custom message, got %q", response.Detail)
 	}
 
 	// Skip header should bypass
@@ -815,7 +890,7 @@ func TestRateLimitByIP_MultipleOptionsComposed(t *testing.T) {
 // BenchmarkRateLimit measures overhead of rate limiting
 func BenchmarkRateLimit(b *testing.B) {
 	middleware := RateLimit(1000000, time.Second) // High limit to not block
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -827,7 +902,7 @@ func BenchmarkRateLimit(b *testing.B) {
 // BenchmarkRateLimitByIP measures per-IP rate limiter overhead
 func BenchmarkRateLimitByIP(b *testing.B) {
 	middleware := RateLimitByIP(1000000, time.Second)
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -839,7 +914,7 @@ func BenchmarkRateLimitByIP(b *testing.B) {
 // BenchmarkRateLimitByIP_ManyIPs measures performance with many different IPs
 func BenchmarkRateLimitByIP_ManyIPs(b *testing.B) {
 	middleware := RateLimitByIP(1000000, time.Second)
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -881,7 +956,7 @@ func TestRateLimitWithStore(t *testing.T) {
 	middleware := RateLimitWithStore(store, func(c *Context) string {
 		return c.Header("X-User-ID")
 	})
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// First two requests should be allowed
 	for i := 0; i < 2; i++ {
@@ -907,7 +982,7 @@ func TestRateLimitWithStore_Skip(t *testing.T) {
 	}, WithSkip(func(c *Context) bool {
 		return c.Path() == "/skip"
 	}))
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// First request uses the limit
 	ctx, rec := createTestContext("GET", "/test", nil)
@@ -932,7 +1007,7 @@ func TestRateLimitWithStore_OnLimitReached(t *testing.T) {
 	}, WithOnLimitReached(func(c *Context) {
 		called = true
 	}))
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Exhaust limit
 	ctx, _ := createTestContext("GET", "/test", nil)
@@ -951,7 +1026,7 @@ func TestThrottleByKey(t *testing.T) {
 	middleware := ThrottleByKey(2, time.Second, func(c *Context) string {
 		return c.Header("X-Tenant")
 	})
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Tenant1 makes 2 requests
 	for i := 0; i < 2; i++ {
@@ -991,7 +1066,7 @@ func TestExtractIP_IPv6NoPort(t *testing.T) {
 
 func TestRateLimit_HeadersOnBlockedRequest(t *testing.T) {
 	middleware := RateLimit(1, time.Second)
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Exhaust limit
 	ctx, _ := createTestContext("GET", "/test", nil)
@@ -1101,7 +1176,7 @@ func TestRateLimitByIP_HonorsRouterLevelTrustedProxies(t *testing.T) {
 	// router-level). Burst=1 so the second hit from the same client
 	// is denied.
 	middleware := RateLimitByIP(1, time.Minute)
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Helper: build a context with router-level trust populated, a
 	// fixed LB RemoteAddr, and a chosen real-client XFF.
@@ -1159,7 +1234,7 @@ func TestRateLimitByIP_UnionsRouterAndPerMiddlewareTrust(t *testing.T) {
 	// Per-middleware adds 192.168.0.0/16 (a second hop the router
 	// itself does not trust, e.g. an internal LB layer).
 	middleware := RateLimitByIP(1, time.Minute, WithTrustedProxies([]string{"192.168.0.0/16"}))
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Request through the chain: real client + 192.168.x (inner LB,
 	// per-middleware trust) + 10.0.0.x (outer LB, router trust) ->
@@ -1217,7 +1292,7 @@ func TestRouterThrottleByIP_SnapshotIsolatedFromLaterMutation(t *testing.T) {
 
 	// Register the limiter NOW. The snapshot is 10.0.0.0/8.
 	middleware := r.ThrottleByIP(1, time.Minute)
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	// Mutate the router's trusted-proxy set AFTER registration. The
 	// already-captured snapshot must not be affected.
@@ -1283,7 +1358,7 @@ func TestRouterThrottleByIP_SpoofedXFFResolvesOnlyWithTrust(t *testing.T) {
 	if err := r.ValidateConfig(); err != nil {
 		t.Fatalf("ValidateConfig: %v", err)
 	}
-	withTrust := r.ThrottleByIP(1, time.Minute)(successHandler)
+	withTrust := throughBoundary(r.ThrottleByIP(1, time.Minute)(successHandler))
 
 	makeReq := func(remote string, xff string, tp *TrustedProxies) (*Context, *httptest.ResponseRecorder) {
 		req := httptest.NewRequest("GET", "/", nil)
@@ -1323,7 +1398,7 @@ func TestRouterThrottleByIP_SpoofedXFFResolvesOnlyWithTrust(t *testing.T) {
 	if err := rNoTrust.ValidateConfig(); err != nil {
 		t.Fatalf("ValidateConfig (no trust): %v", err)
 	}
-	noTrust := rNoTrust.ThrottleByIP(1, time.Minute)(successHandler)
+	noTrust := throughBoundary(rNoTrust.ThrottleByIP(1, time.Minute)(successHandler))
 
 	ctx3, rec3 := makeReq("10.0.0.1:443", "203.0.113.9, 10.0.0.2", rNoTrust.trustedProxiesOrParse())
 	_ = noTrust(ctx3)
@@ -1348,7 +1423,7 @@ func TestRouterThrottleByIP_UnionsPerMiddlewareTrust(t *testing.T) {
 	}
 
 	middleware := r.ThrottleByIP(1, time.Minute, WithTrustedProxies([]string{"192.168.0.0/16"}))
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	makeReq := func(remote, xff string) (*Context, *httptest.ResponseRecorder) {
 		req := httptest.NewRequest("GET", "/", nil)
@@ -1397,7 +1472,7 @@ func TestRateLimitByIP_WarnsOnPrivatePeerWithNoTrust(t *testing.T) {
 	}()
 
 	middleware := RateLimitByIP(10, time.Minute)
-	handler := middleware(successHandler)
+	handler := throughBoundary(middleware(successHandler))
 
 	makeReq := func(remote string) *Context {
 		req := httptest.NewRequest("GET", "/", nil)
