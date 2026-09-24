@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -383,6 +384,97 @@ func TestBoundary_DeepChainMarkers(t *testing.T) {
 			}
 			if len(failed) != 1 || failed[0].Recovered != tt.wantRecovered {
 				t.Errorf("RequestFailed = %+v, want one with Recovered %v", failed, tt.wantRecovered)
+			}
+		})
+	}
+}
+
+// consumerRecovered stands for the recovered-panic error of a consumer's
+// own recovery middleware: it implements contract.RecoveredPanic and
+// unwraps to the error it carries, and is not a *PanicError.
+type consumerRecovered struct{ err error }
+
+func (e *consumerRecovered) Error() string  { return "recovered: " + e.err.Error() }
+func (e *consumerRecovered) Recovered() any { return e.err }
+func (e *consumerRecovered) Unwrap() error  { return e.err }
+
+// TestBoundary_ConsumerRecoveredPanic asserts the router treats any
+// contract.RecoveredPanic as a recovered panic: the default path answers
+// 500 without echoing the value's message and logs it, RequestFailed fires
+// once with Recovered set (and no raw stack, since there is no
+// *PanicError), and an installed handler receives it flagged recovered,
+// whatever the value would answer or be dropped as on its own.
+func TestBoundary_ConsumerRecoveredPanic(t *testing.T) {
+	dead, cancel := context.WithCancel(context.Background())
+	cancel()
+	tests := []struct {
+		name      string
+		value     error
+		reqCx     context.Context
+		installed bool
+	}{
+		{name: "ClientError", value: contract.NewHTTPError(http.StatusNotFound, "payload")},
+		{name: "CanceledLiveRequest", value: context.Canceled},
+		{name: "CanceledDeadRequest", value: context.Canceled, reqCx: dead},
+		{name: "ClientErrorInstalledHandler", value: contract.NewHTTPError(http.StatusNotFound, "payload"), installed: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewV2()
+			errLog := &logCapture{}
+			r.SetErrorLogger(errLog.fn)
+			var (
+				mu     sync.Mutex
+				failed []*RequestFailed
+			)
+			r.SetEventDispatcher(func(_ context.Context, event interface{}) error {
+				if rf, ok := event.(*RequestFailed); ok {
+					mu.Lock()
+					failed = append(failed, rf)
+					mu.Unlock()
+				}
+				return nil
+			})
+			var (
+				calls int
+				got   ErrorInfo
+			)
+			if tt.installed {
+				r.SetErrorHandler(func(c *Context, _ error, info ErrorInfo) {
+					calls++
+					got = info
+					c.Response.WriteHeader(http.StatusInternalServerError)
+				})
+			}
+			r.Get("/x", func(*Context) error { return &consumerRecovered{err: tt.value} })
+
+			req := httptest.NewRequest(http.MethodGet, "/x", nil)
+			if tt.reqCx != nil {
+				req = req.WithContext(tt.reqCx)
+			}
+			req.Header.Set("Accept", "application/json")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusInternalServerError {
+				t.Errorf("status = %d, want 500", w.Code)
+			}
+			if strings.Contains(w.Body.String(), "payload") {
+				t.Errorf("body leaks the panic value's message: %q", w.Body.String())
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(failed) != 1 || !failed[0].Recovered || failed[0].Stack != "" {
+				t.Errorf("RequestFailed = %+v, want one with Recovered set and no stack", failed)
+			}
+			if tt.installed {
+				if calls != 1 || !got.Recovered {
+					t.Errorf("error handler calls = %d, Recovered = %v, want 1 and true", calls, got.Recovered)
+				}
+				return
+			}
+			if errLog.count() != 1 {
+				t.Errorf("error log entries = %d, want 1", errLog.count())
 			}
 		})
 	}

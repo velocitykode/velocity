@@ -789,3 +789,78 @@ func TestInstall_DeepChainMarkers(t *testing.T) {
 		})
 	}
 }
+
+// consumerRecovered stands for the recovered-panic error of a consumer's
+// own recovery middleware: it implements contract.RecoveredPanic and
+// unwraps to the error it carries, and is no framework panic type.
+type consumerRecovered struct{ err error }
+
+func (e *consumerRecovered) Error() string  { return "recovered: " + e.err.Error() }
+func (e *consumerRecovered) Recovered() any { return e.err }
+func (e *consumerRecovered) Unwrap() error  { return e.err }
+
+// ctxReporter records whether each report was flagged recovered.
+type ctxReporter struct {
+	mu        sync.Mutex
+	recovered []bool
+}
+
+func (r *ctxReporter) Report(_ error, ctx *contract.ErrorContext) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recovered = append(r.recovered, ctx != nil && ctx.Recovered)
+}
+
+func (r *ctxReporter) all() []bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]bool(nil), r.recovered...)
+}
+
+// TestInstall_ConsumerRecoveredPanic asserts the installed pipeline treats
+// any contract.RecoveredPanic a handler returns as a recovered panic: one
+// report flagged recovered and a 500 that does not echo the value's
+// message, for JSON and browser clients, whatever the value would answer
+// or be dropped as on its own.
+func TestInstall_ConsumerRecoveredPanic(t *testing.T) {
+	dead, cancel := context.WithCancel(context.Background())
+	cancel()
+	tests := []struct {
+		name   string
+		value  error
+		reqCx  context.Context
+		accept string
+	}{
+		{name: "ClientErrorJSON", value: problem.NotFound("payload"), accept: "application/json"},
+		{name: "ClientErrorHTML", value: problem.NotFound("payload"), accept: "text/html"},
+		{name: "CanceledLiveRequest", value: context.Canceled, accept: "application/json"},
+		{name: "CanceledDeadRequest", value: context.Canceled, reqCx: dead, accept: "application/json"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rep := &ctxReporter{}
+			h := problem.NewHandler(problem.WithReporters(rep))
+			r := router.New()
+			Install(r, WithHandler(func() contract.ErrorHandler { return h }))
+			r.Get("/x", func(*router.Context) error { return &consumerRecovered{err: tt.value} })
+
+			req := httptest.NewRequest(http.MethodGet, "/x", nil)
+			if tt.reqCx != nil {
+				req = req.WithContext(tt.reqCx)
+			}
+			req.Header.Set("Accept", tt.accept)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusInternalServerError {
+				t.Errorf("status = %d, want 500", w.Code)
+			}
+			if strings.Contains(w.Body.String(), "payload") {
+				t.Errorf("body leaks the panic value's message: %q", w.Body.String())
+			}
+			if got := rep.all(); len(got) != 1 || !got[0] {
+				t.Errorf("reports (recovered flags) = %v, want one flagged recovered", got)
+			}
+		})
+	}
+}

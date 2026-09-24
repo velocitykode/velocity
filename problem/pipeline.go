@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
-	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // HandleRequest reports err once and renders one response for it through
@@ -134,12 +133,14 @@ func (h *Handler) applyMap(s *snapshot, err error) (out error) {
 	return err
 }
 
-// isRecovered reports whether err came from a recovered panic.
+// isRecovered reports whether err came from a recovered panic: ctx flags
+// it, or err's chain holds a contract.RecoveredPanic node (the framework's
+// own recovered-panic errors, or any other error implementing the facet).
 func isRecovered(err error, ctx *ErrorContext) bool {
 	if ctx != nil && ctx.Recovered {
 		return true
 	}
-	return panicerr.AsTyped(err) != nil
+	return carriesRecoveredPanic(err)
 }
 
 // outsidePanic reports whether the marker predicate match (a contract

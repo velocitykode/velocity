@@ -158,6 +158,10 @@ func TestClassifyError_ParityWithErrorsPackage(t *testing.T) {
 		deep = fmt.Errorf("layer %d: %w", i, deep)
 	}
 	pe := &PanicError{Err: errors.New("boom"), Stack: "stack"}
+	deepConsumer := error(&consumerRecovered{err: context.Canceled})
+	for i := 0; i < walkLimit+5; i++ {
+		deepConsumer = fmt.Errorf("layer %d: %w", i, deepConsumer)
+	}
 	tests := []struct {
 		name string
 		err  error
@@ -171,6 +175,9 @@ func TestClassifyError_ParityWithErrorsPackage(t *testing.T) {
 		{"panic carrying marker", &PanicError{Err: contract.ErrResponseWritten}},
 		{"as method", &asOnlyError{target: contract.NewHTTPError(http.StatusGone), inner: context.Canceled}},
 		{"beyond walk limit", deep},
+		{"consumer recovered panic", &consumerRecovered{err: contract.NewHTTPError(http.StatusNotFound)}},
+		{"consumer recovered around panic error", &consumerRecovered{err: pe}},
+		{"deep consumer recovered panic", deepConsumer},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -189,8 +196,12 @@ func TestClassifyError_ParityWithErrorsPackage(t *testing.T) {
 			if got, want := f.haveMessage, errors.As(tt.err, &me); got != want || (want && f.message != me) {
 				t.Errorf("message = %v, errors.As gives %v", got, want)
 			}
-			if got, want := f.panicked, errors.As(tt.err, &gotPE); got != want || f.panicErr != gotPE {
-				t.Errorf("panic = %v %p, errors.As gives %v %p", got, f.panicErr, want, gotPE)
+			var rp contract.RecoveredPanic
+			if got, want := f.panicked, errors.As(tt.err, &rp); got != want {
+				t.Errorf("panicked = %v, errors.As gives %v", got, want)
+			}
+			if errors.As(tt.err, &gotPE); f.panicErr != gotPE {
+				t.Errorf("panic error = %p, errors.As gives %p", f.panicErr, gotPE)
 			}
 			if got, want := f.maxBytes, errors.As(tt.err, &mbe); got != want {
 				t.Errorf("maxBytes = %v, errors.As gives %v", got, want)

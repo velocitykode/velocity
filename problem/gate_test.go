@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -695,6 +696,92 @@ func TestHandleRequest_DeepChainMarkers(t *testing.T) {
 			}
 			if w.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+		})
+	}
+}
+
+// consumerRecovered stands for the recovered-panic error of a consumer's
+// own recovery middleware: it implements contract.RecoveredPanic and
+// unwraps to the error it carries, and is no framework panic type.
+type consumerRecovered struct{ err error }
+
+func (e *consumerRecovered) Error() string  { return "recovered: " + e.err.Error() }
+func (e *consumerRecovered) Recovered() any { return e.err }
+func (e *consumerRecovered) Unwrap() error  { return e.err }
+
+// TestHandleRequest_ConsumerRecoveredPanic asserts any contract.RecoveredPanic
+// is a recovered panic to the pipeline: always reported with Recovered
+// set, always a 500 that does not echo the value's message, whatever the
+// value would answer or be ignored as on its own.
+func TestHandleRequest_ConsumerRecoveredPanic(t *testing.T) {
+	dead, cancel := context.WithCancel(context.Background())
+	cancel()
+	tests := []struct {
+		name  string
+		value error
+		reqCx context.Context
+	}{
+		{name: "ClientError", value: NotFound("payload")},
+		{name: "CanceledLiveRequest", value: context.Canceled},
+		{name: "CanceledDeadRequest", value: context.Canceled, reqCx: dead},
+		{name: "IgnoredSentinel", value: fmt.Errorf("wrapped: %w", errSentinel)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, rep, _ := newTestHandler()
+			IgnoreIs(h, errSentinel)
+			err := &consumerRecovered{err: tt.value}
+			if !h.ShouldReport(err) {
+				t.Error("ShouldReport = false, want true")
+			}
+			reqCx := tt.reqCx
+			if reqCx == nil {
+				reqCx = context.Background()
+			}
+			rc, w := newRCWithContext(reqCx, http.MethodGet, "/x")
+			rc.Request().Header.Set("Accept", "application/json")
+			h.HandleRequest(rc, err, nil)
+			if rep.count() != 1 {
+				t.Fatalf("reports = %d, want 1", rep.count())
+			}
+			if ctx, _ := rep.last(); ctx == nil || !ctx.Recovered {
+				t.Errorf("reported ctx = %+v, want Recovered", ctx)
+			}
+			if w.Code != http.StatusInternalServerError {
+				t.Errorf("status = %d, want 500", w.Code)
+			}
+			if strings.Contains(w.Body.String(), "payload") {
+				t.Errorf("body leaks the panic value's message: %q", w.Body.String())
+			}
+		})
+	}
+}
+
+// TestRenderFor_RecoveredPanicFacet asserts a render rule keyed on
+// contract.RecoveredPanic sees every recovered panic, the framework's and a
+// consumer's own, pinned at 500.
+func TestRenderFor_RecoveredPanicFacet(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "Framework", err: panicerr.FromRecovered(NotFound("payload"))},
+		{name: "Consumer", err: &consumerRecovered{err: NotFound("payload")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _, _ := newTestHandler()
+			calls := 0
+			RenderFor(h, func(rc RenderContext, _ contract.RecoveredPanic, _ *ErrorContext) bool {
+				calls++
+				rc.WriteHeader(http.StatusInternalServerError)
+				return true
+			})
+			rc, w := newRC(http.MethodGet, "/x", "Accept", "application/json")
+			h.HandleRequest(rc, tt.err, nil)
+			if calls != 1 || w.Code != http.StatusInternalServerError {
+				t.Errorf("rule calls = %d, status = %d; want 1 and 500", calls, w.Code)
 			}
 		})
 	}

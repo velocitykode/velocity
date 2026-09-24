@@ -1096,9 +1096,10 @@ func (r *VelocityRouterV2) dispatchRequestFailed(req *http.Request, meta request
 // fires nothing; a contract.Handled value fires with its cause. A marker
 // the value of a recovered panic carries counts for nothing (see
 // errorFacts.markedWritten). The event fires only for a recovered panic
-// (a *PanicError the Timeout middleware forwarded), an error resolving to
-// status 500 or above, or an error naming no status. 4xx outcomes are
-// responses, not failures.
+// (a contract.RecoveredPanic in the chain, such as a *PanicError the
+// Timeout middleware forwarded; only a *PanicError carries a raw stack),
+// an error resolving to status 500 or above, or an error naming no
+// status. 4xx outcomes are responses, not failures.
 func failureOf(err error, f *errorFacts) requestFailure {
 	if f.markedWritten(err, false) {
 		cause := contract.HandledCause(err)
@@ -1124,10 +1125,11 @@ func failureOf(err error, f *errorFacts) requestFailure {
 
 // handleError is the router's error boundary for one failed request. It
 // classifies err once and derives everything from that one walk: whether
-// the request panicked (a *PanicError forwarded by the Timeout middleware
-// counts as recovered), the RequestFailed decision it returns for the
-// caller to dispatch, and on the default path the status, headers, log
-// level and body. A bare contract.ErrResponseWritten outside a recovered
+// the request panicked (a returned error whose chain holds a
+// contract.RecoveredPanic counts as recovered, such as a *PanicError the
+// Timeout middleware forwarded), the RequestFailed decision it returns
+// for the caller to dispatch, and on the default path the status,
+// headers, log level and body. A bare contract.ErrResponseWritten outside a recovered
 // panic ends here: the response was written deliberately and there is
 // nothing to report; a panic is a 500 whatever its value, so
 // panic(contract.ErrResponseWritten) does not. Otherwise the boundary

@@ -16,8 +16,10 @@ import (
 // the error handler installed with SetErrorHandler (and to
 // DefaultErrorHandler).
 type ErrorInfo struct {
-	// Recovered is true when the error came from a recovered panic,
-	// including a panic the Timeout middleware forwarded as a *PanicError.
+	// Recovered is true when the error came from a recovered panic: one
+	// the router recovered, or a returned error whose chain holds a
+	// contract.RecoveredPanic (a *PanicError the Timeout middleware
+	// forwarded, or a consumer recovery middleware's own error).
 	Recovered bool
 	// Stack is the raw goroutine stack captured at the panic, or "".
 	Stack string
@@ -162,9 +164,10 @@ const walkLimit = 64
 
 // errorFacts is what one walk of an error chain found: the first
 // StatusError, HeaderError, MessageError and *PanicError in errors.As
-// order, and whether errors.Is would match *http.MaxBytesError,
-// context.Canceled, context.DeadlineExceeded and
-// contract.ErrResponseWritten.
+// order, whether errors.As would find a contract.RecoveredPanic (panicked;
+// a *PanicError is one, and supplies the stack fields when present), and
+// whether errors.Is would match *http.MaxBytesError, context.Canceled,
+// context.DeadlineExceeded and contract.ErrResponseWritten.
 type errorFacts struct {
 	status   contract.StatusError
 	header   contract.HeaderError
@@ -246,8 +249,13 @@ func (f *errorFacts) matchAs(err error) {
 		}
 	}
 	if !f.panicked {
+		if _, ok := err.(contract.RecoveredPanic); ok {
+			f.panicked = true
+		}
+	}
+	if f.panicErr == nil {
 		if pe, ok := err.(*PanicError); ok {
-			f.panicErr, f.panicked = pe, true
+			f.panicErr = pe
 		}
 	}
 	if !f.maxBytes {
@@ -303,9 +311,13 @@ func (f *errorFacts) fallbackAs(err error) {
 		}
 	}
 	if !f.panicked {
+		var rp contract.RecoveredPanic
+		f.panicked = errors.As(err, &rp)
+	}
+	if f.panicErr == nil {
 		var pe *PanicError
 		if errors.As(err, &pe) {
-			f.panicErr, f.panicked = pe, true
+			f.panicErr = pe
 		}
 	}
 	if !f.maxBytes {
@@ -393,8 +405,9 @@ func (f *errorFacts) answer() (status int, headers http.Header, named bool) {
 //     errorFacts.markedWritten): nothing written, nothing logged.
 //   - a contract.Handled value outside a recovered panic: nothing
 //     written; the cause resolves (and logs) through these same cases.
-//   - info.Recovered (or a *PanicError in the chain): 500, logged at
-//     error level with the stack, whatever the panic value carries.
+//   - info.Recovered (or a contract.RecoveredPanic in the chain, such as
+//     a *PanicError): 500, logged at error level with the stack when there
+//     is one, whatever the panic value carries.
 //   - context.Canceled while the request context is dead: the client is
 //     gone, nothing written, nothing logged.
 //   - an explicit StatusError: its status, with the headers of the first
