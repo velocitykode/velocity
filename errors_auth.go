@@ -13,8 +13,8 @@ import (
 // installAuthErrorRules installs auth's default render rule on h: an
 // *auth.UnauthenticatedError renders through Manager.RenderUnauthenticated
 // of the auth manager in the failed request's services (a 303 to the login
-// target for a browser request; JSON and Inertia requests fall through to
-// the pipeline's 401 problem+json body and Inertia answer). The manager is
+// target for a browser or Inertia request; a request that wants JSON falls
+// through to the pipeline's 401 problem+json body). The manager is
 // resolved per request, so one replaced after New is honoured; with no
 // auth manager the default login target applies.
 func installAuthErrorRules(h *problem.Handler) {

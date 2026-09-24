@@ -114,7 +114,7 @@ func TestAuthErrorRules_ThroughApp(t *testing.T) {
 	}{
 		{name: "unauthenticated json", mw: requireAuth, kind: "json", target: "/api/user", wantStatus: http.StatusUnauthorized, wantType: problem.ProblemTypeContent, wantDetail: "Unauthorized"},
 		{name: "unauthenticated browser", mw: requireAuth, kind: "browser", target: "/settings?tab=2", wantStatus: http.StatusSeeOther, wantLocation: "/auth/sign-in", wantStash: "/settings?tab=2"},
-		{name: "unauthenticated inertia", mw: requireAuth, kind: "inertia", target: "/settings", wantStatus: http.StatusConflict, wantInertiaLocation: "/settings", wantStash: "/settings"},
+		{name: "unauthenticated inertia", mw: requireAuth, kind: "inertia", target: "/settings", wantStatus: http.StatusSeeOther, wantLocation: "/auth/sign-in", wantStash: "/settings"},
 		{name: "forbidden json", authenticated: true, mw: requireAbility, kind: "json", target: "/reports", wantStatus: http.StatusForbidden, wantType: problem.ProblemTypeContent, wantDetail: "Forbidden"},
 		{name: "forbidden browser", authenticated: true, mw: requireAbility, kind: "browser", target: "/reports", wantStatus: http.StatusForbidden, wantType: "text/html"},
 		{name: "forbidden inertia", authenticated: true, mw: requireAbility, kind: "inertia", target: "/reports", wantStatus: http.StatusConflict, wantInertiaLocation: "/reports"},
@@ -333,5 +333,39 @@ func TestErrorPipeline_RequestUserIDFromAuthManager(t *testing.T) {
 				t.Errorf("user lookups = %d, want 0", n)
 			}
 		})
+	}
+}
+
+// TestAuthErrorRules_InertiaWithErrorPageReachesLogin asserts an
+// unauthenticated Inertia visit is redirected to the login target even
+// with an error component configured: the intended URL is stashed and the
+// Error component is never rendered at 401.
+func TestAuthErrorRules_InertiaWithErrorPageReachesLogin(t *testing.T) {
+	a := newInertiaApp(t, "Error", false)
+	m := auth.FromServices(a.Services)
+	if m == nil {
+		t.Fatal("app has no *auth.Manager")
+	}
+	sess := auth.NewSession("sid")
+	m.RegisterScheme("web", &stubAuthScheme{sess: sess})
+	m.SetLoginRedirect(func(*http.Request) string { return "/auth/sign-in" })
+	a.Router.Get("/dashboard", func(*router.Context) error {
+		t.Error("guarded handler ran")
+		return nil
+	}).Use(auth.AuthMiddleware(m))
+
+	req := authRequest(http.MethodGet, "/dashboard?tab=1", "inertia")
+	req.Header.Set("X-Inertia-Version", "v1")
+	w := httptest.NewRecorder()
+	a.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/auth/sign-in" {
+		t.Fatalf("response = %d %q, want 303 /auth/sign-in (body %q)", w.Code, w.Header().Get("Location"), w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), `"component":"Error"`) {
+		t.Errorf("error component rendered: %q", w.Body.String())
+	}
+	if got, _ := sess.Get(router.IntendedSessionKey).(string); got != "/dashboard?tab=1" {
+		t.Errorf("stashed intended = %q, want /dashboard?tab=1", got)
 	}
 }

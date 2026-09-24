@@ -158,7 +158,7 @@ func TestManager_RenderUnauthenticated(t *testing.T) {
 	}{
 		{name: "json falls through", err: &UnauthenticatedError{RedirectTo: "/login"}, kind: kindJSON},
 		{name: "xhr falls through", err: &UnauthenticatedError{}, kind: kindXHR},
-		{name: "inertia falls through", err: &UnauthenticatedError{RedirectTo: "/login"}, kind: kindInertia},
+		{name: "inertia redirected", err: &UnauthenticatedError{RedirectTo: "/login"}, kind: kindInertia, want: true, wantLocation: "/login"},
 		{name: "error target wins", loginTarget: "/sign-in", err: &UnauthenticatedError{RedirectTo: "/custom"}, kind: kindBrowser, want: true, wantLocation: "/custom"},
 		{name: "wrapped error target", err: fmt.Errorf("guard: %w", &UnauthenticatedError{RedirectTo: "/custom"}), kind: kindBrowser, want: true, wantLocation: "/custom"},
 		{name: "manager target", loginTarget: "/sign-in", err: &UnauthenticatedError{}, kind: kindBrowser, want: true, wantLocation: "/sign-in"},

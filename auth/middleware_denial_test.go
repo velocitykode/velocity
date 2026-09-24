@@ -270,7 +270,7 @@ func TestMiddleware_DenialThroughPipeline(t *testing.T) {
 		{name: "unauthenticated browser post", fixture: unauthenticatedWith(requireAuth), method: http.MethodPost, target: "/posts", kind: kindBrowser, wantStatus: http.StatusSeeOther, wantLocation: "/login"},
 		{name: "unauthenticated browser custom login", fixture: signInAt("/auth/sign-in"), target: "/dashboard", kind: kindBrowser, wantStatus: http.StatusSeeOther, wantLocation: "/auth/sign-in"},
 		{name: "unauthenticated browser unsafe login", fixture: signInAt("https://evil.example/login"), target: "/dashboard", kind: kindBrowser, wantStatus: http.StatusUnauthorized, wantType: "text/html"},
-		{name: "unauthenticated inertia", fixture: unauthenticatedWith(requireAuth), target: "/dashboard?tab=1", kind: kindInertia, wantStatus: http.StatusConflict, wantInertiaLocation: "/dashboard?tab=1"},
+		{name: "unauthenticated inertia", fixture: unauthenticatedWith(requireAuth), target: "/dashboard?tab=1", kind: kindInertia, wantStatus: http.StatusSeeOther, wantLocation: "/login"},
 		{name: "role unauthenticated json", fixture: unauthenticatedWith(requireAdmin), target: "/admin", kind: kindJSON, wantStatus: http.StatusUnauthorized, wantType: problem.ProblemTypeContent},
 		{name: "forbidden json", fixture: signedInAs([]string{"editor"}, requireAdmin), target: "/admin", kind: kindJSON, wantStatus: http.StatusForbidden, wantType: problem.ProblemTypeContent, wantDetail: "Forbidden"},
 		{name: "forbidden browser", fixture: signedInAs(nil, requireAdmin), target: "/admin", kind: kindBrowser, wantStatus: http.StatusForbidden, wantType: "text/html"},
@@ -333,7 +333,7 @@ func TestAuthMiddleware_StashesIntended(t *testing.T) {
 		wantStatus int
 	}{
 		{name: "browser get", method: http.MethodGet, kind: kindBrowser, wantStash: "/settings?tab=profile&page=2", wantStatus: http.StatusSeeOther},
-		{name: "inertia get", method: http.MethodGet, kind: kindInertia, wantStash: "/settings?tab=profile&page=2", wantStatus: http.StatusConflict},
+		{name: "inertia get", method: http.MethodGet, kind: kindInertia, wantStash: "/settings?tab=profile&page=2", wantStatus: http.StatusSeeOther},
 		{name: "json get", method: http.MethodGet, kind: kindJSON, wantStatus: http.StatusUnauthorized},
 		{name: "browser post", method: http.MethodPost, kind: kindBrowser, wantStatus: http.StatusSeeOther},
 	}

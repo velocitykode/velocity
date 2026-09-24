@@ -19,9 +19,8 @@ const sessionUserIDKey = "user_id"
 // UnauthenticatedError is returned when a request needs an authenticated
 // user and has none. It answers 401 and is not reported. The framework's
 // default render rule answers a request that wants JSON with a 401
-// problem+json body, an Inertia request through the error pipeline's
-// Inertia branch, and any other request with a redirect to the login
-// target (see Manager.RenderUnauthenticated).
+// problem+json body and any other request, Inertia included, with a
+// redirect to the login target (see Manager.RenderUnauthenticated).
 type UnauthenticatedError struct {
 	// Schemes names the authentication schemes that were checked.
 	Schemes []string
@@ -161,16 +160,16 @@ func (m *Manager) RequestUserID(r *http.Request) (id string) {
 }
 
 // RenderUnauthenticated is the framework's default render rule for an
-// *UnauthenticatedError in err's chain. A request that wants JSON, and an
-// Inertia request, return false so the error pipeline renders the 401
-// problem+json body or its Inertia answer. Any other request is
-// redirected (303) to the error's RedirectTo, or to the manager's login
-// target when that is empty, and true is returned. A target the render
-// context refuses (not same-origin and not an allowed host) is logged and
-// returns false, leaving the 401 to the pipeline. A nil manager uses
-// "/login".
+// *UnauthenticatedError in err's chain. A request that wants JSON returns
+// false so the error pipeline renders the 401 problem+json body. Any other
+// request, an Inertia visit included (the Inertia client follows the
+// redirect), is redirected (303) to the error's RedirectTo, or to the
+// manager's login target when that is empty, and true is returned. A
+// target the render context refuses (not same-origin and not an allowed
+// host) is logged and returns false, leaving the 401 to the pipeline. A
+// nil manager uses "/login".
 func (m *Manager) RenderUnauthenticated(rc contract.RenderContext, err error, _ *contract.ErrorContext) bool {
-	if rc == nil || rc.WantsJSON() || rc.IsInertia() {
+	if rc == nil || rc.WantsJSON() {
 		return false
 	}
 	target := ""
