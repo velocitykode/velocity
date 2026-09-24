@@ -359,6 +359,9 @@ func TestTokenMismatchError(t *testing.T) {
 			if got := tt.err.reason(); !errors.Is(got, tt.wantWhy) {
 				t.Errorf("reason() = %v, want %v", got, tt.wantWhy)
 			}
+			if got := tt.err.Unwrap(); got != tt.wantWhy {
+				t.Errorf("Unwrap() = %v, want %v", got, tt.wantWhy)
+			}
 
 			var se contract.StatusError
 			var rep contract.Reportable
@@ -373,9 +376,10 @@ func TestTokenMismatchError(t *testing.T) {
 	}
 }
 
-// TestTokenMismatchError_WrappedMatchesSentinel pins that a wrapped
-// rejection still matches ErrTokenMissing and unwraps to the typed error.
-func TestTokenMismatchError_WrappedMatchesSentinel(t *testing.T) {
+// TestTokenMismatchError_WrappedMatchesReason pins that a wrapped
+// rejection matches its reason (not ErrTokenMissing) and unwraps to the
+// typed error.
+func TestTokenMismatchError_WrappedMatchesReason(t *testing.T) {
 	c := New(testConfig())
 	req := httptest.NewRequest(http.MethodPost, "/submit", nil)
 	req.Header.Set("X-CSRF-Token", newFixtureTokens(t).stored)
@@ -391,8 +395,8 @@ func TestTokenMismatchError_WrappedMatchesSentinel(t *testing.T) {
 		&contract.HTTPError{Status: 419, Cause: err},
 	}
 	for i, w := range wrapped {
-		if !errors.Is(w, ErrTokenMissing) {
-			t.Errorf("[%d] errors.Is(_, ErrTokenMissing) = false", i)
+		if !errors.Is(w, ErrNoSession) || errors.Is(w, ErrTokenMissing) {
+			t.Errorf("[%d] errors.Is(_, ErrNoSession) = %v, errors.Is(_, ErrTokenMissing) = %v; want true, false", i, errors.Is(w, ErrNoSession), errors.Is(w, ErrTokenMissing))
 		}
 		var tm *TokenMismatchError
 		if !errors.As(w, &tm) || !errors.Is(tm.Reason, ErrNoSession) {

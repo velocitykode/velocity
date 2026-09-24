@@ -9,9 +9,10 @@ import (
 
 // TokenMismatchError is the error Protect returns when an unsafe request
 // fails CSRF protection. It answers 419 with Message as the client-facing
-// text (contract.MessageError), is never reported, and unwraps to
-// ErrTokenMissing, so a match on that sentinel covers every rejection
-// however it is wrapped.
+// text (contract.MessageError), is never reported, and unwraps to its
+// Reason (ErrTokenMissing when Reason is unset), so errors.Is and
+// errors.As reach the actual cause however the rejection is wrapped: an
+// invalid token matches ErrTokenInvalid and not ErrTokenMissing.
 type TokenMismatchError struct {
 	// Reason is why the request was rejected: ErrTokenMissing,
 	// ErrTokenInvalid, ErrNoSession, ErrFormBodyTooLarge, or the error the
@@ -46,8 +47,8 @@ func (e *TokenMismatchError) ClientMessage() string { return e.Message }
 // failure.
 func (e *TokenMismatchError) ShouldReport() bool { return false }
 
-// Unwrap returns ErrTokenMissing.
-func (e *TokenMismatchError) Unwrap() error { return ErrTokenMissing }
+// Unwrap returns Reason, or ErrTokenMissing when Reason is unset.
+func (e *TokenMismatchError) Unwrap() error { return e.reason() }
 
 // reason returns Reason, or ErrTokenMissing when it is unset.
 func (e *TokenMismatchError) reason() error {

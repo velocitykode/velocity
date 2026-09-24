@@ -193,24 +193,103 @@ func TestErrorPipeline_CSRFRejection(t *testing.T) {
 	}
 }
 
-// TestErrorPipeline_CSRFRejectionMatchesSentinel pins that the typed
-// rejection still satisfies the ErrTokenMissing sentinel the framework
-// ignore and prepare rules key on, wrapped or not.
+// TestErrorPipeline_CSRFRejectionMatchesSentinel pins that a rejection
+// matches the sentinel of its own reason, wrapped or not (a missing token
+// matches ErrTokenMissing, an invalid one ErrTokenInvalid and not
+// ErrTokenMissing), and that a rejection of either kind, and the bare
+// sentinel of either kind, answers 419 through the pipeline and is never
+// reported.
 func TestErrorPipeline_CSRFRejectionMatchesSentinel(t *testing.T) {
 	c := newEnforcingCSRF(t, nil, "")
-	_, err := c.Protect(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/posts", nil))
-	var tm *csrf.TokenMismatchError
-	if !errors.As(err, &tm) {
-		t.Fatalf("Protect error = %v, want a *csrf.TokenMismatchError", err)
+	if err := c.RotateToken("", "s1"); err != nil {
+		t.Fatalf("RotateToken: %v", err)
 	}
-	h := problem.NewHandler()
-	installFrameworkErrorRules(h)
-	for _, e := range []error{err, errors.Join(errors.New("context"), err)} {
-		if !errors.Is(e, csrf.ErrTokenMissing) {
-			t.Errorf("errors.Is(%v, csrf.ErrTokenMissing) = false", e)
+	other, err := csrf.GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	protect := func(token string) error {
+		req := httptest.NewRequest(http.MethodPost, "/posts", nil)
+		req.AddCookie(&http.Cookie{Name: "session_id", Value: "s1"})
+		if token != "" {
+			req.Header.Set("X-CSRF-Token", token)
 		}
-		if h.ShouldReport(e) {
-			t.Errorf("ShouldReport(%v) = true, want false", e)
+		_, err := c.Protect(httptest.NewRecorder(), req)
+		var tm *csrf.TokenMismatchError
+		if !errors.As(err, &tm) {
+			t.Fatalf("Protect error = %v, want a *csrf.TokenMismatchError", err)
 		}
+		return err
+	}
+
+	tests := []struct {
+		name    string
+		err     error
+		wantIs  error
+		wantNot error
+	}{
+		{name: "MissingToken", err: protect(""), wantIs: csrf.ErrTokenMissing, wantNot: csrf.ErrTokenInvalid},
+		{name: "InvalidToken", err: protect(other), wantIs: csrf.ErrTokenInvalid, wantNot: csrf.ErrTokenMissing},
+		{name: "BareMissingSentinel", err: csrf.ErrTokenMissing, wantIs: csrf.ErrTokenMissing, wantNot: csrf.ErrTokenInvalid},
+		{name: "BareInvalidSentinel", err: csrf.ErrTokenInvalid, wantIs: csrf.ErrTokenInvalid, wantNot: csrf.ErrTokenMissing},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := problem.NewHandler(problem.WithReporters())
+			installFrameworkErrorRules(h)
+			for _, e := range []error{tt.err, errors.Join(errors.New("context"), tt.err)} {
+				if !errors.Is(e, tt.wantIs) || errors.Is(e, tt.wantNot) {
+					t.Errorf("errors.Is(%v): %v = %v, %v = %v; want true, false", e, tt.wantIs, errors.Is(e, tt.wantIs), tt.wantNot, errors.Is(e, tt.wantNot))
+				}
+				if h.ShouldReport(e) {
+					t.Errorf("ShouldReport(%v) = true, want false", e)
+				}
+				req := httptest.NewRequest(http.MethodPost, "/posts", nil)
+				req.Header.Set("Accept", "application/json")
+				w := httptest.NewRecorder()
+				h.HandleRequest(contract.NewRenderContext(w, req), e, nil)
+				if w.Code != contract.StatusTokenMismatch {
+					t.Errorf("status for %v = %d, want 419", e, w.Code)
+				}
+			}
+		})
+	}
+}
+
+// TestErrorPipeline_CSRFMapIsInvalidToken asserts an application MapIs
+// rule keyed on csrf.ErrTokenInvalid fires for a Protect rejection with
+// that reason, through a real app.
+func TestErrorPipeline_CSRFMapIsInvalidToken(t *testing.T) {
+	a, _, _ := newPipelineApp(t)
+	h, ok := a.Services.Errors.(*problem.Handler)
+	if !ok {
+		t.Fatalf("Services.Errors is %T, want *problem.Handler", a.Services.Errors)
+	}
+	problem.MapIs(h, csrf.ErrTokenInvalid, func(err error) error {
+		return contract.NewHTTPError(http.StatusGone).WithCause(err)
+	})
+
+	c := newEnforcingCSRF(t, nil, "")
+	if err := c.RotateToken("", "s1"); err != nil {
+		t.Fatalf("RotateToken: %v", err)
+	}
+	other, err := csrf.GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	a.Router.Post("/posts", func(*router.Context) error {
+		t.Fatal("handler must not run on a CSRF rejection")
+		return nil
+	}).Use(router.CSRFMiddleware(c))
+
+	req := httptest.NewRequest(http.MethodPost, "/posts", nil)
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: "s1"})
+	req.Header.Set("X-CSRF-Token", other)
+	req.Header.Set("Accept", "application/json")
+	w := httptest.NewRecorder()
+	a.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusGone {
+		t.Errorf("status = %d, want 410 from the MapIs rule (body %q)", w.Code, w.Body.String())
 	}
 }

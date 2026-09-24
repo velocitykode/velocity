@@ -55,6 +55,7 @@ var sentinelStatuses = []sentinelStatus{
 	{err: orm.ErrNoRows, status: http.StatusNotFound, message: http.StatusText(http.StatusNotFound)},
 	{err: auth.ErrUnauthorized, status: http.StatusForbidden, message: http.StatusText(http.StatusForbidden)},
 	{err: csrf.ErrTokenMissing, status: contract.StatusTokenMismatch, message: "CSRF token mismatch"},
+	{err: csrf.ErrTokenInvalid, status: contract.StatusTokenMismatch, message: "CSRF token mismatch"},
 	{err: router.ErrBindExtraData, status: http.StatusBadRequest, message: http.StatusText(http.StatusBadRequest)},
 }
 
