@@ -226,3 +226,54 @@ func TestNewRenderContext_HonoursCommitReporter(t *testing.T) {
 		})
 	}
 }
+
+// panicOnceWriter panics on its first WriteHeader, before anything reaches
+// the wire, as a writer whose pre-commit hook panics does, and writes
+// through afterwards.
+type panicOnceWriter struct {
+	*httptest.ResponseRecorder
+	panicked bool
+}
+
+func (w *panicOnceWriter) WriteHeader(code int) {
+	if !w.panicked {
+		w.panicked = true
+		panic("hook exploded")
+	}
+	w.ResponseRecorder.WriteHeader(code)
+}
+
+// TestNewRenderContext_PanickingWriterLeavesUnwritten asserts the render
+// context records a write only after the writer took it: a WriteHeader,
+// implicit Write or Redirect whose writer panics before committing leaves
+// Written false, so a fallback can still write its status.
+func TestNewRenderContext_PanickingWriterLeavesUnwritten(t *testing.T) {
+	tests := []struct {
+		name  string
+		write func(rc RenderContext)
+	}{
+		{name: "WriteHeader", write: func(rc RenderContext) { rc.WriteHeader(http.StatusNotFound) }},
+		{name: "Write", write: func(rc RenderContext) { _, _ = rc.Write([]byte("body")) }},
+		{name: "Redirect", write: func(rc RenderContext) { _ = rc.Redirect(http.StatusSeeOther, "/login") }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &panicOnceWriter{ResponseRecorder: httptest.NewRecorder()}
+			rc := NewRenderContext(w, httptest.NewRequest(http.MethodGet, "/x", nil))
+			func() {
+				defer func() { _ = recover() }()
+				tt.write(rc)
+			}()
+			if !w.panicked {
+				t.Fatal("the writer did not panic")
+			}
+			if rc.Written() {
+				t.Error("Written = true after the writer panicked before committing")
+			}
+			rc.WriteHeader(http.StatusInternalServerError)
+			if w.Code != http.StatusInternalServerError || !rc.Written() {
+				t.Errorf("fallback: status %d, Written %v; want 500 and true", w.Code, rc.Written())
+			}
+		})
+	}
+}

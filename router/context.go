@@ -667,7 +667,9 @@ func (c *Context) RenderContext() contract.RenderContext {
 
 // ctxRenderContext is the router's contract.RenderContext. written covers
 // writers that do not report their own state (anything but the router's
-// responseWriter).
+// responseWriter). It is set only after the writer took the write, so a
+// write whose writer panics before committing (a panicking pre-commit
+// hook) leaves the response unwritten for a fallback.
 type ctxRenderContext struct {
 	c       *Context
 	written bool
@@ -691,16 +693,17 @@ func (rc *ctxRenderContext) Written() bool {
 }
 
 // WriteHeader writes status once; a status outside 100-999 is written as
-// 500 because net/http rejects it.
+// 500 because net/http rejects it. The write is recorded once the writer
+// returns.
 func (rc *ctxRenderContext) WriteHeader(status int) {
 	if rc.Written() {
 		return
 	}
-	rc.written = true
 	if status < 100 || status > 999 {
 		status = http.StatusInternalServerError
 	}
 	rc.c.Response.WriteHeader(status)
+	rc.written = true
 }
 
 // Write writes p, writing a 200 status first when none was written.
@@ -730,8 +733,11 @@ func (rc *ctxRenderContext) Redirect(status int, target string) error {
 	if target == "" || sanitizeRedirect(target, rc.c.redirectAllowedHosts) != target {
 		return contract.NewHTTPError(http.StatusBadRequest).WithCause(contract.ErrInvalidRedirect)
 	}
+	if err := rc.c.Redirect(status, target); err != nil {
+		return err
+	}
 	rc.written = true
-	return rc.c.Redirect(status, target)
+	return nil
 }
 
 // Report sends err to the application error handler (Services.Errors)

@@ -864,3 +864,104 @@ func TestInstall_ConsumerRecoveredPanic(t *testing.T) {
 		})
 	}
 }
+
+// errLineLogger is a contract.Logger recording error-level lines.
+type errLineLogger struct {
+	mu    sync.Mutex
+	lines []string
+	kvs   [][]any
+}
+
+func (l *errLineLogger) Debug(string, ...any) {}
+func (l *errLineLogger) Info(string, ...any)  {}
+func (l *errLineLogger) Warn(string, ...any)  {}
+func (l *errLineLogger) Fatal(string, ...any) {}
+func (l *errLineLogger) Error(msg string, kvs ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, msg)
+	l.kvs = append(l.kvs, kvs)
+}
+
+// value returns the value logged under key on the first line msg, or nil.
+func (l *errLineLogger) value(msg, key string) any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i, line := range l.lines {
+		if line != msg {
+			continue
+		}
+		for j := 0; j+1 < len(l.kvs[i]); j += 2 {
+			if l.kvs[i][j] == key {
+				return l.kvs[i][j+1]
+			}
+		}
+	}
+	return nil
+}
+
+// TestInstall_PanickingPreCommitHookFallsBackTo500 asserts a pre-commit
+// hook that panics while the pipeline renders a returned error leaves the
+// response unwritten, so the last-resort plain-text 500 reaches the
+// client (not an empty 200), the pipeline's logger records the panic, and
+// RequestHandled fires once.
+func TestInstall_PanickingPreCommitHookFallsBackTo500(t *testing.T) {
+	logger := &errLineLogger{}
+	h := problem.NewHandler(problem.WithHandlerLogger(logger))
+	r := router.New()
+	Install(r, WithHandler(func() contract.ErrorHandler { return h }))
+	var (
+		mu      sync.Mutex
+		handled int
+	)
+	r.SetEventDispatcher(func(_ context.Context, event interface{}) error {
+		if _, ok := event.(*router.RequestHandled); ok {
+			mu.Lock()
+			handled++
+			mu.Unlock()
+		}
+		return nil
+	})
+	r.Use(func(next router.HandlerFunc) router.HandlerFunc {
+		return func(c *router.Context) error {
+			if hk, ok := c.Response.(interface{ BeforeFirstWrite(func()) }); ok {
+				fired := false
+				hk.BeforeFirstWrite(func() {
+					if !fired {
+						fired = true
+						panic("hook exploded")
+					}
+				})
+			}
+			return next(c)
+		}
+	})
+	r.Get("/missing", func(*router.Context) error { return problem.NotFound() })
+
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+	resp, err := srv.Client().Get(srv.URL + "/missing")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 (body %q)", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", ct)
+	}
+	if string(body) != http.StatusText(http.StatusInternalServerError) {
+		t.Errorf("body = %q, want %q", body, http.StatusText(http.StatusInternalServerError))
+	}
+	if v := logger.value("problem: rendering panicked", "panic"); v != "hook exploded" {
+		t.Errorf("logged panic = %v, want hook exploded", v)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if handled != 1 {
+		t.Errorf("RequestHandled dispatched %d times, want 1", handled)
+	}
+}

@@ -84,12 +84,15 @@ func (c *httpRenderContext) Written() bool {
 
 // WriteHeader writes status once, and never over a committed response. A
 // status outside 100-999 is written as 500 because net/http rejects it.
+// The write is recorded once w returns, so a WriteHeader that panics
+// before committing (a panicking pre-commit hook) leaves the response
+// unwritten for a fallback.
 func (c *httpRenderContext) WriteHeader(status int) {
 	if c.Written() {
 		return
 	}
-	c.written = true
 	c.w.WriteHeader(validStatus(status))
+	c.written = true
 }
 
 // Write writes p, writing a 200 status first when none was written.

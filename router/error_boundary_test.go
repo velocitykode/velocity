@@ -944,3 +944,72 @@ func TestDefaultErrorHandler_ProblemBodyMembers(t *testing.T) {
 		})
 	}
 }
+
+// panicOnceWriter panics on its first WriteHeader, before anything reaches
+// the wire, and writes through afterwards.
+type panicOnceWriter struct {
+	*httptest.ResponseRecorder
+	panicked bool
+}
+
+func (w *panicOnceWriter) WriteHeader(code int) {
+	if !w.panicked {
+		w.panicked = true
+		panic("writer exploded")
+	}
+	w.ResponseRecorder.WriteHeader(code)
+}
+
+// TestRenderContext_PanickingWriterLeavesUnwritten asserts the router's
+// render context records a write only after the writer took it: over a
+// plain writer that panics, and over the router's own writer whose
+// BeforeFirstWrite hook panics, a WriteHeader, implicit Write or Redirect
+// leaves Written false, and a fallback WriteHeader then writes its status
+// (the hook's once is consumed, so it does not panic again).
+func TestRenderContext_PanickingWriterLeavesUnwritten(t *testing.T) {
+	writers := []struct {
+		name string
+		make func(rec *httptest.ResponseRecorder) http.ResponseWriter
+	}{
+		{name: "PlainWriter", make: func(rec *httptest.ResponseRecorder) http.ResponseWriter {
+			return &panicOnceWriter{ResponseRecorder: rec}
+		}},
+		{name: "RouterWriterHook", make: func(rec *httptest.ResponseRecorder) http.ResponseWriter {
+			rw := &responseWriter{ResponseWriter: rec, status: http.StatusOK}
+			rw.BeforeFirstWrite(func() { panic("hook exploded") })
+			return rw
+		}},
+	}
+	writes := []struct {
+		name  string
+		write func(rc contract.RenderContext)
+	}{
+		{name: "WriteHeader", write: func(rc contract.RenderContext) { rc.WriteHeader(http.StatusNotFound) }},
+		{name: "Write", write: func(rc contract.RenderContext) { _, _ = rc.Write([]byte("body")) }},
+		{name: "Redirect", write: func(rc contract.RenderContext) { _ = rc.Redirect(http.StatusSeeOther, "/login") }},
+	}
+	for _, wr := range writers {
+		for _, tt := range writes {
+			t.Run(wr.name+"/"+tt.name, func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				c := NewContext(wr.make(rec), httptest.NewRequest(http.MethodGet, "/x", nil))
+				rc := c.RenderContext()
+				panicked := false
+				func() {
+					defer func() { panicked = recover() != nil }()
+					tt.write(rc)
+				}()
+				if !panicked {
+					t.Fatal("the write did not panic")
+				}
+				if rc.Written() {
+					t.Error("Written = true after the writer panicked before committing")
+				}
+				rc.WriteHeader(http.StatusInternalServerError)
+				if rec.Code != http.StatusInternalServerError || !rc.Written() {
+					t.Errorf("fallback: status %d, Written %v; want 500 and true", rec.Code, rc.Written())
+				}
+			})
+		}
+	}
+}
