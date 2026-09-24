@@ -47,7 +47,9 @@ func Back(ctx *router.Context) {
 //	view.For(ctx).Flash("error", msg).Redirect("/path")
 //
 // All methods are nil-safe: when no view engine is wired on the request
-// context, For returns nil and every chain method is a no-op.
+// context, For returns nil and every chain method is a no-op, except
+// Render, which returns ErrNoEngine so the handler's error reaches the
+// error pipeline instead of an empty response.
 type ReqEngine struct {
 	ctx     *router.Context
 	e       *Engine
@@ -150,10 +152,11 @@ func (re *ReqEngine) Back() {
 
 // Render renders an Inertia component, persisting any pending flash bag
 // first so bond.Render's flash reader drains the same bag onto
-// Page.Flash on this response.
+// Page.Flash on this response. On a nil receiver (no view engine wired)
+// it returns ErrNoEngine and writes nothing.
 func (re *ReqEngine) Render(component string, props ...Props) error {
 	if re == nil {
-		return nil
+		return ErrNoEngine
 	}
 	re.commitSession()
 	return re.e.Render(re.w, re.r, component, props...)

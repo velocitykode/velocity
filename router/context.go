@@ -1358,41 +1358,92 @@ func (c *Context) XML(status int, data interface{}) error {
 //   - paths containing NUL bytes (null-byte injection)
 //
 // The returned path is the cleaned relative form, safe to pass to
-// (*os.Root).Open or (*os.Root).OpenFile.
+// (*os.Root).Open or (*os.Root).OpenFile. Every rejection returns
+// ErrInvalidFilePath.
 func validateFilePath(path string) (string, error) {
 	if strings.ContainsRune(path, 0) {
-		return "", fmt.Errorf("invalid file path")
+		return "", ErrInvalidFilePath
 	}
 	cleaned := filepath.Clean(path)
 	if strings.ContainsRune(cleaned, 0) {
-		return "", fmt.Errorf("invalid file path")
+		return "", ErrInvalidFilePath
 	}
 	if filepath.IsAbs(cleaned) || strings.HasPrefix(cleaned, string(filepath.Separator)) {
-		return "", fmt.Errorf("invalid file path")
+		return "", ErrInvalidFilePath
 	}
 	// Reject ".." as a path segment (not as a substring of a filename).
 	if cleaned == ".." {
-		return "", fmt.Errorf("invalid file path")
+		return "", ErrInvalidFilePath
 	}
 	for _, sep := range []string{string(filepath.Separator), "/"} {
 		if strings.HasPrefix(cleaned, ".."+sep) ||
 			strings.Contains(cleaned, sep+".."+sep) ||
 			strings.HasSuffix(cleaned, sep+"..") {
-			return "", fmt.Errorf("invalid file path")
+			return "", ErrInvalidFilePath
 		}
 	}
 	return cleaned, nil
 }
 
-// fileRootOrError returns the context's *os.Root, or an error if no
+// fileRootOrError returns the context's *os.Root, or ErrNilRoot if no
 // root is wired. File/Download/SaveFile all funnel through this so the
 // nil-root case (e.g. router never opened a root, or test context
 // without a root) surfaces as a clear error rather than a panic.
 func (c *Context) fileRootOrError() (*os.Root, error) {
 	if c.fileRoot == nil {
-		return nil, fmt.Errorf("velocity/router: no file root configured")
+		return nil, ErrNilRoot
 	}
 	return c.fileRoot, nil
+}
+
+// openServedFile resolves path under the context's file root for File,
+// Download and Attachment and returns the open file with its info, or
+// the HTTP error the request answers with. The cause stays in the chain
+// so errors.Is reaches it; the client sees only the status text:
+//
+//   - no file root: 500 (ErrNilRoot), a configuration fault
+//   - a malformed path: 400 (ErrInvalidFilePath)
+//   - a missing file: 404 (the fs error, errors.Is os.ErrNotExist)
+//   - a path escaping the root: 404 (ErrPathOutsideRoot), so whether the
+//     target exists is not revealed
+//   - a directory: 404 (ErrIsDirectory)
+//   - any other stat failure: 500 with the fs error
+//
+// The origin recorded on the error is the caller of File, Download or
+// Attachment.
+func (c *Context) openServedFile(path string) (*os.File, os.FileInfo, error) {
+	root, err := c.fileRootOrError()
+	if err != nil {
+		return nil, nil, fileError(http.StatusInternalServerError, err)
+	}
+	rel, err := validateFilePath(path)
+	if err != nil {
+		return nil, nil, fileError(http.StatusBadRequest, err)
+	}
+	f, err := OpenFileIn(root, rel)
+	if err != nil {
+		// OpenFileIn returns a not-exist error as is and folds every
+		// other open failure into ErrPathOutsideRoot: both are a 404.
+		return nil, nil, fileError(http.StatusNotFound, err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, fileError(http.StatusInternalServerError, err)
+	}
+	if info.IsDir() {
+		_ = f.Close()
+		return nil, nil, fileError(http.StatusNotFound, ErrIsDirectory)
+	}
+	return f, info, nil
+}
+
+// fileError builds the HTTP error openServedFile returns: status with
+// its standard text, cause in the chain, origin four frames up (through
+// openServedFile, serveFile and File, Download or Attachment to the
+// handler calling it).
+func fileError(status int, cause error) error {
+	return contract.NewHTTPError(status).WithCause(cause).WithOrigin(4)
 }
 
 // defaultPrivateNoStore sets `Cache-Control: private, no-store` on the
@@ -1420,30 +1471,14 @@ func (c *Context) defaultPrivateNoStore() {
 //
 // Sets `Cache-Control: private, no-store` by default; a caller-set
 // Cache-Control header is preserved.
+//
+// A failure writes nothing and returns an HTTP error carrying its cause:
+// 400 for a malformed path (ErrInvalidFilePath), 404 for a missing file
+// (errors.Is os.ErrNotExist), a path escaping the root
+// (ErrPathOutsideRoot) or a directory (ErrIsDirectory), and 500 when the
+// context has no file root (ErrNilRoot).
 func (c *Context) File(path string) error {
-	root, err := c.fileRootOrError()
-	if err != nil {
-		return err
-	}
-	rel, err := validateFilePath(path)
-	if err != nil {
-		return err
-	}
-	f, err := OpenFileIn(root, rel)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	if info.IsDir() {
-		return fmt.Errorf("velocity/router: path is a directory")
-	}
-	c.defaultPrivateNoStore()
-	http.ServeContent(c.Response, c.Request, filepath.Base(rel), info.ModTime(), f)
-	return nil
+	return c.serveFile(path, "", false)
 }
 
 // Download sends a file as an attachment with the given filename.
@@ -1457,36 +1492,32 @@ func (c *Context) File(path string) error {
 //
 // Sets `Cache-Control: private, no-store` by default; a caller-set
 // Cache-Control header is preserved.
+//
+// Failures return the same HTTP errors as File.
 func (c *Context) Download(path string, filename string) error {
-	root, err := c.fileRootOrError()
-	if err != nil {
-		return err
-	}
-	rel, err := validateFilePath(path)
-	if err != nil {
-		return err
-	}
-	f, err := OpenFileIn(root, rel)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	if info.IsDir() {
-		return fmt.Errorf("velocity/router: path is a directory")
-	}
-	c.defaultPrivateNoStore()
-	c.Response.Header().Set("Content-Disposition", buildContentDisposition(filename))
-	http.ServeContent(c.Response, c.Request, filepath.Base(rel), info.ModTime(), f)
-	return nil
+	return c.serveFile(path, filename, true)
 }
 
 // Attachment is an alias for Download.
 func (c *Context) Attachment(path string, filename string) error {
-	return c.Download(path, filename)
+	return c.serveFile(path, filename, true)
+}
+
+// serveFile serves File, Download and Attachment at the same call depth,
+// so the origin fileError records is the handler for all three. attach
+// adds the Content-Disposition header for filename.
+func (c *Context) serveFile(path, filename string, attach bool) error {
+	f, info, err := c.openServedFile(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	c.defaultPrivateNoStore()
+	if attach {
+		c.Response.Header().Set("Content-Disposition", buildContentDisposition(filename))
+	}
+	http.ServeContent(c.Response, c.Request, info.Name(), info.ModTime(), f)
+	return nil
 }
 
 // buildContentDisposition constructs an attachment Content-Disposition

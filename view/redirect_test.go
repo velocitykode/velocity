@@ -1,6 +1,7 @@
 package view
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -254,8 +255,8 @@ func TestFor_NoEngine_ReturnsNilAndChainIsNoop(t *testing.T) {
 	re.Flash("k", "v").FlashMany(map[string]any{"a": 1}).Redirect("/foo")
 	re.Location("/bar")
 	re.Back()
-	if err := re.Render("Comp"); err != nil {
-		t.Errorf("Render on nil ReqEngine = %v, want nil", err)
+	if err := re.Render("Comp"); !errors.Is(err, ErrNoEngine) {
+		t.Errorf("Render on nil ReqEngine = %v, want ErrNoEngine", err)
 	}
 
 	if rec.Code != http.StatusOK {

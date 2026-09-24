@@ -12,6 +12,7 @@ package view
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -237,11 +238,17 @@ const defaultTemplate = `<!DOCTYPE html>
 </body>
 </html>`
 
+// ErrNoEngine is returned by Render and (*ReqEngine).Render when no view
+// engine is wired on the request context. It is a configuration fault:
+// the request answers 500 and the error is reported.
+var ErrNoEngine = errors.New("velocity/view: engine not configured on context")
+
 // Render renders a component using the view engine on the given context.
+// It returns ErrNoEngine and writes nothing when no engine is wired.
 func Render(ctx *router.Context, component string, props ...Props) error {
 	engine := FromContext(ctx)
 	if engine == nil {
-		return fmt.Errorf("view: engine not configured on context")
+		return ErrNoEngine
 	}
 	return engine.Render(ctx.Response, ctx.Request, component, props...)
 }

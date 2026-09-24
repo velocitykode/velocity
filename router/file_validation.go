@@ -23,10 +23,21 @@ import (
 var ErrPathOutsideRoot = errors.New("velocity/router: file path outside allowed root")
 
 // ErrNilRoot is returned by OpenFileIn when the caller passes a nil
-// *os.Root. The framework never constructs a nil Root internally; a nil
-// value here indicates a caller bug (e.g. forgetting to run the module
-// that opens the root) and must not panic library code.
+// *os.Root, and by Context.File, Download, Attachment and SaveFile (in
+// the chain of the returned error) when the context carries no file root
+// (the router's FileRoot could not be opened, or a bare context). It is
+// a configuration fault, not a client error, and must not panic library
+// code.
 var ErrNilRoot = errors.New("velocity/router: nil *os.Root")
+
+// ErrInvalidFilePath is the cause when Context.File, Download,
+// Attachment or SaveFile is given a structurally invalid path: absolute,
+// containing a ".." segment, or containing a NUL byte.
+var ErrInvalidFilePath = errors.New("velocity/router: invalid file path")
+
+// ErrIsDirectory is the cause when Context.File, Download or Attachment
+// resolves a path that names a directory.
+var ErrIsDirectory = errors.New("velocity/router: path is a directory")
 
 // OpenFileIn opens relative against root, returning the open handle.
 //
