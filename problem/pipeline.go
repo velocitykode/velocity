@@ -64,8 +64,12 @@ func (h *Handler) HandleRequest(rc RenderContext, err error, ctx *ErrorContext) 
 	h.render(s, rc, err, ctx)
 }
 
-// Report sends err to the reporters when the report gate allows it. User
-// map rules apply first. A nil ctx is replaced by a new one.
+// Report sends err to the reporters when the report gate allows it. The
+// report-once marker is read from err before user map rules apply, as in
+// HandleRequest, so a map rule that builds a new error cannot drop it: a
+// marked err (outside the value of a recovered panic) is not reported.
+// Otherwise the mapped error is reported. A nil ctx is replaced by a new
+// one.
 func (h *Handler) Report(err error, ctx *ErrorContext) {
 	if err == nil {
 		return
@@ -73,6 +77,9 @@ func (h *Handler) Report(err error, ctx *ErrorContext) {
 	s := h.snap()
 	if ctx == nil {
 		ctx = NewErrorContext()
+	}
+	if outsidePanic(err, ctx, contract.IsReported) {
+		return
 	}
 	h.report(s, h.applyMap(s, err), ctx, nil)
 }

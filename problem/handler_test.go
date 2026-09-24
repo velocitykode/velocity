@@ -3,6 +3,7 @@ package problem
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	stdlog "log"
 	"net"
 	"net/http"
@@ -412,5 +413,43 @@ func TestFakeHandler(t *testing.T) {
 	wg.Wait()
 	if len(f.ReportedErrors()) != 8 {
 		t.Errorf("concurrent reports = %d, want 8", len(f.ReportedErrors()))
+	}
+}
+
+// domainErr is an application error a map rule turns into a 500.
+type domainErr struct{ id int }
+
+func (e *domainErr) Error() string { return fmt.Sprintf("domain %d", e.id) }
+
+// The report-once marker is read before map rules apply, so a mapper that
+// builds a new error from the inner value cannot make a marked error
+// report again, through Report or HandleRequest.
+func TestHandler_MapRuleKeepsReportOnceMarker(t *testing.T) {
+	entries := []struct {
+		name string
+		call func(h *Handler, err error)
+	}{
+		{"Report", func(h *Handler, err error) { h.Report(err, nil) }},
+		{"HandleRequest", func(h *Handler, err error) {
+			rc, _ := newRC(http.MethodGet, "/x")
+			h.HandleRequest(rc, err, nil)
+		}},
+	}
+	for _, entry := range entries {
+		t.Run(entry.name, func(t *testing.T) {
+			h, rep, _ := newTestHandler()
+			MapFor[*domainErr](h, func(e *domainErr) error { return Internal().WithCause(e) })
+			e := &domainErr{id: 7}
+
+			entry.call(h, e)
+			entry.call(h, contract.MarkReported(e))
+
+			if rep.count() != 1 {
+				t.Errorf("reports = %d, want 1", rep.count())
+			}
+			if _, got := rep.last(); !errors.Is(got, e) {
+				t.Errorf("reported %v, want the mapped error wrapping the domain error", got)
+			}
+		})
 	}
 }
