@@ -18,8 +18,10 @@ import (
 // falls through to negotiation, which answers 422
 // application/problem+json with the per-field "errors". Any other request
 // with a view engine gets the errors and old input flashed and a redirect
-// back (or to Failure.RedirectTo), the same answer the validator callback
-// writes. With no view engine the failure still renders as problem+json.
+// back (or to Failure.RedirectTo). With no view engine the failure still
+// renders as problem+json. Every validation entry point (ctx.Validate,
+// vform.Form, ctx.BindValid) returns its *validation.Failure with nothing
+// written, so this rule is the one browser answer for all of them.
 func installValidationErrorRules(h *problem.Handler) {
 	problem.FrameworkRenderFor[*validation.Failure](h, func(rc contract.RenderContext, err error, ctx *contract.ErrorContext) bool {
 		return renderValidationFailure(h, rc, err, ctx)
@@ -43,16 +45,6 @@ func renderValidationFailure(h *problem.Handler, rc contract.RenderContext, err 
 	}
 	flashFailure(router.NewContext(rc.Writer(), r), rc, view, f)
 	return true
-}
-
-// errorsWantJSON reports whether the error pipeline answers err for c's
-// request with JSON: the error handler's negotiation when one is wired,
-// else contract.WantsJSON.
-func errorsWantJSON(c *router.Context, err error) bool {
-	if s := c.ServicesIfSet(); s != nil && s.Errors != nil {
-		return s.Errors.WantsJSON(c.Request, err)
-	}
-	return contract.WantsJSON(c.Request)
 }
 
 // flashFailure writes the browser answer to a validation failure: the

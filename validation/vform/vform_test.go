@@ -317,79 +317,48 @@ func formCtx(t *testing.T, body string, view contract.ViewEngine, headers map[st
 	return c, w, enc
 }
 
-// TestForm_Failure asserts the two answers to a failed Form: a browser with
-// a view engine gets errors and redacted old input flashed plus a redirect
-// back (contract.ErrResponseWritten); a JSON client or an app with no view
-// engine gets a *validation.Failure and nothing written.
+// TestForm_Failure asserts a failed Form writes nothing and returns a
+// *validation.Failure for every client, with or without a view engine: the
+// error pipeline answers it (the browser flash-and-redirect is the
+// framework render rule's job).
 func TestForm_Failure(t *testing.T) {
 	tests := []struct {
-		name        string
-		view        contract.ViewEngine
-		headers     map[string]string
-		wantFailure bool
+		name    string
+		view    contract.ViewEngine
+		headers map[string]string
 	}{
-		{name: "browser with view engine flashes and redirects", view: backView{to: "/signup"}},
-		{name: "inertia with view engine flashes and redirects", view: backView{to: "/signup"}, headers: map[string]string{"X-Inertia": "true"}},
-		{name: "json client gets the failure", view: backView{to: "/signup"}, headers: map[string]string{"Accept": "application/json"}, wantFailure: true},
-		{name: "no view engine gets the failure", wantFailure: true},
+		{name: "browser with view engine", view: backView{to: "/signup"}},
+		{name: "inertia with view engine", view: backView{to: "/signup"}, headers: map[string]string{"X-Inertia": "true"}},
+		{name: "json client", view: backView{to: "/signup"}, headers: map[string]string{"Accept": "application/json"}},
+		{name: "no view engine"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, w, enc := formCtx(t, `{"email":"bad","password":"x"}`, tt.view, tt.headers)
+			ctx, w, _ := formCtx(t, `{"email":"bad","password":"x"}`, tt.view, tt.headers)
 
 			form, err := Form[signupRequest](ctx)
 			if form != nil {
 				t.Errorf("expected nil form on failure, got %+v", form)
 			}
-
-			if tt.wantFailure {
-				var f *validation.Failure
-				if !errors.As(err, &f) {
-					t.Fatalf("error = %v, want a *validation.Failure", err)
-				}
-				if f.StatusCode() != http.StatusUnprocessableEntity {
-					t.Errorf("StatusCode = %d, want 422", f.StatusCode())
-				}
-				if len(f.Errors()["email"]) == 0 || len(f.Errors()["password"]) == 0 {
-					t.Errorf("Errors = %v, want email and password", f.Errors())
-				}
-				if !errors.Is(err, validation.ErrValidationFailed) {
-					t.Error("failure does not match ErrValidationFailed")
-				}
-				if len(w.Result().Cookies()) != 0 || w.Header().Get("Location") != "" || w.Body.Len() != 0 {
-					t.Errorf("wrote cookies %v, Location %q, body %q; want nothing written",
-						cookieNames(w.Result().Cookies()), w.Header().Get("Location"), w.Body.String())
-				}
-				return
+			var f *validation.Failure
+			if !errors.As(err, &f) {
+				t.Fatalf("error = %v, want a *validation.Failure", err)
 			}
-
-			if !errors.Is(err, contract.ErrResponseWritten) {
-				t.Fatalf("error = %v, want contract.ErrResponseWritten", err)
+			if f.StatusCode() != http.StatusUnprocessableEntity {
+				t.Errorf("StatusCode = %d, want 422", f.StatusCode())
 			}
-			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/signup" {
-				t.Errorf("response = %d Location %q, want 303 /signup", w.Code, w.Header().Get("Location"))
+			if len(f.Errors()["email"]) == 0 || len(f.Errors()["password"]) == 0 {
+				t.Errorf("Errors = %v, want email and password", f.Errors())
 			}
-			flashed := map[string]string{}
-			for _, c := range w.Result().Cookies() {
-				flashed[c.Name] = c.Value
+			if old := f.Result.Old(); old["email"] != "bad" {
+				t.Errorf("Old email = %v, want bad", old["email"])
 			}
-			errs, openErr := router.OpenFlash(enc, router.FlashErrorsCookie, flashed[router.FlashErrorsCookie])
-			if openErr != nil {
-				t.Fatalf("errors cookie: %v (cookies %v)", openErr, cookieNames(w.Result().Cookies()))
+			if !errors.Is(err, validation.ErrValidationFailed) {
+				t.Error("failure does not match ErrValidationFailed")
 			}
-			if m, _ := errs.(map[string]any); m["email"] == nil || m["password"] == nil {
-				t.Errorf("flashed errors = %v, want email and password", errs)
-			}
-			old, openErr := router.OpenFlash(enc, router.FlashInputCookie, flashed[router.FlashInputCookie])
-			if openErr != nil {
-				t.Fatalf("old input cookie: %v", openErr)
-			}
-			m, _ := old.(map[string]any)
-			if m["email"] != "bad" {
-				t.Errorf("flashed old email = %v, want bad", m["email"])
-			}
-			if _, leaked := m["password"]; leaked {
-				t.Error("flashed old input carries the password")
+			if len(w.Result().Cookies()) != 0 || w.Header().Get("Location") != "" || w.Body.Len() != 0 {
+				t.Errorf("wrote cookies %v, Location %q, body %q; want nothing written",
+					cookieNames(w.Result().Cookies()), w.Header().Get("Location"), w.Body.String())
 			}
 		})
 	}

@@ -750,21 +750,13 @@ func New(opts ...Option) (*App, error) {
 		if !result.HasErrors() {
 			return nil
 		}
-		failure := validation.NewFailure(result)
-		// A request the error handler answers with JSON (its negotiation:
-		// JSONWhen, API mode, API prefixes, then the Accept header), or an
-		// app with no view engine (API-only), gets the failure back with
-		// nothing written: the handler returns it and the error pipeline
-		// answers 422 problem+json. c.View() is fatal when the service is
-		// unset, so the container is read directly.
-		view := viewEngineOf(c.ServicesIfSet())
-		if view == nil || errorsWantJSON(c, failure) {
-			return failure
-		}
-		// Browser with a view engine: flash errors and old input, redirect
-		// back, and tell the router the response is written.
-		flashFailure(c, c.RenderContext(), view, failure)
-		return contract.ErrResponseWritten
+		// The failure is returned with nothing written: the handler returns
+		// it and the error pipeline answers, so application map and render
+		// rules see it. The framework render rule for *validation.Failure
+		// flashes the errors and old input and redirects back for a browser
+		// with a view engine, and negotiation answers 422 problem+json
+		// otherwise.
+		return validation.NewFailure(result)
 	})
 
 	// Wire the data validator: ctx.BindValid validates an already-bound

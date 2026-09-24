@@ -136,20 +136,15 @@ func safeDB(ctx *router.Context) orm.Database {
 
 // Form binds the request body into a fresh *T, validates using T.Rules() if
 // T implements FormRequest, and returns *T on success. On validation
-// failure:
-//
-//   - when the error pipeline answers the request with JSON (the error
-//     handler's WantsJSON: JSONWhen, API mode, API prefixes, then the
-//     Accept header; contract.WantsJSON when no handler is wired) or no
-//     view engine is wired, it writes nothing and returns a
-//     *validation.Failure; the handler returns it and the error pipeline
-//     answers 422 application/problem+json with the per-field errors.
-//   - otherwise it flashes errors plus old input, redirects back, and
-//     returns contract.ErrResponseWritten so the handler can return early
-//     without the router emitting an error response.
+// failure it writes nothing and returns a *validation.Failure; the handler
+// returns it and the error pipeline answers: the errors and old input
+// flashed plus a redirect back for a browser when a view engine is wired,
+// 422 application/problem+json with the per-field errors otherwise, unless
+// an application map or render rule for the failure answers first.
 //
 // Adopters that want to render a custom error view instead of redirecting
-// back should call Validate[T] directly and inspect the returned *Result.
+// back can register a render rule for *validation.Failure, or call
+// Validate[T] directly and inspect the returned *Result.
 func Form[T any](ctx *router.Context) (*T, error) {
 	req, result, err := Validate[T](ctx)
 	if err != nil {
@@ -158,18 +153,7 @@ func Form[T any](ctx *router.Context) (*T, error) {
 	if result == nil {
 		return req, nil
 	}
-
-	failure := validation.NewFailure(result)
-	v := safeView(ctx)
-	if v == nil || wantsJSON(ctx, failure) {
-		return nil, failure
-	}
-
-	ctx.FlashErrors(result.All())
-	ctx.FlashInput(result.Old())
-	v.Back(ctx.Response, ctx.Request)
-
-	return nil, contract.ErrResponseWritten
+	return nil, validation.NewFailure(result)
 }
 
 // mismatchedRulesMethod inspects req for a method literally named "Rules"
@@ -195,26 +179,4 @@ func mismatchedRulesMethod(req any) (string, bool) {
 		return "", false
 	}
 	return t.String(), true
-}
-
-// safeView mirrors safeDB: returns the view engine without panicking when
-// the services container or View field is unset. View.Back is the
-// redirect-back hook used by Form[T] on validation failure; when no view
-// engine is wired, Form[T] returns a *validation.Failure instead.
-func safeView(ctx *router.Context) contract.ViewEngine {
-	s := ctx.ServicesIfSet()
-	if s == nil || s.View == nil {
-		return nil
-	}
-	return s.View
-}
-
-// wantsJSON reports whether the error pipeline answers err for ctx's
-// request with JSON: the error handler's negotiation when one is wired,
-// else contract.WantsJSON.
-func wantsJSON(ctx *router.Context, err error) bool {
-	if s := ctx.ServicesIfSet(); s != nil && s.Errors != nil {
-		return s.Errors.WantsJSON(ctx.Request, err)
-	}
-	return contract.WantsJSON(ctx.Request)
 }

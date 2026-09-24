@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -278,22 +279,98 @@ func TestValidationFailure_ErrorBag(t *testing.T) {
 	}
 }
 
-// TestValidationFailure_UserRuleWins asserts the framework default stays
-// overridable: a user render rule for *validation.Failure answers first.
-func TestValidationFailure_UserRuleWins(t *testing.T) {
-	a, _, _, _ := validationApp(t, backToSignup{})
-	problem.RenderFor(a.Services.Errors, func(rc contract.RenderContext, f *validation.Failure, _ *contract.ErrorContext) bool {
-		rc.WriteHeader(http.StatusTeapot)
-		_, _ = rc.Write([]byte(strings.Join([]string{"custom", f.Errors()["email"][0]}, ": ")))
-		return true
-	})
-
-	w := postSignup(a, "/manual", map[string]string{"Accept": "text/html"})
-	if w.Code != http.StatusTeapot || !strings.HasPrefix(w.Body.String(), "custom: ") {
-		t.Fatalf("response = %d %q, want the user rule's 418", w.Code, w.Body.String())
+// TestValidationFailure_UserRulesSeeEveryEntryPoint asserts the framework
+// default stays overridable for every validation entry point (the
+// ctx.Validate callback, vform.Form, ctx.BindValid, a Failure returned by
+// hand): a user render rule for *validation.Failure answers first, and a
+// user map rule that gives the failure another status keeps the browser
+// flash-and-redirect from running.
+func TestValidationFailure_UserRulesSeeEveryEntryPoint(t *testing.T) {
+	rules := []struct {
+		name       string
+		configure  func(h contract.ErrorHandler)
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name: "render rule",
+			configure: func(h contract.ErrorHandler) {
+				problem.RenderFor(h, func(rc contract.RenderContext, f *validation.Failure, _ *contract.ErrorContext) bool {
+					rc.WriteHeader(http.StatusTeapot)
+					_, _ = rc.Write([]byte(strings.Join([]string{"custom", f.Errors()["email"][0]}, ": ")))
+					return true
+				})
+			},
+			wantStatus: http.StatusTeapot,
+			wantBody:   "custom: ",
+		},
+		{
+			name: "map rule",
+			configure: func(h contract.ErrorHandler) {
+				problem.MapFor(h, func(f *validation.Failure) error {
+					return contract.NewHTTPError(http.StatusBadRequest).WithCause(f)
+				})
+			},
+			wantStatus: http.StatusBadRequest,
+		},
 	}
-	if cookies := w.Result().Cookies(); len(cookies) != 0 {
-		t.Errorf("Set-Cookie = %v, want none", cookies)
+	for _, rule := range rules {
+		for _, path := range []string{"/validate", "/vform", "/bindvalid", "/manual"} {
+			t.Run(rule.name+" "+path, func(t *testing.T) {
+				a, _, _, _ := validationApp(t, backToSignup{})
+				rule.configure(a.Services.Errors)
+
+				w := postSignup(a, path, map[string]string{"Accept": "text/html"})
+				if w.Code != rule.wantStatus || !strings.HasPrefix(w.Body.String(), rule.wantBody) {
+					t.Fatalf("response = %d %q, want the user rule's %d", w.Code, w.Body.String(), rule.wantStatus)
+				}
+				if loc := w.Header().Get("Location"); loc != "" {
+					t.Errorf("Location = %q, want none", loc)
+				}
+				if cookies := w.Result().Cookies(); len(cookies) != 0 {
+					t.Errorf("Set-Cookie = %v, want none", cookies)
+				}
+			})
+		}
+	}
+}
+
+// TestValidationFailure_BrowserFlashIdenticalAcrossEntryPoints asserts
+// every validation entry point gives a browser the same answer through the
+// framework render rule: 303 back, both flash cookies with the same
+// attributes, and the same sealed errors and old input.
+func TestValidationFailure_BrowserFlashIdenticalAcrossEntryPoints(t *testing.T) {
+	type answer struct {
+		status   int
+		location string
+		errs     any
+		old      any
+	}
+	answers := map[string]answer{}
+	for _, path := range []string{"/manual", "/validate", "/vform", "/bindvalid"} {
+		a, _, _, enc := validationApp(t, backToSignup{})
+		w := postSignup(a, path, map[string]string{"Accept": "text/html"})
+		assertFlashRedirect(t, w, enc, "/signup")
+		got := answer{status: w.Code, location: w.Header().Get("Location")}
+		for _, c := range w.Result().Cookies() {
+			value, err := router.OpenFlash(enc, c.Name, c.Value)
+			if err != nil {
+				t.Fatalf("%s: open %s: %v", path, c.Name, err)
+			}
+			switch c.Name {
+			case router.FlashErrorsCookie:
+				got.errs = value
+			case router.FlashInputCookie:
+				got.old = value
+			}
+		}
+		answers[path] = got
+	}
+	want := answers["/manual"]
+	for path, got := range answers {
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s answered %+v, want %+v (the /manual answer)", path, got, want)
+		}
 	}
 }
 
@@ -411,35 +488,41 @@ func TestInstallValidationErrorRules(t *testing.T) {
 }
 
 // TestValidateCallback_ReturnsFailure asserts what ctx.Validate hands the
-// handler: the Failure itself when nothing was written, the bare
-// contract.ErrResponseWritten once the browser flow wrote the redirect.
+// handler: the Failure itself, with nothing written, for every client; the
+// error pipeline answers it once the handler returns.
 func TestValidateCallback_ReturnsFailure(t *testing.T) {
 	tests := []struct {
-		name        string
-		view        contract.ViewEngine
-		accept      string
-		wantFailure bool
+		name   string
+		view   contract.ViewEngine
+		accept string
 	}{
-		{name: "json client", view: backToSignup{}, accept: "application/json", wantFailure: true},
-		{name: "no view engine", accept: "text/html", wantFailure: true},
+		{name: "json client", view: backToSignup{}, accept: "application/json"},
+		{name: "no view engine", accept: "text/html"},
 		{name: "browser with view engine", view: backToSignup{}, accept: "text/html"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a, _, _, _ := validationApp(t, tt.view)
-			var got error
+			var (
+				got     error
+				written bool
+			)
 			a.Router.Post("/probe", func(c *router.Context) error {
 				got = c.Validate(signupForm{}.Rules())
+				written = c.RenderContext().Written() || len(c.Response.Header().Values("Set-Cookie")) != 0
 				return got
 			})
 			postSignup(a, "/probe", map[string]string{"Accept": tt.accept})
 
 			var f *validation.Failure
-			if isFailure := errors.As(got, &f); isFailure != tt.wantFailure {
-				t.Fatalf("error = %v (failure %v), want failure %v", got, isFailure, tt.wantFailure)
+			if !errors.As(got, &f) {
+				t.Fatalf("error = %v, want a *validation.Failure", got)
 			}
-			if !tt.wantFailure && (!errors.Is(got, contract.ErrResponseWritten) || contract.HandledCause(got) != nil) {
-				t.Errorf("error = %v, want the bare contract.ErrResponseWritten", got)
+			if errors.Is(got, contract.ErrResponseWritten) {
+				t.Errorf("error = %v, want no response-written marker", got)
+			}
+			if written {
+				t.Error("ctx.Validate wrote to the response")
 			}
 		})
 	}

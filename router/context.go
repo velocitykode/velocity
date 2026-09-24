@@ -2016,18 +2016,12 @@ func writeFlashCookie(w http.ResponseWriter, enc contract.Encryptor, name string
 	http.SetCookie(w, FlashCookie(name, sealed, 300, secure))
 }
 
-// Validate checks the request against rules. On failure the handler
-// returns what Validate returned:
-//
-//   - a *validation.Failure, with nothing written, when the error pipeline
-//     answers the request with JSON (the error handler's negotiation) or
-//     the app has no view engine; the pipeline answers 422
-//     application/problem+json with the per-field errors.
-//   - contract.ErrResponseWritten otherwise, after the errors and old
-//     input were flashed and a redirect back was written; the router then
-//     writes nothing more.
-//
-// Either way the handler returns the error unchanged:
+// Validate checks the request against rules. On failure it writes
+// nothing and returns a *validation.Failure, which the handler returns
+// unchanged; the error pipeline answers it: the errors and old input
+// flashed plus a redirect back for a browser when a view engine is wired,
+// 422 application/problem+json with the per-field errors otherwise, unless
+// an application map or render rule for the failure answers first.
 //
 //	func (h *Handler) Store(ctx *router.Context) error {
 //	    if err := ctx.Validate(validation.Rules{
