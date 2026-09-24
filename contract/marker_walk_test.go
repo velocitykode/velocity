@@ -66,6 +66,15 @@ func TestMarkerPredicates_OutsidePanicOnly(t *testing.T) {
 		{name: "AsMethodReported", err: &asMarkedError{hidden: MarkReported(base)}, wantReported: true},
 		{name: "AsMethodHandled", err: &asMarkedError{hidden: Handled(base)}, wantCause: base},
 		{name: "PastWalkLimit", err: deepWrap(MarkReported(Handled(base)), chainWalkLimit+6), wantReported: true, wantWritten: true, wantCause: base},
+		{name: "SentinelPastWalkLimit", err: deepWrap(ErrResponseWritten, chainWalkLimit+1), wantWritten: true},
+		{name: "SentinelInsidePanicPastWalkLimit", err: deepWrap(panicOf(ErrResponseWritten), chainWalkLimit+1)},
+		{name: "MarkersInsidePanicPastWalkLimit", err: deepWrap(panicOf(MarkReported(Handled(base))), chainWalkLimit+1)},
+		{name: "JoinedPanicPastWalkLimit", err: deepWrap(errors.Join(other, panicOf(ErrResponseWritten)), chainWalkLimit+1)},
+		{name: "SentinelAtMarkerCap", err: deepWrap(ErrResponseWritten, markerWalkCap-1), wantWritten: true},
+		{name: "MarkersPastMarkerCap", err: deepWrap(MarkReported(Handled(base)), markerWalkCap+1)},
+		{name: "SentinelPastMarkerCap", err: deepWrap(ErrResponseWritten, markerWalkCap)},
+		{name: "WideJoinPastMarkerCap", err: wideJoin(MarkReported(Handled(base)), markerWalkCap)},
+		{name: "WideJoinWithinMarkerCap", err: wideJoin(MarkReported(base), 100), wantReported: true},
 		{name: "Unmarked", err: base},
 		{name: "Nil", err: nil},
 	}
@@ -82,6 +91,16 @@ func TestMarkerPredicates_OutsidePanicOnly(t *testing.T) {
 			}
 		})
 	}
+}
+
+// wideJoin joins n unmarked errors followed by last, so the walk visits
+// n+2 nodes (the join, the n siblings, then last) before it reaches last.
+func wideJoin(last error, n int) error {
+	errs := make([]error, 0, n+1)
+	for i := 0; i < n; i++ {
+		errs = append(errs, fmt.Errorf("sibling %d", i))
+	}
+	return errors.Join(append(errs, last)...)
 }
 
 // TestMarkReported_AroundAMarkedPanic asserts a recovered panic whose value
@@ -127,6 +146,10 @@ func TestMarkerPredicates_Allocations(t *testing.T) {
 		{"marker inside panic", &testPanic{value: MarkReported(Handled(base))}},
 		{"handled around panic", Handled(&testPanic{value: "boom"})},
 		{"joined", errors.Join(&testPanic{value: "boom"}, MarkReported(base))},
+		{"nested joins", errors.Join(base, errors.Join(base, errors.Join(base, MarkReported(base))))},
+		{"wide join", wideJoin(MarkReported(base), 40)},
+		{"deep chain", deepWrap(Handled(base), chainWalkLimit*4)},
+		{"deep panic", deepWrap(&testPanic{value: MarkReported(Handled(base))}, chainWalkLimit+1)},
 		{"unmarked", fmt.Errorf("x: %w", base)},
 	}
 	for _, tt := range tests {

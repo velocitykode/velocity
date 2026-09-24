@@ -654,3 +654,48 @@ func TestReport_ThenMarkARecoveredPanic(t *testing.T) {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
 }
+
+// TestHandleRequest_DeepChainMarkers asserts a marker counts by position
+// at any depth: a recovered panic carrying a marker under more wrappers
+// than a depth-limited walk visits is a reported 500, a plain marker that
+// deep still counts, and a marker past the marker walk's cap does not.
+func TestHandleRequest_DeepChainMarkers(t *testing.T) {
+	wrap := func(err error, n int) error {
+		for i := 0; i < n; i++ {
+			err = fmt.Errorf("layer %d: %w", i, err)
+		}
+		return err
+	}
+	tests := []struct {
+		name        string
+		err         error
+		wantReports int
+		wantStatus  int // 0: nothing rendered
+	}{
+		{name: "SentinelInsidePanicPastWalkLimit", err: wrap(panicerr.FromRecovered(contract.ErrResponseWritten), 65), wantReports: 1, wantStatus: http.StatusInternalServerError},
+		{name: "ReportedInsidePanicPastWalkLimit", err: wrap(panicerr.FromRecovered(contract.MarkReported(errors.New("x"))), 65), wantReports: 1, wantStatus: http.StatusInternalServerError},
+		{name: "SentinelPastWalkLimit", err: wrap(contract.ErrResponseWritten, 65)},
+		{name: "ReportedPastWalkLimit", err: wrap(contract.MarkReported(errors.New("x")), 65), wantStatus: http.StatusInternalServerError},
+		{name: "SentinelPastMarkerCap", err: wrap(contract.ErrResponseWritten, 1025), wantReports: 1, wantStatus: http.StatusInternalServerError},
+		{name: "ReportedPastMarkerCap", err: wrap(contract.MarkReported(errors.New("x")), 1025), wantReports: 1, wantStatus: http.StatusInternalServerError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, rep, _ := newTestHandler()
+			rc, w := newRC(http.MethodGet, "/x", "Accept", "application/json")
+			h.HandleRequest(rc, tt.err, nil)
+			if rep.count() != tt.wantReports {
+				t.Errorf("reports = %d, want %d", rep.count(), tt.wantReports)
+			}
+			if tt.wantStatus == 0 {
+				if rc.Written() {
+					t.Errorf("rendered %d, want nothing", w.Code)
+				}
+				return
+			}
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+		})
+	}
+}

@@ -737,3 +737,55 @@ func TestInstall_ProblemBodyMatchesStandalone(t *testing.T) {
 		})
 	}
 }
+
+// TestInstall_DeepChainMarkers asserts the pipeline finds a marker by its
+// position at any depth: a *router.PanicError carrying the response-written
+// sentinel under more wrappers than a depth-limited walk visits is a
+// reported 500, a plain sentinel that deep still ends the request, and a
+// marker past the marker walk's cap is not found, so the error is
+// reported and rendered.
+func TestInstall_DeepChainMarkers(t *testing.T) {
+	wrap := func(err error, n int) error {
+		for i := 0; i < n; i++ {
+			err = fmt.Errorf("layer %d: %w", i, err)
+		}
+		return err
+	}
+	tests := []struct {
+		name        string
+		err         error
+		wantStatus  int // 0: nothing written
+		wantReports int
+	}{
+		{name: "PanicCarryingSentinelPastWalkLimit", err: wrap(&router.PanicError{Err: contract.ErrResponseWritten, Stack: "stack"}, 65), wantStatus: http.StatusInternalServerError, wantReports: 1},
+		{name: "PanicCarryingReportedPastWalkLimit", err: wrap(&router.PanicError{Err: contract.MarkReported(errors.New("x")), Stack: "stack"}, 65), wantStatus: http.StatusInternalServerError, wantReports: 1},
+		{name: "SentinelPastWalkLimit", err: wrap(contract.ErrResponseWritten, 65)},
+		{name: "SentinelPastMarkerCap", err: wrap(contract.ErrResponseWritten, 1025), wantStatus: http.StatusInternalServerError, wantReports: 1},
+		{name: "ReportedPastMarkerCap", err: wrap(contract.MarkReported(errors.New("x")), 1025), wantStatus: http.StatusInternalServerError, wantReports: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recordingReporter{}
+			h := problem.NewHandler(problem.WithReporters(rec))
+			r := router.New()
+			Install(r, WithHandler(func() contract.ErrorHandler { return h }))
+			r.Get("/x", func(*router.Context) error { return tt.err })
+
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/x", nil)
+			req.Header.Set("Accept", "application/json")
+			r.ServeHTTP(w, req)
+
+			if tt.wantStatus == 0 {
+				if w.Body.Len() != 0 || w.Header().Get("Content-Type") != "" {
+					t.Errorf("wrote %d %q, want nothing", w.Code, w.Body.String())
+				}
+			} else if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d (body %q)", w.Code, tt.wantStatus, w.Body.String())
+			}
+			if rec.count() != tt.wantReports {
+				t.Errorf("reports = %d, want %d", rec.count(), tt.wantReports)
+			}
+		})
+	}
+}

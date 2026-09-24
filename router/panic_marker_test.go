@@ -321,3 +321,69 @@ func TestPanicError_Recovered(t *testing.T) {
 		})
 	}
 }
+
+// TestBoundary_DeepChainMarkers asserts the response-written marker is
+// found by position at any depth: a *PanicError carrying the sentinel under
+// more wrappers than the classification walk's limit is still a logged,
+// dispatched 500, a plain sentinel that deep still ends the request, and a
+// sentinel past the marker walk's cap is not found, so the error is logged
+// and answered like any other.
+func TestBoundary_DeepChainMarkers(t *testing.T) {
+	wrap := func(err error, n int) error {
+		for i := 0; i < n; i++ {
+			err = fmt.Errorf("layer %d: %w", i, err)
+		}
+		return err
+	}
+	tests := []struct {
+		name          string
+		err           error
+		wantStatus    int // 0: nothing written
+		wantRecovered bool
+	}{
+		{name: "PanicCarryingSentinelPastWalkLimit", err: wrap(&PanicError{Err: contract.ErrResponseWritten, Stack: "stack"}, walkLimit+1), wantStatus: http.StatusInternalServerError, wantRecovered: true},
+		{name: "SentinelPastWalkLimit", err: wrap(contract.ErrResponseWritten, walkLimit+1)},
+		{name: "SentinelPastMarkerCap", err: wrap(contract.ErrResponseWritten, 1025), wantStatus: http.StatusInternalServerError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewV2()
+			errLog := &logCapture{}
+			r.SetErrorLogger(errLog.fn)
+			var (
+				mu     sync.Mutex
+				failed []*RequestFailed
+			)
+			r.SetEventDispatcher(func(_ context.Context, event interface{}) error {
+				if rf, ok := event.(*RequestFailed); ok {
+					mu.Lock()
+					failed = append(failed, rf)
+					mu.Unlock()
+				}
+				return nil
+			})
+			r.Get("/x", func(*Context) error { return tt.err })
+
+			w := newHeaderCountingRecorder()
+			r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil))
+
+			mu.Lock()
+			defer mu.Unlock()
+			if tt.wantStatus == 0 {
+				if w.headerCalls != 0 || w.Body.Len() != 0 || errLog.count() != 0 || len(failed) != 0 {
+					t.Errorf("status lines %d, body %q, logs %d, RequestFailed %d; want nothing", w.headerCalls, w.Body.String(), errLog.count(), len(failed))
+				}
+				return
+			}
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+			if errLog.count() != 1 {
+				t.Errorf("error log entries = %d, want 1", errLog.count())
+			}
+			if len(failed) != 1 || failed[0].Recovered != tt.wantRecovered {
+				t.Errorf("RequestFailed = %+v, want one with Recovered %v", failed, tt.wantRecovered)
+			}
+		})
+	}
+}

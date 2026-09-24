@@ -513,7 +513,7 @@ func Handled(cause error) error {
 // ErrResponseWritten under errors.Is (the bare sentinel or a Handled
 // value). A marker inside a recovered panic's value does not count.
 func IsResponseWritten(err error) bool {
-	return findMarker(err, markWritten, 0) != nil
+	return findMarker(err, markWritten) != nil
 }
 
 // HandledCause returns the cause the first Handled value in err's chain
@@ -521,7 +521,7 @@ func IsResponseWritten(err error) bool {
 // ErrResponseWritten, and for a Handled value inside a recovered panic's
 // value).
 func HandledCause(err error) error {
-	if h := findMarker(err, markHandled, 0); h != nil {
+	if h := findMarker(err, markHandled); h != nil {
 		return errors.Unwrap(h)
 	}
 	return nil
@@ -559,7 +559,7 @@ func MarkReported(err error) error {
 // of its chain outside any RecoveredPanic. A marker inside a recovered
 // panic's value does not count.
 func IsReported(err error) bool {
-	return findMarker(err, markReported, 0) != nil
+	return findMarker(err, markReported) != nil
 }
 
 // markerKind selects the marker findMarker looks for.
@@ -575,42 +575,68 @@ const (
 	markHandled
 )
 
+// markerWalkCap bounds how many nodes of an error chain findMarker visits.
+// Past the cap the answer is "no marker", the safe side: an error whose
+// marker lies deeper is reported and rendered.
+const markerWalkCap = 1024
+
+// joinFrame is one Unwrap() []error node findMarker is part way through:
+// its branches and the index of the next one to visit.
+type joinFrame struct {
+	errs []error
+	next int
+}
+
 // findMarker walks err's chain depth-first in the order errors.As and
 // errors.Is visit it (the node, then Unwrap() error or each Unwrap()
 // []error branch) and returns the first node matching kind, or nil. It
-// never looks at a RecoveredPanic node or below it. A node with an As
-// method is asked for the marker type the way errors.As would ask it.
-// Matching uses type assertions only, so the walk allocates nothing unless
-// it reaches a node with an As method or goes deeper than chainWalkLimit;
-// past the limit the rest of that branch is handed to the errors package,
-// which does not stop at a RecoveredPanic.
-func findMarker(err error, kind markerKind, depth int) error {
-	for err != nil {
-		if _, ok := err.(RecoveredPanic); ok {
-			return nil
-		}
-		if depth >= chainWalkLimit {
-			return markerFallback(err, kind)
-		}
-		if m := markerNode(err, kind); m != nil {
-			return m
-		}
-		switch x := err.(type) {
-		case interface{ Unwrap() error }:
-			err = x.Unwrap()
-			depth++
-		case interface{ Unwrap() []error }:
-			for _, e := range x.Unwrap() {
-				if m := findMarker(e, kind, depth+1); m != nil {
-					return m
-				}
+// never looks at a RecoveredPanic node or below it, at any depth. A node
+// with an As method is asked for the marker type the way errors.As would
+// ask it. The walk is iterative and visits at most markerWalkCap nodes;
+// a marker past the cap is not found. Matching uses type assertions only
+// and the pending joins live in a stack buffer, so the walk allocates
+// nothing unless a node's As method does or joins nest deeper than the
+// buffer.
+func findMarker(err error, kind markerKind) error {
+	var buf [8]joinFrame
+	joins := buf[:0]
+	visited := 0
+	for {
+		for err != nil {
+			if visited >= markerWalkCap {
+				return nil
 			}
-			return nil
-		default:
-			return nil
+			visited++
+			if _, ok := err.(RecoveredPanic); ok {
+				err = nil
+				continue
+			}
+			if m := markerNode(err, kind); m != nil {
+				return m
+			}
+			switch x := err.(type) {
+			case interface{ Unwrap() error }:
+				err = x.Unwrap()
+			case interface{ Unwrap() []error }:
+				joins = append(joins, joinFrame{errs: x.Unwrap()})
+				err = nil
+			default:
+				err = nil
+			}
+		}
+		for err == nil {
+			if len(joins) == 0 {
+				return nil
+			}
+			top := &joins[len(joins)-1]
+			if top.next >= len(top.errs) {
+				joins = joins[:len(joins)-1]
+				continue
+			}
+			err = top.errs[top.next]
+			top.next++
 		}
 	}
-	return nil
 }
 
 // markerNode returns the marker of kind err itself carries, or nil.
@@ -642,28 +668,6 @@ func markerNode(err error, kind markerKind) error {
 			if x.As(&h) && h != nil {
 				return h
 			}
-		}
-	}
-	return nil
-}
-
-// markerFallback resolves kind over err's whole branch through the errors
-// package.
-func markerFallback(err error, kind markerKind) error {
-	switch kind {
-	case markReported:
-		var r *reportedError
-		if errors.As(err, &r) {
-			return r
-		}
-	case markWritten:
-		if errors.Is(err, ErrResponseWritten) {
-			return ErrResponseWritten
-		}
-	case markHandled:
-		var h *handledError
-		if errors.As(err, &h) {
-			return h
 		}
 	}
 	return nil
