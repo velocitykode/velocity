@@ -1,10 +1,12 @@
 package velocity
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/contract"
@@ -266,21 +268,43 @@ func guardProductionDataLoss(a *App, name string, args []string) error {
 // displays available commands.
 //
 // A command that fails goes through the error handler's HandleConsole: the
-// error is reported once, one "error: <message>" line goes to stderr, and
-// the process exits with the code HandleConsole returns (the error's
-// contract.ExitCoder code, otherwise 1). Run returns the error instead only
-// when no error handler is configured.
+// error is reported once, one "error: <message>" line goes to stderr, the
+// app is shut down (Shutdown, bounded by consoleShutdownTimeout), and the
+// process exits with the code HandleConsole returns (the error's
+// contract.ExitCoder code, otherwise 1). The exit ends the process: Run
+// does not return and no deferred function of its callers runs. Run
+// returns the error instead only when no error handler is configured.
 func (a *App) Run() error {
-	if len(os.Args) <= 1 {
+	var argv []string
+	if len(os.Args) > 1 {
+		argv = os.Args[1:]
+	}
+	return a.run(argv, os.Stderr, os.Exit)
+}
+
+// consoleShutdownTimeout bounds the Shutdown Run performs before exiting
+// on a failed command.
+const consoleShutdownTimeout = 5 * time.Second
+
+// run is Run over argv, stderr and exit. A failed command handled by the
+// error handler shuts the app down before calling exit, because exit
+// skips every deferred cleanup; a shutdown failure gets one stderr line.
+func (a *App) run(argv []string, stderr io.Writer, exit func(code int)) error {
+	if len(argv) == 0 {
 		a.printHelp()
 		return nil
 	}
-	code, err := a.runConsole(os.Args[1:], os.Stderr)
+	code, err := a.runConsole(argv, stderr)
 	if err != nil {
 		return err
 	}
 	if code != 0 {
-		os.Exit(code)
+		ctx, cancel := context.WithTimeout(context.Background(), consoleShutdownTimeout)
+		if sdErr := a.Shutdown(ctx); sdErr != nil {
+			_, _ = fmt.Fprintf(stderr, "error: shutdown: %v\n", sdErr)
+		}
+		cancel()
+		exit(code)
 	}
 	return nil
 }

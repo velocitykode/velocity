@@ -22,9 +22,12 @@ import (
 )
 
 // Serve is the single entry point for a Velocity application. If os.Args
-// contains a CLI command (len > 1), it delegates to Run() for command dispatch.
-// Otherwise it boots the application and starts the HTTP server with signal
-// handling and graceful shutdown.
+// contains a CLI command (len > 1), it delegates to Run() for command dispatch;
+// a command that fails is handled, the app is shut down and the process
+// exits with the command's code, so Serve does not return then and no
+// deferred function of its callers runs (see Run). Otherwise it boots the
+// application and starts the HTTP server with signal handling and graceful
+// shutdown.
 func (a *App) Serve() error {
 	// Guarantee the App's shutdown context is cancelled on every exit
 	// path from Serve, including the CLI-dispatch path (a.Run) which

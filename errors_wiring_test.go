@@ -924,3 +924,44 @@ func TestErrorPipeline_PanicReachesRenderRules(t *testing.T) {
 		}
 	})
 }
+
+// TestRun_FailedCommandShutsDownBeforeExit asserts that a failed command
+// shuts the app down before the process exits (the exit skips every
+// deferred cleanup), and that a successful one neither shuts down nor
+// exits.
+func TestRun_FailedCommandShutsDownBeforeExit(t *testing.T) {
+	tests := []struct {
+		name         string
+		argv         []string
+		wantExit     int
+		wantShutdown bool
+	}{
+		{name: "failed command", argv: []string{"run", "fail"}, wantExit: 3, wantShutdown: true},
+		{name: "successful command", argv: []string{"help"}, wantExit: -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mod := &shutdownRecorder{}
+			a, _, _ := newPipelineApp(t, WithModules(mod))
+			a.Commands(func(r *chain.Commands) { r.Add(failingCommand{err: exitCodeError{code: 3}}) })
+
+			exitCode, shutDownAtExit := -1, false
+			var stderr strings.Builder
+			err := a.run(tt.argv, &stderr, func(code int) {
+				exitCode, shutDownAtExit = code, mod.shutdowns.Load() > 0
+			})
+			if err != nil {
+				t.Fatalf("run returned %v, want the error handled", err)
+			}
+			if exitCode != tt.wantExit {
+				t.Errorf("exit code = %d, want %d", exitCode, tt.wantExit)
+			}
+			if shutDownAtExit != tt.wantShutdown {
+				t.Errorf("shut down before exit = %v, want %v", shutDownAtExit, tt.wantShutdown)
+			}
+			if !tt.wantShutdown && mod.shutdowns.Load() > 0 {
+				t.Error("a successful command shut the app down")
+			}
+		})
+	}
+}
