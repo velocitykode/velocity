@@ -84,10 +84,12 @@ func (h *Handler) Render(rc RenderContext, err error, ctx *ErrorContext) {
 
 // ShouldReport reports whether err passes the report gate: not already
 // reported; a recovered panic always passes; otherwise an unignore rule
-// forces it through, or it must survive its own ShouldReport, the
-// framework ignores (skipped when ShouldReport says true), the user ignores
-// and the IgnoreIf predicates. Throttling is decided only when a report is
-// made, so ShouldReport does not consume throttle budget.
+// forces it through, or it must survive the dead-request cancel ignore
+// (applied whatever the error's own ShouldReport says), its own
+// ShouldReport, the framework ignores (skipped when ShouldReport says
+// true), the user ignores and the IgnoreIf predicates. Throttling is
+// decided only when a report is made, so ShouldReport does not consume
+// throttle budget.
 func (h *Handler) ShouldReport(err error) bool {
 	return h.passes(h.snap(), err, nil, nil, false)
 }
@@ -132,6 +134,13 @@ func (h *Handler) passes(s *snapshot, err error, ctx *ErrorContext, r *http.Requ
 		return true
 	}
 	if !anyIgnoreMatch(s.unignoreRules, err) {
+		// A cancel whose request context is dead is a fact about the
+		// request (the client went away), not a property of the error, so
+		// no ShouldReport answer overrides it: a Timeout 503 wrapping the
+		// cancel is dropped like the bare cancel.
+		if errors.Is(err, context.Canceled) && requestGone(r) {
+			return false
+		}
 		ownDecision := false
 		var rep contract.Reportable
 		if errors.As(err, &rep) {
@@ -140,13 +149,8 @@ func (h *Handler) passes(s *snapshot, err error, ctx *ErrorContext, r *http.Requ
 			}
 			ownDecision = true
 		}
-		if !ownDecision {
-			if anyIgnoreMatch(s.frameworkIgnores, err) {
-				return false
-			}
-			if errors.Is(err, context.Canceled) && requestGone(r) {
-				return false
-			}
+		if !ownDecision && anyIgnoreMatch(s.frameworkIgnores, err) {
+			return false
 		}
 		if anyIgnoreMatch(s.ignoreRules, err) {
 			return false

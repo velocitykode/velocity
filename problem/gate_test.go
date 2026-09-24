@@ -60,6 +60,8 @@ func TestReportGate_Order(t *testing.T) {
 		{name: "FrameworkIgnore_MaxBytes", err: fmt.Errorf("read: %w", &http.MaxBytesError{Limit: 1}), want: false},
 		{name: "FrameworkIgnore_CanceledDeadRequest", err: context.Canceled, reqCx: canceled, want: false},
 		{name: "CanceledLiveRequestReported", err: context.Canceled, want: true},
+		{name: "DeadCancelIgnoredDespiteShouldReport", err: contract.NewHTTPError(http.StatusServiceUnavailable).WithCause(context.Canceled), reqCx: canceled, want: false},
+		{name: "LiveCancelUnderServerErrorReported", err: contract.NewHTTPError(http.StatusServiceUnavailable).WithCause(context.Canceled), want: true},
 		{name: "DeadlineReported", err: context.DeadlineExceeded, want: true},
 		{
 			name:  "UserIgnoreType",

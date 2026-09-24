@@ -127,6 +127,11 @@ func bindHandler(c *router.Context) error {
 // real app: the router boundary, the bridge and the error handler built
 // by New.
 func TestErrorPipeline_DefaultMappings(t *testing.T) {
+	// release unblocks the handler the Timeout case leaves running once
+	// every case has finished.
+	release := make(chan struct{})
+	defer close(release)
+
 	tests := []struct {
 		name       string
 		method     string
@@ -211,6 +216,16 @@ func TestErrorPipeline_DefaultMappings(t *testing.T) {
 			name:       "dead context canceled writes nothing",
 			deadClient: true,
 			handler:    func(*router.Context) error { return context.Canceled },
+			wantStatus: 0,
+		},
+		{
+			name:       "timeout with a dead client writes and reports nothing",
+			deadClient: true,
+			middleware: []router.MiddlewareFunc{router.Timeout(5 * time.Second)},
+			handler: func(*router.Context) error {
+				<-release
+				return nil
+			},
 			wantStatus: 0,
 		},
 		{
