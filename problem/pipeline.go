@@ -295,10 +295,15 @@ func callReporter(logger contract.Logger, reporter Reporter, err error, ctx *Err
 	reporter.Report(err, ctx)
 }
 
-// render runs the render stage under one recover: a panic anywhere in it is
-// logged through the handler logger and answered with the plain-text 500
-// when nothing was written yet.
-func (h *Handler) render(s *snapshot, rc RenderContext, err error, ctx *ErrorContext) {
+// stage runs one render of err through rc: nothing when a response was
+// already written; otherwise a Content-Length the handler staged is
+// dropped, then write runs. Every write the pipeline makes (Renderable
+// errors, render rules, renderers, the error page and the last resort)
+// happens inside a stage, after that drop: the pipeline replaces the body,
+// and a server enforcing the stale length would reject it. A panic in
+// write is logged through the handler logger and answered with the
+// plain-text 500 when nothing was written yet.
+func stage(s *snapshot, rc RenderContext, err error, write func()) {
 	defer func() {
 		if p := recover(); p != nil {
 			safeLog(s.logger, "problem: rendering panicked", "panic", fmt.Sprint(p), "error", err.Error())
@@ -308,6 +313,19 @@ func (h *Handler) render(s *snapshot, rc RenderContext, err error, ctx *ErrorCon
 	if rc.Written() {
 		return
 	}
+	if w := rc.Writer(); w != nil {
+		w.Header().Del("Content-Length")
+	}
+	write()
+}
+
+// render runs the render stage (see stage).
+func (h *Handler) render(s *snapshot, rc RenderContext, err error, ctx *ErrorContext) {
+	stage(s, rc, err, func() { h.renderStage(s, rc, err, ctx) })
+}
+
+// renderStage renders err through rc inside a stage.
+func (h *Handler) renderStage(s *snapshot, rc RenderContext, err error, ctx *ErrorContext) {
 	// Every rule and renderer below reads the handler's negotiation
 	// answer through rc.WantsJSON, so a rule that picks between JSON and a
 	// browser answer agrees with the negotiation that follows it.
@@ -410,14 +428,10 @@ func (h *Handler) RenderJSON(rc RenderContext, err error, ctx *ErrorContext) boo
 	}
 	s := h.snap()
 	ctx = fillRequestContext(ctx, rc, s.trustedProxies)
-	defer func() {
-		if p := recover(); p != nil {
-			safeLog(s.logger, "problem: rendering panicked", "panic", fmt.Sprint(p), "error", err.Error())
-			lastResort(s.logger, rc)
-		}
-	}()
-	status, _, _ := contract.StatusOf(err)
-	h.respond(s, rc, err, ctx, status, true)
+	stage(s, rc, err, func() {
+		status, _, _ := contract.StatusOf(err)
+		h.respond(s, rc, err, ctx, status, true)
+	})
 	return rc.Written()
 }
 

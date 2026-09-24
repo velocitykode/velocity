@@ -1,8 +1,10 @@
 package routerbridge
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -429,5 +431,40 @@ func TestInstall_PanicCarryingMarkerIsAReported500(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestInstall_ErrorResponseDropsStaleContentLength asserts a Content-Length
+// a handler staged before returning an error never reaches the pipeline's
+// response through a real server.
+func TestInstall_ErrorResponseDropsStaleContentLength(t *testing.T) {
+	h := problem.NewHandler(problem.WithReporters())
+	h.SetDebug(false)
+	r := router.New()
+	Install(r, WithHandler(func() contract.ErrorHandler { return h }))
+	r.Get("/boom", func(c *router.Context) error {
+		c.Response.Header().Set("Content-Length", "1")
+		return errors.New("db down")
+	})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/boom", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var doc map[string]any
+	if resp.StatusCode != http.StatusInternalServerError || json.Unmarshal(raw, &doc) != nil || doc["status"] != float64(http.StatusInternalServerError) {
+		t.Errorf("response = %d %q, want the full 500 problem body", resp.StatusCode, raw)
 	}
 }

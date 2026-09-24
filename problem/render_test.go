@@ -2,9 +2,11 @@ package problem
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1044,6 +1046,99 @@ func TestFrameworkRenderFor_AnswersOnlyTheStatusOwner(t *testing.T) {
 			h.HandleRequest(rc, tt.err, ctx)
 			if w.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+		})
+	}
+}
+
+// failingJSONRenderer declines every render without writing, so the
+// pipeline falls back to the plain-text 500.
+type failingJSONRenderer struct{}
+
+func (failingJSONRenderer) ContentType() string { return ProblemTypeContent }
+
+func (failingJSONRenderer) Render(RenderContext, error, *ErrorContext, int, bool) error {
+	return errors.New("renderer down")
+}
+
+// TestRender_DropsStaleContentLengthOnARealServer asserts a Content-Length
+// the handler staged before failing never reaches the error response:
+// every renderer (JSON, HTML, the Inertia reload) and the last resort
+// deliver their full body through a real server, which enforces the
+// declared length.
+func TestRender_DropsStaleContentLengthOnARealServer(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       []Option
+		err        error
+		headers    map[string]string
+		wantStatus int
+		wantBody   func(body string) bool
+	}{
+		{
+			name:       "JSON",
+			err:        errors.New("db down"),
+			headers:    map[string]string{"Accept": "application/json"},
+			wantStatus: http.StatusInternalServerError,
+			wantBody: func(body string) bool {
+				var doc map[string]any
+				return json.Unmarshal([]byte(body), &doc) == nil && doc["status"] == float64(http.StatusInternalServerError)
+			},
+		},
+		{
+			name:       "HTML",
+			err:        NotFound(),
+			headers:    map[string]string{"Accept": "text/html"},
+			wantStatus: http.StatusNotFound,
+			wantBody:   func(body string) bool { return strings.Contains(body, "</html>") },
+		},
+		{
+			name:       "InertiaReload",
+			err:        NotFound(),
+			headers:    map[string]string{"X-Inertia": "true", "Accept": "text/html"},
+			wantStatus: http.StatusConflict,
+			wantBody:   func(body string) bool { return body == "" },
+		},
+		{
+			name:       "LastResort",
+			opts:       []Option{WithRenderers(map[string]Renderer{"json": failingJSONRenderer{}})},
+			err:        errors.New("db down"),
+			headers:    map[string]string{"Accept": "application/json"},
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   func(body string) bool { return body == http.StatusText(http.StatusInternalServerError) },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _, _ := newTestHandler(tt.opts...)
+			h.SetDebug(false)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Length", "1")
+				h.HandleRequest(contract.NewRenderContext(w, r), tt.err, nil)
+			}))
+			defer srv.Close()
+
+			req, err := http.NewRequest(http.MethodGet, srv.URL+"/x", nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
+			resp, err := srv.Client().Do(req)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			raw, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if resp.StatusCode != tt.wantStatus {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			if !tt.wantBody(string(raw)) {
+				t.Errorf("body = %q (Content-Length %d), want the full error body", raw, resp.ContentLength)
 			}
 		})
 	}
