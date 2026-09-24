@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // TestBoundary_PanicCarryingWrittenMarker asserts a panic whose value is
@@ -121,6 +122,23 @@ func TestBoundary_ReturnedWrittenMarkerStillEndsTheRequest(t *testing.T) {
 			handler:    func(*Context) error { panic("boom") },
 			wantFailed: 1,
 		},
+		{
+			name: "handled forwarded panic whose value is handled",
+			mw: func(next HandlerFunc) HandlerFunc {
+				guarded := Timeout(time.Minute)(next)
+				return func(c *Context) error {
+					err := guarded(c)
+					var pe *PanicError
+					if errors.As(err, &pe) {
+						c.Response.WriteHeader(http.StatusTeapot)
+						return contract.Handled(err)
+					}
+					return err
+				}
+			},
+			handler:    func(*Context) error { panic(contract.Handled(errors.New("inner"))) },
+			wantFailed: 1,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -158,9 +176,53 @@ func TestBoundary_ReturnedWrittenMarkerStillEndsTheRequest(t *testing.T) {
 			}
 			if tt.wantFailed == 1 {
 				var pe *PanicError
-				if !failed[0].Recovered || !errors.As(failed[0].Error, &pe) || errors.Is(failed[0].Error, contract.ErrResponseWritten) {
+				if !failed[0].Recovered || !errors.As(failed[0].Error, &pe) || contract.IsResponseWritten(failed[0].Error) {
 					t.Errorf("RequestFailed = %+v, want the recovered panic without the handled marker", failed[0])
 				}
+			}
+		})
+	}
+}
+
+// TestMarkedWritten_OutsidePanicParity pins where the response-written
+// marker counts relative to a recovered panic, as the pipeline's
+// outsidePanic does: never inside the panic value, always around it or on
+// a sibling branch of a join, and never when recovered is set but the
+// error carries no panic node.
+func TestMarkedWritten_OutsidePanicParity(t *testing.T) {
+	x := errors.New("x")
+	p := func(v any) error { return newPanicError(panicerr.FromRecovered(v), 0) }
+	around := p("boom")
+	both := p(contract.Handled(x))
+	sibling := p("boom")
+	tests := []struct {
+		name      string
+		err       error
+		recovered bool
+		want      bool
+		wantCause error
+	}{
+		{name: "NoPanicSentinel", err: contract.ErrResponseWritten, want: true},
+		{name: "NoPanicHandled", err: contract.Handled(x), want: true, wantCause: x},
+		{name: "SentinelInsidePanicOnly", err: p(contract.ErrResponseWritten), recovered: true},
+		{name: "HandledInsidePanicOnly", err: p(contract.Handled(x)), recovered: true},
+		{name: "HandledAroundPanic", err: contract.Handled(around), recovered: true, want: true, wantCause: around},
+		{name: "HandledInsideAndAround", err: contract.Handled(both), recovered: true, want: true, wantCause: both},
+		{name: "RecoveredNoPanicNode", err: contract.Handled(x), recovered: true},
+		{name: "JoinSentinelSibling", err: errors.Join(sibling, contract.ErrResponseWritten), recovered: true, want: true},
+		{name: "JoinHandledSibling", err: errors.Join(sibling, contract.Handled(x)), recovered: true, want: true, wantCause: x},
+		{name: "Unmarked", err: x},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := markedWritten(tt.err, tt.recovered); got != tt.want {
+				t.Errorf("markedWritten = %v, want %v", got, tt.want)
+			}
+			if !tt.want {
+				return
+			}
+			if got := contract.HandledCause(tt.err); got != tt.wantCause {
+				t.Errorf("HandledCause = %v, want %v", got, tt.wantCause)
 			}
 		})
 	}

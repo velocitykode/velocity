@@ -465,6 +465,20 @@ func (f *statusFinder) fallback(err error) {
 // visible for reporting.
 var ErrResponseWritten = errors.New("velocity: response already written")
 
+// RecoveredPanic is an error carrying the value a recovered panic handed
+// to recover(). The framework's own recovered-panic error implements it;
+// so may any other error that stands for a recovered panic.
+//
+// A RecoveredPanic node is the boundary of the panic in an error chain:
+// the marker predicates (IsReported, IsResponseWritten, HandledCause)
+// never look at it or below it, because a panic is a bug whatever its
+// value carries. A marker wrapped around the node (a middleware that
+// reported or rendered the recovered panic) still counts.
+type RecoveredPanic interface {
+	error
+	Recovered() any
+}
+
 // handledError is the value Handled returns: errors.Is matches
 // ErrResponseWritten, and Unwrap returns the cause.
 type handledError struct {
@@ -494,12 +508,21 @@ func Handled(cause error) error {
 	return &handledError{cause: cause}
 }
 
-// HandledCause returns the cause a Handled value carries anywhere in err's
-// chain, or nil (including for a bare ErrResponseWritten).
+// IsResponseWritten reports whether err marks a response written on
+// purpose: a node of err's chain outside any RecoveredPanic matches
+// ErrResponseWritten under errors.Is (the bare sentinel or a Handled
+// value). A marker inside a recovered panic's value does not count.
+func IsResponseWritten(err error) bool {
+	return findMarker(err, markWritten, 0) != nil
+}
+
+// HandledCause returns the cause the first Handled value in err's chain
+// outside any RecoveredPanic carries, or nil (including for a bare
+// ErrResponseWritten, and for a Handled value inside a recovered panic's
+// value).
 func HandledCause(err error) error {
-	var h *handledError
-	if errors.As(err, &h) {
-		return h.cause
+	if h := findMarker(err, markHandled, 0); h != nil {
+		return errors.Unwrap(h)
 	}
 	return nil
 }
@@ -521,7 +544,10 @@ func (r *reportedError) Unwrap() error {
 // MarkReported records inside the error value that err has been reported,
 // so a later report gate skips it. The wrapper is transparent to
 // errors.Is, errors.As and errors.Unwrap and keeps err's text. A nil err
-// returns nil; an already-marked err is returned unchanged.
+// returns nil; an err IsReported already holds for is returned unchanged.
+// A marker inside a recovered panic's value does not count, so a recovered
+// panic whose value was marked is wrapped: the report of the panic itself
+// is recorded around it.
 func MarkReported(err error) error {
 	if err == nil || IsReported(err) {
 		return err
@@ -529,8 +555,116 @@ func MarkReported(err error) error {
 	return &reportedError{err: err}
 }
 
-// IsReported reports whether err's chain carries the MarkReported marker.
+// IsReported reports whether err carries the MarkReported marker on a node
+// of its chain outside any RecoveredPanic. A marker inside a recovered
+// panic's value does not count.
 func IsReported(err error) bool {
-	var r *reportedError
-	return errors.As(err, &r)
+	return findMarker(err, markReported, 0) != nil
+}
+
+// markerKind selects the marker findMarker looks for.
+type markerKind int
+
+const (
+	// markReported matches a reportedError node.
+	markReported markerKind = iota
+	// markWritten matches a node errors.Is would match against
+	// ErrResponseWritten (equality or an Is method).
+	markWritten
+	// markHandled matches a handledError node.
+	markHandled
+)
+
+// findMarker walks err's chain depth-first in the order errors.As and
+// errors.Is visit it (the node, then Unwrap() error or each Unwrap()
+// []error branch) and returns the first node matching kind, or nil. It
+// never looks at a RecoveredPanic node or below it. A node with an As
+// method is asked for the marker type the way errors.As would ask it.
+// Matching uses type assertions only, so the walk allocates nothing unless
+// it reaches a node with an As method or goes deeper than chainWalkLimit;
+// past the limit the rest of that branch is handed to the errors package,
+// which does not stop at a RecoveredPanic.
+func findMarker(err error, kind markerKind, depth int) error {
+	for err != nil {
+		if _, ok := err.(RecoveredPanic); ok {
+			return nil
+		}
+		if depth >= chainWalkLimit {
+			return markerFallback(err, kind)
+		}
+		if m := markerNode(err, kind); m != nil {
+			return m
+		}
+		switch x := err.(type) {
+		case interface{ Unwrap() error }:
+			err = x.Unwrap()
+			depth++
+		case interface{ Unwrap() []error }:
+			for _, e := range x.Unwrap() {
+				if m := findMarker(e, kind, depth+1); m != nil {
+					return m
+				}
+			}
+			return nil
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+// markerNode returns the marker of kind err itself carries, or nil.
+func markerNode(err error, kind markerKind) error {
+	switch kind {
+	case markReported:
+		if r, ok := err.(*reportedError); ok {
+			return r
+		}
+		if x, ok := err.(interface{ As(any) bool }); ok {
+			var r *reportedError
+			if x.As(&r) && r != nil {
+				return r
+			}
+		}
+	case markWritten:
+		if err == ErrResponseWritten {
+			return err
+		}
+		if x, ok := err.(interface{ Is(error) bool }); ok && x.Is(ErrResponseWritten) {
+			return err
+		}
+	case markHandled:
+		if h, ok := err.(*handledError); ok {
+			return h
+		}
+		if x, ok := err.(interface{ As(any) bool }); ok {
+			var h *handledError
+			if x.As(&h) && h != nil {
+				return h
+			}
+		}
+	}
+	return nil
+}
+
+// markerFallback resolves kind over err's whole branch through the errors
+// package.
+func markerFallback(err error, kind markerKind) error {
+	switch kind {
+	case markReported:
+		var r *reportedError
+		if errors.As(err, &r) {
+			return r
+		}
+	case markWritten:
+		if errors.Is(err, ErrResponseWritten) {
+			return ErrResponseWritten
+		}
+	case markHandled:
+		var h *handledError
+		if errors.As(err, &h) {
+			return h
+		}
+	}
+	return nil
 }

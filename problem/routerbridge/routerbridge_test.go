@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/problem"
@@ -434,6 +435,46 @@ func TestInstall_PanicCarryingMarkerIsAReported500(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestInstall_MiddlewareReportsAMarkedPanicOnce asserts the report-once
+// flow for a recovered panic whose value was marked: the handler under
+// Timeout panics with a marked error, an outer middleware reports the
+// forwarded panic through c.Errors().Report and returns it marked, and
+// the boundary reports nothing more.
+func TestInstall_MiddlewareReportsAMarkedPanicOnce(t *testing.T) {
+	rec := &recordingReporter{}
+	h := problem.NewHandler(problem.WithReporters(rec))
+	r := router.New()
+	r.SetServices(&app.Services{Errors: h})
+	Install(r, WithHandler(func() contract.ErrorHandler { return h }))
+	r.Use(func(next router.HandlerFunc) router.HandlerFunc {
+		return func(c *router.Context) error {
+			err := next(c)
+			var pe *router.PanicError
+			if errors.As(err, &pe) {
+				c.Errors().Report(err, problem.NewErrorContext())
+				return contract.MarkReported(err)
+			}
+			return err
+		}
+	})
+	r.Use(router.Timeout(time.Minute))
+	r.Get("/boom", func(*router.Context) error {
+		panic(contract.MarkReported(errors.New("reported inside the handler")))
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/boom", nil)
+	req.Header.Set("Accept", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 (body %q)", w.Code, w.Body.String())
+	}
+	if rec.count() != 1 {
+		t.Errorf("reports = %d, want exactly 1", rec.count())
 	}
 }
 

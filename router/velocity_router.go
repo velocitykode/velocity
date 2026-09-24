@@ -1097,7 +1097,7 @@ func (r *VelocityRouterV2) dispatchRequestFailed(req *http.Request, meta request
 // status 500 or above, or an error naming no status. 4xx outcomes are
 // responses, not failures.
 func failureOf(err error, f *errorFacts) requestFailure {
-	if f.markedWritten(false) {
+	if f.markedWritten(err, false) {
 		cause := contract.HandledCause(err)
 		if cause == nil {
 			return requestFailure{}
@@ -1148,7 +1148,7 @@ func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err err
 	if r.eventDispatcher != nil {
 		failure = failureOf(err, &f)
 	}
-	if f.markedWritten(info.Recovered) && contract.HandledCause(err) == nil {
+	if f.markedWritten(err, info.Recovered) && contract.HandledCause(err) == nil {
 		return failure
 	}
 	info.Committed = rw.committed()
@@ -1187,7 +1187,7 @@ func (r *VelocityRouterV2) logDefault(ctx *Context, err error, f *errorFacts, in
 	if fn == nil {
 		return
 	}
-	if f.markedWritten(info.Recovered) {
+	if f.markedWritten(err, info.Recovered) {
 		if cause := contract.HandledCause(err); cause != nil {
 			err = cause
 		}

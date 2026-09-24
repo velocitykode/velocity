@@ -573,3 +573,84 @@ func TestHandleRequest_MarkersInsideAndAroundAPanic(t *testing.T) {
 		})
 	}
 }
+
+// TestMarkers_OutsidePanicParity pins where a report-once or
+// response-written marker counts relative to a recovered panic, through
+// HandleRequest and Report: a marker inside the panic value never counts,
+// one around the panic or on a sibling branch of a join does, both inside
+// and around counts once, and a ctx flagged recovered whose error carries
+// no panic node treats the whole error as the panic value.
+func TestMarkers_OutsidePanicParity(t *testing.T) {
+	x := errors.New("x")
+	p := func(v any) error { return panicerr.FromRecovered(v) }
+	tests := []struct {
+		name        string
+		err         error
+		recovered   bool
+		wantReports int // through HandleRequest
+		wantStatus  int // 0: nothing rendered
+		wantReport  int // through Report
+	}{
+		{name: "NoPanicReported", err: contract.MarkReported(x), wantStatus: 500},
+		{name: "NoPanicHandled", err: contract.Handled(x), wantReports: 1, wantReport: 1},
+		{name: "ReportedInsidePanicOnly", err: p(contract.MarkReported(x)), recovered: true, wantReports: 1, wantStatus: 500, wantReport: 1},
+		{name: "HandledInsidePanicOnly", err: p(contract.Handled(x)), recovered: true, wantReports: 1, wantStatus: 500, wantReport: 1},
+		{name: "ReportedAroundPanic", err: contract.MarkReported(p("boom")), recovered: true, wantStatus: 500},
+		{name: "ReportedInsideAndAround", err: contract.MarkReported(p(contract.MarkReported(x))), recovered: true, wantStatus: 500},
+		{name: "HandledInsideAndAround", err: contract.Handled(p(contract.Handled(x))), recovered: true, wantReports: 1, wantReport: 1},
+		{name: "RecoveredNoPanicNodeReported", err: contract.MarkReported(x), recovered: true, wantReports: 1, wantStatus: 500, wantReport: 1},
+		{name: "RecoveredNoPanicNodeHandled", err: contract.Handled(x), recovered: true, wantReports: 1, wantStatus: 500, wantReport: 1},
+		{name: "JoinReportedSibling", err: errors.Join(p("boom"), contract.MarkReported(x)), recovered: true, wantStatus: 500},
+		{name: "JoinHandledSibling", err: errors.Join(p("boom"), contract.Handled(x)), recovered: true, wantReports: 1, wantReport: 1},
+		{name: "HandledAroundPanic", err: contract.Handled(p("boom")), recovered: true, wantReports: 1, wantReport: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, rep, _ := newTestHandler()
+			ctx := NewErrorContext()
+			ctx.Recovered = tt.recovered
+			rc, w := newRC(http.MethodGet, "/x", "Accept", "application/json")
+			h.HandleRequest(rc, tt.err, ctx)
+			if rep.count() != tt.wantReports {
+				t.Errorf("HandleRequest reports = %d, want %d", rep.count(), tt.wantReports)
+			}
+			if tt.wantStatus == 0 && rc.Written() {
+				t.Errorf("rendered %d, want nothing", w.Code)
+			}
+			if tt.wantStatus != 0 && w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+
+			h2, rep2, _ := newTestHandler()
+			ctx2 := NewErrorContext()
+			ctx2.Recovered = tt.recovered
+			h2.Report(tt.err, ctx2)
+			if rep2.count() != tt.wantReport {
+				t.Errorf("Report reports = %d, want %d", rep2.count(), tt.wantReport)
+			}
+		})
+	}
+}
+
+// TestReport_ThenMarkARecoveredPanic asserts the report-once flow for a
+// recovered panic whose value was marked: reporting it once and marking
+// the result keeps the boundary from reporting it again.
+func TestReport_ThenMarkARecoveredPanic(t *testing.T) {
+	h, rep, _ := newTestHandler()
+	pe := panicerr.FromRecovered(contract.MarkReported(errors.New("reported inside the handler")))
+
+	h.Report(pe, nil)
+	marked := contract.MarkReported(pe)
+
+	ctx := NewErrorContext()
+	ctx.Recovered = true
+	rc, w := newRC(http.MethodGet, "/x", "Accept", "application/json")
+	h.HandleRequest(rc, marked, ctx)
+
+	if rep.count() != 1 {
+		t.Errorf("reports = %d, want exactly 1", rep.count())
+	}
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}

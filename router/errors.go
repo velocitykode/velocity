@@ -306,28 +306,36 @@ func (f *errorFacts) fallbackIs(err error) {
 	}
 }
 
-// markedWritten reports whether the classified error marks a response
-// written on purpose: it matches contract.ErrResponseWritten (bare or
-// through contract.Handled) outside the value of any recovered panic it
-// carries. A panic is a 500 whatever its value, so a marker inside a
-// *PanicError, or anywhere in the error when recovered is set and it
-// carries no *PanicError, counts for nothing. A Handled value wrapping a
-// *PanicError (a middleware rendered the panic) still marks the response
-// written.
-func (f *errorFacts) markedWritten(recovered bool) bool {
+// markedWritten reports whether err, classified into f, marks a response
+// written on purpose: contract.IsResponseWritten holds for it (the bare
+// sentinel or a contract.Handled value outside the value of any recovered
+// panic it carries). A panic is a 500 whatever its value, so a marker
+// inside a contract.RecoveredPanic node counts for nothing, and when
+// recovered is set but err carries no such node the whole of err is the
+// panic value and nothing counts. A Handled value wrapping a *PanicError
+// (a middleware rendered the panic) still marks the response written.
+// f.written is the cheap precondition: no marker anywhere, none outside.
+func (f *errorFacts) markedWritten(err error, recovered bool) bool {
 	if !f.written {
 		return false
 	}
-	if f.panicked {
-		return !errors.Is(f.panicErr, contract.ErrResponseWritten)
+	if recovered && !carriesRecoveredPanic(err) {
+		return false
 	}
-	return !recovered
+	return contract.IsResponseWritten(err)
 }
 
 // markedWritten is errorFacts.markedWritten for an unclassified error.
 func markedWritten(err error, recovered bool) bool {
 	f := classifyError(err)
-	return f.markedWritten(recovered)
+	return f.markedWritten(err, recovered)
+}
+
+// carriesRecoveredPanic reports whether err's chain holds a
+// contract.RecoveredPanic node.
+func carriesRecoveredPanic(err error) bool {
+	var rp contract.RecoveredPanic
+	return errors.As(err, &rp)
 }
 
 // answer resolves the status and headers for an error that is neither a
@@ -385,7 +393,7 @@ func resolveDefault(c *Context, err error, info ErrorInfo) defaultResolution {
 // resolveClassified is resolveDefault for an error already classified
 // into f.
 func resolveClassified(c *Context, err error, f *errorFacts, info ErrorInfo) defaultResolution {
-	if f.markedWritten(info.Recovered) {
+	if f.markedWritten(err, info.Recovered) {
 		cause := contract.HandledCause(err)
 		if cause == nil {
 			return defaultResolution{}

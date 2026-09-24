@@ -46,7 +46,7 @@ func (h *Handler) HandleRequest(rc RenderContext, err error, ctx *ErrorContext) 
 
 	marked := outsidePanic(err, ctx, contract.IsReported)
 	written := false
-	if outsidePanic(err, ctx, isWrittenMarker) {
+	if outsidePanic(err, ctx, contract.IsResponseWritten) {
 		cause := contract.HandledCause(err)
 		if cause == nil {
 			return
@@ -138,37 +138,26 @@ func isRecovered(err error, ctx *ErrorContext) bool {
 	return panicerr.AsTyped(err) != nil
 }
 
-// panicValue returns the part of err a recovered panic's value carries:
-// the panic error in err's chain, or the whole of err when ctx flags it
-// recovered and it carries no panic error. It returns nil when err is not
-// a recovered panic.
-func panicValue(err error, ctx *ErrorContext) error {
-	if pe := panicerr.AsTyped(err); pe != nil {
-		return pe
-	}
-	if ctx != nil && ctx.Recovered {
-		return err
-	}
-	return nil
-}
-
-// outsidePanic reports whether match holds for err outside the value of
-// a recovered panic it carries. A panic is a reported 500 whatever its
-// value, so a response-written or report-once marker inside the panic
-// value counts for nothing, while one wrapped around the panic (a
-// middleware that rendered or reported it) still counts.
+// outsidePanic reports whether the marker predicate match (a contract
+// predicate such as contract.IsReported or contract.IsResponseWritten)
+// holds for err outside the value of a recovered panic. The contract
+// predicates never look inside a contract.RecoveredPanic node, so a marker
+// wrapped around the panic (a middleware that rendered or reported it)
+// counts and one inside the panic value does not. When ctx flags the error
+// recovered but err carries no RecoveredPanic node, the whole of err is
+// the panic value and no marker counts.
 func outsidePanic(err error, ctx *ErrorContext, match func(error) bool) bool {
-	if !match(err) {
+	if ctx != nil && ctx.Recovered && !carriesRecoveredPanic(err) {
 		return false
 	}
-	pv := panicValue(err, ctx)
-	return pv == nil || !match(pv)
+	return match(err)
 }
 
-// isWrittenMarker reports whether err's chain holds
-// contract.ErrResponseWritten.
-func isWrittenMarker(err error) bool {
-	return errors.Is(err, contract.ErrResponseWritten)
+// carriesRecoveredPanic reports whether err's chain holds a
+// contract.RecoveredPanic node.
+func carriesRecoveredPanic(err error) bool {
+	var rp contract.RecoveredPanic
+	return errors.As(err, &rp)
 }
 
 // passes runs the report gate. r, when non-nil, lets a cancelled request
