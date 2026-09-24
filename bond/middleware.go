@@ -22,9 +22,11 @@ func (b *Bond) Middleware(next http.Handler) http.Handler {
 // MiddlewareFunc. handlerErred reports whether the inner handler
 // returned an error through a side channel the plain http.Handler
 // signature cannot carry: when it did and the buffer holds an
-// untouched empty 200, nothing is written to the real writer so the
-// router's error path keeps full ownership of the response. Middleware
-// has no error channel and passes a constant false.
+// untouched empty 200, the headers the handler set (a session
+// Set-Cookie among them) are copied to the real writer and the status
+// and body are dropped, so the router's error path answers the request
+// and the headers ride on its response, as they would without the
+// buffer. Middleware has no error channel and passes a constant false.
 func (b *Bond) serveBuffered(w http.ResponseWriter, r *http.Request, next http.Handler, handlerErred func() bool) {
 	// Always add Vary for proper caching, preserving values set by
 	// earlier middleware (CORS's Origin, security headers' Host).
@@ -61,11 +63,12 @@ func (b *Bond) serveBuffered(w http.ResponseWriter, r *http.Request, next http.H
 	next.ServeHTTP(bw, r)
 
 	// Empty 200 response. Two distinct cases: the handler errored
-	// without writing, so leave the real writer untouched and let the
+	// without writing, so keep its headers, write nothing and let the
 	// router error path respond; or the handler forgot to return
 	// anything, in which case redirect back.
 	if bw.statusCode == http.StatusOK && bw.buf.Len() == 0 {
 		if handlerErred() {
+			bw.commitHeader(w)
 			return
 		}
 		b.Back(w, r)
@@ -159,12 +162,10 @@ func isSeeOtherMethod(method string) bool {
 // inspect and modify it before flushing to the real writer.
 //
 // The header map is a CLONE of the real writer's headers, not a shared
-// reference. Sharing let every header the handler set leak onto the
-// real connection even when the buffered body was discarded (handler
-// error -> router error path, empty 200 -> redirect back), so an error
-// response could carry the aborted handler's Content-Type, cache or
-// cookie headers. With the clone, handler-set headers reach the wire
-// only when flush commits the buffered response.
+// reference, so the handler's headers reach the wire only when the
+// middleware commits them: flush for a buffered response, commitHeader
+// for an errored empty one (the error response carries them). An empty
+// 200 answered with a redirect back drops them.
 type responseBuffer struct {
 	header     http.Header
 	buf        bytes.Buffer
@@ -190,14 +191,12 @@ func (rb *responseBuffer) WriteHeader(code int) {
 	rb.statusCode = code
 }
 
-// flush commits the buffered headers, status code, and body to the
-// real writer. The buffered header map (a clone taken before the
-// handler ran) replaces the real writer's map wholesale: keys the
-// handler added or modified are copied over, and keys the handler
-// deleted are removed. Returns the io.Copy error so callers can log
-// closed-connection failures; the header has already been committed so
-// nothing else is actionable.
-func (rb *responseBuffer) flush(w http.ResponseWriter) error {
+// commitHeader copies the buffered headers to the real writer without
+// writing a status or body. The buffered header map (a clone taken
+// before the handler ran) replaces the real writer's map wholesale:
+// keys the handler added or modified are copied over, and keys the
+// handler deleted are removed.
+func (rb *responseBuffer) commitHeader(w http.ResponseWriter) {
 	dst := w.Header()
 	for k := range dst {
 		if _, ok := rb.header[k]; !ok {
@@ -207,6 +206,14 @@ func (rb *responseBuffer) flush(w http.ResponseWriter) error {
 	for k, v := range rb.header {
 		dst[k] = v
 	}
+}
+
+// flush commits the buffered headers, status code, and body to the
+// real writer. Returns the io.Copy error so callers can log
+// closed-connection failures; the header has already been committed so
+// nothing else is actionable.
+func (rb *responseBuffer) flush(w http.ResponseWriter) error {
+	rb.commitHeader(w)
 	w.WriteHeader(rb.statusCode)
 	_, err := io.Copy(w, &rb.buf)
 	return err

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -14,8 +16,11 @@ import (
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/log"
+	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/router"
+	"github.com/velocitykode/velocity/view"
 )
 
 // stubAuthUser is the user a stubAuthScheme authenticates.
@@ -367,5 +372,108 @@ func TestAuthErrorRules_InertiaWithErrorPageReachesLogin(t *testing.T) {
 	}
 	if got, _ := sess.Get(router.IntendedSessionKey).(string); got != "/dashboard?tab=1" {
 		t.Errorf("stashed intended = %q, want /dashboard?tab=1", got)
+	}
+}
+
+// TestAuthErrorRules_InertiaIntendedURLSurvivesCookieSession drives an
+// anonymous Inertia visit through a real server with the cookie session
+// store: the session middleware, the bond buffer, the auth guard and the
+// error pipeline. The guard saves the intended URL into the session cookie
+// before it returns the error; the cookie must reach the browser on the
+// login redirect, so the followed request reloads the session from it.
+func TestAuthErrorRules_InertiaIntendedURLSurvivesCookieSession(t *testing.T) {
+	enc, err := crypto.NewEncryptor(crypto.Config{Key: strings.Repeat("k", 32), Cipher: "AES-256-GCM"})
+	if err != nil {
+		t.Fatalf("NewEncryptor: %v", err)
+	}
+	sessionScheme, err := schemes.NewSessionScheme(&countingUserStore{}, auth.SessionConfig{
+		Name:     "vel_session",
+		Lifetime: 60,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}, enc)
+	if err != nil {
+		t.Fatalf("NewSessionScheme: %v", err)
+	}
+
+	a, err := New(WithConfig(Config{
+		Env:   "testing",
+		Port:  "0",
+		Cache: CacheConfig{Driver: "memory", Prefix: "test_cache"},
+		Log:   log.LogConfig{Driver: "null", Config: make(map[string]any)},
+		Queue: QueueConfig{Driver: "memory"},
+		Mail:  mail.MailConfig{Driver: "log"},
+		View:  view.Config{RootTemplate: inertiaTestTemplate, Version: "v1"},
+	}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
+	a.Errors(func(h contract.ErrorHandler) { h.SetDebug(false) })
+	m := auth.FromServices(a.Services)
+	if m == nil {
+		t.Fatal("app has no *auth.Manager")
+	}
+	m.RegisterScheme("web", sessionScheme)
+	m.SetLoginRedirect(func(*http.Request) string { return "/auth/sign-in" })
+	// Bootstrap installs the session middleware for the session scheme.
+	if err := a.Bootstrap(); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	engine, ok := a.Services.View.(*view.Engine)
+	if !ok {
+		t.Fatal("view engine not built")
+	}
+	a.Router.Use(engine.Middleware())
+	a.Router.Get("/dashboard", func(*router.Context) error {
+		t.Error("guarded handler ran")
+		return nil
+	}).Use(auth.AuthMiddleware(m))
+	a.Router.Get("/auth/sign-in", func(c *router.Context) error {
+		intended, _ := m.Session(c.Request).Get(router.IntendedSessionKey).(string)
+		return c.String(http.StatusOK, "intended="+intended)
+	})
+
+	srv := httptest.NewServer(a.Router)
+	t.Cleanup(srv.Close)
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar: %v", err)
+	}
+	var hops []int
+	client := &http.Client{
+		Jar: jar,
+		CheckRedirect: func(next *http.Request, _ []*http.Request) error {
+			hops = append(hops, next.Response.StatusCode)
+			return nil
+		},
+	}
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/dashboard?tab=1", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("X-Inertia", "true")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.Header.Set("X-Inertia-Version", "v1")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /dashboard: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	if len(hops) != 1 || hops[0] != http.StatusSeeOther {
+		t.Fatalf("redirect hops = %v, want one 303", hops)
+	}
+	if resp.Request.URL.Path != "/auth/sign-in" {
+		t.Fatalf("followed to %q, want /auth/sign-in", resp.Request.URL.Path)
+	}
+	if got, want := string(body), "intended=/dashboard?tab=1"; got != want {
+		t.Errorf("login page body = %q, want %q (session cookie lost on the redirect)", got, want)
 	}
 }

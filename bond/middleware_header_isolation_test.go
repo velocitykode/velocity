@@ -9,18 +9,19 @@ import (
 	"github.com/velocitykode/velocity/router"
 )
 
-// Regression: responseBuffer shared the real writer's header map by
-// pointer, so headers the handler set leaked onto the real connection
-// even when the buffered body was discarded (handler error -> router
-// error path, empty 200 -> redirect back). The buffer now clones the
-// header map and flush commits it only when the buffered response is
-// actually written.
+// responseBuffer clones the real writer's header map, so the headers a
+// handler sets reach the connection only when the middleware commits
+// them: with the buffered response, or on an errored empty response,
+// where they ride on the error path's answer (a session Set-Cookie saved
+// before the error must reach the browser). An empty 200 answered with a
+// redirect back drops them.
 
-func TestMiddlewareFunc_HandlerHeadersDoNotLeakIntoErrorResponse(t *testing.T) {
+func TestMiddlewareFunc_HandlerHeadersKeptOnErrorResponse(t *testing.T) {
 	_, rt := newBondRouter(t)
 	rt.Get("/boom", func(c *router.Context) error {
-		c.Response.Header().Set("X-Handler-Secret", "leaked")
-		c.Response.Header().Set("Cache-Control", "public, max-age=3600")
+		c.Response.Header().Set("X-Handler-Header", "kept")
+		http.SetCookie(c.Response, &http.Cookie{Name: "sid", Value: "abc"})
+		c.Response.Header().Del("Vary")
 		return errors.New("boom")
 	})
 
@@ -33,11 +34,14 @@ func TestMiddlewareFunc_HandlerHeadersDoNotLeakIntoErrorResponse(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", w.Code)
 	}
-	if got := w.Header().Get("X-Handler-Secret"); got != "" {
-		t.Errorf("handler header leaked into error response: X-Handler-Secret=%q", got)
+	if got := w.Header().Get("X-Handler-Header"); got != "kept" {
+		t.Errorf("X-Handler-Header = %q, want %q", got, "kept")
 	}
-	if got := w.Header().Get("Cache-Control"); got != "" {
-		t.Errorf("handler header leaked into error response: Cache-Control=%q", got)
+	if got := w.Header().Get("Set-Cookie"); got != "sid=abc" {
+		t.Errorf("Set-Cookie = %q, want %q", got, "sid=abc")
+	}
+	if got := w.Header().Get("Vary"); got != "" {
+		t.Errorf("Vary = %q, want the handler's delete kept", got)
 	}
 }
 
