@@ -769,14 +769,20 @@ func New(opts ...Option) (*App, error) {
 	// struct, so there is no request body to read here, but it must reach
 	// the same DB-backed rules ctx.Validate and vform do. The request
 	// context is threaded through so a slow unique/exists query is dropped
-	// when the client disconnects.
+	// when the client disconnects. A failure is returned as a
+	// *validation.Failure with nothing written: the handler returns it and
+	// the error pipeline answers (422 problem+json for a JSON client,
+	// flash and redirect back for a browser with a view engine).
 	a.Router.SetDataValidator(func(c *router.Context, data map[string]interface{}, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error {
 		result, err := dbrules.CheckDataWithDBCtx(c.Request.Context(), data, rules, validationDB(c), messages...)
 		if err != nil {
 			// Malformed rule set: a handler bug, not user input.
 			return err
 		}
-		return result.Err()
+		if !result.HasErrors() {
+			return nil
+		}
+		return validation.NewFailure(result)
 	})
 
 	// Wire the intended-redirect resolver: ctx.Intended pulls the URL that

@@ -1186,14 +1186,18 @@ type Validatable interface {
 }
 
 // BindValid binds JSON then validates using the struct's own rules (if any).
-// It returns the validation error; unlike ctx.Validate it neither flashes
-// errors nor redirects back.
+// It writes nothing itself. Through the seam an app wires
+// (Router.SetDataValidator) a failure comes back as a *validation.Failure;
+// the handler returns it and the error pipeline answers: 422
+// application/problem+json with the per-field errors for a JSON client or
+// an app with no view engine, errors and old input flashed with a redirect
+// back for a browser.
 //
-// Rules run through the same seam vform uses when the app wires one
-// (Router.SetDataValidator), so DB-backed rules resolve here too. Without
-// that seam it falls back to the validator service, which resolves the
-// orm-free rule set only: a rule the validator cannot resolve is reported as
-// a configuration error, never as a field failure.
+// Rules run through the same seam vform uses when the app wires one, so
+// DB-backed rules resolve here too. Without that seam it falls back to the
+// validator service, which resolves the orm-free rule set only and returns
+// its own validation error: a rule the validator cannot resolve is reported
+// as a configuration error, never as a field failure.
 //
 // Returns an error when neither the seam nor a validator service is wired.
 func (c *Context) BindValid(v interface{}) error {

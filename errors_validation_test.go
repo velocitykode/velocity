@@ -75,6 +75,10 @@ func validationApp(t *testing.T, view contract.ViewEngine) (*App, *levelLogger, 
 		_, err := vform.Form[signupForm](c)
 		return err
 	})
+	a.Router.Post("/bindvalid", func(c *router.Context) error {
+		var form signupForm
+		return c.BindValid(&form)
+	})
 	a.Router.Post("/manual", func(*router.Context) error {
 		return signupFailure(t)
 	})
@@ -190,11 +194,11 @@ func assertFlashRedirect(t *testing.T, w *httptest.ResponseRecorder, enc crypto.
 }
 
 // TestValidationFailure_Wire drives every validation entry point (the
-// ctx.Validate callback, vform.Form, a Failure returned by hand) through
-// the real app for each kind of client, and asserts the wire answer: 422
-// problem+json for a JSON client or an app with no view engine, the
-// flash-and-redirect flow for a browser with a view engine. A validation
-// failure is never reported.
+// ctx.Validate callback, vform.Form, ctx.BindValid, a Failure returned by
+// hand) through the real app for each kind of client, and asserts the wire
+// answer: 422 problem+json for a JSON client or an app with no view
+// engine, the flash-and-redirect flow for a browser with a view engine. A
+// validation failure is never reported.
 func TestValidationFailure_Wire(t *testing.T) {
 	jsonClient := map[string]string{"Accept": "application/json"}
 	browser := map[string]string{"Accept": "text/html,application/xhtml+xml"}
@@ -214,6 +218,10 @@ func TestValidationFailure_Wire(t *testing.T) {
 		{name: "vform json client", path: "/vform", headers: jsonClient},
 		{name: "vform browser", path: "/vform", headers: browser, location: "/signup"},
 		{name: "vform browser no view engine", path: "/vform", headers: browser, noView: true},
+		{name: "bindvalid json client", path: "/bindvalid", headers: jsonClient},
+		{name: "bindvalid browser", path: "/bindvalid", headers: browser, location: "/signup"},
+		{name: "bindvalid browser no view engine", path: "/bindvalid", headers: browser, noView: true},
+		{name: "bindvalid inertia", path: "/bindvalid", headers: inertia, location: "/signup"},
 		{name: "manual json client", path: "/manual", headers: jsonClient},
 		{name: "manual browser", path: "/manual", headers: browser, location: "/signup"},
 		{name: "manual browser no view engine", path: "/manual", headers: browser, noView: true},
