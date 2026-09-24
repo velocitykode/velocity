@@ -270,6 +270,21 @@ func (r *HTMLRenderer) RegisterClassTemplate(class int, tmpl *template.Template)
 	return nil
 }
 
+// ownsPage reports whether a page registered by the application answers
+// status outside debug mode: a template for the exact status or its class,
+// or a fallback error template in place of the built-in one.
+func (r *HTMLRenderer) ownsPage(status int) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, ok := r.statusTemplates[status]; ok {
+		return true
+	}
+	if _, ok := r.classTemplates[status/100]; ok {
+		return true
+	}
+	return r.errorTemplate != builtinErrorTemplate
+}
+
 // ContentType returns text/html.
 func (r *HTMLRenderer) ContentType() string {
 	return "text/html"

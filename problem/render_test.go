@@ -915,3 +915,101 @@ func TestHandleRequest_FillsRequestContext(t *testing.T) {
 		t.Error("timestamp not set")
 	}
 }
+
+// TestRender_FullPageErrorPagePrecedence asserts the order a full-page HTML
+// request is answered in outside debug mode: a page the application
+// supplied (status, class or fallback template, custom html renderer),
+// then the configured error page, then the built-in template. An Inertia
+// request keeps the error page first.
+func TestRender_FullPageErrorPagePrecedence(t *testing.T) {
+	tpl := func(body string) *template.Template {
+		return template.Must(template.New("t").Parse(body))
+	}
+	tests := []struct {
+		name      string
+		setup     func(h *Handler)
+		inertia   bool
+		wantPage  bool
+		wantBody  string
+		wantBuilt bool
+	}{
+		{name: "NoAppPageErrorPageWins", wantPage: true},
+		{
+			name: "StatusTemplateWins",
+			setup: func(h *Handler) {
+				r := NewHTMLRenderer()
+				_ = r.RegisterStatusTemplate(http.StatusNotFound, tpl("status page"))
+				h.AddRenderer("html", r)
+			},
+			wantBody: "status page",
+		},
+		{
+			name: "ClassTemplateWins",
+			setup: func(h *Handler) {
+				r := NewHTMLRenderer()
+				_ = r.RegisterClassTemplate(4, tpl("class page"))
+				h.AddRenderer("html", r)
+			},
+			wantBody: "class page",
+		},
+		{
+			name: "OtherStatusTemplateLeavesErrorPage",
+			setup: func(h *Handler) {
+				r := NewHTMLRenderer()
+				_ = r.RegisterStatusTemplate(http.StatusGone, tpl("gone page"))
+				h.AddRenderer("html", r)
+			},
+			wantPage: true,
+		},
+		{
+			name:     "FallbackTemplateWins",
+			setup:    func(h *Handler) { h.AddRenderer("html", NewHTMLRendererWithTemplates(nil, tpl("fallback page"))) },
+			wantBody: "fallback page",
+		},
+		{
+			name:     "CustomHTMLRendererWins",
+			setup:    func(h *Handler) { h.AddRenderer("html", jsonStamp{}) },
+			wantBody: `{"stamp":true}`,
+		},
+		{
+			name: "InertiaKeepsErrorPageFirst",
+			setup: func(h *Handler) {
+				r := NewHTMLRenderer()
+				_ = r.RegisterStatusTemplate(http.StatusNotFound, tpl("status page"))
+				h.AddRenderer("html", r)
+			},
+			inertia:  true,
+			wantPage: true,
+		},
+		{name: "DeclinedErrorPageFallsToBuiltin", wantBuilt: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _, _ := newTestHandler()
+			page := &fakeErrorPage{ok: !tt.wantBuilt, write: !tt.wantBuilt}
+			h.SetErrorPageRenderer(page)
+			if tt.setup != nil {
+				tt.setup(h)
+			}
+			headers := []string{"Accept", "text/html"}
+			if tt.inertia {
+				headers = append(headers, "X-Inertia", "true")
+			}
+			rc, w := newRC(http.MethodGet, "/p", headers...)
+			h.HandleRequest(rc, NotFound(), nil)
+
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404 (body %q)", w.Code, w.Body.String())
+			}
+			if called := page.status != 0; called != (tt.wantPage || tt.wantBuilt) {
+				t.Errorf("error page asked = %v, want %v", called, tt.wantPage || tt.wantBuilt)
+			}
+			if tt.wantBody != "" && w.Body.String() != tt.wantBody {
+				t.Errorf("body = %q, want %q", w.Body.String(), tt.wantBody)
+			}
+			if tt.wantBuilt && !strings.Contains(w.Body.String(), "Not Found") {
+				t.Errorf("body = %q, want the built-in page", w.Body.String())
+			}
+		})
+	}
+}

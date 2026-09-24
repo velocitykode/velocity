@@ -179,8 +179,11 @@ func (h *Handler) BeforeRender(fn func(rc RenderContext, err error, status int) 
 }
 
 // SetErrorPageRenderer installs the error page renderer. Outside debug mode
-// it answers Inertia and full-page HTML requests at the real status; an
-// Inertia request it declines gets a 409 reload. Nil removes it.
+// it answers Inertia requests at the real status (one it declines gets a
+// 409 reload) and full-page HTML requests for which the application
+// supplied no page of its own (a custom "html" renderer, or a status, class
+// or fallback template on the HTMLRenderer), ahead of the built-in
+// template. Nil removes it.
 func (h *Handler) SetErrorPageRenderer(r contract.ErrorPageRenderer) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

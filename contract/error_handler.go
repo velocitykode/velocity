@@ -57,7 +57,10 @@ type ErrorHandler interface {
 	// BeforeRender registers a hook run before the response is written. It
 	// may set headers through rc and returns the status to write.
 	BeforeRender(fn func(rc RenderContext, err error, status int) int)
-	// SetErrorPageRenderer installs the renderer for Inertia error pages.
+	// SetErrorPageRenderer installs the renderer for error pages. Outside
+	// debug mode it answers Inertia requests at the real status and
+	// full-page HTML requests for which the application registered no page
+	// of its own, ahead of the built-in template.
 	SetErrorPageRenderer(r ErrorPageRenderer)
 
 	// AddReporter appends a reporter.
@@ -100,8 +103,10 @@ type Renderer interface {
 }
 
 // ErrorPageRenderer is an optional facet (implemented by the view layer)
-// that renders an Inertia error page at status. It returns false, having
-// written nothing, when no error page is configured.
+// that renders the configured error page at status. The error pipeline asks
+// it for Inertia requests and for full-page HTML requests the application
+// has no page of its own for. It returns false, having written nothing,
+// when no error page is configured.
 type ErrorPageRenderer interface {
 	RenderErrorPage(rc RenderContext, status int, message string) (bool, error)
 }

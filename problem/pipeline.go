@@ -424,16 +424,30 @@ func (h *Handler) renderInertia(s *snapshot, rc RenderContext, err error, ctx *E
 	return nil
 }
 
-// renderHTML answers a full-page request: the configured error page at
-// status outside debug mode, else the HTML renderer (the debug page in
-// debug mode).
+// renderHTML answers a full-page request through the HTML renderer. In
+// debug mode that is the debug page. Otherwise a page the application
+// supplied wins (a custom "html" renderer, or a status, class or fallback
+// template registered on the HTMLRenderer), then the configured error
+// page, then the built-in template.
 func (h *Handler) renderHTML(s *snapshot, rc RenderContext, err error, ctx *ErrorContext, status int) error {
-	if !s.debug {
+	html := rendererFor(s, "html")
+	if !s.debug && !appOwnsHTMLPage(html, status) {
 		if answered, pageErr := renderErrorPage(s, rc, err, status); answered {
 			return pageErr
 		}
 	}
-	return rendererFor(s, "html").Render(rc, err, ctx, status, s.debug)
+	return html.Render(rc, err, ctx, status, s.debug)
+}
+
+// appOwnsHTMLPage reports whether r answers status with a page the
+// application supplied: any renderer other than an *HTMLRenderer, or an
+// *HTMLRenderer holding its own template for status.
+func appOwnsHTMLPage(r Renderer, status int) bool {
+	hr, ok := r.(*HTMLRenderer)
+	if !ok {
+		return true
+	}
+	return hr.ownsPage(status)
 }
 
 // renderErrorPage asks the error page renderer to answer at status and
