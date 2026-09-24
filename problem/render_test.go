@@ -1245,3 +1245,52 @@ func TestRender_PanickingRedirectFallbackHasNoLocation(t *testing.T) {
 		t.Error("the render panic was not logged")
 	}
 }
+
+// TestFakeHandler_RenderResponseWrittenMarkers mirrors
+// TestRender_ResponseWrittenMarkers on the fake: it records every error it
+// is asked to render, writes nothing for one marking the response written
+// outside a recovered panic, and otherwise writes the error's resolved
+// status (the fake applies no rules, so a recovered panic is not pinned at
+// 500; the panic values below name no status).
+func TestFakeHandler_RenderResponseWrittenMarkers(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		recovered  bool
+		wantStatus int // 0: nothing written
+	}{
+		{name: "BareSentinel", err: contract.ErrResponseWritten},
+		{name: "Handled", err: contract.Handled(errors.New("rendered by middleware"))},
+		{name: "HandledClientError", err: contract.Handled(NotFound())},
+		{name: "WrappedSentinel", err: fmt.Errorf("mw: %w", contract.ErrResponseWritten)},
+		{name: "HandledAroundPanic", err: contract.Handled(panicerr.FromRecovered("boom")), recovered: true},
+		{name: "PanicCarryingSentinel", err: panicerr.FromRecovered(contract.ErrResponseWritten), recovered: true, wantStatus: http.StatusInternalServerError},
+		{name: "PanicCarryingHandled", err: panicerr.FromRecovered(contract.Handled(errors.New("rendered"))), recovered: true, wantStatus: http.StatusInternalServerError},
+		{name: "RecoveredNoPanicNode", err: contract.ErrResponseWritten, recovered: true, wantStatus: http.StatusInternalServerError},
+		{name: "Unmarked", err: NotFound(), wantStatus: http.StatusNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := NewFakeHandler()
+			rc, w := newRC(http.MethodGet, "/x", "Accept", "application/json")
+			ctx := NewErrorContext()
+			ctx.Recovered = tt.recovered
+			f.Render(rc, tt.err, ctx)
+			if got := f.RenderedErrors(); len(got) != 1 || got[0] != tt.err {
+				t.Errorf("Rendered = %v, want [%v]", got, tt.err)
+			}
+			if got := f.ReportedErrors(); len(got) != 0 {
+				t.Errorf("Reported = %v, want none", got)
+			}
+			if tt.wantStatus == 0 {
+				if rc.Written() || w.Body.Len() != 0 {
+					t.Errorf("wrote %d %q, want nothing", w.Code, w.Body.String())
+				}
+				return
+			}
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+		})
+	}
+}

@@ -85,14 +85,19 @@ func (f *FakeHandler) Report(err error, _ *ErrorContext) {
 }
 
 // Render records err and writes its resolved status when nothing was
-// written.
-func (f *FakeHandler) Render(rc RenderContext, err error, _ *ErrorContext) {
+// written. As in Handler.Render, an err marking the response written
+// (contract.ErrResponseWritten or a contract.Handled value) outside the
+// value of a recovered panic is recorded but writes nothing.
+func (f *FakeHandler) Render(rc RenderContext, err error, ctx *ErrorContext) {
 	if err == nil {
 		return
 	}
 	f.mu.Lock()
 	f.Rendered = append(f.Rendered, err)
 	f.mu.Unlock()
+	if outsidePanic(err, ctx, contract.IsResponseWritten) {
+		return
+	}
 	if rc != nil && !rc.Written() {
 		status, _, _ := contract.StatusOf(err)
 		rc.WriteHeader(status)
