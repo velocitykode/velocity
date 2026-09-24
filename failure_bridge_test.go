@@ -35,7 +35,7 @@ func (r *recordingReporter) count() int {
 // TestFailureBridge_BackgroundFailuresReachReporters is the end-to-end
 // guarantee of the event->Reporter bridge: a background *Failed event
 // dispatched through the app's dispatcher reaches every registered
-// exception Reporter, while events whose error is caller-owned (e.g.
+// error Reporter, while events whose error is caller-owned (e.g.
 // router.RequestFailed) do not double-report.
 func TestFailureBridge_BackgroundFailuresReachReporters(t *testing.T) {
 	app, err := NewTestApp()
@@ -78,7 +78,7 @@ func TestFailureBridge_BackgroundFailuresReachReporters(t *testing.T) {
 	}
 
 	// Caller-owned failure: NOT bridged. Request errors reach Report
-	// through the exceptions handler on the request path; bridging the
+	// through the problem handler on the request path; bridging the
 	// event too would double-report.
 	if err := app.Services.Events.Dispatch(context.Background(), &router.RequestFailed{
 		Context: context.Background(),
@@ -100,6 +100,6 @@ func TestFailureBridge_BackgroundFailuresReachReporters(t *testing.T) {
 func TestFailureBridge_RouterRequestFailedNotFailureEvent(t *testing.T) {
 	var ev any = &router.RequestFailed{}
 	if _, ok := ev.(contract.FailureEvent); ok {
-		t.Fatal("router.RequestFailed must not implement contract.FailureEvent: request errors already reach Report via the exceptions handler; bridging the event double-reports")
+		t.Fatal("router.RequestFailed must not implement contract.FailureEvent: request errors already reach Report via the problem handler; bridging the event double-reports")
 	}
 }

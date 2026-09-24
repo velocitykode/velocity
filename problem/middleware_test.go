@@ -1,489 +1,140 @@
 package problem
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
-func TestNewHTTPRenderContext(t *testing.T) {
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/test", nil)
-
-	ctx := newHTTPRenderContext(w, r)
-
-	if ctx == nil {
-		t.Fatal("newHTTPRenderContext returned nil")
-	}
-	if ctx.Writer() != w {
-		t.Error("ResponseWriter not set")
-	}
-	if ctx.Request() != r {
-		t.Error("Request not set")
-	}
-}
-
-func TestHTTPRenderContext_WriteHeader(t *testing.T) {
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/test", nil)
-	ctx := newHTTPRenderContext(w, r)
-
-	ctx.WriteHeader(http.StatusNotFound)
-
-	if w.Code != http.StatusNotFound {
-		t.Errorf("StatusCode = %d, want %d", w.Code, http.StatusNotFound)
-	}
-
-	// Second call should be ignored
-	ctx.WriteHeader(http.StatusOK)
-	if w.Code != http.StatusNotFound {
-		t.Error("Second WriteHeader should be ignored")
-	}
-}
-
-func TestHTTPRenderContext_Write(t *testing.T) {
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/test", nil)
-	ctx := newHTTPRenderContext(w, r)
-
-	n, err := ctx.Write([]byte("test"))
-
-	if err != nil {
-		t.Errorf("Write() error = %v", err)
-	}
-	if n != 4 {
-		t.Errorf("Write() n = %d, want 4", n)
-	}
-	if w.Body.String() != "test" {
-		t.Error("Data not written")
-	}
-}
-
-func TestHTTPRenderContext_SetHeader(t *testing.T) {
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/test", nil)
-	ctx := newHTTPRenderContext(w, r)
-
-	ctx.SetHeader("X-Custom", "value")
-
-	if w.Header().Get("X-Custom") != "value" {
-		t.Error("Header not set")
-	}
-}
-
-func TestHTTPRenderContext_WantsJSON(t *testing.T) {
+func TestMiddleware_RecoversPanic(t *testing.T) {
 	tests := []struct {
-		name         string
-		accept       string
-		contentType  string
-		xRequestWith string
-		path         string
-		want         bool
+		name  string
+		serve func(h *Handler, w http.ResponseWriter, r *http.Request)
 	}{
-		{"accept json", "application/json", "", "", "/", true},
-		{"content-type json", "", "application/json", "", "/", true},
-		{"xhr request", "", "", "XMLHttpRequest", "/", true},
-		{"api path", "", "", "", "/api/users", true},
-		{"html accept", "text/html", "", "", "/", false},
-		{"no indicators", "", "", "", "/", false},
+		{"Middleware", func(h *Handler, w http.ResponseWriter, r *http.Request) {
+			Middleware(h)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(NotFound()) })).ServeHTTP(w, r)
+		}},
+		{"MiddlewareFunc", func(h *Handler, w http.ResponseWriter, r *http.Request) {
+			MiddlewareFunc(h)(func(http.ResponseWriter, *http.Request) { panic("boom") })(w, r)
+		}},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			h, rep, _ := newTestHandler()
 			w := httptest.NewRecorder()
-			r := httptest.NewRequest("GET", tt.path, nil)
-			if tt.accept != "" {
-				r.Header.Set("Accept", tt.accept)
+			tt.serve(h, w, httptest.NewRequest(http.MethodGet, "/x", nil))
+			if w.Code != http.StatusInternalServerError {
+				t.Errorf("status = %d, want 500 for a panic", w.Code)
 			}
-			if tt.contentType != "" {
-				r.Header.Set("Content-Type", tt.contentType)
+			ctx, err := rep.last()
+			if err == nil || panicerr.AsTyped(err) == nil {
+				t.Fatalf("reported %v, want the recovered panic", err)
 			}
-			if tt.xRequestWith != "" {
-				r.Header.Set("X-Requested-With", tt.xRequestWith)
-			}
-
-			ctx := newHTTPRenderContext(w, r)
-
-			if got := ctx.WantsJSON(); got != tt.want {
-				t.Errorf("WantsJSON() = %v, want %v", got, tt.want)
+			if !ctx.Recovered || ctx.PanicStack == "" || ctx.StackTrace == nil {
+				t.Errorf("panic context incomplete: recovered=%v stack=%d", ctx.Recovered, len(ctx.PanicStack))
 			}
 		})
 	}
 }
 
-func TestMiddleware(t *testing.T) {
-	h := NewHandler(WithDebug(false))
-	middleware := Middleware(h)
-
-	tests := []struct {
-		name       string
-		handler    http.Handler
-		wantPanic  bool
-		wantStatus int
-	}{
-		{
-			name: "normal handler",
-			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-			}),
-			wantPanic:  false,
-			wantStatus: http.StatusOK,
-		},
-		{
-			name: "panic handler",
-			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				panic("test panic")
-			}),
-			wantPanic:  true,
-			wantStatus: http.StatusInternalServerError,
-		},
+func TestMiddleware_PassesThroughWithoutPanic(t *testing.T) {
+	h, rep, _ := newTestHandler()
+	w := httptest.NewRecorder()
+	Middleware(h)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if w.Code != http.StatusNoContent || rep.count() != 0 {
+		t.Errorf("got %d with %d reports", w.Code, rep.count())
 	}
+}
 
+func TestMiddleware_AbortHandlerPropagates(t *testing.T) {
+	h, rep, _ := newTestHandler()
+	defer func() {
+		p := recover()
+		err, ok := p.(error)
+		if !ok || !errors.Is(err, http.ErrAbortHandler) {
+			t.Fatalf("recovered %v, want http.ErrAbortHandler", p)
+		}
+		if rep.count() != 0 {
+			t.Error("ErrAbortHandler must not be reported")
+		}
+	}()
+	Middleware(h)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
+}
+
+func TestErrorHandler_Adapter(t *testing.T) {
+	tests := []struct {
+		name        string
+		setup       func(h *Handler)
+		path        string
+		headers     []string
+		err         error
+		wantStatus  int
+		wantContent string
+	}{
+		{name: "HTMLForBrowser", path: "/api/users", err: NotFound(), wantStatus: 404, wantContent: "text/html; charset=utf-8"},
+		{name: "JSONContentTypeRequestIsNotJSONAccept", path: "/x", headers: []string{"Content-Type", "application/json"}, err: NotFound(), wantStatus: 404, wantContent: "text/html; charset=utf-8"},
+		{name: "AcceptJSON", path: "/x", headers: []string{"Accept", "application/json"}, err: BadRequest(), wantStatus: 400, wantContent: ProblemTypeContent},
+		{name: "ConfiguredPrefix", setup: func(h *Handler) { h.SetAPIPrefixes("/api/") }, path: "/api/users", err: NotFound(), wantStatus: 404, wantContent: ProblemTypeContent},
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			wrapped := middleware(tt.handler)
-
+			h, _, _ := newTestHandler()
+			if tt.setup != nil {
+				tt.setup(h)
+			}
+			r := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			for i := 0; i+1 < len(tt.headers); i += 2 {
+				r.Header.Set(tt.headers[i], tt.headers[i+1])
+			}
 			w := httptest.NewRecorder()
-			r := httptest.NewRequest("GET", "/test", nil)
-			r.Header.Set("Accept", "application/json")
-
-			// Should not panic
-			wrapped.ServeHTTP(w, r)
-
+			ErrorHandler(h)(w, r, tt.err)
 			if w.Code != tt.wantStatus {
-				t.Errorf("StatusCode = %d, want %d", w.Code, tt.wantStatus)
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+			if got := w.Header().Get("Content-Type"); got != tt.wantContent {
+				t.Errorf("Content-Type = %q, want %q", got, tt.wantContent)
 			}
 		})
 	}
 }
 
-func TestMiddlewareFunc(t *testing.T) {
-	h := NewHandler(WithDebug(false))
-	middleware := MiddlewareFunc(h)
-
+func TestErrorHandler_ClientIPUsesTrustedProxies(t *testing.T) {
+	_, trusted, _ := net.ParseCIDR("192.0.2.0/24")
 	tests := []struct {
-		name       string
-		handler    http.HandlerFunc
-		wantStatus int
+		name    string
+		proxies []*net.IPNet
+		want    string
 	}{
-		{
-			name: "normal handler",
-			handler: func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-			},
-			wantStatus: http.StatusOK,
-		},
-		{
-			name: "panic handler",
-			handler: func(w http.ResponseWriter, r *http.Request) {
-				panic("test panic")
-			},
-			wantStatus: http.StatusInternalServerError,
-		},
+		{"UntrustedIgnoresHeader", nil, "192.0.2.1"},
+		{"TrustedHonoursHeader", []*net.IPNet{trusted}, "203.0.113.9"},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			wrapped := middleware(tt.handler)
-
-			w := httptest.NewRecorder()
-			r := httptest.NewRequest("GET", "/test", nil)
-			r.Header.Set("Accept", "application/json")
-
-			wrapped(w, r)
-
-			if w.Code != tt.wantStatus {
-				t.Errorf("StatusCode = %d, want %d", w.Code, tt.wantStatus)
+			h, rep, _ := newTestHandler(WithTrustedProxies(tt.proxies))
+			r := httptest.NewRequest(http.MethodGet, "/x", nil)
+			r.Header.Set("X-Forwarded-For", "203.0.113.9")
+			ErrorHandler(h)(httptest.NewRecorder(), r, errors.New("boom"))
+			ctx, _ := rep.last()
+			if ctx.IP != tt.want {
+				t.Errorf("IP = %q, want %q", ctx.IP, tt.want)
 			}
 		})
 	}
 }
 
-func TestRecoverMiddleware(t *testing.T) {
-	h := NewHandler(WithDebug(false))
-	middleware := Middleware(h)
-
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		panic("test panic")
-	})
-
-	wrapped := middleware(handler)
-
+func TestErrorHandler_AcceptsInterface(t *testing.T) {
+	fake := NewFakeHandler()
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/test", nil)
-	r.Header.Set("Accept", "application/json")
-
-	wrapped.ServeHTTP(w, r)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("StatusCode = %d, want %d", w.Code, http.StatusInternalServerError)
-	}
-}
-
-func TestErrorHandler(t *testing.T) {
-	var reportedErr error
-	mockReporter := NewCallbackReporter(func(err error, ctx *ErrorContext) {
-		reportedErr = err
-	})
-
-	h := NewHandler(WithReporters(mockReporter))
-	errorHandler := ErrorHandler(h)
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/test", nil)
-	r.Header.Set("Accept", "application/json")
-
-	testErr := NewNotFoundHttpException("Resource not found")
-	errorHandler(w, r, testErr)
-
-	if reportedErr != nil {
-		t.Error("404 errors should not be reported")
-	}
-	if w.Code != http.StatusNotFound {
-		t.Errorf("StatusCode = %d, want %d", w.Code, http.StatusNotFound)
-	}
-}
-
-// TestGetClientIP_SecureDefault confirms the post-C-05 behaviour:
-// without any trusted-proxy list installed, X-Forwarded-For and
-// X-Real-IP are IGNORED. Spoofed headers from a direct-internet client
-// can no longer poison the audit log. RemoteAddr is the only source.
-func TestGetClientIP_SecureDefault(t *testing.T) {
-	tests := []struct {
-		name          string
-		xForwardedFor string
-		xRealIP       string
-		remoteAddr    string
-		want          string
-	}{
-		{
-			name:       "remote addr with port",
-			remoteAddr: "192.168.1.3:12345",
-			want:       "192.168.1.3",
-		},
-		{
-			name:       "ipv6 with brackets+port",
-			remoteAddr: "[2001:db8::1]:443",
-			want:       "2001:db8::1",
-		},
-		{
-			name:          "spoofed XFF ignored when no trusted proxies configured",
-			xForwardedFor: "8.8.8.8",
-			remoteAddr:    "203.0.113.9:54321",
-			want:          "203.0.113.9",
-		},
-		{
-			name:          "spoofed XFF with multiple hops ignored",
-			xForwardedFor: "8.8.8.8, 1.2.3.4, 5.6.7.8",
-			remoteAddr:    "203.0.113.9:54321",
-			want:          "203.0.113.9",
-		},
-		{
-			name:       "spoofed X-Real-IP ignored",
-			xRealIP:    "8.8.8.8",
-			remoteAddr: "203.0.113.9:54321",
-			want:       "203.0.113.9",
-		},
-		{
-			name:          "spoofed X-Forwarded-For + X-Real-IP both ignored",
-			xForwardedFor: "10.0.0.1",
-			xRealIP:       "10.0.0.2",
-			remoteAddr:    "10.0.0.3:1234",
-			want:          "10.0.0.3",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r := httptest.NewRequest("GET", "/", nil)
-			if tt.xForwardedFor != "" {
-				r.Header.Set("X-Forwarded-For", tt.xForwardedFor)
-			}
-			if tt.xRealIP != "" {
-				r.Header.Set("X-Real-IP", tt.xRealIP)
-			}
-			if tt.remoteAddr != "" {
-				r.RemoteAddr = tt.remoteAddr
-			}
-
-			// nil trusted-proxy list: forwarded headers MUST be ignored.
-			got := getClientIP(r, nil)
-			if got != tt.want {
-				t.Errorf("getClientIP() = %q, want %q (spoofed header leaked into audit log)", got, tt.want)
-			}
-		})
-	}
-}
-
-// TestGetClientIP_HonorsTrustedProxies confirms that when a trusted-
-// proxy list IS installed and the direct peer is in it, forwarded
-// headers ARE honoured via clientip.Extract's right-most-of-trusted
-// semantics. This is the explicit opt-in for load-balancer
-// deployments.
-func TestGetClientIP_HonorsTrustedProxies(t *testing.T) {
-	trusted, err := clientip.ParseCIDRs([]string{"10.0.0.0/8"})
-	if err != nil {
-		t.Fatalf("ParseCIDRs: %v", err)
-	}
-
-	r := httptest.NewRequest("GET", "/", nil)
-	r.RemoteAddr = "10.0.0.1:443"
-	r.Header.Set("X-Forwarded-For", "203.0.113.9, 10.0.0.2")
-
-	if got := getClientIP(r, trusted); got != "203.0.113.9" {
-		t.Errorf("getClientIP = %q, want %q", got, "203.0.113.9")
-	}
-
-	// Spoofed XFF from an UNTRUSTED direct peer must still be ignored
-	// even when a trust list is installed.
-	r2 := httptest.NewRequest("GET", "/", nil)
-	r2.RemoteAddr = "203.0.113.9:54321"
-	r2.Header.Set("X-Forwarded-For", "8.8.8.8")
-	if got := getClientIP(r2, trusted); got != "203.0.113.9" {
-		t.Errorf("spoofed XFF from untrusted peer leaked: got %q, want %q", got, "203.0.113.9")
-	}
-}
-
-// TestErrorHandler_RecordsRealClientIP_NotSpoofedXFF wires the
-// Handler-side setter end-to-end: a deployment with NO trusted proxies
-// (the default after `velocity.New` on a direct-internet host) must
-// record RemoteAddr on the ErrorContext, even when the attacker
-// sends X-Forwarded-For. This is the regression pin for the audit
-// finding (log poisoning / forensics evasion).
-func TestErrorHandler_RecordsRealClientIP_NotSpoofedXFF(t *testing.T) {
-	var captured *ErrorContext
-	h := NewHandler(WithReporters(NewCallbackReporter(func(_ error, exCtx *ErrorContext) {
-		captured = exCtx
-	})))
-
-	// No SetTrustedProxies call: handler defaults to no trust.
-	eh := ErrorHandler(h)
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/", nil)
-	r.RemoteAddr = "203.0.113.9:54321"
-	r.Header.Set("X-Forwarded-For", "8.8.8.8")
-	r.Header.Set("X-Real-IP", "9.9.9.9")
-
-	eh(w, r, NewInternalServerErrorException("boom"))
-
-	if captured == nil {
-		t.Fatal("no error context captured")
-	}
-	if captured.IP != "203.0.113.9" {
-		t.Fatalf("ErrorContext.IP = %q, want %q (spoofed XFF/X-Real-IP leaked into audit log)", captured.IP, "203.0.113.9")
-	}
-}
-
-// TestHandler_SetTrustedProxies_DefensiveCopy: caller mutation of the
-// slice handed in must not affect the handler's view.
-func TestHandler_SetTrustedProxies_DefensiveCopy(t *testing.T) {
-	h := NewHandler()
-	proxies, _ := clientip.ParseCIDRs([]string{"10.0.0.0/8"})
-	h.SetTrustedProxies(proxies)
-
-	for i := range proxies {
-		proxies[i] = nil
-	}
-
-	got := h.getTrustedProxies()
-	if len(got) != 1 || got[0] == nil {
-		t.Fatalf("handler observed caller mutation: %v", got)
-	}
-}
-
-// TestHandler_SetTrustedProxies_NilClears: passing nil reverts to the
-// secure default (no trust).
-func TestHandler_SetTrustedProxies_NilClears(t *testing.T) {
-	h := NewHandler()
-	proxies, _ := clientip.ParseCIDRs([]string{"10.0.0.0/8"})
-	h.SetTrustedProxies(proxies)
-	h.SetTrustedProxies(nil)
-	if got := h.getTrustedProxies(); got != nil {
-		t.Fatalf("expected nil after clear, got %v", got)
-	}
-}
-
-// TestHandler_SetTrustedProxies_DeepClone_SubsequentExtractUnaffected
-// pins the C-05 follow-up fix on the exceptions side: mutation of an
-// IPNet's IP / Mask AFTER SetTrustedProxies must not change what
-// ErrorHandler.getClientIP resolves on later requests.
-func TestHandler_SetTrustedProxies_DeepClone_SubsequentExtractUnaffected(t *testing.T) {
-	h := NewHandler()
-	proxies, err := clientip.ParseCIDRs([]string{"10.0.0.0/8"})
-	if err != nil {
-		t.Fatalf("ParseCIDRs: %v", err)
-	}
-	h.SetTrustedProxies(proxies)
-
-	// Stomp the IP and mask bytes through the source slice.
-	for i := range proxies[0].IP {
-		proxies[0].IP[i] = 0xff
-	}
-	for i := range proxies[0].Mask {
-		proxies[0].Mask[i] = 0
-	}
-
-	// Build a request that arrives "from the LB" (10.0.0.1, formerly
-	// in the trust set; should still be) carrying a forwarded chain.
-	r := httptest.NewRequest("GET", "/", nil)
-	r.RemoteAddr = "10.0.0.1:443"
-	r.Header.Set("X-Forwarded-For", "203.0.113.9")
-
-	// With the deep clone intact, the LB is still trusted and the
-	// real-client XFF is honoured.
-	got := getClientIP(r, h.getTrustedProxies())
-	if got != "203.0.113.9" {
-		t.Fatalf("handler trust set was mutated: got %q, want %q", got, "203.0.113.9")
-	}
-
-	// Also: a peer at the post-mutation address (which would be
-	// trusted if the mutation had leaked) must NOT be honoured for
-	// its XFF.
-	r2 := httptest.NewRequest("GET", "/", nil)
-	r2.RemoteAddr = "255.255.255.255:443"
-	r2.Header.Set("X-Forwarded-For", "8.8.8.8")
-	if got := getClientIP(r2, h.getTrustedProxies()); got != "255.255.255.255" {
-		t.Errorf("post-mutation address became trusted (deep clone leaked): got %q", got)
-	}
-}
-
-// TestHandler_SetTrustedProxies_AppendNotVisible: appending to the
-// source slice after SetTrustedProxies must not extend the handler's
-// trust set.
-func TestHandler_SetTrustedProxies_AppendNotVisible(t *testing.T) {
-	h := NewHandler()
-	proxies, _ := clientip.ParseCIDRs([]string{"10.0.0.0/8"})
-	h.SetTrustedProxies(proxies)
-
-	extra, _ := clientip.ParseCIDRs([]string{"192.168.0.0/16"})
-	_ = append(proxies, extra...)
-
-	// A peer in the would-be-appended range must NOT be trusted.
-	r := httptest.NewRequest("GET", "/", nil)
-	r.RemoteAddr = "192.168.1.5:443"
-	r.Header.Set("X-Forwarded-For", "203.0.113.9")
-	if got := getClientIP(r, h.getTrustedProxies()); got != "192.168.1.5" {
-		t.Errorf("appended entry leaked into handler trust: got %q, want %q", got, "192.168.1.5")
-	}
-}
-
-// TestHandler_GetTrustedProxies_ReturnsClone: mutating the slice
-// returned by getTrustedProxies() must not affect subsequent reads.
-func TestHandler_GetTrustedProxies_ReturnsClone(t *testing.T) {
-	h := NewHandler()
-	proxies, _ := clientip.ParseCIDRs([]string{"10.0.0.0/8"})
-	h.SetTrustedProxies(proxies)
-
-	snap := h.getTrustedProxies()
-	for i := range snap[0].IP {
-		snap[0].IP[i] = 0xff
-	}
-
-	again := h.getTrustedProxies()
-	if !again[0].Contains(net.ParseIP("10.0.0.5")) {
-		t.Errorf("second read shows mutated state: %v", again[0])
+	ErrorHandler(fake)(w, httptest.NewRequest(http.MethodGet, "/x", nil), Forbidden())
+	if w.Code != http.StatusForbidden || len(fake.ReportedErrors()) != 1 || len(fake.RenderedErrors()) != 1 {
+		t.Errorf("fake handler not driven: %d %v %v", w.Code, fake.Reported, fake.Rendered)
 	}
 }

@@ -12,7 +12,7 @@ import (
 // CBC decrypt failure returns ErrDecrypt (one sentinel, not six distinct
 // strings). The previous behaviour returned different errors for bad IV
 // encoding, bad value encoding, missing MAC, wrong MAC, bad padding, etc.
-// If any of those messages ever reached a client (debug exception
+// If any of those messages ever reached a client (debug error
 // handler, careless wrap, etc.) the client would gain a padding-oracle
 // precursor: each variant tells the attacker which check fell first.
 func TestDecrypt_ErrorsCollapseToErrDecrypt(t *testing.T) {

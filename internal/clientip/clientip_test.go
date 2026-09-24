@@ -319,7 +319,7 @@ func TestCloneIPNets_DeepCopiesPointers(t *testing.T) {
 
 // Caller-side mutation of the source slice and its elements must not
 // alter the clone. This is the core property exercised end-to-end by
-// the auth / exceptions / router consumers.
+// the auth / problem / router consumers.
 func TestCloneIPNets_CallerMutationIsolated(t *testing.T) {
 	src, err := ParseCIDRs([]string{"10.0.0.0/8"})
 	if err != nil {

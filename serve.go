@@ -246,7 +246,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	queue.SetBatchCallbackQueue(nil, "")
 	// H-22: clear the queued-listener failure reporter so a new app
 	// instance does not inherit a stale callback bound to the
-	// torn-down Exceptions handler; mirrors the New() failure-path
+	// torn-down error handler; mirrors the New() failure-path
 	// queue cleanup closure. Also drop the queue signing logger
 	// installed by initQueue so it does not retain the torn-down
 	// logger (nil-safe setter), and the payload encryptor installed

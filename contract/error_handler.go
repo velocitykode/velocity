@@ -84,9 +84,10 @@ type Reporter interface {
 	Report(err error, ctx *ErrorContext)
 }
 
-// Renderer renders an error response for one content type.
+// Renderer renders an error response for one content type at the status the
+// pipeline resolved.
 type Renderer interface {
-	Render(ctx RenderContext, err error, exCtx *ErrorContext, debug bool) error
+	Render(rc RenderContext, err error, ctx *ErrorContext, status int, debug bool) error
 	ContentType() string
 }
 

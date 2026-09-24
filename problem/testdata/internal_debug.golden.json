@@ -1,0 +1,23 @@
+{
+  "type": "about:blank",
+  "title": "Internal Server Error",
+  "status": 500,
+  "detail": "db password hunter2 rejected: dial tcp 10.0.0.5:5432: refused",
+  "instance": "/orders",
+  "request_id": "req-500",
+  "trace_id": "trace-500",
+  "exception": "*contract.HTTPError",
+  "context": {
+    "tenant": "acme",
+    "unencodable": "+Inf"
+  },
+  "previous": "dial tcp 10.0.0.5:5432: refused",
+  "stack_trace": [
+    {
+      "file": "/app/handlers/orders.go",
+      "line": 42,
+      "function": "Show",
+      "package": "example.test/app/handlers"
+    }
+  ]
+}

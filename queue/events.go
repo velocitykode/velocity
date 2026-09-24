@@ -76,7 +76,7 @@ func (e *JobFailed) Name() string {
 
 // FailureError implements contract.FailureEvent: a permanently failed job
 // (retries exhausted) has no caller observing the error, so the dispatcher
-// bridges it to the exception Reporter chain.
+// bridges it to the error Reporter chain.
 func (e *JobFailed) FailureError() error {
 	if e.Error == "" {
 		return nil

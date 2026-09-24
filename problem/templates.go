@@ -176,7 +176,8 @@ const debugTemplateHTML = `<!DOCTYPE html>
     <div class="header">
         <h1>{{.StatusCode}} {{.StatusText}}</h1>
         <div class="message">{{.Message}}</div>
-        <div class="type">{{.ExceptionType}}</div>
+        <div class="type">{{.ErrorType}}</div>
+        {{if .Origin}}<div class="type">{{.Origin}}</div>{{end}}
     </div>
 
     <div class="meta">
@@ -218,7 +219,7 @@ const debugTemplateHTML = `<!DOCTYPE html>
 
         {{if .Context}}
         <div class="section">
-            <div class="section-header">Exception Context</div>
+            <div class="section-header">Error Context</div>
             <div class="section-content">
                 <table class="context-table">
                     {{range $key, $value := .Context}}
@@ -234,7 +235,7 @@ const debugTemplateHTML = `<!DOCTYPE html>
 
         {{if .Previous}}
         <div class="section">
-            <div class="section-header">Previous Exception</div>
+            <div class="section-header">Previous Error</div>
             <div class="section-content">
                 <div class="previous-error">{{.Previous}}</div>
             </div>
@@ -318,134 +319,6 @@ const errorTemplateHTML = `<!DOCTYPE html>
             {{if .TraceID}}<span>Trace ID: {{.TraceID}}</span>{{end}}
         </div>
         {{end}}
-    </div>
-</body>
-</html>`
-
-// notFoundTemplateHTML is the template for 404 pages.
-const notFoundTemplateHTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>404 - Page Not Found</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: #f5f5f5;
-            color: #333;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .container {
-            text-align: center;
-            padding: 2rem;
-            max-width: 600px;
-        }
-        .status-code {
-            font-size: 8rem;
-            font-weight: 700;
-            color: #3498db;
-            line-height: 1;
-            margin-bottom: 1rem;
-        }
-        .status-text {
-            font-size: 1.5rem;
-            color: #666;
-            margin-bottom: 1rem;
-        }
-        .message {
-            font-size: 1.125rem;
-            color: #888;
-            margin-bottom: 2rem;
-        }
-        .home-link {
-            display: inline-block;
-            padding: 0.75rem 2rem;
-            background: #3498db;
-            color: white;
-            text-decoration: none;
-            border-radius: 4px;
-            transition: background 0.2s;
-        }
-        .home-link:hover {
-            background: #2980b9;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="status-code">404</div>
-        <div class="status-text">Page Not Found</div>
-        <div class="message">The page you're looking for doesn't exist or has been moved.</div>
-        <a href="/" class="home-link">Go Home</a>
-    </div>
-</body>
-</html>`
-
-// serverErrorTemplateHTML is the template for 500 pages.
-const serverErrorTemplateHTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>500 - Server Error</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: #f5f5f5;
-            color: #333;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .container {
-            text-align: center;
-            padding: 2rem;
-            max-width: 600px;
-        }
-        .status-code {
-            font-size: 8rem;
-            font-weight: 700;
-            color: #e74c3c;
-            line-height: 1;
-            margin-bottom: 1rem;
-        }
-        .status-text {
-            font-size: 1.5rem;
-            color: #666;
-            margin-bottom: 1rem;
-        }
-        .message {
-            font-size: 1.125rem;
-            color: #888;
-            margin-bottom: 2rem;
-        }
-        .home-link {
-            display: inline-block;
-            padding: 0.75rem 2rem;
-            background: #3498db;
-            color: white;
-            text-decoration: none;
-            border-radius: 4px;
-            transition: background 0.2s;
-        }
-        .home-link:hover {
-            background: #2980b9;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="status-code">500</div>
-        <div class="status-text">Server Error</div>
-        <div class="message">Something went wrong on our end. Please try again later.</div>
-        <a href="/" class="home-link">Go Home</a>
     </div>
 </body>
 </html>`

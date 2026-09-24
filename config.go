@@ -296,7 +296,7 @@ func ConfigFromEnv() Config {
 	// neither, so unset deployments fail closed instead of inheriting
 	// development relaxations. Storing the canonical form once at the
 	// boundary keeps the exact-match consumers (scheduler.Job environment
-	// filter, exceptions.Handler) seeing the same string.
+	// filter, problem.Handler) seeing the same string.
 	envValue := app.Env()
 	config := Config{
 		Env:      envValue,

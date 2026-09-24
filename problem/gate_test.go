@@ -1,0 +1,491 @@
+package problem
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/panicerr"
+)
+
+var errSentinel = errors.New("sentinel")
+
+func TestReportGate_Order(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	tests := []struct {
+		name  string
+		setup func(h *Handler)
+		err   error
+		ctx   *ErrorContext
+		reqCx context.Context
+		want  bool
+	}{
+		{name: "PlainErrorReported", err: errors.New("boom"), want: true},
+		{name: "MarkedNotReportedAgain", err: contract.MarkReported(errors.New("boom")), want: false},
+		{
+			name: "PanicAlwaysReports_IgnoredType",
+			setup: func(h *Handler) {
+				Ignore[*panicerr.Error](h)
+				h.IgnoreIf(func(error, *ErrorContext) bool { return true })
+			},
+			err:  panicerr.FromRecovered("boom"),
+			want: true,
+		},
+		{
+			name:  "PanicAlwaysReports_RecoveredContextOverridesShouldReport",
+			err:   &reportableErr{report: false, code: 404},
+			ctx:   &ErrorContext{Recovered: true},
+			want:  true,
+			setup: func(h *Handler) { Ignore[*reportableErr](h) },
+		},
+		{name: "PanicMarkedStillOnce", err: contract.MarkReported(panicerr.FromRecovered("boom")), want: false},
+		{name: "ReportableFalseDropped", err: &reportableErr{report: false, code: 500}, want: false},
+		{name: "ReportableTrueSkipsFrameworkIgnore", err: &reportableErr{report: true, code: 404}, want: true},
+		{
+			name:  "ReportableTrueStillUserIgnored",
+			setup: func(h *Handler) { Ignore[*reportableErr](h) },
+			err:   &reportableErr{report: true, code: 500},
+			want:  false,
+		},
+		{name: "FrameworkIgnore_StatusBelow500", err: &statusErr{code: 404}, want: false},
+		{name: "FrameworkIgnore_Status500Reported", err: &statusErr{code: 500}, want: true},
+		{name: "FrameworkIgnore_HTTPError4xx", err: NotFound(), want: false},
+		{name: "FrameworkIgnore_MaxBytes", err: fmt.Errorf("read: %w", &http.MaxBytesError{Limit: 1}), want: false},
+		{name: "FrameworkIgnore_CanceledDeadRequest", err: context.Canceled, reqCx: canceled, want: false},
+		{name: "CanceledLiveRequestReported", err: context.Canceled, want: true},
+		{name: "DeadlineReported", err: context.DeadlineExceeded, want: true},
+		{
+			name:  "UserIgnoreType",
+			setup: func(h *Handler) { Ignore[*contextualErr](h) },
+			err:   fmt.Errorf("wrapped: %w", &contextualErr{}),
+			want:  false,
+		},
+		{
+			name:  "UserIgnoreIs",
+			setup: func(h *Handler) { IgnoreIs(h, errSentinel) },
+			err:   fmt.Errorf("wrapped: %w", errSentinel),
+			want:  false,
+		},
+		{
+			name:  "IgnoreThenUnignore",
+			setup: func(h *Handler) { Ignore[*contextualErr](h); Unignore[*contextualErr](h) },
+			err:   &contextualErr{},
+			want:  true,
+		},
+		{
+			name:  "IgnoreIsThenUnignoreIs",
+			setup: func(h *Handler) { IgnoreIs(h, errSentinel); UnignoreIs(h, errSentinel) },
+			err:   errSentinel,
+			want:  true,
+		},
+		{
+			name:  "UnignoreThenIgnore",
+			setup: func(h *Handler) { Unignore[*contextualErr](h); Ignore[*contextualErr](h) },
+			err:   &contextualErr{},
+			want:  false,
+		},
+		{
+			name:  "UnignoreLiftsFrameworkIgnore",
+			setup: func(h *Handler) { Unignore[*http.MaxBytesError](h) },
+			err:   &http.MaxBytesError{Limit: 1},
+			want:  true,
+		},
+		{
+			name:  "UnignoreLiftsShouldReportFalse",
+			setup: func(h *Handler) { Unignore[*contract.HTTPError](h) },
+			err:   NotFound(),
+			want:  true,
+		},
+		{
+			name:  "UnignoreLiftsDeadCancel",
+			setup: func(h *Handler) { UnignoreIs(h, context.Canceled) },
+			err:   context.Canceled,
+			reqCx: canceled,
+			want:  true,
+		},
+		{
+			name: "PredicateIgnores",
+			setup: func(h *Handler) {
+				h.IgnoreIf(func(err error, _ *ErrorContext) bool { return err.Error() == "noisy" })
+			},
+			err:  errors.New("noisy"),
+			want: false,
+		},
+		{
+			name: "PredicateSeesContext",
+			setup: func(h *Handler) {
+				h.IgnoreIf(func(_ error, ctx *ErrorContext) bool { return ctx != nil && ctx.Method == http.MethodHead })
+			},
+			err:  errors.New("boom"),
+			ctx:  &ErrorContext{Method: http.MethodHead},
+			want: false,
+		},
+		{
+			name:  "MapRuleAppliesBeforeGate",
+			setup: func(h *Handler) { MapIs(h, errSentinel, func(err error) error { return NotFound().WithCause(err) }) },
+			err:   errSentinel,
+			want:  false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, rep, _ := newTestHandler()
+			if tt.setup != nil {
+				tt.setup(h)
+			}
+			reqCx := tt.reqCx
+			if reqCx == nil {
+				reqCx = context.Background()
+			}
+			rc, _ := newRCWithContext(reqCx, http.MethodGet, "/x")
+			h.HandleRequest(rc, tt.err, tt.ctx)
+			if got := rep.count() == 1; got != tt.want {
+				t.Errorf("reported = %v (count %d), want %v", got, rep.count(), tt.want)
+			}
+		})
+	}
+}
+
+func TestReportGate_ThrottleSample(t *testing.T) {
+	tests := []struct {
+		name   string
+		sample float64
+		draw   float64
+		want   bool
+	}{
+		{"DrawBelowSampleReported", 0.5, 0.1, true},
+		{"DrawAboveSampleDropped", 0.5, 0.9, false},
+		{"SampleOneAlwaysReported", 1, 0.99, true},
+		{"SampleZeroDisabled", 0, 0.99, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, rep, _ := newTestHandler()
+			h.throttle.sample = func() float64 { return tt.draw }
+			ThrottleFor[*contextualErr](h, contract.Throttle{Sample: tt.sample})
+			h.Report(&contextualErr{}, nil)
+			if got := rep.count() == 1; got != tt.want {
+				t.Errorf("reported = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReportGate_ThrottleBucket(t *testing.T) {
+	h, rep, _ := newTestHandler()
+	now := time.Unix(1_000_000, 0)
+	h.throttle.now = func() time.Time { return now }
+	ThrottleFor[*contextualErr](h, contract.Throttle{
+		MaxPerWindow: 2,
+		Window:       time.Minute,
+		By: func(err error) string {
+			var c *contextualErr
+			if errors.As(err, &c) {
+				return fmt.Sprint(c.fields["tenant"])
+			}
+			return ""
+		},
+	})
+	tenantA := &contextualErr{fields: map[string]any{"tenant": "a"}}
+	tenantB := &contextualErr{fields: map[string]any{"tenant": "b"}}
+
+	steps := []struct {
+		name    string
+		err     error
+		advance time.Duration
+		want    int
+	}{
+		{"FirstA", tenantA, 0, 1},
+		{"SecondA", tenantA, 0, 2},
+		{"ThirdADropped", tenantA, 0, 2},
+		{"FirstBOwnBucket", tenantB, 0, 3},
+		{"UnmatchedNotThrottled", errors.New("other"), 0, 4},
+		{"WindowResetsA", tenantA, time.Minute, 5},
+	}
+	for _, st := range steps {
+		now = now.Add(st.advance)
+		h.Report(st.err, nil)
+		if got := rep.count(); got != st.want {
+			t.Fatalf("%s: reports = %d, want %d", st.name, got, st.want)
+		}
+	}
+}
+
+func TestReportGate_ThrottleDefaultWindowAndSweep(t *testing.T) {
+	b := newThrottleBuckets()
+	now := time.Unix(0, 0)
+	b.now = func() time.Time { return now }
+	rule := contract.ThrottleRule{Match: func(error) bool { return true }, Throttle: contract.Throttle{MaxPerWindow: 1}}
+	if !b.allow(rule, errSentinel) || b.allow(rule, errSentinel) {
+		t.Fatal("anonymous rule must allow exactly one report per window")
+	}
+	now = now.Add(defaultThrottleWindow)
+	if !b.allow(rule, errSentinel) {
+		t.Fatal("default window must reset after one minute")
+	}
+
+	keyed := contract.ThrottleRule{Key: "k", Match: rule.Match, Throttle: contract.Throttle{
+		MaxPerWindow: 1, Window: time.Second, By: func(err error) string { return err.Error() },
+	}}
+	for i := 0; i < maxThrottleBuckets+10; i++ {
+		b.allow(keyed, fmt.Errorf("e%d", i))
+		now = now.Add(2 * time.Second)
+	}
+	b.mu.Lock()
+	n := len(b.buckets)
+	b.mu.Unlock()
+	if n > maxThrottleBuckets {
+		t.Errorf("buckets = %d, want at most %d after sweeping", n, maxThrottleBuckets)
+	}
+}
+
+func TestReportGate_ShouldReportDoesNotConsumeThrottle(t *testing.T) {
+	h, rep, _ := newTestHandler()
+	ThrottleFor[*contextualErr](h, contract.Throttle{MaxPerWindow: 1, Window: time.Hour})
+	for i := 0; i < 3; i++ {
+		if !h.ShouldReport(&contextualErr{}) {
+			t.Fatal("ShouldReport must pass a throttled type")
+		}
+	}
+	h.Report(&contextualErr{}, nil)
+	if rep.count() != 1 {
+		t.Errorf("reports = %d, want 1: ShouldReport consumed the budget", rep.count())
+	}
+}
+
+func TestReportGate_StopsAndStages(t *testing.T) {
+	tests := []struct {
+		name          string
+		err           func() error
+		setup         func(h *Handler, calls *[]string)
+		wantReporters int
+		wantCalls     []string
+	}{
+		{
+			name:          "SelfReportStops",
+			err:           func() error { return &selfErr{stop: true} },
+			setup:         func(h *Handler, calls *[]string) { recordReportFor[*selfErr](h, calls, false) },
+			wantReporters: 0,
+			wantCalls:     nil,
+		},
+		{
+			name:          "SelfReportContinues",
+			err:           func() error { return &selfErr{stop: false} },
+			setup:         func(h *Handler, calls *[]string) { recordReportFor[*selfErr](h, calls, false) },
+			wantReporters: 1,
+			wantCalls:     []string{"reportFor"},
+		},
+		{
+			name:          "TypedReportStops",
+			err:           func() error { return &contextualErr{} },
+			setup:         func(h *Handler, calls *[]string) { recordReportFor[*contextualErr](h, calls, true) },
+			wantReporters: 0,
+			wantCalls:     []string{"reportFor"},
+		},
+		{
+			name:          "TypedReportContinues",
+			err:           func() error { return &contextualErr{} },
+			setup:         func(h *Handler, calls *[]string) { recordReportFor[*contextualErr](h, calls, false) },
+			wantReporters: 1,
+			wantCalls:     []string{"reportFor"},
+		},
+		{
+			name: "ThrottledNeverReachesSelfReport",
+			err:  func() error { return &selfErr{stop: false} },
+			setup: func(h *Handler, calls *[]string) {
+				h.throttle.sample = func() float64 { return 0.99 }
+				ThrottleFor[*selfErr](h, contract.Throttle{Sample: 0.1})
+				recordReportFor[*selfErr](h, calls, false)
+			},
+			wantReporters: 0,
+			wantCalls:     nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, rep, _ := newTestHandler()
+			var calls []string
+			tt.setup(h, &calls)
+			err := tt.err()
+			h.Report(err, nil)
+			if rep.count() != tt.wantReporters {
+				t.Errorf("reporter calls = %d, want %d", rep.count(), tt.wantReporters)
+			}
+			if fmt.Sprint(calls) != fmt.Sprint(tt.wantCalls) {
+				t.Errorf("stage calls = %v, want %v", calls, tt.wantCalls)
+			}
+			var self *selfErr
+			if errors.As(err, &self) && tt.name == "ThrottledNeverReachesSelfReport" && self.hits != 0 {
+				t.Error("throttled error reached ReportError")
+			}
+		})
+	}
+}
+
+// recordReportFor registers a ReportFor[T] rule that records its call and
+// asserts it runs before the context merge.
+func recordReportFor[T error](h *Handler, calls *[]string, stop bool) {
+	h.ContextUsing(func(error, *ErrorContext) map[string]any { return map[string]any{"merged": true} })
+	ReportFor[T](h, func(_ T, ctx *ErrorContext) bool {
+		if _, merged := ctx.Extra["merged"]; merged {
+			*calls = append(*calls, "merged-too-early")
+		}
+		*calls = append(*calls, "reportFor")
+		return stop
+	})
+}
+
+func TestReportGate_ContextMerge(t *testing.T) {
+	h, rep, _ := newTestHandler()
+	h.ContextUsing(func(err error, _ *ErrorContext) map[string]any {
+		return map[string]any{"provider": err.Error(), "shared": "provider"}
+	})
+	h.Report(&contextualErr{fields: map[string]any{"order": 42, "shared": "error"}}, nil)
+	ctx, _ := rep.last()
+	if ctx == nil {
+		t.Fatal("not reported")
+	}
+	want := map[string]any{"order": 42, "provider": "contextual", "shared": "provider"}
+	for k, v := range want {
+		if ctx.Extra[k] != v {
+			t.Errorf("Extra[%q] = %v, want %v", k, ctx.Extra[k], v)
+		}
+	}
+}
+
+func TestReportGate_LevelSelection(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(h *Handler)
+		err   error
+		ctx   *ErrorContext
+		want  contract.LogLevel
+	}{
+		{name: "DefaultError", err: errors.New("boom"), want: contract.LogLevelError},
+		{name: "CallerLevelKept", err: errors.New("boom"), ctx: &ErrorContext{Level: contract.LogLevelInfo}, want: contract.LogLevelInfo},
+		{name: "FrameworkDeadlineWarn", err: fmt.Errorf("q: %w", context.DeadlineExceeded), want: contract.LogLevelWarn},
+		{
+			name:  "UserOutranksFramework",
+			setup: func(h *Handler) { LevelIs(h, context.DeadlineExceeded, contract.LogLevelInfo) },
+			err:   context.DeadlineExceeded,
+			want:  contract.LogLevelInfo,
+		},
+		{
+			name:  "LevelForType",
+			setup: func(h *Handler) { LevelFor[*contextualErr](h, contract.LogLevelDebug) },
+			err:   &contextualErr{},
+			want:  contract.LogLevelDebug,
+		},
+		{
+			name: "LaterKeyReplacesEarlier",
+			setup: func(h *Handler) {
+				LevelFor[*contextualErr](h, contract.LogLevelDebug)
+				LevelFor[*contextualErr](h, contract.LogLevelWarn)
+			},
+			err:  &contextualErr{},
+			want: contract.LogLevelWarn,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, rep, _ := newTestHandler()
+			if tt.setup != nil {
+				tt.setup(h)
+			}
+			h.Report(tt.err, tt.ctx)
+			ctx, _ := rep.last()
+			if ctx == nil {
+				t.Fatal("not reported")
+			}
+			if ctx.Level != tt.want {
+				t.Errorf("Level = %v, want %v", ctx.Level, tt.want)
+			}
+		})
+	}
+}
+
+func TestReportGate_PanicsInUserCodeAreContained(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(h *Handler)
+		wantLog string
+		wantRep int
+	}{
+		{
+			name:    "MapRulePanics",
+			setup:   func(h *Handler) { MapIs(h, errSentinel, func(error) error { panic("map") }) },
+			wantLog: "problem: map rule panicked",
+			wantRep: 1,
+		},
+		{
+			name:    "PredicatePanics",
+			setup:   func(h *Handler) { h.IgnoreIf(func(error, *ErrorContext) bool { panic("pred") }) },
+			wantLog: "problem: report failed",
+			wantRep: 0,
+		},
+		{
+			name: "ReporterPanicsOthersRun",
+			setup: func(h *Handler) {
+				h.SetReporters(NewCallbackReporter(func(error, *ErrorContext) { panic("rep") }))
+			},
+			wantLog: "problem: reporter panicked",
+			wantRep: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, rep, logger := newTestHandler()
+			tt.setup(h)
+			if tt.name == "ReporterPanicsOthersRun" {
+				h.AddReporter(rep)
+			}
+			rc, w := newRC(http.MethodGet, "/x")
+			h.HandleRequest(rc, errSentinel, nil)
+			if !logger.has("error", tt.wantLog) {
+				t.Errorf("missing log %q in %v", tt.wantLog, logger.all())
+			}
+			if rep.count() != tt.wantRep {
+				t.Errorf("reports = %d, want %d", rep.count(), tt.wantRep)
+			}
+			if w.Code != http.StatusInternalServerError {
+				t.Errorf("status = %d, want 500 still rendered", w.Code)
+			}
+		})
+	}
+}
+
+func TestHandler_ConcurrentRulesAndRequests(t *testing.T) {
+	h, _, _ := newTestHandler()
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				Ignore[*contextualErr](h)
+				Unignore[*contextualErr](h)
+				LevelFor[*statusErr](h, contract.LogLevelWarn)
+				ThrottleFor[*selfErr](h, contract.Throttle{MaxPerWindow: 5})
+				h.SetAPIPrefixes("/api")
+				h.AddRenderer("json", NewJSONRenderer())
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				rc, _ := newRC(http.MethodGet, "/api/x", "Accept", "application/json")
+				h.HandleRequest(rc, &contextualErr{}, nil)
+				h.Report(&selfErr{}, nil)
+				_ = h.ShouldReport(&statusErr{code: 500})
+			}
+		}()
+	}
+	wg.Wait()
+}

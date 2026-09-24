@@ -27,7 +27,7 @@ import (
 //     consumers only want to register the job factory and reporter.
 //   - reporter: optional callback that fires from EventListenerJob.Failed.
 //     Nil disables the reporter (calls become no-ops); pass a closure over
-//     exceptions.Handler.Report to route to the framework's exception sink.
+//     problem.Handler.Report to route to the framework's error sink.
 //
 // This is the canonical entry point. The events package retains a
 // deprecated shim with the same signature for backwards compatibility

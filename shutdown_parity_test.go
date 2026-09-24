@@ -93,7 +93,7 @@ func TestShutdown_TearsDownViewEngine(t *testing.T) {
 // TestShutdown_ClearsEventQueueFailureReporter proves App.Shutdown clears the
 // package-global queued-listener failure reporter wired through
 // eventqueue.InitializeQueueIntegration. Before the fix only the New()
-// failure path cleared it, so a torn-down app's Exceptions handler kept
+// failure path cleared it, so a torn-down app's error handler kept
 // receiving Failed callbacks from the events side.
 func TestShutdown_ClearsEventQueueFailureReporter(t *testing.T) {
 	a, err := NewTestApp()

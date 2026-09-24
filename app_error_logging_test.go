@@ -51,7 +51,7 @@ func (l *errCaptureLogger) lastError() errCapturedEntry {
 
 // newCaptureApp builds a test app whose a.Log is the returned errCaptureLogger,
 // installed via a log-driver override so the logger is in place during New()
-// (the exceptions LogReporter snapshots a.Log at construction time).
+// (the problem LogReporter snapshots a.Log at construction time).
 func newCaptureApp(t *testing.T) (*App, *errCaptureLogger) {
 	t.Helper()
 	capture := &errCaptureLogger{}
@@ -76,10 +76,10 @@ func newCaptureApp(t *testing.T) (*App, *errCaptureLogger) {
 	return a, capture
 }
 
-// V2-15: the exceptions handler built by New() must report through the app
+// V2-15: the error handler built by New() must report through the app
 // logger out of the box (previously its default LogReporter had a nil logger
 // and silently dropped every Report).
-func TestNew_ExceptionsReporterLogsViaAppLogger(t *testing.T) {
+func TestNew_ErrorReporterLogsViaAppLogger(t *testing.T) {
 	a, capture := newCaptureApp(t)
 
 	a.Services.Errors.Report(errors.New("reported failure"), nil)

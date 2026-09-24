@@ -9,7 +9,7 @@ import (
 // stdlib-only) so every framework subsystem can route through one
 // vocabulary regardless of where it sits in the import graph. The root
 // app package re-exports these via app.IsProductionEnv etc; subsystems
-// that cannot import app because of cycles (exceptions, auth, csrf,
+// that cannot import app because of cycles (problem, auth, csrf,
 // scheduler, grpc, ...) call them directly.
 //
 // Vocabulary is final for the 1.0 surface:

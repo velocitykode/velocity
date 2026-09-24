@@ -69,7 +69,7 @@ func TestExtractFunctionName(t *testing.T) {
 		want     string
 	}{
 		{"main.main", "main"},
-		{"velocity/exceptions.TestExtractFunctionName", "TestExtractFunctionName"},
+		{"velocity/problem.TestExtractFunctionName", "TestExtractFunctionName"},
 		{"github.com/user/repo/pkg.Function", "Function"},
 		{"(*Type).Method", "Method"},
 		{"simple", "simple"},
@@ -209,7 +209,7 @@ func TestStackFrame_ShortFile(t *testing.T) {
 		file string
 		want string
 	}{
-		{"pkg path", "/home/user/project/pkg/exceptions/handler.go", "pkg/exceptions/handler.go"},
+		{"pkg path", "/home/user/project/pkg/problem/handler.go", "pkg/problem/handler.go"},
 		{"internal path", "/home/user/project/internal/app/main.go", "internal/app/main.go"},
 		{"cmd path", "/home/user/project/cmd/server/main.go", "cmd/server/main.go"},
 		{"src path", "/home/user/project/src/app/main.go", "src/app/main.go"},

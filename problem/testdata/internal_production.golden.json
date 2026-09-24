@@ -1,0 +1,8 @@
+{
+  "type": "about:blank",
+  "title": "Internal Server Error",
+  "status": 500,
+  "detail": "Internal Server Error",
+  "instance": "/orders",
+  "request_id": "req-500"
+}

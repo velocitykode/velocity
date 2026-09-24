@@ -97,7 +97,7 @@ type Dispatcher interface {
 }
 
 // FailureEvent is implemented by events that represent a terminal failure
-// which should reach the exception Reporter chain in addition to event
+// which should reach the error Reporter chain in addition to event
 // listeners. The dispatcher bridges such events to ErrorHandler.Report
 // synchronously at dispatch time, so reporting stays reliable even when
 // listener delivery is asynchronous or best-effort.
@@ -108,7 +108,7 @@ type Dispatcher interface {
 // queries, outbound HTTP, request handler errors) must NOT implement it:
 // the caller's boundary owns reporting, and bridging them would
 // double-report. router.RequestFailed is deliberately excluded for this
-// reason; request errors reach Report through the exceptions handler.
+// reason; request errors reach Report through the problem handler.
 type FailureEvent interface {
 	// FailureError returns the failure as an error for reporting.
 	FailureError() error

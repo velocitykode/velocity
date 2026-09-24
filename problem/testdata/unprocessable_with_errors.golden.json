@@ -1,0 +1,16 @@
+{
+  "type": "about:blank",
+  "title": "Unprocessable Entity",
+  "status": 422,
+  "detail": "Unprocessable Entity",
+  "instance": "/users",
+  "errors": {
+    "email": [
+      "The email has already been taken."
+    ],
+    "name": [
+      "The name field is required.",
+      "The name must be a string."
+    ]
+  }
+}

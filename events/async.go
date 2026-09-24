@@ -35,7 +35,7 @@ func (e *AsyncFailed) Name() string { return "events.async_failed" }
 
 // FailureError implements contract.FailureEvent: a listener that panicked
 // or errored on an async goroutine has no caller observing the failure, so
-// the dispatcher bridges it to the exception Reporter chain.
+// the dispatcher bridges it to the error Reporter chain.
 func (e *AsyncFailed) FailureError() error {
 	if e.Error == "" {
 		return nil

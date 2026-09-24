@@ -5,7 +5,7 @@
 // the framework. Both the auth login throttler (auth/throttle.go) and the
 // session scheme (auth/drivers/schemes/session.go) call Extract so the
 // throttle key, the audit-trail IP recorded on Login, and the per-IP
-// rate limiter all agree. Other layers (exceptions, rate-limit, ws
+// rate limiter all agree. Other layers (rate-limit, ws
 // origin checks) should adopt it next so the framework has one IP
 // extraction policy, not three.
 //

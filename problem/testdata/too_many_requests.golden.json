@@ -1,0 +1,7 @@
+{
+  "type": "about:blank",
+  "title": "Too Many Requests",
+  "status": 429,
+  "detail": "Slow down",
+  "instance": "/login"
+}

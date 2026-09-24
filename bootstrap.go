@@ -223,7 +223,7 @@ func wireInstanceEvents(a *App) {
 		mgr.SetTxEventBus(a.Services.Events)
 	}
 
-	// Bridge contract.FailureEvent dispatches to the exception Reporter
+	// Bridge contract.FailureEvent dispatches to the error Reporter
 	// chain. Wired on the dispatcher itself (not the dispatch closure) so
 	// EVERY dispatch path is covered: service-fired events, registry
 	// components, and app code calling Services.Events.Dispatch directly.

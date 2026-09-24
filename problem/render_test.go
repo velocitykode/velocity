@@ -1,0 +1,735 @@
+package problem
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"html/template"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/panicerr"
+)
+
+func TestRender_Order(t *testing.T) {
+	var sawOriginal bool
+	tests := []struct {
+		name       string
+		setup      func(h *Handler)
+		err        error
+		ctx        *ErrorContext
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name: "RenderableWinsOverUserRule",
+			setup: func(h *Handler) {
+				RenderStatus[*renderableErr](h, http.StatusGone)
+			},
+			err:        &renderableErr{handled: true},
+			wantStatus: http.StatusTeapot,
+			wantBody:   "self rendered",
+		},
+		{
+			name:       "RenderableDeclinesFallsThrough",
+			err:        &renderableErr{handled: false},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "UserRuleOutranksFrameworkRule",
+			setup: func(h *Handler) {
+				h.AddFrameworkRenderRule(contract.RenderRule{Key: "fw", Match: matchIs(errSentinel), Status: http.StatusForbidden})
+				RenderStatus[*contract.HTTPError](h, http.StatusGone)
+				h.AddFrameworkPrepareRule(contract.MapRule{Match: matchIs(errSentinel), Map: func(err error) error {
+					return NotFound().WithCause(err)
+				}})
+			},
+			err:        errSentinel,
+			wantStatus: http.StatusGone,
+		},
+		{
+			name: "FrameworkRuleWhenNoUserRule",
+			setup: func(h *Handler) {
+				h.AddFrameworkRenderRule(contract.RenderRule{Key: "fw", Match: matchIs(errSentinel), Status: http.StatusForbidden})
+			},
+			err:        errSentinel,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name: "UserRuleDeclinesFallsThrough",
+			setup: func(h *Handler) {
+				RenderFor[*contextualErr](h, func(RenderContext, *contextualErr, *ErrorContext) bool { return false })
+			},
+			err:        &contextualErr{},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "RenderForWrites",
+			setup: func(h *Handler) {
+				RenderFor[*contextualErr](h, func(rc RenderContext, err *contextualErr, _ *ErrorContext) bool {
+					rc.WriteHeader(http.StatusAccepted)
+					_, _ = rc.Write([]byte(err.Error()))
+					return true
+				})
+			},
+			err:        fmt.Errorf("wrap: %w", &contextualErr{}),
+			wantStatus: http.StatusAccepted,
+			wantBody:   "contextual",
+		},
+		{
+			name: "PrepareMapsWrappedSentinelKeepsIs",
+			setup: func(h *Handler) {
+				h.AddFrameworkPrepareRule(contract.MapRule{Key: errSentinel, Match: matchIs(errSentinel), Map: func(err error) error {
+					return NotFound().WithCause(err)
+				}})
+				h.BeforeRender(func(_ RenderContext, err error, status int) int {
+					sawOriginal = errors.Is(err, errSentinel)
+					return status
+				})
+			},
+			err:        fmt.Errorf("load user: %w", errSentinel),
+			wantStatus: http.StatusNotFound,
+		},
+		{name: "StdlibPrepareMaxBytes", err: fmt.Errorf("bind: %w", &http.MaxBytesError{Limit: 1}), wantStatus: http.StatusRequestEntityTooLarge},
+		{name: "StdlibPrepareDeadline", err: fmt.Errorf("query: %w", context.DeadlineExceeded), wantStatus: http.StatusServiceUnavailable},
+		{name: "StatusErrorStatus", err: &statusErr{code: http.StatusPaymentRequired}, wantStatus: http.StatusPaymentRequired},
+		{
+			name:       "RecoveredPanicAlways500",
+			err:        panicerr.FromRecovered(NotFound()),
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name:       "RecoveredContextAlways500",
+			setup:      func(h *Handler) { RenderStatus[*renderableErr](h, http.StatusGone) },
+			err:        &renderableErr{handled: true},
+			ctx:        &ErrorContext{Recovered: true},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "BeforeRenderChangesStatus",
+			setup: func(h *Handler) {
+				h.BeforeRender(func(rc RenderContext, _ error, status int) int {
+					rc.SetHeader("X-Hook", fmt.Sprint(status))
+					return http.StatusGone
+				})
+				h.BeforeRender(func(_ RenderContext, _ error, status int) int { return status + 1 })
+			},
+			err:        NotFound(),
+			wantStatus: http.StatusGone + 1,
+		},
+		{
+			name: "BeforeRenderInvalidStatusBecomes500",
+			setup: func(h *Handler) {
+				h.BeforeRender(func(RenderContext, error, int) int { return 42 })
+			},
+			err:        NotFound(),
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _, _ := newTestHandler()
+			if tt.setup != nil {
+				tt.setup(h)
+			}
+			rc, w := newRC(http.MethodGet, "/x")
+			h.HandleRequest(rc, tt.err, tt.ctx)
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+			if tt.wantBody != "" && w.Body.String() != tt.wantBody {
+				t.Errorf("body = %q, want %q", w.Body.String(), tt.wantBody)
+			}
+		})
+	}
+	if !sawOriginal {
+		t.Error("prepared error lost errors.Is to the original sentinel")
+	}
+}
+
+func TestRender_WrittenNeverOverwritten(t *testing.T) {
+	tests := []struct {
+		name       string
+		preWrite   bool
+		err        error
+		wantStatus int
+		wantReport int
+	}{
+		{"AlreadyWritten", true, errors.New("late"), http.StatusCreated, 1},
+		{"HandledCauseReportedNotRendered", false, contract.Handled(errors.New("rendered by middleware")), http.StatusOK, 1},
+		{"HandledMarkedNotReported", false, contract.Handled(contract.MarkReported(errors.New("done"))), http.StatusOK, 0},
+		{"MarkedHandledNotReported", false, contract.MarkReported(contract.Handled(errors.New("done"))), http.StatusOK, 0},
+		{"BareSentinelNothing", false, contract.ErrResponseWritten, http.StatusOK, 0},
+		{"HandledClientErrorNotReported", false, contract.Handled(NotFound()), http.StatusOK, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, rep, _ := newTestHandler()
+			rc, w := newRC(http.MethodGet, "/x")
+			if tt.preWrite {
+				rc.WriteHeader(http.StatusCreated)
+			}
+			h.HandleRequest(rc, tt.err, nil)
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+			if !tt.preWrite && w.Body.Len() != 0 {
+				t.Errorf("body = %q, want nothing written", w.Body.String())
+			}
+			if rep.count() != tt.wantReport {
+				t.Errorf("reports = %d, want %d", rep.count(), tt.wantReport)
+			}
+		})
+	}
+}
+
+func TestRender_LastResort(t *testing.T) {
+	tests := []struct {
+		name     string
+		renderer Renderer
+		wantLog  string
+	}{
+		{"PanickingRenderer", panicRenderer{}, "problem: rendering panicked"},
+		{"FailingRenderer", failRenderer{}, "problem: rendering failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _, logger := newTestHandler()
+			h.AddRenderer("html", tt.renderer)
+			rc, w := newRC(http.MethodGet, "/x")
+			h.HandleRequest(rc, errors.New("boom"), nil)
+			if w.Code != http.StatusInternalServerError {
+				t.Errorf("status = %d, want 500", w.Code)
+			}
+			if got := w.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+				t.Errorf("Content-Type = %q, want text/plain", got)
+			}
+			if w.Body.String() != "Internal Server Error" {
+				t.Errorf("body = %q", w.Body.String())
+			}
+			if !logger.has("error", tt.wantLog) {
+				t.Errorf("missing log %q in %v", tt.wantLog, logger.all())
+			}
+		})
+	}
+}
+
+// panicWriter is a ResponseWriter whose every method panics.
+type panicWriter struct{ header http.Header }
+
+func (p *panicWriter) Header() http.Header       { return p.header }
+func (p *panicWriter) Write([]byte) (int, error) { panic("write exploded") }
+func (p *panicWriter) WriteHeader(int)           { panic("write header exploded") }
+
+func TestRender_LastResortNeverRepanics(t *testing.T) {
+	h, _, logger := newTestHandler()
+	h.AddRenderer("html", panicRenderer{})
+	rc := contract.NewRenderContext(&panicWriter{header: http.Header{}}, httptest.NewRequest(http.MethodGet, "/x", nil))
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				t.Fatalf("HandleRequest re-panicked: %v", p)
+			}
+		}()
+		h.HandleRequest(rc, errors.New("boom"), nil)
+	}()
+	if !logger.has("error", "problem: last-resort response failed") {
+		t.Errorf("missing last-resort log in %v", logger.all())
+	}
+}
+
+func TestRender_SafeLogSwallowsPanickingLogger(t *testing.T) {
+	safeLog(panicLogger{}, "msg")
+	safeLog(nil, "msg")
+}
+
+type panicLogger struct{}
+
+func (panicLogger) Debug(string, ...any) { panic("log") }
+func (panicLogger) Info(string, ...any)  { panic("log") }
+func (panicLogger) Warn(string, ...any)  { panic("log") }
+func (panicLogger) Error(string, ...any) { panic("log") }
+func (panicLogger) Fatal(string, ...any) { panic("log") }
+
+func TestRender_ClientGoneWritesNothing(t *testing.T) {
+	h, rep, _ := newTestHandler()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rc, w := newRCWithContext(ctx, http.MethodGet, "/x")
+	h.HandleRequest(rc, fmt.Errorf("read: %w", context.Canceled), nil)
+	if rc.Written() || w.Body.Len() != 0 {
+		t.Errorf("client-gone cancel wrote a response: %d %q", w.Code, w.Body.String())
+	}
+	if rep.count() != 0 {
+		t.Errorf("client-gone cancel reported %d times", rep.count())
+	}
+}
+
+func TestRender_Negotiation(t *testing.T) {
+	tests := []struct {
+		name        string
+		setup       func(h *Handler)
+		path        string
+		headers     []string
+		wantContent string
+	}{
+		{name: "HTMLDefault", path: "/x", wantContent: "text/html; charset=utf-8"},
+		{name: "APIPathNoLongerImpliesJSON", path: "/api/x", wantContent: "text/html; charset=utf-8"},
+		{name: "AcceptJSON", path: "/x", headers: []string{"Accept", "application/json"}, wantContent: ProblemTypeContent},
+		{name: "AcceptProblemJSON", path: "/x", headers: []string{"Accept", "application/problem+json"}, wantContent: ProblemTypeContent},
+		{name: "XHR", path: "/x", headers: []string{"X-Requested-With", "XMLHttpRequest"}, wantContent: ProblemTypeContent},
+		{name: "APIMode", setup: func(h *Handler) { h.SetAPIMode(true) }, path: "/x", wantContent: ProblemTypeContent},
+		{name: "APIPrefix", setup: func(h *Handler) { h.SetAPIPrefixes("/v1/") }, path: "/v1/users", wantContent: ProblemTypeContent},
+		{name: "APIPrefixMiss", setup: func(h *Handler) { h.SetAPIPrefixes("/v1/") }, path: "/v2/users", wantContent: "text/html; charset=utf-8"},
+		{
+			name:        "JSONWhenDecidesTrue",
+			setup:       func(h *Handler) { h.JSONWhen(func(r *http.Request, _ error) bool { return r.URL.Path == "/x" }) },
+			path:        "/x",
+			wantContent: ProblemTypeContent,
+		},
+		{
+			name: "JSONWhenOverridesAPIMode",
+			setup: func(h *Handler) {
+				h.SetAPIMode(true)
+				h.JSONWhen(func(*http.Request, error) bool { return false })
+			},
+			path:        "/x",
+			headers:     []string{"Accept", "application/json"},
+			wantContent: "text/html; charset=utf-8",
+		},
+		{
+			name: "JSONWhenNilRestoresDefault",
+			setup: func(h *Handler) {
+				h.JSONWhen(func(*http.Request, error) bool { return false })
+				h.JSONWhen(nil)
+			},
+			path:        "/x",
+			headers:     []string{"Accept", "application/json"},
+			wantContent: ProblemTypeContent,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _, _ := newTestHandler()
+			if tt.setup != nil {
+				tt.setup(h)
+			}
+			rc, w := newRC(http.MethodGet, tt.path, tt.headers...)
+			h.HandleRequest(rc, NotFound(), nil)
+			if got := w.Header().Get("Content-Type"); got != tt.wantContent {
+				t.Errorf("Content-Type = %q, want %q", got, tt.wantContent)
+			}
+			if w.Code != http.StatusNotFound {
+				t.Errorf("status = %d, want 404", w.Code)
+			}
+		})
+	}
+}
+
+func TestRender_ErrorHeadersCopied(t *testing.T) {
+	multi := NotFound()
+	multi.Header = http.Header{"Link": {"</a>", "</b>"}, "X-Bad": {"ok", "no\r\nsplit"}}
+	tests := []struct {
+		name   string
+		err    error
+		header string
+		want   []string
+	}{
+		{"Allow", MethodNotAllowed("GET", "HEAD"), "Allow", []string{"GET, HEAD"}},
+		{"RetryAfter", TooManyRequests(3 * time.Second), "Retry-After", []string{"3"}},
+		{"WrappedKeepsHeaders", fmt.Errorf("limit: %w", TooManyRequests(time.Second)), "Retry-After", []string{"1"}},
+		{"MultiValue", multi, "Link", []string{"</a>", "</b>"}},
+		{"MultiValueCRLFDropped", multi, "X-Bad", []string{"ok"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _, _ := newTestHandler()
+			rc, w := newRC(http.MethodGet, "/x")
+			h.HandleRequest(rc, tt.err, nil)
+			if got := w.Header().Values(tt.header); fmt.Sprint(got) != fmt.Sprint(tt.want) {
+				t.Errorf("%s = %v, want %v", tt.header, got, tt.want)
+			}
+		})
+	}
+}
+
+// fakeErrorPage records RenderErrorPage calls.
+type fakeErrorPage struct {
+	ok      bool
+	err     error
+	write   bool
+	status  int
+	message string
+}
+
+func (p *fakeErrorPage) RenderErrorPage(rc RenderContext, status int, message string) (bool, error) {
+	p.status, p.message = status, message
+	if p.write {
+		rc.WriteHeader(status)
+	}
+	return p.ok, p.err
+}
+
+func TestRender_Inertia(t *testing.T) {
+	tests := []struct {
+		name         string
+		method       string
+		path         string
+		headers      []string
+		page         *fakeErrorPage
+		debug        bool
+		err          error
+		wantStatus   int
+		wantLocation string
+		wantPage     int
+		wantContent  string
+	}{
+		{
+			name: "ErrorPageAtRealStatus", method: http.MethodGet, path: "/p",
+			page: &fakeErrorPage{ok: true, write: true}, err: Forbidden("members only"),
+			wantStatus: http.StatusForbidden, wantPage: http.StatusForbidden,
+		},
+		{
+			name: "NoPageGETReloadsCurrentURL", method: http.MethodGet, path: "/posts/1?tab=a",
+			err: NotFound(), wantStatus: http.StatusConflict, wantLocation: "/posts/1?tab=a",
+		},
+		{
+			name: "PageDeclinesFallsTo409", method: http.MethodGet, path: "/p",
+			page: &fakeErrorPage{ok: false}, err: NotFound(),
+			wantStatus: http.StatusConflict, wantLocation: "/p", wantPage: http.StatusNotFound,
+		},
+		{
+			name: "PageErrorFallsTo409", method: http.MethodGet, path: "/p",
+			page: &fakeErrorPage{ok: false, err: errors.New("no component")}, err: NotFound(),
+			wantStatus: http.StatusConflict, wantLocation: "/p", wantPage: http.StatusNotFound,
+		},
+		{
+			name: "POSTSameOriginReferer", method: http.MethodPost, path: "/posts",
+			headers: []string{"Referer", "http://example.com/posts/new?draft=1"},
+			err:     errors.New("boom"), wantStatus: http.StatusConflict, wantLocation: "/posts/new?draft=1",
+		},
+		{
+			name: "POSTCrossOriginReferer", method: http.MethodPost, path: "/posts",
+			headers: []string{"Referer", "https://evil.test/phish"},
+			err:     errors.New("boom"), wantStatus: http.StatusConflict, wantLocation: "/",
+		},
+		{
+			name: "POSTRelativeReferer", method: http.MethodPut, path: "/posts",
+			headers: []string{"Referer", "/posts/2/edit"},
+			err:     errors.New("boom"), wantStatus: http.StatusConflict, wantLocation: "/posts/2/edit",
+		},
+		{
+			name: "POSTProtocolRelativeReferer", method: http.MethodPost, path: "/posts",
+			headers: []string{"Referer", "//evil.test/x"},
+			err:     errors.New("boom"), wantStatus: http.StatusConflict, wantLocation: "/",
+		},
+		{
+			name: "POSTNoReferer", method: http.MethodDelete, path: "/posts/1",
+			err: errors.New("boom"), wantStatus: http.StatusConflict, wantLocation: "/",
+		},
+		{
+			name: "DebugRendersDebugPageAtRealStatus", method: http.MethodGet, path: "/p",
+			debug: true, err: errors.New("boom"),
+			wantStatus: http.StatusInternalServerError, wantContent: "text/html; charset=utf-8",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _, _ := newTestHandler(WithDebug(tt.debug))
+			if tt.page != nil {
+				h.SetErrorPageRenderer(tt.page)
+			}
+			headers := append([]string{"X-Inertia", "true"}, tt.headers...)
+			rc, w := newRC(tt.method, tt.path, headers...)
+			h.HandleRequest(rc, tt.err, nil)
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+			if got := w.Header().Get("X-Inertia-Location"); got != tt.wantLocation {
+				t.Errorf("X-Inertia-Location = %q, want %q", got, tt.wantLocation)
+			}
+			if tt.page != nil && tt.page.status != tt.wantPage {
+				t.Errorf("page status = %d, want %d", tt.page.status, tt.wantPage)
+			}
+			if tt.wantContent != "" && w.Header().Get("Content-Type") != tt.wantContent {
+				t.Errorf("Content-Type = %q, want %q", w.Header().Get("Content-Type"), tt.wantContent)
+			}
+		})
+	}
+}
+
+func TestRender_InertiaPageMessagePolicy(t *testing.T) {
+	tests := []struct {
+		name  string
+		err   error
+		debug bool
+		want  string
+	}{
+		{"ClientErrorMessage", Forbidden("members only"), false, "members only"},
+		{"ServerErrorHidden", Internal("db password wrong"), false, "Internal Server Error"},
+		{"PlainErrorHidden", errors.New("secret"), false, "Internal Server Error"},
+		{"DebugFull", errors.New("secret"), true, "secret"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _, _ := newTestHandler(WithDebug(tt.debug))
+			page := &fakeErrorPage{ok: true, write: true}
+			h.SetErrorPageRenderer(page)
+			rc, _ := newRC(http.MethodGet, "/p", "X-Inertia", "true")
+			h.HandleRequest(rc, tt.err, nil)
+			if page.message != tt.want {
+				t.Errorf("message = %q, want %q", page.message, tt.want)
+			}
+		})
+	}
+}
+
+func TestInertiaLocation_Edges(t *testing.T) {
+	tests := []struct {
+		name string
+		req  func() *http.Request
+		want string
+	}{
+		{"NilRequest", func() *http.Request { return nil }, "/"},
+		{"GETUnsafeURI", func() *http.Request {
+			r := httptest.NewRequest(http.MethodGet, "/x", nil)
+			r.URL.Path = "//evil.test"
+			return r
+		}, "/"},
+		{"RefererWithUserinfo", func() *http.Request {
+			r := httptest.NewRequest(http.MethodPost, "/x", nil)
+			r.Header.Set("Referer", "http://user@example.com/a")
+			return r
+		}, "/"},
+		{"RefererBadScheme", func() *http.Request {
+			r := httptest.NewRequest(http.MethodPost, "/x", nil)
+			r.Header.Set("Referer", "javascript://example.com/a")
+			return r
+		}, "/"},
+		{"RefererUnparseable", func() *http.Request {
+			r := httptest.NewRequest(http.MethodPost, "/x", nil)
+			r.Header.Set("Referer", "http://[::1")
+			return r
+		}, "/"},
+		{"RefererHostOnly", func() *http.Request {
+			r := httptest.NewRequest(http.MethodPost, "/x", nil)
+			r.Header.Set("Referer", "http://example.com")
+			return r
+		}, "/"},
+		{"RefererBackslashEscaped", func() *http.Request {
+			r := httptest.NewRequest(http.MethodPost, "/x", nil)
+			r.Header.Set("Referer", "/\\evil.test")
+			return r
+		}, "/%5Cevil.test"},
+		{"RefererNotRooted", func() *http.Request {
+			r := httptest.NewRequest(http.MethodPost, "/x", nil)
+			r.Header.Set("Referer", "posts")
+			return r
+		}, "/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := inertiaLocation(tt.req()); got != tt.want {
+				t.Errorf("inertiaLocation = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsLocalPath(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{"/", true},
+		{"/a?b=c", true},
+		{"", false},
+		{"a", false},
+		{"//x", false},
+		{"/a b", false},
+		{"/a\x00", false},
+		{"/a\x7f", false},
+		{"/a／b", false},
+		{"/a\\b", false},
+	}
+	for _, tt := range tests {
+		if got := isLocalPath(tt.in); got != tt.want {
+			t.Errorf("isLocalPath(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestHTMLRenderer_TemplateLookup(t *testing.T) {
+	r := NewHTMLRenderer()
+	mustTpl := func(s string) *template.Template { return template.Must(template.New("t").Parse(s)) }
+	if err := r.RegisterStatusTemplate(http.StatusNotFound, mustTpl("status {{.StatusCode}} {{.Message}}")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RegisterClassTemplate(4, mustTpl("class4 {{.StatusCode}}")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RegisterClassTemplate(5, mustTpl("class5 {{.StatusCode}}")); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name   string
+		err    error
+		debug  bool
+		prefix string
+	}{
+		{"ExactStatus", NotFound("no post"), false, "status 404 no post"},
+		{"ClassFour", Forbidden(), false, "class4 403"},
+		{"ClassFive", errors.New("boom"), false, "class5 500"},
+		{"DebugIgnoresRegistrations", NotFound(), true, "<!DOCTYPE html>"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _, _ := newTestHandler(WithDebug(tt.debug), WithRenderers(map[string]Renderer{"html": r}))
+			rc, w := newRC(http.MethodGet, "/x")
+			h.HandleRequest(rc, tt.err, nil)
+			if !strings.HasPrefix(w.Body.String(), tt.prefix) {
+				t.Errorf("body = %q, want prefix %q", w.Body.String(), tt.prefix)
+			}
+		})
+	}
+}
+
+func TestHTMLRenderer_RegistrationErrors(t *testing.T) {
+	r := NewHTMLRenderer()
+	tpl := template.Must(template.New("t").Parse("x"))
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"StatusNilTemplate", r.RegisterStatusTemplate(404, nil)},
+		{"StatusTooLow", r.RegisterStatusTemplate(99, tpl)},
+		{"StatusTooHigh", r.RegisterStatusTemplate(1000, tpl)},
+		{"ClassNilTemplate", r.RegisterClassTemplate(4, nil)},
+		{"ClassThree", r.RegisterClassTemplate(3, tpl)},
+	}
+	for _, tt := range tests {
+		if !errors.Is(tt.err, ErrInvalidTemplate) {
+			t.Errorf("%s: err = %v, want ErrInvalidTemplate", tt.name, tt.err)
+		}
+	}
+}
+
+func TestHTMLRenderer_TemplateFailureLeavesResponseUntouched(t *testing.T) {
+	r := NewHTMLRenderer()
+	if err := r.RegisterStatusTemplate(404, template.Must(template.New("t").Parse("{{.Missing.Field}}"))); err != nil {
+		t.Fatal(err)
+	}
+	h, _, logger := newTestHandler(WithRenderers(map[string]Renderer{"html": r}))
+	rc, w := newRC(http.MethodGet, "/x")
+	h.HandleRequest(rc, NotFound(), nil)
+	if w.Code != http.StatusInternalServerError || w.Body.String() != "Internal Server Error" {
+		t.Errorf("got %d %q, want the plain-text 500", w.Code, w.Body.String())
+	}
+	if !logger.has("error", "problem: rendering failed") {
+		t.Error("template failure not logged")
+	}
+}
+
+func TestHTMLRenderer_DebugPage(t *testing.T) {
+	h, _, _ := newTestHandler(WithDebug(true))
+	ctx := NewErrorContext()
+	ctx.RequestID = "req-1"
+	ctx.StackTrace = contract.CaptureStackTrace(0)
+	ctx.WithExtra("tenant", "acme")
+	rc, w := newRC(http.MethodGet, "/x")
+	h.HandleRequest(rc, Internal("db down").WithCause(errors.New("dial tcp: refused")), ctx)
+	body := w.Body.String()
+	for _, want := range []string{"500 Internal Server Error", "*contract.HTTPError", "render_test.go", "req-1", "tenant", "acme", "dial tcp: refused", "Stack Trace"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("debug page missing %q", want)
+		}
+	}
+}
+
+func TestHTMLRenderer_ProductionPageHidesInternals(t *testing.T) {
+	h, _, _ := newTestHandler()
+	rc, w := newRC(http.MethodGet, "/x")
+	h.HandleRequest(rc, Internal("db password is hunter2").WithCause(errors.New("dial")), nil)
+	body := w.Body.String()
+	for _, leak := range []string{"hunter2", "dial", "contract.HTTPError"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("production page leaks %q", leak)
+		}
+	}
+	if !strings.Contains(body, "Internal Server Error") {
+		t.Error("production page missing status text")
+	}
+}
+
+func TestHTMLRenderer_ContentTypes(t *testing.T) {
+	if NewHTMLRenderer().ContentType() != "text/html" || NewJSONRenderer().ContentType() != ProblemTypeContent {
+		t.Error("unexpected renderer content types")
+	}
+	custom := NewHTMLRendererWithTemplates(template.Must(template.New("d").Parse("D")), template.Must(template.New("e").Parse("E")))
+	h, _, _ := newTestHandler(WithRenderers(map[string]Renderer{"html": custom}))
+	rc, w := newRC(http.MethodGet, "/x")
+	h.HandleRequest(rc, NotFound(), nil)
+	if w.Body.String() != "E" {
+		t.Errorf("custom error template not used: %q", w.Body.String())
+	}
+}
+
+func TestRendererFor_FallsBackToBuiltins(t *testing.T) {
+	s := &snapshot{renderers: map[string]Renderer{}}
+	if _, ok := rendererFor(s, "json").(*JSONRenderer); !ok {
+		t.Error("json fallback is not the JSONRenderer")
+	}
+	if _, ok := rendererFor(s, "html").(*HTMLRenderer); !ok {
+		t.Error("html fallback is not the HTMLRenderer")
+	}
+}
+
+func TestRender_PublicRenderAppliesMapWithoutReporting(t *testing.T) {
+	h, rep, _ := newTestHandler()
+	MapIs(h, errSentinel, func(err error) error { return Conflict().WithCause(err) })
+	rc, w := newRC(http.MethodGet, "/x")
+	h.Render(rc, errSentinel, nil)
+	h.Render(nil, errSentinel, nil)
+	h.Render(rc, nil, nil)
+	if w.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409", w.Code)
+	}
+	if rep.count() != 0 {
+		t.Errorf("Render reported %d times", rep.count())
+	}
+}
+
+func TestHandleRequest_NilErrAndNilRC(t *testing.T) {
+	h, rep, _ := newTestHandler()
+	rc, w := newRC(http.MethodGet, "/x")
+	h.HandleRequest(rc, nil, nil)
+	if rc.Written() || rep.count() != 0 {
+		t.Error("nil error must do nothing")
+	}
+	h.HandleRequest(nil, errors.New("console-ish"), nil)
+	if rep.count() != 1 {
+		t.Errorf("nil rc still reports: got %d", rep.count())
+	}
+	_ = w
+}
+
+func TestHandleRequest_FillsRequestContext(t *testing.T) {
+	h, rep, _ := newTestHandler()
+	rc, _ := newRC(http.MethodPost, "/orders?id=1", "User-Agent", "probe/1", "X-Forwarded-For", "6.6.6.6")
+	h.HandleRequest(rc, errors.New("boom"), &ErrorContext{RequestID: "r1"})
+	ctx, _ := rep.last()
+	if ctx.Method != http.MethodPost || ctx.URL != "/orders" || ctx.UserAgent != "probe/1" || ctx.RequestID != "r1" {
+		t.Errorf("context not filled: %+v", ctx)
+	}
+	if ctx.IP != "192.0.2.1" {
+		t.Errorf("IP = %q, want RemoteAddr (untrusted forwarded header ignored)", ctx.IP)
+	}
+	if ctx.Timestamp.IsZero() {
+		t.Error("timestamp not set")
+	}
+}

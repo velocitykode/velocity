@@ -1,0 +1,7 @@
+{
+  "type": "https://example.test/problems/conflict",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "Conflict",
+  "instance": "/orders/7"
+}

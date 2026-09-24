@@ -213,11 +213,11 @@ func New(opts ...Option) (*App, error) {
 		}
 	})
 
-	// 2. Initialize exception handler (available for all subsequent services).
+	// 2. Initialize the error handler (available for all subsequent services).
 	//
 	// Trusted-proxy plumbing: parse the deployment-level trust list once
 	// here and propagate to every subsystem that captures a client IP
-	// (exceptions audit log, router rate-limit, auth throttler). The
+	// (error handler audit log, router rate-limit, auth throttler). The
 	// list is sourced from Config.Auth.TrustedProxies for now; the auth
 	// config is where the C-05 fix introduced the deployment knob and
 	// it is still the single source of truth for "real client IP" until
@@ -674,7 +674,7 @@ func New(opts ...Option) (*App, error) {
 	})
 	// Propagate the deployment-level trusted-proxy list parsed at step 2
 	// so Context.IP(), per-IP rate limits, and any future client-IP
-	// surface in the router agree with the throttle/exception layers.
+	// surface in the router agree with the throttle and error-handler layers.
 	//
 	// Copy the []string slice (defensively) AND immediately force a
 	// parse via ValidateConfig so the router holds its own parsed
@@ -682,7 +682,7 @@ func New(opts ...Option) (*App, error) {
 	// let any later mutation of that slice (or its strings) flip
 	// router trust decisions at runtime. Validation failure here is
 	// logged and the list is dropped (no proxies trusted, secure
-	// default), matching the exceptions/auth wiring above.
+	// default), matching the problem/auth wiring above.
 	if len(a.config.Auth.TrustedProxies) > 0 {
 		copied := make([]string, len(a.config.Auth.TrustedProxies))
 		copy(copied, a.config.Auth.TrustedProxies)

@@ -1,26 +1,16 @@
 package problem
 
 import (
-	"errors"
 	"fmt"
-	"time"
+	"sync"
 
 	"github.com/velocitykode/velocity/contract"
-	"github.com/velocitykode/velocity/log"
 )
 
-// ErrorContext contains contextual information about where an exception occurred.
+// ErrorContext carries the facts about where and how an error happened.
 type ErrorContext = contract.ErrorContext
 
-// NewErrorContext creates a new ErrorContext with the current timestamp.
-func NewErrorContext() *ErrorContext {
-	return &ErrorContext{
-		Timestamp: time.Now(),
-		Extra:     make(map[string]any),
-	}
-}
-
-// Reporter is the interface for exception reporters.
+// Reporter receives reported errors.
 type Reporter = contract.Reporter
 
 // Conformance assertions for the concrete reporters.
@@ -30,159 +20,159 @@ var (
 	_ contract.Reporter = (*MultiReporter)(nil)
 )
 
-// LogReporter reports exceptions to the log package.
+// LogReporter writes reported errors to a contract.Logger at the level the
+// pipeline selected (ErrorContext.Level; error when unset).
 type LogReporter struct {
-	logger      log.Logger
+	logger      contract.Logger
 	includeCtx  bool
 	contextKeys []string
 }
 
-// NewLogReporter creates a new LogReporter.
+// LogReporterOption configures a LogReporter.
+type LogReporterOption func(*LogReporter)
+
+// NewLogReporter returns a LogReporter. Without WithLogger it reports
+// nothing.
 func NewLogReporter(opts ...LogReporterOption) *LogReporter {
-	r := &LogReporter{
-		includeCtx: true,
-	}
+	r := &LogReporter{includeCtx: true}
 	for _, opt := range opts {
 		opt(r)
 	}
 	return r
 }
 
-// LogReporterOption is a functional option for LogReporter.
-type LogReporterOption func(*LogReporter)
-
-// WithLogger sets a custom logger for the reporter.
-func WithLogger(logger log.Logger) LogReporterOption {
-	return func(r *LogReporter) {
-		r.logger = logger
-	}
+// WithLogger sets the logger the reporter writes to.
+func WithLogger(logger contract.Logger) LogReporterOption {
+	return func(r *LogReporter) { r.logger = logger }
 }
 
-// WithContextKeys sets which context keys to include in logs.
+// WithContextKeys limits the ErrorContext.Extra fields written to keys.
 func WithContextKeys(keys ...string) LogReporterOption {
-	return func(r *LogReporter) {
-		r.contextKeys = keys
-	}
+	return func(r *LogReporter) { r.contextKeys = append([]string(nil), keys...) }
 }
 
-// WithoutContext disables context inclusion in logs.
+// WithoutContext omits every ErrorContext field from the log entry.
 func WithoutContext() LogReporterOption {
-	return func(r *LogReporter) {
-		r.includeCtx = false
-	}
+	return func(r *LogReporter) { r.includeCtx = false }
 }
 
-// Report logs an exception with its context.
+// Report logs err with its fields at ctx.Level.
 func (r *LogReporter) Report(err error, ctx *ErrorContext) {
-	logger := r.logger
-	if logger == nil {
-		return // No logger configured, skip reporting
+	if r.logger == nil || err == nil {
+		return
 	}
-
 	fields := r.buildFields(err, ctx)
-	logger.Error(err.Error(), fields...)
+	level := contract.LogLevelUnset
+	if ctx != nil {
+		level = ctx.Level
+	}
+	switch level {
+	case contract.LogLevelDebug:
+		r.logger.Debug(err.Error(), fields...)
+	case contract.LogLevelInfo:
+		r.logger.Info(err.Error(), fields...)
+	case contract.LogLevelWarn:
+		r.logger.Warn(err.Error(), fields...)
+	default:
+		r.logger.Error(err.Error(), fields...)
+	}
 }
 
-// buildFields builds log fields from the error and context.
+// buildFields returns the key-value pairs logged with err.
 func (r *LogReporter) buildFields(err error, ctx *ErrorContext) []any {
 	var fields []any
-
-	// Add exception-specific fields
-	var exc Exception
-	if errors.As(err, &exc) {
-		fields = append(fields, "code", exc.GetCode())
-		if prev := exc.GetPrevious(); prev != nil {
-			fields = append(fields, "previous", prev.Error())
-		}
-		excCtx := exc.GetContext()
-		for k, v := range excCtx {
-			fields = append(fields, k, v)
-		}
+	if status, _, ok := contract.StatusOf(err); ok {
+		fields = append(fields, "status", status)
 	}
-
-	// Add HTTP-specific fields (HttpException and every type embedding it)
-	var httpExc httpStatusError
-	if errors.As(err, &httpExc) {
-		fields = append(fields, "status_code", httpExc.GetStatusCode())
+	if origin := originOf(err); origin != "" {
+		fields = append(fields, "origin", origin)
 	}
-
 	if ctx == nil || !r.includeCtx {
 		return fields
 	}
-
-	// Add context fields
-	if ctx.RequestID != "" {
-		fields = append(fields, "request_id", ctx.RequestID)
+	for _, kv := range []struct{ k, v string }{
+		{"request_id", ctx.RequestID},
+		{"trace_id", ctx.TraceID},
+		{"span_id", ctx.SpanID},
+		{"user_id", ctx.UserID},
+		{"url", ctx.URL},
+		{"method", ctx.Method},
+		{"ip", ctx.IP},
+		{"user_agent", ctx.UserAgent},
+	} {
+		if kv.v != "" {
+			fields = append(fields, kv.k, kv.v)
+		}
 	}
-	if ctx.TraceID != "" {
-		fields = append(fields, "trace_id", ctx.TraceID)
+	if ctx.Recovered {
+		fields = append(fields, "recovered", true)
 	}
-	if ctx.UserID != "" {
-		fields = append(fields, "user_id", ctx.UserID)
+	if ctx.PanicStack != "" {
+		fields = append(fields, "stack", ctx.PanicStack)
 	}
-	if ctx.URL != "" {
-		fields = append(fields, "url", ctx.URL)
-	}
-	if ctx.Method != "" {
-		fields = append(fields, "method", ctx.Method)
-	}
-	if ctx.IP != "" {
-		fields = append(fields, "ip", ctx.IP)
-	}
-	if ctx.UserAgent != "" {
-		fields = append(fields, "user_agent", ctx.UserAgent)
-	}
-
-	// Add stack trace summary
 	if ctx.StackTrace != nil && len(ctx.StackTrace.Frames) > 0 {
 		frame := ctx.StackTrace.Frames[0]
-		fields = append(fields, "file", fmt.Sprintf("%s:%d", frame.File, frame.Line))
-		fields = append(fields, "function", frame.Function)
+		fields = append(fields, "file", fmt.Sprintf("%s:%d", frame.File, frame.Line), "function", frame.Function)
 	}
-
-	// Add extra fields
+	if len(r.contextKeys) > 0 {
+		for _, k := range r.contextKeys {
+			if v, ok := ctx.Extra[k]; ok {
+				fields = append(fields, k, v)
+			}
+		}
+		return fields
+	}
 	for k, v := range ctx.Extra {
 		fields = append(fields, k, v)
 	}
-
 	return fields
 }
 
-// CallbackReporter reports exceptions using a callback function.
+// CallbackReporter reports errors through a callback.
 type CallbackReporter struct {
 	callback func(err error, ctx *ErrorContext)
 }
 
-// NewCallbackReporter creates a new CallbackReporter.
+// NewCallbackReporter returns a CallbackReporter for callback.
 func NewCallbackReporter(callback func(err error, ctx *ErrorContext)) *CallbackReporter {
 	return &CallbackReporter{callback: callback}
 }
 
-// Report calls the callback function with the error and context.
+// Report calls the callback.
 func (r *CallbackReporter) Report(err error, ctx *ErrorContext) {
 	if r.callback != nil {
 		r.callback(err, ctx)
 	}
 }
 
-// MultiReporter reports to multiple reporters.
+// MultiReporter fans a report out to several reporters. It is safe for
+// concurrent use.
 type MultiReporter struct {
+	mu        sync.RWMutex
 	reporters []Reporter
 }
 
-// NewMultiReporter creates a new MultiReporter.
+// NewMultiReporter returns a MultiReporter over reporters.
 func NewMultiReporter(reporters ...Reporter) *MultiReporter {
-	return &MultiReporter{reporters: reporters}
+	return &MultiReporter{reporters: append([]Reporter(nil), reporters...)}
 }
 
-// Report sends the error to all reporters.
+// Report sends the error to every reporter.
 func (r *MultiReporter) Report(err error, ctx *ErrorContext) {
-	for _, reporter := range r.reporters {
+	r.mu.RLock()
+	reporters := r.reporters
+	r.mu.RUnlock()
+	for _, reporter := range reporters {
 		reporter.Report(err, ctx)
 	}
 }
 
-// AddReporter adds a reporter to the multi-reporter.
+// AddReporter appends a reporter.
 func (r *MultiReporter) AddReporter(reporter Reporter) {
-	r.reporters = append(r.reporters, reporter)
+	if reporter == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reporters = appendCopy(r.reporters, reporter)
 }

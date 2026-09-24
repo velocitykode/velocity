@@ -5,7 +5,7 @@
 // change to the environment-name vocabulary reaches every gate at once.
 //
 // The classification logic lives in the contract package (leaf, stdlib-only)
-// so subsystems that cannot import app because of cycles (exceptions, auth,
+// so subsystems that cannot import app because of cycles (problem, auth,
 // csrf, scheduler, grpc, ...) call contract.IsProductionEnv directly. This
 // file re-exports the helpers for callers that already depend on app and
 // adds the process-level Env() reader.

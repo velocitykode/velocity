@@ -116,7 +116,7 @@ func (d *DefaultDispatcher) SetQueueDispatcher(qd QueueDispatcher) {
 type failureReportedKey struct{}
 
 // SetFailureReporter installs the bridge that forwards FailureEvent
-// dispatches to the exception Reporter chain. Pass nil to disable.
+// dispatches to the error Reporter chain. Pass nil to disable.
 // Safe for concurrent use with Dispatch.
 func (d *DefaultDispatcher) SetFailureReporter(fn func(ctx context.Context, event interface{}, err error)) {
 	d.mu.Lock()

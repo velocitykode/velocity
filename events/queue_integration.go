@@ -182,7 +182,7 @@ func (j *EventListenerJob) MaxAttempts() int {
 // Failed is invoked by the queue driver once the job has exhausted its retry
 // budget. The previous no-op silently dropped queued security / audit
 // listeners. Route the error through the package-level failure reporter so
-// the framework's exceptions handler (or any other reporter installed via
+// the framework's error handler (or any other reporter installed via
 // SetFailureReporter) records the drop. When no reporter is installed --
 // e.g. in tests that exercise the queue path standalone -- the call becomes
 // a documented no-op rather than a silent one (it is still observable via
@@ -571,7 +571,7 @@ func EventJobFactory(data []byte) (queue.Job, error) {
 
 // FailureReporter receives queued-listener failure callbacks invoked by
 // queue.Driver.Failed once the job has exhausted its retry budget. The
-// framework wires the App's exceptions handler via InitializeQueueIntegration
+// framework wires the App's error handler via InitializeQueueIntegration
 // so a silently dropped security / audit listener becomes visible to the
 // configured reporters (sentry, log, etc).
 type FailureReporter func(job *EventListenerJob, err error)
@@ -588,7 +588,7 @@ type FailureReporter func(job *EventListenerJob, err error)
 //     consumers only want to register the job factory and reporter.
 //   - reporter: optional callback that fires from EventListenerJob.Failed.
 //     Nil disables the reporter (calls become no-ops); pass a closure over
-//     exceptions.Handler.Report to route to the framework's exception sink.
+//     problem.Handler.Report to route to the framework's error sink.
 //
 // The function also registers the EventListenerJob with the queue's typed
 // job registry (queue.RegisterJob) so cross-process workers can rehydrate

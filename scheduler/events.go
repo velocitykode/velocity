@@ -70,7 +70,7 @@ func (e *ScheduledTaskFailed) Name() string {
 
 // FailureError implements contract.FailureEvent: a failed scheduled task
 // has no caller observing the error, so the dispatcher bridges it to the
-// exception Reporter chain.
+// error Reporter chain.
 func (e *ScheduledTaskFailed) FailureError() error {
 	if e.Error == "" {
 		return nil
