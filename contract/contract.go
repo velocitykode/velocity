@@ -47,8 +47,15 @@ type AuthManager interface {
 
 // CSRFProtector defines the contract for CSRF protection middleware.
 // Implemented by *csrf.CSRF.
+//
+// Protect runs the protection for one request and writes no response
+// body: it returns the request the rest of the chain must see (carrying
+// any request-scoped state the protector attaches) and a nil error, or
+// that request and the rejection error. Middleware is the bare net/http
+// form, which writes the rejection itself.
 type CSRFProtector interface {
 	Middleware(next http.Handler) http.Handler
+	Protect(w http.ResponseWriter, r *http.Request) (*http.Request, error)
 }
 
 // CSRFTokenRotator is the contract the auth subsystem uses to keep CSRF

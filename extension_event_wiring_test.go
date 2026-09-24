@@ -37,6 +37,9 @@ type csrfProbe struct {
 }
 
 func (p *csrfProbe) Middleware(next http.Handler) http.Handler { return next }
+func (p *csrfProbe) Protect(_ http.ResponseWriter, r *http.Request) (*http.Request, error) {
+	return r, nil
+}
 
 // assertProbeDispatches verifies the probe holds a dispatcher and that an
 // event sent through it lands in the fake dispatcher.

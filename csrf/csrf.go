@@ -165,73 +165,99 @@ func (c *CSRF) dispatchEvent(ctx context.Context, evt interface{}) {
 	_ = fn(ctx, evt)
 }
 
-// Middleware returns HTTP middleware that validates CSRF tokens
+// Middleware returns bare net/http middleware that runs Protect on every
+// request. An accepted request reaches next carrying the request Protect
+// returned; a rejected one never does. It is answered by
+// Config.ErrorHandler when one is configured, else by a 419 written here:
+// a JSON {code, message} body when the request wants JSON
+// (contract.WantsJSON), plain text otherwise. The router path
+// (router.CSRFMiddleware, RouterMiddleware) returns the rejection to the
+// error pipeline instead and writes nothing itself.
 func (c *CSRF) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Attach the request-scoped token cache BEFORE any downstream
-		// reader can observe the request. Both the safe-method
-		// bootstrap path (which mints the XSRF-TOKEN cookie via
-		// c.GetToken) and the unsafe-method validation path benefit:
-		// any handler that calls csrf.TokenForRequest(r) downstream
-		// gets a memoised token instead of re-paying Store.Get. See
-		// request_token.go for the cache contract.
-		//
-		// We MUST replace the request pointer so the handler chain
-		// inherits the augmented context. WithTokenState is cheap
-		// (one allocation per request) and idempotent: nested
-		// middleware stacks that re-enter Middleware will shadow the
-		// outer state with their own, which is the desired behaviour
-		// when a consumer wires a custom CSRF instance under a
-		// sub-path mounted under the framework default.
-		r = r.WithContext(withTokenState(r.Context(), c))
-
-		// Skip safe methods (GET, HEAD, OPTIONS, TRACE).
-		// Safe methods are also the bootstrap point for the XSRF-TOKEN
-		// cookie: SPA clients (axios, fetch) expect a non-HttpOnly
-		// cookie they can read and echo as X-XSRF-TOKEN on unsafe
-		// requests. We write that cookie before delegating to the
-		// handler so the body never sees it pre-empted by a Set-Cookie
-		// race.
-		if isSafeMethod(r.Method) {
-			c.maybeWriteXSRFCookie(w, r)
-			next.ServeHTTP(w, r)
+		r, rejected := c.protect(w, r)
+		if rejected != nil {
+			c.writeRejection(w, r, rejected.reason())
 			return
 		}
-
-		// Check exclusions
-		if c.isExcluded(r) {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// Testing-environment bypass: when this instance's configured Env
-		// names a test profile, unsafe requests are exempt from token
-		// validation so HTTP feature tests drive mutating
-		// routes without a token round-trip. Keyed on c.config.Env (the app's
-		// configured environment, captured at construction) - NOT a per-request
-		// os.Getenv - so it is opt-in per instance: a Config built directly
-		// (csrf's own unit tests, any caller that does not set Env) leaves Env
-		// "" and still enforces, even under `APP_ENV=testing go test ./csrf`.
-		// Fail-secure: contract.IsTestingEnv recognises only "test"/"testing";
-		// every other value (unset, "dev", "local", "production", a typo)
-		// enforces.
-		if contract.IsTestingEnv(c.config.Env) {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// Validate token. Pass w so getTokenFromRequest can wrap the
-		// body with http.MaxBytesReader, which lets the standard
-		// library handle oversize bodies cleanly (returns *MaxBytesError
-		// once the cap is exceeded; we surface 419 without truncating
-		// the request downstream).
-		if err := c.validateToken(w, r); err != nil {
-			c.handleError(w, r, err)
-			return
-		}
-
 		next.ServeHTTP(w, r)
 	})
+}
+
+// Protect runs CSRF protection for one request and writes no response
+// body. It attaches the request-scoped token cache (see TokenForRequest),
+// writes the XSRF-TOKEN cookie on safe methods, honours the exclusions
+// and the testing-environment bypass, and validates the token on every
+// other unsafe request. It returns the request the rest of the chain must
+// see and nil, or that request and a *TokenMismatchError.
+func (c *CSRF) Protect(w http.ResponseWriter, r *http.Request) (*http.Request, error) {
+	r, rejected := c.protect(w, r)
+	if rejected != nil {
+		return r, rejected
+	}
+	return r, nil
+}
+
+// protect is Protect with the concrete rejection type, so Middleware can
+// read the reason without an interface round-trip.
+func (c *CSRF) protect(w http.ResponseWriter, r *http.Request) (*http.Request, *TokenMismatchError) {
+	// Attach the request-scoped token cache BEFORE any downstream
+	// reader can observe the request. Both the safe-method
+	// bootstrap path (which mints the XSRF-TOKEN cookie via
+	// c.GetToken) and the unsafe-method validation path benefit:
+	// any handler that calls csrf.TokenForRequest(r) downstream
+	// gets a memoised token instead of re-paying Store.Get. See
+	// request_token.go for the cache contract.
+	//
+	// The caller MUST continue with the returned request so the
+	// handler chain inherits the augmented context. WithTokenState is
+	// cheap (one allocation per request) and idempotent: nested
+	// stacks that re-enter Protect will shadow the outer state with
+	// their own, which is the desired behaviour when a consumer wires
+	// a custom CSRF instance under a sub-path mounted under the
+	// framework default.
+	r = r.WithContext(withTokenState(r.Context(), c))
+
+	// Skip safe methods (GET, HEAD, OPTIONS, TRACE).
+	// Safe methods are also the bootstrap point for the XSRF-TOKEN
+	// cookie: SPA clients (axios, fetch) expect a non-HttpOnly
+	// cookie they can read and echo as X-XSRF-TOKEN on unsafe
+	// requests. We write that cookie before the handler runs so the
+	// body never sees it pre-empted by a Set-Cookie race.
+	if isSafeMethod(r.Method) {
+		c.maybeWriteXSRFCookie(w, r)
+		return r, nil
+	}
+
+	// Check exclusions
+	if c.isExcluded(r) {
+		return r, nil
+	}
+
+	// Testing-environment bypass: when this instance's configured Env
+	// names a test profile, unsafe requests are exempt from token
+	// validation so HTTP feature tests drive mutating
+	// routes without a token round-trip. Keyed on c.config.Env (the app's
+	// configured environment, captured at construction) - NOT a per-request
+	// os.Getenv - so it is opt-in per instance: a Config built directly
+	// (csrf's own unit tests, any caller that does not set Env) leaves Env
+	// "" and still enforces, even under `APP_ENV=testing go test ./csrf`.
+	// Fail-secure: contract.IsTestingEnv recognises only "test"/"testing";
+	// every other value (unset, "dev", "local", "production", a typo)
+	// enforces.
+	if contract.IsTestingEnv(c.config.Env) {
+		return r, nil
+	}
+
+	// Validate token. Pass w so getTokenFromRequest can wrap the
+	// body with http.MaxBytesReader, which lets the standard
+	// library handle oversize bodies cleanly (returns *MaxBytesError
+	// once the cap is exceeded; we reject with 419 without truncating
+	// the request downstream).
+	if err := c.validateToken(w, r); err != nil {
+		return r, &TokenMismatchError{Reason: err, handler: c.config.ErrorHandler}
+	}
+	return r, nil
 }
 
 // maybeWriteXSRFCookie writes a non-HttpOnly XSRF-TOKEN cookie carrying
@@ -386,13 +412,15 @@ func (c *CSRF) getSessionIDQuiet(r *http.Request) (string, error) {
 }
 
 // RouterMiddleware returns a router.MiddlewareFunc that validates CSRF tokens.
-// This is the instance-based alternative to the global Middleware() function.
+// This is the router form of Middleware: a rejection is returned as a
+// *TokenMismatchError for the error pipeline to render, and nothing is
+// written here.
 //
 // It delegates to router.CSRFMiddleware so the two adapters cannot drift:
 // both reuse the ORIGINAL *router.Context (preserving validateFn, fileRoot,
-// intendedFn) and capture the request as csrf.Middleware augmented it.
-// Middleware passes the ResponseWriter through unwrapped, so the Context's
-// Response field needs no reassignment.
+// intendedFn) and continue with the request Protect returned. Protect
+// writes through the Context's own ResponseWriter, so the Response field
+// needs no reassignment.
 func (c *CSRF) RouterMiddleware() router.MiddlewareFunc {
 	return router.CSRFMiddleware(c)
 }
@@ -512,9 +540,9 @@ func (c *CSRF) validateToken(w http.ResponseWriter, r *http.Request) error {
 // header.
 //
 // Returns ErrFormBodyTooLarge when the urlencoded body exceeds
-// Config.MaxFormBodyBytes. The middleware translates that into a 419
-// response and does NOT call the downstream handler, so no truncated
-// prefix is observable past the middleware boundary.
+// Config.MaxFormBodyBytes. Protect turns that into a 419 rejection and
+// the downstream handler is NOT called, so no truncated prefix is
+// observable past the middleware boundary.
 func (c *CSRF) getTokenFromRequest(w http.ResponseWriter, r *http.Request) (string, error) {
 	// Try header first; this is always safe and never reads the body.
 	if token := r.Header.Get(c.config.HeaderName); token != "" {
@@ -570,9 +598,9 @@ func (c *CSRF) getTokenFromRequest(w http.ResponseWriter, r *http.Request) (stri
 		var maxErr *http.MaxBytesError
 		if errors.As(readErr, &maxErr) {
 			// Do NOT install the truncated buffer on r. Leave the
-			// original body in place; the middleware will write 419
-			// and not call the handler, so the body is never read
-			// past this point.
+			// original body in place; the request is rejected with
+			// 419 and the handler is not called, so the body is never
+			// read past this point.
 			r.Body = origBody
 			return "", ErrFormBodyTooLarge
 		}
@@ -650,27 +678,26 @@ func (c *CSRF) isExcluded(r *http.Request) bool {
 	return false
 }
 
-// handleError handles CSRF validation errors
-func (c *CSRF) handleError(w http.ResponseWriter, r *http.Request, err error) {
-	// Custom error handler
+// writeRejection answers a request Middleware rejected: Config.ErrorHandler
+// when configured, else a 419 with Config.ErrorMessage as a JSON
+// {code, message} body when the request wants JSON, or as plain text.
+func (c *CSRF) writeRejection(w http.ResponseWriter, r *http.Request, reason error) {
 	if c.config.ErrorHandler != nil {
-		c.config.ErrorHandler(w, r, err)
+		c.config.ErrorHandler(w, r, reason)
 		return
 	}
 
-	// JSON API response
-	if isJSONRequest(r) {
+	if contract.WantsJSON(r) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(419)
+		w.WriteHeader(statusTokenMismatch)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"code":    419,
+			"code":    statusTokenMismatch,
 			"message": c.config.ErrorMessage,
 		})
 		return
 	}
 
-	// HTML response
-	http.Error(w, c.config.ErrorMessage, 419)
+	http.Error(w, c.config.ErrorMessage, statusTokenMismatch)
 }
 
 // RefreshHandler returns a handler that generates and returns a new CSRF token
@@ -877,11 +904,4 @@ func FromContext(ctx *router.Context) *CSRF {
 	}
 	c, _ := s.CSRF.(*CSRF)
 	return c
-}
-
-func isJSONRequest(r *http.Request) bool {
-	contentType := r.Header.Get("Content-Type")
-	accept := r.Header.Get("Accept")
-	return strings.Contains(contentType, "application/json") ||
-		strings.Contains(accept, "application/json")
 }

@@ -584,39 +584,6 @@ func TestMatchPath(t *testing.T) {
 	}
 }
 
-func TestIsJSONRequest(t *testing.T) {
-	tests := []struct {
-		name        string
-		contentType string
-		accept      string
-		want        bool
-	}{
-		{"JSON content type", "application/json", "", true},
-		{"JSON accept", "", "application/json", true},
-		{"Both JSON", "application/json", "application/json", true},
-		{"Form content type", "application/x-www-form-urlencoded", "", false},
-		{"HTML accept", "", "text/html", false},
-		{"Empty headers", "", "", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("POST", "/test", nil)
-			if tt.contentType != "" {
-				req.Header.Set("Content-Type", tt.contentType)
-			}
-			if tt.accept != "" {
-				req.Header.Set("Accept", tt.accept)
-			}
-
-			got := isJSONRequest(req)
-			if got != tt.want {
-				t.Errorf("isJSONRequest() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func BenchmarkMiddleware_SafeMethod(b *testing.B) {
 	csrf := New(testConfig())
 	handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
@@ -794,25 +761,20 @@ func TestCSRF_RawCookieValueNeverTrustedAsSessionID(t *testing.T) {
 	}
 }
 
-// TestRouterMiddleware_RejectionDoesNotAppendInternalServerError pins the
-// regression for the bug where RouterMiddleware returned a non-nil error
-// after the inner CSRF middleware had already written a 419 response.
-// The router would then call its ErrorHandler, which invokes http.Error
-// and appends "Internal Server Error\n" to the body (the status code is
-// guarded by responseWriter, but the body is not). The fix is to return
-// nil when the inner handler was not called, since the CSRF middleware
-// has already fully written the rejection response.
-func TestRouterMiddleware_RejectionDoesNotAppendInternalServerError(t *testing.T) {
+// TestRouterMiddleware_RejectionReturnsTypedError pins the router path: a
+// rejection writes nothing in the middleware and reaches the router's error
+// handler exactly once as a *TokenMismatchError, so the response is the
+// error handler's alone (no body written twice).
+func TestRouterMiddleware_RejectionReturnsTypedError(t *testing.T) {
 	c := New(testConfig())
 
 	r := router.New()
-	// Install a sentinel error handler so we can detect if the router's
-	// error path fires (it must not, because RouterMiddleware should
-	// return nil after the 419 has been written).
-	errorHandlerFired := false
+	var fired int
+	var got error
 	r.SetErrorHandler(func(ctx *router.Context, err error, info router.ErrorInfo) {
-		errorHandlerFired = true
-		http.Error(ctx.Response, "Internal Server Error", http.StatusInternalServerError)
+		fired++
+		got = err
+		http.Error(ctx.Response, "rendered by the error handler", 419)
 	})
 	r.Use(c.RouterMiddleware())
 	r.Post("/submit", func(ctx *router.Context) error {
@@ -820,27 +782,26 @@ func TestRouterMiddleware_RejectionDoesNotAppendInternalServerError(t *testing.T
 		return nil
 	})
 
+	token, err := GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
 	req := httptest.NewRequest("POST", "/submit", nil)
+	req.Header.Set("X-CSRF-Token", token)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
+	if fired != 1 {
+		t.Fatalf("router error handler fired %d times, want 1", fired)
+	}
+	var tm *TokenMismatchError
+	if !errors.As(got, &tm) || !errors.Is(tm.Reason, ErrNoSession) {
+		t.Fatalf("error = %v, want a *TokenMismatchError with reason ErrNoSession", got)
+	}
 	if w.Code != 419 {
 		t.Fatalf("expected status 419, got %d", w.Code)
 	}
-
-	body := w.Body.String()
-	if strings.Contains(body, "Internal Server Error") {
-		t.Errorf("response body must not contain appended 'Internal Server Error' marker; got body=%q", body)
-	}
-
-	if errorHandlerFired {
-		t.Error("router error handler must not fire after CSRF middleware writes 419")
-	}
-
-	// Body must be exactly the configured CSRF error message followed by a
-	// single newline (the format http.Error writes). No trailing garbage.
-	want := c.config.ErrorMessage + "\n"
-	if body != want {
+	if body, want := w.Body.String(), "rendered by the error handler\n"; body != want {
 		t.Errorf("expected body %q, got %q", want, body)
 	}
 }

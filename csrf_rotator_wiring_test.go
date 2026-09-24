@@ -29,6 +29,9 @@ func (f *fakeCSRFRotator) WriteXSRFCookie(_ http.ResponseWriter, _ string) {
 }
 func (f *fakeCSRFRotator) ClearXSRFCookie(_ http.ResponseWriter, _ *http.Request) {
 }
+func (f *fakeCSRFRotator) Protect(_ http.ResponseWriter, r *http.Request) (*http.Request, error) {
+	return r, nil
+}
 
 // compile-time check: fakeCSRFRotator satisfies BOTH the contract used to
 // store CSRF on Services AND the rotator capability the auth manager

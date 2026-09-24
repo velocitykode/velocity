@@ -32,6 +32,7 @@ func installErrorPipeline(a *App) {
 // application registers, so each default stays overridable.
 func installFrameworkErrorRules(h *problem.Handler) {
 	installSentinelErrorRules(h)
+	installCSRFErrorRules(h)
 }
 
 // sentinelStatus maps a framework sentinel to the status it answers with.
