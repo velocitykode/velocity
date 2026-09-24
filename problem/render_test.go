@@ -110,6 +110,43 @@ func TestRender_Order(t *testing.T) {
 			wantStatus: http.StatusInternalServerError,
 		},
 		{
+			name: "RecoveredPanicReachesRenderFor",
+			setup: func(h *Handler) {
+				RenderFor[*panicerr.Error](h, func(rc RenderContext, _ *panicerr.Error, _ *ErrorContext) bool {
+					rc.WriteHeader(http.StatusInternalServerError)
+					_, _ = rc.Write([]byte("branded panic page"))
+					return true
+				})
+			},
+			err:        panicerr.FromRecovered("boom"),
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   "branded panic page",
+		},
+		{
+			name:       "StatusRuleOutsidePanic",
+			setup:      func(h *Handler) { RenderStatus[*statusErr](h, http.StatusTeapot) },
+			err:        &statusErr{code: http.StatusConflict},
+			wantStatus: http.StatusTeapot,
+		},
+		{
+			name:       "RecoveredPanicStatusRulePinnedTo500",
+			setup:      func(h *Handler) { RenderStatus[*statusErr](h, http.StatusTeapot) },
+			err:        &statusErr{code: http.StatusConflict},
+			ctx:        &ErrorContext{Recovered: true},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "RecoveredPanicSkipsPrepare",
+			setup: func(h *Handler) {
+				h.AddFrameworkPrepareRule(contract.MapRule{Key: errSentinel, Match: matchIs(errSentinel), Map: func(err error) error {
+					return NotFound().WithCause(err)
+				}})
+			},
+			err:        errSentinel,
+			ctx:        &ErrorContext{Recovered: true},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
 			name: "BeforeRenderChangesStatus",
 			setup: func(h *Handler) {
 				h.BeforeRender(func(rc RenderContext, _ error, status int) int {

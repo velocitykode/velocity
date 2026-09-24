@@ -314,7 +314,9 @@ func matchIs(target error) contract.ErrorMatcher {
 
 // RenderFor registers fn to render errors whose chain holds a T. fn receives
 // the T found by errors.As and returns true when it wrote the response, or
-// false to fall through to the next rule.
+// false to fall through to the next rule. A recovered panic reaches the
+// rule too (T = *router.PanicError matches every one); a panic always
+// answers 500, so fn should write that status.
 func RenderFor[T error](h contract.ErrorHandler, fn func(rc RenderContext, err T, ctx *ErrorContext) bool) {
 	if h == nil || fn == nil {
 		return
@@ -333,7 +335,8 @@ func RenderFor[T error](h contract.ErrorHandler, fn func(rc RenderContext, err T
 }
 
 // RenderStatus registers status as the response status for errors whose
-// chain holds a T; the body is negotiated as usual.
+// chain holds a T; the body is negotiated as usual. A recovered panic
+// answers 500 whatever status is registered.
 func RenderStatus[T error](h contract.ErrorHandler, status int) {
 	if h == nil {
 		return

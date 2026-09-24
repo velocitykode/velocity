@@ -22,11 +22,12 @@ import (
 //     rules, context merge, level selection and the reporters.
 //  4. Rendering: nothing when the response is already written; a
 //     Renderable error; the framework prepare table (only for an error
-//     that names no status); user render rules;
-//     framework render rules; content negotiation. A render that fails or
-//     panics falls back to a plain-text 500. Everything in this stage
-//     reads the handler's negotiation answer (see WantsJSON) through
-//     rc.WantsJSON.
+//     that names no status); user render rules; framework render rules;
+//     content negotiation. A recovered panic skips Renderable and the
+//     prepare table and reaches the rules wrapped in a 500 HTTPError,
+//     with every Status rule answering 500. A render that fails or panics
+//     falls back to a plain-text 500. Everything in this stage reads the
+//     handler's negotiation answer (see WantsJSON) through rc.WantsJSON.
 //
 // A nil ctx is replaced by one carrying the request facts; a ctx missing
 // them is filled in.
@@ -274,25 +275,31 @@ func (h *Handler) render(s *snapshot, rc RenderContext, err error, ctx *ErrorCon
 	// answer through rc.WantsJSON, so a rule that picks between JSON and a
 	// browser answer agrees with the negotiation that follows it.
 	rc = negotiatedContext{RenderContext: rc, json: wantsJSON(s, rc, err)}
+
+	// A panic is a bug: always a 500, whatever the panic value carries. The
+	// panic never renders itself (no Renderable) and skips the prepare
+	// table; the render rules see it wrapped in a 500 HTTPError, and a
+	// Status rule answers at 500 whatever status it names.
+	pinned := 0
+	var prepared error
 	if isRecovered(err, ctx) {
-		// A panic is a bug: always a 500, whatever the panic value carries.
-		h.negotiate(s, rc, contract.NewHTTPError(http.StatusInternalServerError).WithCause(err), ctx, http.StatusInternalServerError)
-		return
+		pinned = http.StatusInternalServerError
+		prepared = contract.NewHTTPError(pinned).WithCause(err)
+	} else {
+		var renderable contract.Renderable
+		if errors.As(err, &renderable) && renderable.RenderError(rc, ctx) {
+			return
+		}
+		if rc.Written() {
+			return
+		}
+		prepared = prepare(s, err)
 	}
 
-	var renderable contract.Renderable
-	if errors.As(err, &renderable) && renderable.RenderError(rc, ctx) {
+	if h.applyRenderRules(s, s.renderRules, rc, prepared, ctx, pinned) {
 		return
 	}
-	if rc.Written() {
-		return
-	}
-
-	prepared := prepare(s, err)
-	if h.applyRenderRules(s, s.renderRules, rc, prepared, ctx) {
-		return
-	}
-	if h.applyRenderRules(s, s.frameworkRender, rc, prepared, ctx) {
+	if h.applyRenderRules(s, s.frameworkRender, rc, prepared, ctx, pinned) {
 		return
 	}
 	status, _, _ := contract.StatusOf(prepared)
@@ -321,14 +328,19 @@ func prepare(s *snapshot, err error) error {
 
 // applyRenderRules runs rules in order and reports whether one handled the
 // response. A rule with Render returning false (and writing nothing) falls
-// through; a Status rule always handles it through negotiation.
-func (h *Handler) applyRenderRules(s *snapshot, rules []contract.RenderRule, rc RenderContext, err error, ctx *ErrorContext) bool {
+// through; a Status rule always handles it through negotiation, at pinned
+// instead of its own status when pinned is non-zero.
+func (h *Handler) applyRenderRules(s *snapshot, rules []contract.RenderRule, rc RenderContext, err error, ctx *ErrorContext, pinned int) bool {
 	for _, rule := range rules {
 		if !rule.Match(err) {
 			continue
 		}
 		if rule.Render == nil {
-			h.negotiate(s, rc, err, ctx, rule.Status)
+			status := rule.Status
+			if pinned != 0 {
+				status = pinned
+			}
+			h.negotiate(s, rc, err, ctx, status)
 			return true
 		}
 		if rule.Render(rc, err, ctx) || rc.Written() {

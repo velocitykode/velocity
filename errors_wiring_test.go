@@ -868,3 +868,48 @@ func TestErrorPipeline_StatusBearingErrorKeepsItself(t *testing.T) {
 		})
 	}
 }
+
+// TestErrorPipeline_PanicReachesRenderRules asserts a recovered panic
+// reaches the application's render rules and still answers 500: a
+// RenderFor rule for *router.PanicError writes the page, and a status rule
+// for it is pinned to 500. The panic is reported once.
+func TestErrorPipeline_PanicReachesRenderRules(t *testing.T) {
+	t.Run("render for panic error", func(t *testing.T) {
+		a, _, rec := newPipelineApp(t)
+		fired := false
+		problem.RenderFor(a.Services.Errors, func(rc problem.RenderContext, _ *router.PanicError, _ *problem.ErrorContext) bool {
+			fired = true
+			rc.WriteHeader(http.StatusInternalServerError)
+			_, _ = rc.Write([]byte("branded panic page"))
+			return true
+		})
+		a.Router.Get("/boom", func(*router.Context) error { panic("handler exploded") })
+
+		w := httptest.NewRecorder()
+		a.Router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/boom", nil))
+
+		if !fired {
+			t.Error("render rule for *router.PanicError did not fire")
+		}
+		if w.Code != http.StatusInternalServerError || w.Body.String() != "branded panic page" {
+			t.Errorf("response = %d %q, want 500 branded panic page", w.Code, w.Body.String())
+		}
+		if rec.count() != 1 {
+			t.Errorf("reports = %d, want 1", rec.count())
+		}
+	})
+	t.Run("render status pinned to 500", func(t *testing.T) {
+		a, _, rec := newPipelineApp(t)
+		problem.RenderStatus[*router.PanicError](a.Services.Errors, http.StatusTeapot)
+		a.Router.Get("/boom", func(*router.Context) error { panic("handler exploded") })
+
+		w := httptest.NewRecorder()
+		a.Router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/boom", nil))
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("panic status = %d, want 500 (body %q)", w.Code, w.Body.String())
+		}
+		if rec.count() != 1 {
+			t.Errorf("reports = %d, want 1", rec.count())
+		}
+	})
+}
