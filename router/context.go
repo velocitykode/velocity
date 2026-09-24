@@ -1829,12 +1829,15 @@ func flashAADFor(name string) string {
 // a missing encryptor as a configuration bug; the lack of a flash
 // cookie on the response is the visible symptom.
 //
-// A value that names an error bag (an ErrorBag() string method returning a
-// non-empty name, found through errors.As when the value is an error) is
-// sealed as the envelope {FlashErrorBagKey: bag, FlashBaggedErrorsKey:
-// messages}, where messages is its Errors() map when it has one, else the
-// value itself. The reader exposes the messages at the top level and under
-// the bag's name.
+// A value carrying per-field messages (an Errors() map[string][]string
+// method, found through errors.As when the value is an error, as on
+// *validation.Failure) is sealed as field -> first message, the shape of
+// validation.Result.All. A value that also names an error bag (an
+// ErrorBag() string method returning a non-empty name) is sealed as the
+// envelope {FlashErrorBagKey: bag, FlashBaggedErrorsKey: messages}, where
+// messages is that field -> first message map, or the value itself when it
+// carries no per-field messages. The reader exposes the messages at the
+// top level and under the bag's name.
 func (c *Context) FlashErrors(errs any) {
 	writeFlashCookie(c.Response, c.flashEncryptor(), FlashErrorsCookie, flashErrorsPayload(errs), !c.insecureFlashCookies)
 }
@@ -1856,32 +1859,43 @@ type fieldMessager interface {
 	Errors() map[string][]string
 }
 
-// flashErrorsPayload returns the value FlashErrors seals: the error bag
-// envelope for a value naming a non-empty bag, else the value unchanged.
+// flashErrorsPayload returns the value FlashErrors seals: field -> first
+// message for a value carrying per-field messages, wrapped in the error bag
+// envelope when the value names a non-empty bag; any other value unchanged.
 func flashErrorsPayload(errs any) any {
 	var namer errorBagNamer
 	var fields fieldMessager
 	if err, ok := errs.(error); ok {
-		if !errors.As(err, &namer) {
-			return errs
-		}
+		errors.As(err, &namer)
 		errors.As(err, &fields)
 	} else {
-		var ok bool
-		if namer, ok = errs.(errorBagNamer); !ok {
-			return errs
-		}
+		namer, _ = errs.(errorBagNamer)
 		fields, _ = errs.(fieldMessager)
-	}
-	bag := namer.ErrorBag()
-	if bag == "" {
-		return errs
 	}
 	var messages any = errs
 	if fields != nil {
-		messages = fields.Errors()
+		messages = firstMessages(fields.Errors())
+	}
+	if namer == nil {
+		return messages
+	}
+	bag := namer.ErrorBag()
+	if bag == "" {
+		return messages
 	}
 	return map[string]any{FlashErrorBagKey: bag, FlashBaggedErrorsKey: messages}
+}
+
+// firstMessages returns field -> first message for the fields that have
+// at least one message.
+func firstMessages(fields map[string][]string) map[string]string {
+	out := make(map[string]string, len(fields))
+	for field, msgs := range fields {
+		if len(msgs) > 0 {
+			out[field] = msgs[0]
+		}
+	}
+	return out
 }
 
 // FlashInput stashes old form input as a flash cookie so it survives

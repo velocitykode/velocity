@@ -15,6 +15,7 @@ import (
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/validation"
 	"github.com/velocitykode/velocity/validation/vform"
+	"github.com/velocitykode/velocity/view"
 )
 
 // backToSignup is a contract.ViewEngine whose Back answers 303 /signup,
@@ -259,18 +260,21 @@ func TestValidationFailure_Wire(t *testing.T) {
 }
 
 // TestValidationFailure_ErrorBag asserts a Failure naming a bag flashes its
-// errors nested under the bag.
+// errors as the error bag envelope: the bag's name and field -> first
+// message.
 func TestValidationFailure_ErrorBag(t *testing.T) {
 	a, _, _, enc := validationApp(t, backToSignup{})
 	w := postSignup(a, "/manual-bag", map[string]string{"Accept": "text/html"})
 
 	errs := assertFlashRedirect(t, w, enc, "/signup")
-	bag, _ := errs["login"].(map[string]any)
-	if bag["email"] == nil || bag["password"] == nil {
-		t.Errorf("flashed errors = %v, want email and password under login", errs)
+	if errs[router.FlashErrorBagKey] != "login" {
+		t.Errorf("flashed bag = %v, want login (%v)", errs[router.FlashErrorBagKey], errs)
 	}
-	if errs["email"] != nil {
-		t.Errorf("flashed errors = %v, want nothing at the top level", errs)
+	messages, _ := errs[router.FlashBaggedErrorsKey].(map[string]any)
+	for _, field := range []string{"email", "password"} {
+		if msg, ok := messages[field].(string); !ok || msg == "" {
+			t.Errorf("flashed %s = %v, want its first message (%v)", field, messages[field], errs)
+		}
 	}
 }
 
@@ -512,4 +516,63 @@ func apiPrefix(h contract.ErrorHandler) { h.SetAPIPrefixes("/api") }
 // neverJSON answers no request with JSON.
 func neverJSON(h contract.ErrorHandler) {
 	h.JSONWhen(func(*http.Request, error) bool { return false })
+}
+
+// TestValidationFailure_ErrorBagReachesInertiaProps drives a Failure
+// naming a bag through the real write and read paths: the browser POST is
+// flashed and redirected, and the next Inertia visit renders the errors at
+// props.errors (field -> first message) and under props.errors.{bag}.
+func TestValidationFailure_ErrorBagReachesInertiaProps(t *testing.T) {
+	a := newInertiaApp(t, "", false)
+	enc, err := crypto.NewEncryptor(crypto.Config{
+		Key:    "base64:MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
+		Cipher: "AES-256-GCM",
+	})
+	if err != nil {
+		t.Fatalf("NewEncryptor: %v", err)
+	}
+	a.Services.Crypto = enc
+	engine, ok := a.Services.View.(*view.Engine)
+	if !ok {
+		t.Fatal("view engine not built")
+	}
+	a.Router.Post("/signup", func(*router.Context) error {
+		f := signupFailure(t)
+		f.Bag = "login"
+		f.RedirectTo = "/form"
+		return f
+	})
+	a.Router.Get("/form", func(c *router.Context) error {
+		return engine.Render(c.Response, c.Request, "Form")
+	})
+
+	w := postSignup(a, "/signup", map[string]string{"Accept": "text/html"})
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/form" {
+		t.Fatalf("POST = %d %q, want 303 /form (body %q)", w.Code, w.Header().Get("Location"), w.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/form", nil)
+	req.Header.Set("X-Inertia", "true")
+	req.Header.Set("X-Inertia-Version", "v1")
+	for _, c := range w.Result().Cookies() {
+		req.AddCookie(c)
+	}
+	w = httptest.NewRecorder()
+	a.Router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET = %d, want 200 (body %q)", w.Code, w.Body.String())
+	}
+	page := inertiaPage(t, w, true)
+	props, _ := page["props"].(map[string]any)
+	errs, _ := props["errors"].(map[string]any)
+	bag, _ := errs["login"].(map[string]any)
+	for _, field := range []string{"email", "password"} {
+		top, ok := errs[field].(string)
+		if !ok || top == "" {
+			t.Errorf("props.errors.%s = %v, want its first message (%v)", field, errs[field], errs)
+		}
+		if bag[field] != top {
+			t.Errorf("props.errors.login.%s = %v, want %q", field, bag[field], top)
+		}
+	}
 }

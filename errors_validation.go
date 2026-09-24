@@ -63,19 +63,16 @@ func errorsWantJSON(c *router.Context, err error) bool {
 }
 
 // flashFailure writes the browser answer to a validation failure: the
-// errors (nested under f.Bag when set) and the redacted old input as flash
-// cookies on c, then a 303 to f.RedirectTo when it is a safe same-origin
-// target, else view.Back.
+// errors (router.Context.FlashErrors seals field -> first message, in the
+// error bag envelope when f.Bag is set) and the redacted old input as
+// flash cookies on c, then a 303 to f.RedirectTo when it is a safe
+// same-origin target, else view.Back.
 func flashFailure(c *router.Context, rc contract.RenderContext, view contract.ViewEngine, f *validation.Failure) {
 	result := f.Result
 	if result == nil {
 		result = &validation.Result{}
 	}
-	var errs any = result.All()
-	if f.Bag != "" {
-		errs = map[string]map[string]string{f.Bag: result.All()}
-	}
-	c.FlashErrors(errs)
+	c.FlashErrors(f)
 	c.FlashInput(result.Old())
 	if f.RedirectTo != "" && rc.Redirect(http.StatusSeeOther, f.RedirectTo) == nil {
 		return

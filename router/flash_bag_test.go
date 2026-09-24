@@ -22,8 +22,15 @@ type bagOnly map[string]string
 
 func (bagOnly) ErrorBag() string { return "profile" }
 
+// fieldsOnly carries field messages without naming a bag and is not an
+// error.
+type fieldsOnly map[string][]string
+
+func (f fieldsOnly) Errors() map[string][]string { return f }
+
 func TestFlashErrorsPayload(t *testing.T) {
-	fields := map[string][]string{"email": {"required"}}
+	fields := map[string][]string{"email": {"required", "email"}, "name": {}}
+	first := map[string]string{"email": "required"}
 	named := &bagFailure{bag: "login", fields: fields}
 	unnamed := &bagFailure{fields: fields}
 	plainErr := errors.New("plain")
@@ -33,9 +40,11 @@ func TestFlashErrorsPayload(t *testing.T) {
 		want  any
 	}{
 		{name: "PlainMap", value: fields, want: fields},
-		{name: "NamedBag", value: named, want: map[string]any{FlashErrorBagKey: "login", FlashBaggedErrorsKey: fields}},
-		{name: "WrappedNamedBag", value: fmt.Errorf("store: %w", named), want: map[string]any{FlashErrorBagKey: "login", FlashBaggedErrorsKey: fields}},
-		{name: "EmptyBag", value: unnamed, want: unnamed},
+		{name: "NamedBag", value: named, want: map[string]any{FlashErrorBagKey: "login", FlashBaggedErrorsKey: first}},
+		{name: "WrappedNamedBag", value: fmt.Errorf("store: %w", named), want: map[string]any{FlashErrorBagKey: "login", FlashBaggedErrorsKey: first}},
+		{name: "EmptyBag", value: unnamed, want: first},
+		{name: "WrappedEmptyBag", value: fmt.Errorf("store: %w", unnamed), want: first},
+		{name: "FieldsWithoutBag", value: fieldsOnly(fields), want: first},
 		{name: "ErrorWithoutBag", value: plainErr, want: plainErr},
 		{name: "BagWithoutFieldMessages", value: bagOnly{"name": "required"}, want: map[string]any{FlashErrorBagKey: "profile", FlashBaggedErrorsKey: bagOnly{"name": "required"}}},
 		{name: "Nil", value: nil, want: nil},

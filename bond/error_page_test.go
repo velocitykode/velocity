@@ -245,7 +245,7 @@ func TestBond_ReloadLocation(t *testing.T) {
 }
 
 func TestFlashErrorsProp(t *testing.T) {
-	fields := map[string]any{"email": []any{"required"}}
+	fields := map[string]any{"email": "required"}
 	tests := []struct {
 		name  string
 		value any
@@ -255,7 +255,7 @@ func TestFlashErrorsProp(t *testing.T) {
 		{
 			name:  "BaggedErrors",
 			value: map[string]any{router.FlashErrorBagKey: "login", router.FlashBaggedErrorsKey: fields},
-			want:  map[string]any{"email": []any{"required"}, "login": fields},
+			want:  map[string]any{"email": "required", "login": fields},
 		},
 		{
 			name:  "EmptyBag",
@@ -300,11 +300,12 @@ func (f *baggedFailure) ErrorBag() string            { return f.bag }
 func (f *baggedFailure) Errors() map[string][]string { return f.fields }
 
 // TestApplyFlashData_ErrorBag drives the write path (router's FlashErrors)
-// into the read path: errors flashed from a value naming a bag render at
-// the top level and under errors.{bag}; any other value renders as sealed.
+// into the read path: a value carrying per-field messages renders as field
+// -> first message, at the top level and, when it names a bag, under
+// errors.{bag}; any other value renders as sealed.
 func TestApplyFlashData_ErrorBag(t *testing.T) {
-	fields := map[string][]string{"email": {"The email field is required."}}
-	message := []any{"The email field is required."}
+	fields := map[string][]string{"email": {"The email field is required.", "The email must be valid."}}
+	const message = "The email field is required."
 	tests := []struct {
 		name    string
 		flashed any
@@ -321,13 +322,15 @@ func TestApplyFlashData_ErrorBag(t *testing.T) {
 			want:    map[string]any{"email": message, "signup": map[string]any{"email": message}},
 		},
 		{
-			// Without a bag the error value itself is sealed; its JSON
-			// form carries no exported field.
 			name:    "EmptyBag",
 			flashed: &baggedFailure{fields: fields},
-			want:    map[string]any{},
+			want:    map[string]any{"email": message},
 		},
-		{name: "PlainErrors", flashed: fields, want: map[string]any{"email": message}},
+		{
+			name:    "PlainErrors",
+			flashed: fields,
+			want:    map[string]any{"email": []any{"The email field is required.", "The email must be valid."}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
