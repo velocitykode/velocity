@@ -778,7 +778,7 @@ func TestContext_Report(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := &fakeErrorHandler{}
-			c, _ := NewTestContext(http.MethodPost, "/orders?id=1")
+			c, _ := NewTestContext(http.MethodPost, "/orders?id=1&signature=secret")
 			c.Request.Header.Set("User-Agent", "probe")
 			c.services = tt.services(h)
 
@@ -801,8 +801,8 @@ func TestContext_Report(t *testing.T) {
 			}
 			if tt.wantReported == 1 {
 				ec := h.ctxs[0]
-				if ec == nil || ec.Method != http.MethodPost || !strings.HasPrefix(ec.URL, "/orders") || ec.UserAgent != "probe" || ec.Timestamp.IsZero() {
-					t.Errorf("error context = %+v", ec)
+				if ec == nil || ec.Method != http.MethodPost || ec.URL != "/orders" || ec.UserAgent != "probe" || ec.Timestamp.IsZero() {
+					t.Errorf("error context = %+v, want URL /orders with no query string", ec)
 				}
 			}
 		})

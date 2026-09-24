@@ -749,14 +749,19 @@ func (c *Context) Report(err error) error {
 }
 
 // errorContext builds the contract.ErrorContext for a report made from
-// this request.
+// this request. URL is the path only, as the router boundary records it:
+// a query string can carry tokens or signatures that must not reach logs.
 func (c *Context) errorContext() *contract.ErrorContext {
 	ec := &contract.ErrorContext{Timestamp: time.Now()}
 	if r := c.Request; r != nil {
 		ec.RequestID = GetRequestID(r)
 		ec.TraceID = trace.GetTraceID(r.Context())
 		ec.SpanID = trace.GetSpanID(r.Context())
-		ec.WithRequestInfo(r.Method, r.URL.String(), c.IP(), r.UserAgent())
+		path := ""
+		if r.URL != nil {
+			path = r.URL.Path
+		}
+		ec.WithRequestInfo(r.Method, path, c.IP(), r.UserAgent())
 	}
 	return ec
 }
