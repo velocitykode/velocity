@@ -220,7 +220,9 @@ func (h *Handler) AddFrameworkPrepareRule(rule contract.MapRule) {
 }
 
 // AddFrameworkRenderRule registers a framework render rule, consulted after
-// every user render rule.
+// every user render rule and never for a recovered panic. Match alone
+// decides whether the rule applies; FrameworkRenderFor registers a rule for
+// a subsystem error that applies only while that error owns the status.
 func (h *Handler) AddFrameworkRenderRule(rule contract.RenderRule) {
 	if rule.Match == nil || (rule.Render == nil && rule.Status == 0) {
 		return
@@ -309,6 +311,23 @@ func matchAs[T error]() contract.ErrorMatcher {
 	}
 }
 
+// matchStatusOwner returns a matcher that reports whether an error's chain
+// holds a T (errors.As) that owns the error's status: the status
+// contract.StatusOf resolves for the whole error equals the T's own. An
+// outer error naming another status (a map result such as
+// Internal().WithCause(err)) owns the answer instead.
+func matchStatusOwner[T contract.StatusError]() contract.ErrorMatcher {
+	return func(err error) bool {
+		var target T
+		if !errors.As(err, &target) {
+			return false
+		}
+		status, _, _ := contract.StatusOf(err)
+		own, _, _ := contract.StatusOf(target)
+		return status == own
+	}
+}
+
 // matchIs returns a matcher that reports whether an error's chain holds
 // target (errors.Is).
 func matchIs(target error) contract.ErrorMatcher {
@@ -335,6 +354,20 @@ func RenderFor[T error](h contract.ErrorHandler, fn func(rc RenderContext, err T
 			return fn(rc, target, ctx)
 		},
 	})
+}
+
+// FrameworkRenderFor registers fn as the framework render rule for errors
+// whose chain holds a T that owns the status the error resolves to (see
+// contract.StatusOf): a subsystem default answers its own error, never one
+// an outer error gave another status. Like every framework render rule it
+// runs after the user render rules and never for a recovered panic. fn
+// receives the whole error and returns true when it wrote the response, or
+// false to fall through to negotiation.
+func FrameworkRenderFor[T contract.StatusError](h *Handler, fn func(rc RenderContext, err error, ctx *ErrorContext) bool) {
+	if h == nil || fn == nil {
+		return
+	}
+	h.AddFrameworkRenderRule(contract.RenderRule{Key: typeKey[T](), Match: matchStatusOwner[T](), Render: fn})
 }
 
 // RenderStatus registers status as the response status for errors whose

@@ -3,7 +3,6 @@ package velocity
 import (
 	"errors"
 	"net/http"
-	"reflect"
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/contract"
@@ -13,7 +12,8 @@ import (
 )
 
 // installValidationErrorRules installs the default rendering of a
-// *validation.Failure. A request the handler answers with JSON (its
+// *validation.Failure that owns the response status. A request the
+// handler answers with JSON (its
 // negotiation: JSONWhen, API mode, API prefixes, then the Accept header)
 // falls through to negotiation, which answers 422
 // application/problem+json with the per-field "errors". Any other request
@@ -21,15 +21,8 @@ import (
 // back (or to Failure.RedirectTo), the same answer the validator callback
 // writes. With no view engine the failure still renders as problem+json.
 func installValidationErrorRules(h *problem.Handler) {
-	h.AddFrameworkRenderRule(contract.RenderRule{
-		Key: reflect.TypeFor[*validation.Failure](),
-		Match: func(err error) bool {
-			var f *validation.Failure
-			return errors.As(err, &f)
-		},
-		Render: func(rc contract.RenderContext, err error, ctx *contract.ErrorContext) bool {
-			return renderValidationFailure(h, rc, err, ctx)
-		},
+	problem.FrameworkRenderFor[*validation.Failure](h, func(rc contract.RenderContext, err error, ctx *contract.ErrorContext) bool {
+		return renderValidationFailure(h, rc, err, ctx)
 	})
 }
 

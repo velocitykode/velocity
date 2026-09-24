@@ -1013,3 +1013,38 @@ func TestRender_FullPageErrorPagePrecedence(t *testing.T) {
 		})
 	}
 }
+
+// TestFrameworkRenderFor_AnswersOnlyTheStatusOwner asserts a framework
+// render rule registered for T runs only while the T owns the status the
+// error resolves to, and never for a recovered panic.
+func TestFrameworkRenderFor_AnswersOnlyTheStatusOwner(t *testing.T) {
+	conflict := &statusErr{code: http.StatusConflict}
+	tests := []struct {
+		name       string
+		err        error
+		recovered  bool
+		wantStatus int
+	}{
+		{name: "OwnError", err: conflict, wantStatus: http.StatusTeapot},
+		{name: "WrappedOwnError", err: fmt.Errorf("load: %w", conflict), wantStatus: http.StatusTeapot},
+		{name: "OuterSameStatus", err: contract.NewHTTPError(http.StatusConflict).WithCause(conflict), wantStatus: http.StatusTeapot},
+		{name: "OuterOtherStatus", err: Internal().WithCause(conflict), wantStatus: http.StatusInternalServerError},
+		{name: "RecoveredPanic", err: conflict, recovered: true, wantStatus: http.StatusInternalServerError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _, _ := newTestHandler()
+			FrameworkRenderFor[*statusErr](h, func(rc RenderContext, _ error, _ *ErrorContext) bool {
+				rc.WriteHeader(http.StatusTeapot)
+				return true
+			})
+			ctx := NewErrorContext()
+			ctx.Recovered = tt.recovered
+			rc, w := newRC(http.MethodGet, "/x", "Accept", "application/json")
+			h.HandleRequest(rc, tt.err, ctx)
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+		})
+	}
+}

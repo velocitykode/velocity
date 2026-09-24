@@ -23,9 +23,10 @@ import (
 //  4. Rendering: nothing when the response is already written; a
 //     Renderable error; the framework prepare table (only for an error
 //     that names no status); user render rules; framework render rules;
-//     content negotiation. A recovered panic skips Renderable and the
-//     prepare table and reaches the rules wrapped in a 500 HTTPError,
-//     with every Status rule answering 500. A render that fails or panics
+//     content negotiation. A recovered panic skips Renderable, the
+//     prepare table and the framework render rules, and reaches the user
+//     render rules wrapped in a 500 HTTPError, with every Status rule
+//     answering 500. A render that fails or panics
 //     falls back to a plain-text 500. Everything in this stage reads the
 //     handler's negotiation answer (see WantsJSON) through rc.WantsJSON.
 //
@@ -278,8 +279,10 @@ func (h *Handler) render(s *snapshot, rc RenderContext, err error, ctx *ErrorCon
 
 	// A panic is a bug: always a 500, whatever the panic value carries. The
 	// panic never renders itself (no Renderable) and skips the prepare
-	// table; the render rules see it wrapped in a 500 HTTPError, and a
-	// Status rule answers at 500 whatever status it names.
+	// table and the framework render rules (a subsystem default would
+	// answer the error the panic carries, not the 500); the user render
+	// rules see it wrapped in a 500 HTTPError, and a Status rule answers
+	// at 500 whatever status it names.
 	pinned := 0
 	var prepared error
 	if isRecovered(err, ctx) {
@@ -299,7 +302,7 @@ func (h *Handler) render(s *snapshot, rc RenderContext, err error, ctx *ErrorCon
 	if h.applyRenderRules(s, s.renderRules, rc, prepared, ctx, pinned) {
 		return
 	}
-	if h.applyRenderRules(s, s.frameworkRender, rc, prepared, ctx, pinned) {
+	if pinned == 0 && h.applyRenderRules(s, s.frameworkRender, rc, prepared, ctx, 0) {
 		return
 	}
 	status, _, _ := contract.StatusOf(prepared)
