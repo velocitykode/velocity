@@ -69,7 +69,7 @@ func (l *levelLogger) reset() {
 // newPipelineApp builds a test app whose logger records every entry and
 // whose error handler carries a recording reporter next to the default
 // LogReporter. Boot-time log noise is cleared before it returns.
-func newPipelineApp(t *testing.T) (*App, *levelLogger, *recordingReporter) {
+func newPipelineApp(t *testing.T, opts ...Option) (*App, *levelLogger, *recordingReporter) {
 	t.Helper()
 	capture := &levelLogger{}
 	const driverName = "pipeline-capture"
@@ -78,7 +78,7 @@ func newPipelineApp(t *testing.T) (*App, *levelLogger, *recordingReporter) {
 	})
 	t.Cleanup(func() { log.Drivers().Override(driverName, prev) })
 
-	a, err := New(WithConfig(Config{
+	a, err := New(append([]Option{WithConfig(Config{
 		Env:   "testing",
 		Debug: true,
 		Port:  "0",
@@ -86,7 +86,7 @@ func newPipelineApp(t *testing.T) (*App, *levelLogger, *recordingReporter) {
 		Log:   log.LogConfig{Driver: driverName, Config: make(map[string]any)},
 		Queue: QueueConfig{Driver: "memory"},
 		Mail:  mail.MailConfig{Driver: "log"},
-	}))
+	})}, opts...)...)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -595,25 +595,35 @@ func (m swapViewModule) Start(s *app.Services) error {
 func (swapViewModule) Shutdown(context.Context) error { return nil }
 
 // TestErrorPipeline_ErrorPageFacet asserts that the view engine's
-// ErrorPageRenderer facet answers a failed Inertia request, re-read at
-// bootstrap after a module replaced the view engine.
+// ErrorPageRenderer facet answers a failed Inertia request, resolved per
+// request after a module replaced the view engine: a chain module during
+// Bootstrap, or a WithModules module during New with no Bootstrap at all.
 func TestErrorPipeline_ErrorPageFacet(t *testing.T) {
 	tests := []struct {
-		name       string
-		view       contract.ViewEngine
-		wantStatus int
-		wantPage   bool
+		name        string
+		view        contract.ViewEngine
+		withModules bool
+		wantStatus  int
+		wantPage    bool
 	}{
 		{name: "facet renders the error page at the real status", view: &stubErrorPageView{}, wantStatus: http.StatusNotFound, wantPage: true},
 		{name: "no facet reloads with 409", view: stubPlainView{}, wantStatus: http.StatusConflict},
+		{name: "with modules facet renders without bootstrap", view: &stubErrorPageView{}, withModules: true, wantStatus: http.StatusNotFound, wantPage: true},
+		{name: "with modules no facet reloads with 409", view: stubPlainView{}, withModules: true, wantStatus: http.StatusConflict},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a, _, _ := newPipelineApp(t)
-			a.Errors(func(h contract.ErrorHandler) { h.SetDebug(false) })
-			a.Modules(func(r *chain.ModuleRegistry) { r.Add(swapViewModule{view: tt.view}) })
-			if err := a.Bootstrap(); err != nil {
-				t.Fatalf("Bootstrap: %v", err)
+			var opts []Option
+			if tt.withModules {
+				opts = append(opts, WithModules(swapViewModule{view: tt.view}))
+			}
+			a, _, _ := newPipelineApp(t, opts...)
+			a.Services.Errors.SetDebug(false)
+			if !tt.withModules {
+				a.Modules(func(r *chain.ModuleRegistry) { r.Add(swapViewModule{view: tt.view}) })
+				if err := a.Bootstrap(); err != nil {
+					t.Fatalf("Bootstrap: %v", err)
+				}
 			}
 			a.Router.Get("/page", func(*router.Context) error { return problem.NotFound() })
 
@@ -636,8 +646,9 @@ func TestErrorPipeline_ErrorPageFacet(t *testing.T) {
 	}
 }
 
-// TestInstallErrorPageRenderer asserts the facet detection: set from a view
-// with the facet, cleared for one without, and a no-op with no handler.
+// TestInstallErrorPageRenderer asserts the installed adapter: the view's
+// facet answers when it has one, the 409 reload otherwise, and install is
+// a no-op with no handler.
 func TestInstallErrorPageRenderer(t *testing.T) {
 	tests := []struct {
 		name     string

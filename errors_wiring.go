@@ -75,18 +75,45 @@ func matchSentinel(target error) contract.ErrorMatcher {
 	return func(err error) bool { return errors.Is(err, target) }
 }
 
-// installErrorPageRenderer hands the view engine's ErrorPageRenderer facet
-// (when it has one) to the error handler, so an Inertia request that fails
-// renders the configured error page. Without the facet the handler keeps
-// no error page. Called after the view step in New and again right before
-// the errors bootstrap step, because a module may replace the view engine.
+// installErrorPageRenderer hands the error handler an appErrorPage, which
+// resolves the view engine's ErrorPageRenderer facet on every call, so a
+// view engine a module installs after New (in its Start, or a chain
+// module) renders the configured error page without a re-install. Called
+// after the view step in New and again right before the errors bootstrap
+// step, which reaches a handler a module swapped in since New.
 func installErrorPageRenderer(a *App) {
 	h := a.Services.Errors
 	if h == nil {
 		return
 	}
-	page, _ := a.Services.View.(contract.ErrorPageRenderer)
-	h.SetErrorPageRenderer(page)
+	h.SetErrorPageRenderer(appErrorPage{a: a})
+}
+
+// appErrorPage resolves the ErrorPageRenderer facet (and its
+// problem.ReloadLocator facet) on the app's current view engine for every
+// failed request.
+type appErrorPage struct {
+	a *App
+}
+
+// RenderErrorPage renders through the view engine's facet, or reports
+// false, having written nothing, when the view engine has none.
+func (p appErrorPage) RenderErrorPage(rc contract.RenderContext, status int, message string) (bool, error) {
+	page, ok := p.a.Services.View.(contract.ErrorPageRenderer)
+	if !ok {
+		return false, nil
+	}
+	return page.RenderErrorPage(rc, status, message)
+}
+
+// ReloadLocation returns the view engine's reload target for r, or "" (the
+// handler's own same-origin default) when it names none.
+func (p appErrorPage) ReloadLocation(r *http.Request) string {
+	locator, ok := p.a.Services.View.(problem.ReloadLocator)
+	if !ok {
+		return ""
+	}
+	return locator.ReloadLocation(r)
 }
 
 // appUserIdentifier resolves the RequestUserIdentifier facet on the auth

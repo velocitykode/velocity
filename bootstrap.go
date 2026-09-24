@@ -168,9 +168,9 @@ func (a *App) runBootstrap() error {
 		a.seedersFn(a.seeders)
 	}
 
-	// 8. Configure the error handler. The view engine's error page facet
-	// is re-read first because a module may have replaced the view
-	// engine since New.
+	// 8. Configure the error handler. The error page adapter resolves the
+	// view engine per request; it is installed again here so a handler a
+	// module swapped in since New gets it too.
 	installErrorPageRenderer(a)
 	if a.errorsFn != nil {
 		a.errorsFn(a.Services.Errors)
