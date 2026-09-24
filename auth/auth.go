@@ -132,7 +132,6 @@ func (PasswordNeedsRehashEvent) EventName() string {
 
 // Errors
 var (
-	ErrNotAuthenticated   = errors.New("not authenticated")
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrUserNotFound       = errors.New("user not found")
 	ErrSchemeNotFound     = errors.New("scheme not found")
