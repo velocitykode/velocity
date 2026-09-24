@@ -100,6 +100,21 @@ func writerCases() []writerCase {
 			detail:   "Service Unavailable",
 			is:       context.DeadlineExceeded,
 		},
+		{
+			name: "unsupported media type",
+			setup: func(r *VelocityRouterV2) {
+				r.Use(ContentTypeJSON())
+				r.Post("/items", okHandler)
+			},
+			request: func() *http.Request {
+				req := httptest.NewRequest(http.MethodPost, "/items", strings.NewReader("a=b"))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				return req
+			},
+			status:   http.StatusUnsupportedMediaType,
+			textBody: "Unsupported Media Type\n",
+			detail:   "Unsupported Media Type",
+		},
 	}
 }
 

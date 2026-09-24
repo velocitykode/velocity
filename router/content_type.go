@@ -4,6 +4,8 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // ContentType returns middleware that validates the Content-Type header
@@ -12,7 +14,9 @@ import (
 // bodyless DELETE requests are passed through.
 //
 // Media types are compared using mime.ParseMediaType, so parameters
-// like charset are ignored during matching.
+// like charset are ignored during matching. A request carrying a body
+// with a missing or disallowed Content-Type gets a 415 *contract.HTTPError
+// back; the middleware writes nothing and the error boundary renders it.
 //
 // Usage:
 //
@@ -50,10 +54,7 @@ func ContentType(allowed ...string) MiddlewareFunc {
 			ct := c.Request.Header.Get("Content-Type")
 			if ct == "" {
 				if c.Request.ContentLength != 0 {
-					return c.JSON(http.StatusUnsupportedMediaType, map[string]any{
-						"code":    http.StatusUnsupportedMediaType,
-						"message": "Unsupported Media Type",
-					})
+					return contract.NewHTTPError(http.StatusUnsupportedMediaType)
 				}
 				// No body, no content-type — let it through
 				return next(c)
@@ -69,10 +70,7 @@ func ContentType(allowed ...string) MiddlewareFunc {
 				}
 			}
 
-			return c.JSON(http.StatusUnsupportedMediaType, map[string]any{
-				"code":    http.StatusUnsupportedMediaType,
-				"message": "Unsupported Media Type",
-			})
+			return contract.NewHTTPError(http.StatusUnsupportedMediaType)
 		}
 	}
 }

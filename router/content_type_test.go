@@ -1,10 +1,30 @@
 package router
 
 import (
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
+
+// assertUnsupportedMediaType asserts the middleware rejected the request
+// by returning a 415 *contract.HTTPError and wrote nothing itself.
+func assertUnsupportedMediaType(t *testing.T, err error, w *httptest.ResponseRecorder) {
+	t.Helper()
+	var he *contract.HTTPError
+	if !errors.As(err, &he) {
+		t.Fatalf("err = %v (%T), want a *contract.HTTPError", err, err)
+	}
+	if he.StatusCode() != http.StatusUnsupportedMediaType || he.Message != "Unsupported Media Type" {
+		t.Errorf("got %d %q, want 415 %q", he.StatusCode(), he.Message, "Unsupported Media Type")
+	}
+	if w.Body.Len() != 0 || len(w.Header()) != 0 {
+		t.Errorf("middleware wrote body %q headers %v, want nothing", w.Body.String(), w.Header())
+	}
+}
 
 func TestContentType_AllowsValidType(t *testing.T) {
 	handler := ContentType("application/json")(func(c *Context) error {
@@ -31,12 +51,7 @@ func TestContentType_RejectsInvalidType(t *testing.T) {
 	c.Request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	c.Request.ContentLength = 9
 
-	if err := handler(c); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if w.Code != http.StatusUnsupportedMediaType {
-		t.Errorf("expected 415, got %d", w.Code)
-	}
+	assertUnsupportedMediaType(t, handler(c), w)
 }
 
 func TestContentType_SkipsGET(t *testing.T) {
@@ -105,12 +120,7 @@ func TestContentType_ChecksDELETEWithBody(t *testing.T) {
 	c.Request.Header.Set("Content-Type", "text/plain")
 	c.Request.ContentLength = 9
 
-	if err := handler(c); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if w.Code != http.StatusUnsupportedMediaType {
-		t.Errorf("expected 415, got %d", w.Code)
-	}
+	assertUnsupportedMediaType(t, handler(c), w)
 }
 
 func TestContentType_ChecksDELETEWithChunkedBody(t *testing.T) {
@@ -122,12 +132,7 @@ func TestContentType_ChecksDELETEWithChunkedBody(t *testing.T) {
 	c.Request.Header.Set("Content-Type", "text/plain")
 	c.Request.ContentLength = -1 // chunked encoding
 
-	if err := handler(c); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if w.Code != http.StatusUnsupportedMediaType {
-		t.Errorf("expected 415, got %d", w.Code)
-	}
+	assertUnsupportedMediaType(t, handler(c), w)
 }
 
 func TestContentType_NoContentTypeWithBody(t *testing.T) {
@@ -139,12 +144,7 @@ func TestContentType_NoContentTypeWithBody(t *testing.T) {
 	c.Request.ContentLength = 4
 	// No Content-Type header set
 
-	if err := handler(c); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if w.Code != http.StatusUnsupportedMediaType {
-		t.Errorf("expected 415, got %d", w.Code)
-	}
+	assertUnsupportedMediaType(t, handler(c), w)
 }
 
 func TestContentType_NoContentTypeNoBody(t *testing.T) {
@@ -208,12 +208,7 @@ func TestContentType_MultipleAllowed(t *testing.T) {
 	c3, w3 := NewTestContext("POST", "/test", strings.NewReader("name=test"))
 	c3.Request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	c3.Request.ContentLength = 9
-	if err := handler(c3); err != nil {
-		t.Fatalf("Form: unexpected error: %v", err)
-	}
-	if w3.Code != http.StatusUnsupportedMediaType {
-		t.Errorf("Form: expected 415, got %d", w3.Code)
-	}
+	assertUnsupportedMediaType(t, handler(c3), w3)
 }
 
 func TestContentTypeJSON(t *testing.T) {
@@ -267,12 +262,7 @@ func TestContentType_PUT(t *testing.T) {
 	c.Request.Header.Set("Content-Type", "text/plain")
 	c.Request.ContentLength = 2
 
-	if err := handler(c); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if w.Code != http.StatusUnsupportedMediaType {
-		t.Errorf("expected 415, got %d", w.Code)
-	}
+	assertUnsupportedMediaType(t, handler(c), w)
 }
 
 func TestContentType_PATCH(t *testing.T) {
