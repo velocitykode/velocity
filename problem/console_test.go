@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func TestHandleConsole(t *testing.T) {
@@ -52,5 +54,44 @@ func TestHandleConsole_NilWriterAndIgnoreRules(t *testing.T) {
 	}
 	if rep.count() != 0 {
 		t.Errorf("ignored console error reported %d times", rep.count())
+	}
+}
+
+// Map rules apply once before reporting: the report, the message and the
+// exit code come from the mapped error, and a marked error is not
+// reported.
+func TestHandleConsole_AppliesMapRules(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantReport int
+	}{
+		{"sentinel", errSentinel, 1},
+		{"wrapped sentinel", fmt.Errorf("seed: %w", errSentinel), 1},
+		{"marked sentinel", contract.MarkReported(errSentinel), 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, rep, _ := newTestHandler()
+			MapIs(h, errSentinel, func(error) error { return &exitErr{code: 2} })
+			var out bytes.Buffer
+			if code := h.HandleConsole(&out, tt.err); code != 2 {
+				t.Errorf("code = %d, want 2 from the mapped error", code)
+			}
+			if out.String() != "error: exit\n" {
+				t.Errorf("stderr = %q, want the mapped message", out.String())
+			}
+			if rep.count() != tt.wantReport {
+				t.Fatalf("reports = %d, want %d", rep.count(), tt.wantReport)
+			}
+			if tt.wantReport == 0 {
+				return
+			}
+			_, got := rep.last()
+			var coder *exitErr
+			if !errors.As(got, &coder) || errors.Is(got, errSentinel) {
+				t.Errorf("reported %v, want the mapped error", got)
+			}
+		})
 	}
 }
