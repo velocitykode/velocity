@@ -390,56 +390,104 @@ type handoffKey struct{}
 // TestTimeout_HandsBackTheInnerRequest asserts that when the handler
 // finishes in time, the caller's Context sees the request the inner chain
 // ended with (a value inner middleware added, the handler's error), with a
-// live context although the timeout context was cancelled, and that the
-// error boundary receives that request.
+// live context although the timeout context was cancelled (Err and
+// context.Cause both nil, the parent's deadline), and that the error
+// boundary receives that request. Ending the parent request context
+// afterwards (cancelled, or past its deadline) shows through Err and
+// context.Cause alike, never as the timeout context's own cancellation,
+// with the inner value still readable.
 func TestTimeout_HandsBackTheInnerRequest(t *testing.T) {
-	var (
-		innerCtx    context.Context
-		outerValue  any
-		outerErr    error
-		outerDL     bool
-		boundaryVal any
-	)
-	r := New()
-	r.SetErrorHandler(func(c *Context, _ error, _ ErrorInfo) {
-		boundaryVal = c.Request.Context().Value(handoffKey{})
-		c.Response.WriteHeader(http.StatusTeapot)
-	})
-	r.Use(func(next HandlerFunc) HandlerFunc {
-		return func(c *Context) error {
-			err := next(c)
-			outerValue = c.Request.Context().Value(handoffKey{})
-			outerErr = c.Request.Context().Err()
-			_, outerDL = c.Request.Context().Deadline()
-			return err
-		}
-	})
-	r.Use(Timeout(time.Minute))
-	r.Use(func(next HandlerFunc) HandlerFunc {
-		return func(c *Context) error {
-			c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), handoffKey{}, "inner"))
-			return next(c)
-		}
-	})
-	r.Get("/x", func(c *Context) error {
-		innerCtx = c.Request.Context()
-		return errors.New("boom")
-	})
+	tests := []struct {
+		name    string
+		parent  func() (context.Context, context.CancelFunc)
+		end     func(ctx context.Context, cancel context.CancelFunc)
+		wantErr error
+	}{
+		{
+			name:    "ParentCancelled",
+			parent:  func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) },
+			end:     func(_ context.Context, cancel context.CancelFunc) { cancel() },
+			wantErr: context.Canceled,
+		},
+		{
+			name: "ParentDeadlinePassed",
+			parent: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 300*time.Millisecond)
+			},
+			end:     func(ctx context.Context, _ context.CancelFunc) { <-ctx.Done() },
+			wantErr: context.DeadlineExceeded,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var (
+				innerCtx    context.Context
+				handoffCtx  context.Context
+				outerValue  any
+				outerErr    error
+				outerCause  error
+				outerDL     time.Time
+				outerHasDL  bool
+				boundaryVal any
+			)
+			r := New()
+			r.SetErrorHandler(func(c *Context, _ error, _ ErrorInfo) {
+				boundaryVal = c.Request.Context().Value(handoffKey{})
+				c.Response.WriteHeader(http.StatusTeapot)
+			})
+			r.Use(func(next HandlerFunc) HandlerFunc {
+				return func(c *Context) error {
+					err := next(c)
+					handoffCtx = c.Request.Context()
+					outerValue = handoffCtx.Value(handoffKey{})
+					outerErr = handoffCtx.Err()
+					outerCause = context.Cause(handoffCtx)
+					outerDL, outerHasDL = handoffCtx.Deadline()
+					return err
+				}
+			})
+			r.Use(Timeout(time.Minute))
+			r.Use(func(next HandlerFunc) HandlerFunc {
+				return func(c *Context) error {
+					c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), handoffKey{}, "inner"))
+					return next(c)
+				}
+			})
+			r.Get("/x", func(c *Context) error {
+				innerCtx = c.Request.Context()
+				return errors.New("boom")
+			})
 
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil))
+			parent, cancel := tt.parent()
+			defer cancel()
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil).WithContext(parent))
 
-	if w.Code != http.StatusTeapot {
-		t.Fatalf("status = %d, want 418 from the error handler", w.Code)
-	}
-	if outerValue != "inner" || boundaryVal != "inner" {
-		t.Errorf("value after Timeout = %v, at the boundary = %v; want inner for both", outerValue, boundaryVal)
-	}
-	if outerErr != nil || outerDL {
-		t.Errorf("request context after Timeout: Err = %v, has deadline = %v; want nil, false", outerErr, outerDL)
-	}
-	if innerCtx == nil || innerCtx.Err() == nil {
-		t.Error("the handler's timeout context must be cancelled once Timeout returns")
+			if w.Code != http.StatusTeapot {
+				t.Fatalf("status = %d, want 418 from the error handler", w.Code)
+			}
+			if outerValue != "inner" || boundaryVal != "inner" {
+				t.Errorf("value after Timeout = %v, at the boundary = %v; want inner for both", outerValue, boundaryVal)
+			}
+			parentDL, parentHasDL := parent.Deadline()
+			if outerErr != nil || outerCause != nil || outerHasDL != parentHasDL || !outerDL.Equal(parentDL) {
+				t.Errorf("request context after Timeout: Err = %v, Cause = %v, deadline = %v %v; want nil, nil, the parent's %v %v", outerErr, outerCause, outerDL, outerHasDL, parentDL, parentHasDL)
+			}
+			if innerCtx == nil || innerCtx.Err() == nil {
+				t.Error("the handler's timeout context must be cancelled once Timeout returns")
+			}
+
+			tt.end(parent, cancel)
+			if got := handoffCtx.Err(); !errors.Is(got, tt.wantErr) {
+				t.Errorf("Err after the parent ended = %v, want %v", got, tt.wantErr)
+			}
+			if got := context.Cause(handoffCtx); !errors.Is(got, tt.wantErr) {
+				t.Errorf("Cause after the parent ended = %v, want %v", got, tt.wantErr)
+			}
+			if got := handoffCtx.Value(handoffKey{}); got != "inner" {
+				t.Errorf("inner value after the parent ended = %v, want inner", got)
+			}
+		})
 	}
 }
 

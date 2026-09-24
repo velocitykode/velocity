@@ -254,7 +254,7 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 				// goroutine has returned, so reading the clone is
 				// safe.
 				if inner := clone.Request; inner != nil {
-					c.Request = inner.WithContext(handoffContext{Context: c.Request.Context(), values: inner.Context()})
+					c.Request = inner.WithContext(handoffContext{Context: c.Request.Context(), values: context.WithoutCancel(inner.Context())})
 				}
 				return err
 			case <-ctx.Done():
@@ -274,11 +274,13 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 
 // handoffContext is the request context Timeout hands back to the parent
 // Context when the handler finished in time: Value answers from values,
-// the inner request's context (the inner middleware's additions and,
-// through the timeout context, every parent value), while Deadline, Done
-// and Err come from the embedded parent request context, because the
-// timeout context is cancelled when Timeout returns and must not end the
-// rest of the request.
+// the inner request's context behind context.WithoutCancel (the inner
+// middleware's additions and, through the timeout context, every parent
+// value), while Deadline, Done and Err come from the embedded parent
+// request context, because the timeout context is cancelled when Timeout
+// returns and must not end the rest of the request. WithoutCancel hides
+// the timeout context's cancellation state from value lookups, so
+// context.Cause reports the parent's state too.
 type handoffContext struct {
 	context.Context
 	values context.Context
