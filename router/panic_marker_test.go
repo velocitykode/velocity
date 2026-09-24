@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -195,6 +196,7 @@ func TestMarkedWritten_OutsidePanicParity(t *testing.T) {
 	around := p("boom")
 	both := p(contract.Handled(x))
 	sibling := p("boom")
+	handBuilt := &PanicError{Err: x}
 	tests := []struct {
 		name      string
 		err       error
@@ -212,6 +214,11 @@ func TestMarkedWritten_OutsidePanicParity(t *testing.T) {
 		{name: "JoinSentinelSibling", err: errors.Join(sibling, contract.ErrResponseWritten), recovered: true, want: true},
 		{name: "JoinHandledSibling", err: errors.Join(sibling, contract.Handled(x)), recovered: true, want: true, wantCause: x},
 		{name: "Unmarked", err: x},
+		{name: "HandBuiltHandledInside", err: &PanicError{Err: contract.Handled(x)}, recovered: true},
+		{name: "HandBuiltHandledInsideNotFlagged", err: &PanicError{Err: contract.Handled(x)}},
+		{name: "HandBuiltSentinelInside", err: &PanicError{Err: contract.ErrResponseWritten}, recovered: true},
+		{name: "HandBuiltHandledAround", err: contract.Handled(handBuilt), recovered: true, want: true, wantCause: handBuilt},
+		{name: "HandBuiltHandledAroundNotFlagged", err: contract.Handled(handBuilt), want: true, wantCause: handBuilt},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -286,5 +293,31 @@ func TestFinalize_PanickingHookIsRecoveredAndLogged(t *testing.T) {
 	defer mu.Unlock()
 	if handled != 1 {
 		t.Errorf("RequestHandled dispatched %d times, want 1", handled)
+	}
+}
+
+// TestPanicError_Recovered asserts *PanicError is a contract.RecoveredPanic
+// whose Recovered answers the recovered value of the panic error it wraps,
+// or its Err when it wraps none.
+func TestPanicError_Recovered(t *testing.T) {
+	plain := errors.New("plain")
+	valueErr := errors.New("value")
+	tests := []struct {
+		name string
+		err  *PanicError
+		want any
+	}{
+		{name: "RouterBuilt", err: newPanicError(panicerr.FromRecovered("boom"), 0), want: "boom"},
+		{name: "TimeoutWrapped", err: newPanicError(fmt.Errorf("timeout handler panic: %w", panicerr.FromRecovered(valueErr)), 0), want: valueErr},
+		{name: "HandBuilt", err: &PanicError{Err: plain}, want: plain},
+		{name: "Nil", err: nil, want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var rp contract.RecoveredPanic = tt.err
+			if got := rp.Recovered(); got != tt.want {
+				t.Errorf("Recovered() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

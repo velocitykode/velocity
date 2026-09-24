@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // ErrorInfo carries the facts the router knows about a failed request to
@@ -41,6 +42,12 @@ type ErrorInfo struct {
 // A PanicError always resolves to status 500 and always reports: a panic
 // is a bug, not a response, even when the panic value is itself an
 // HTTP-shaped error.
+//
+// PanicError implements contract.RecoveredPanic, so it is the boundary of
+// the panic in an error chain: a report-once or response-written marker
+// inside it counts for nothing, while one wrapped around it (a middleware
+// that reported or rendered the panic) counts. A PanicError built by hand
+// behaves the same as one the router built.
 type PanicError struct {
 	// Err is the recovered value converted to an error. It unwraps to the
 	// panic value when that value was an error.
@@ -66,6 +73,21 @@ func (e *PanicError) Unwrap() error {
 	}
 	return e.Err
 }
+
+// Recovered returns the value handed to recover(): the value of the
+// recovered-panic error Err wraps, or Err itself when it wraps none.
+func (e *PanicError) Recovered() any {
+	if e == nil {
+		return nil
+	}
+	if pe := panicerr.AsTyped(e.Err); pe != nil {
+		return pe.Recovered()
+	}
+	return e.Err
+}
+
+// PanicError is the boundary node of a recovered panic.
+var _ contract.RecoveredPanic = (*PanicError)(nil)
 
 // StatusCode returns 500: a recovered panic never answers with any other
 // status.
@@ -310,10 +332,11 @@ func (f *errorFacts) fallbackIs(err error) {
 // written on purpose: contract.IsResponseWritten holds for it (the bare
 // sentinel or a contract.Handled value outside the value of any recovered
 // panic it carries). A panic is a 500 whatever its value, so a marker
-// inside a contract.RecoveredPanic node counts for nothing, and when
-// recovered is set but err carries no such node the whole of err is the
-// panic value and nothing counts. A Handled value wrapping a *PanicError
-// (a middleware rendered the panic) still marks the response written.
+// inside a contract.RecoveredPanic node (a *PanicError is one) counts for
+// nothing, and when recovered is set but err carries no such node the
+// whole of err is the panic value and nothing counts. A Handled value
+// wrapping a *PanicError (a middleware rendered the panic) still marks the
+// response written.
 // f.written is the cheap precondition: no marker anywhere, none outside.
 func (f *errorFacts) markedWritten(err error, recovered bool) bool {
 	if !f.written {
