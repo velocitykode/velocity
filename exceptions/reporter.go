@@ -1,6 +1,7 @@
 package exceptions
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -87,7 +88,8 @@ func (r *LogReporter) buildFields(err error, ctx *ExceptionContext) []any {
 	var fields []any
 
 	// Add exception-specific fields
-	if exc, ok := err.(Exception); ok {
+	var exc Exception
+	if errors.As(err, &exc) {
 		fields = append(fields, "code", exc.GetCode())
 		if prev := exc.GetPrevious(); prev != nil {
 			fields = append(fields, "previous", prev.Error())
@@ -98,9 +100,10 @@ func (r *LogReporter) buildFields(err error, ctx *ExceptionContext) []any {
 		}
 	}
 
-	// Add HTTP-specific fields
-	if httpExc, ok := err.(*HttpException); ok {
-		fields = append(fields, "status_code", httpExc.StatusCode)
+	// Add HTTP-specific fields (HttpException and every type embedding it)
+	var httpExc httpStatusError
+	if errors.As(err, &httpExc) {
+		fields = append(fields, "status_code", httpExc.GetStatusCode())
 	}
 
 	if ctx == nil || !r.includeCtx {

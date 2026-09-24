@@ -109,8 +109,13 @@ func (e *BaseException) ShouldReport() bool {
 	return true
 }
 
-// Unwrap returns the previous error for errors.Is/errors.As support.
+// Unwrap returns the previous error for errors.Is/errors.As support. It is
+// nil-safe because errors.As reaches it through the promoted method of any
+// type embedding a nil *BaseException.
 func (e *BaseException) Unwrap() error {
+	if e == nil {
+		return nil
+	}
 	return e.previous
 }
 

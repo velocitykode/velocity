@@ -2,6 +2,7 @@ package exceptions
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -26,6 +27,55 @@ func setJSONHeaders(ctx RenderContext) {
 	ctx.SetHeader("X-Content-Type-Options", "nosniff")
 }
 
+// statusCoder is an error that names its HTTP status.
+type statusCoder interface {
+	GetStatusCode() int
+}
+
+// statusMessageError names its HTTP status and a client-facing message.
+type statusMessageError interface {
+	GetStatusCode() int
+	GetMessage() string
+}
+
+// httpStatusError names its HTTP status and response headers. *HttpException
+// satisfies it, and so does every type embedding *HttpException (for example
+// TooManyRequestsException) through the promoted methods. Status and headers
+// resolve against this interface rather than *HttpException because
+// errors.As never reaches an embedded *HttpException: BaseException.Unwrap
+// returns the previous error, not the embedding parent.
+type httpStatusError interface {
+	GetStatusCode() int
+	GetHeaders() map[string]string
+}
+
+// resolveHTTPStatus returns the status and response headers for err. The
+// first error in err's chain (errors.As) carrying both status and headers
+// wins; failing that, the first carrying only a status names it with no
+// headers. Everything else is a 500.
+func resolveHTTPStatus(err error) (int, map[string]string) {
+	var withHeaders httpStatusError
+	if errors.As(err, &withHeaders) {
+		return withHeaders.GetStatusCode(), withHeaders.GetHeaders()
+	}
+	var status statusCoder
+	if errors.As(err, &status) {
+		return status.GetStatusCode(), nil
+	}
+	return http.StatusInternalServerError, nil
+}
+
+// setExceptionHeaders copies an exception's response headers onto ctx,
+// dropping any header whose name or value contains CR or LF.
+func setExceptionHeaders(ctx RenderContext, headers map[string]string) {
+	for k, v := range headers {
+		if strings.ContainsAny(k, "\r\n") || strings.ContainsAny(v, "\r\n") {
+			continue
+		}
+		ctx.SetHeader(k, v)
+	}
+}
+
 // JSONRenderer renders exceptions as JSON.
 type JSONRenderer struct{}
 
@@ -41,18 +91,10 @@ func (r *JSONRenderer) ContentType() string {
 
 // Render renders the exception as JSON.
 func (r *JSONRenderer) Render(ctx RenderContext, err error, exCtx *ExceptionContext, debug bool) error {
-	statusCode := http.StatusInternalServerError
 	response := make(map[string]any)
 
-	// Handle HTTP exceptions
-	if httpExc, ok := err.(*HttpException); ok {
-		statusCode = httpExc.StatusCode
-		for k, v := range httpExc.GetHeaders() {
-			ctx.SetHeader(k, v)
-		}
-	} else if exc, ok := err.(interface{ GetStatusCode() int }); ok {
-		statusCode = exc.GetStatusCode()
-	}
+	statusCode, headers := resolveHTTPStatus(err)
+	setExceptionHeaders(ctx, headers)
 
 	// Build response
 	response["message"] = getErrorMessage(err, debug)
@@ -70,7 +112,8 @@ func (r *JSONRenderer) Render(ctx RenderContext, err error, exCtx *ExceptionCont
 	if debug {
 		response["exception"] = getExceptionType(err)
 
-		if exc, ok := err.(Exception); ok {
+		var exc Exception
+		if errors.As(err, &exc) {
 			if ctx := exc.GetContext(); len(ctx) > 0 {
 				response["context"] = ctx
 			}
@@ -134,17 +177,8 @@ func (r *HTMLRenderer) ContentType() string {
 
 // Render renders the exception as HTML.
 func (r *HTMLRenderer) Render(ctx RenderContext, err error, exCtx *ExceptionContext, debug bool) error {
-	statusCode := http.StatusInternalServerError
-
-	// Handle HTTP exceptions
-	if httpExc, ok := err.(*HttpException); ok {
-		statusCode = httpExc.StatusCode
-		for k, v := range httpExc.GetHeaders() {
-			ctx.SetHeader(k, v)
-		}
-	} else if exc, ok := err.(interface{ GetStatusCode() int }); ok {
-		statusCode = exc.GetStatusCode()
-	}
+	statusCode, headers := resolveHTTPStatus(err)
+	setExceptionHeaders(ctx, headers)
 
 	data := &templateData{
 		StatusCode:    statusCode,
@@ -166,7 +200,8 @@ func (r *HTMLRenderer) Render(ctx RenderContext, err error, exCtx *ExceptionCont
 		}
 	}
 
-	if exc, ok := err.(Exception); ok && debug {
+	var exc Exception
+	if debug && errors.As(err, &exc) {
 		data.Context = exc.GetContext()
 		if prev := exc.GetPrevious(); prev != nil {
 			data.Previous = prev.Error()
@@ -211,28 +246,27 @@ func (w *responseWriter) Write(p []byte) (int, error) {
 }
 
 // getErrorMessage returns the appropriate error message based on debug mode.
+// Outside debug mode a status-carrying error in err's chain (errors.As)
+// decides: 5xx shows only the status text, 4xx shows that error's own
+// message (never the wrapper text around it) when it has one. Anything else
+// shows a generic message.
 func getErrorMessage(err error, debug bool) string {
 	if debug {
 		return err.Error()
 	}
 
-	// In production, show generic messages for server errors
-	if httpExc, ok := err.(*HttpException); ok {
-		if httpExc.StatusCode >= 500 {
-			return http.StatusText(httpExc.StatusCode)
-		}
-		return httpExc.GetMessage()
-	}
-
-	// Check for types that embed HttpException and implement GetStatusCode
-	if exc, ok := err.(interface{ GetStatusCode() int }); ok {
-		code := exc.GetStatusCode()
-		if code >= 500 {
+	var withMessage statusMessageError
+	if errors.As(err, &withMessage) {
+		if code := withMessage.GetStatusCode(); code >= 500 {
 			return http.StatusText(code)
 		}
-		// For client errors (4xx), return the message
-		if msgProvider, ok := err.(interface{ GetMessage() string }); ok {
-			return msgProvider.GetMessage()
+		return withMessage.GetMessage()
+	}
+
+	var status statusCoder
+	if errors.As(err, &status) {
+		if code := status.GetStatusCode(); code >= 500 {
+			return http.StatusText(code)
 		}
 	}
 

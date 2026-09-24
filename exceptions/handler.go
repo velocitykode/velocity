@@ -1,6 +1,7 @@
 package exceptions
 
 import (
+	"errors"
 	"log"
 	"net"
 	"net/http"
@@ -324,8 +325,9 @@ func (h *Handler) ShouldReport(err error) bool {
 	}
 	h.mu.RUnlock()
 
-	// Check if the exception implements Reportable
-	if reportable, ok := err.(Reportable); ok {
+	// Check if the exception, or any error it wraps, implements Reportable
+	var reportable Reportable
+	if errors.As(err, &reportable) {
 		return reportable.ShouldReport()
 	}
 
@@ -355,8 +357,9 @@ func (h *Handler) reportToAll(err error, ctx *ExceptionContext) {
 
 // Render renders an exception response.
 func (h *Handler) Render(ctx RenderContext, err error, exCtx *ExceptionContext) {
-	// Check if error implements Renderable (only for API requests or if explicitly renderable)
-	if renderable, ok := err.(Renderable); ok {
+	// Check if the error, or any error it wraps, implements Renderable
+	var renderable Renderable
+	if errors.As(err, &renderable) {
 		if renderErr := renderable.Render(ctx); renderErr == nil {
 			return
 		}
@@ -449,6 +452,9 @@ func (h *Handler) HandlePanic(ctx RenderContext, recovered any) {
 	// Always report panics (bypasses ShouldReport)
 	h.reportToAll(err, exCtx)
 
-	// Render as internal server error
-	h.Render(ctx, NewInternalServerErrorException(err.Error()).WithPrevious(err), exCtx)
+	// Render as internal server error. The rendered exception carries the
+	// panic's text but not its chain: a panic always renders 500, even when
+	// the panic value is an HTTP exception or Renderable that errors.As would
+	// otherwise resolve through the recovered-panic wrapper.
+	h.Render(ctx, NewInternalServerErrorException(err.Error()).WithPrevious(errors.New(err.Error())), exCtx)
 }

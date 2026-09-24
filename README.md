@@ -92,7 +92,7 @@ func main() {
         Routes(routes.Register).            // your route definitions
         Events(app.Events(v.Log)).          // your event listeners
         Schedule(schedule.Configure).       // your scheduled jobs
-        Exceptions(app.ExceptionHandler).   // your custom error handler
+        Exceptions(app.ExceptionHandler).   // optional: configure the error handler
         Run(); err != nil {                 // serves HTTP, or runs a `./vel ...` command
         log.Fatal(err)
     }
