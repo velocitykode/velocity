@@ -448,8 +448,9 @@ func New(opts ...Option) (*App, error) {
 	// and TestCSRFRotator_WiredByNewWithoutBootstrap (direct-New path).
 	installCSRFTokenRotator(a)
 
-	// 9. Initialize view/bond engine
-	if a.config.View.RootTemplate != "" {
+	// 9. Initialize view/bond engine when the config asks for one (see
+	// Config.View): a root template, an error page or SSR.
+	if buildsViewEngine(a.config.View) {
 		viewEngine, err := view.NewEngine(a.config.View)
 		if err != nil {
 			return nil, fmt.Errorf("velocity: failed to initialize view engine: %w", err)

@@ -70,7 +70,11 @@ type Config struct {
 	sessionSameSiteRaw string
 	csrfSameSiteRaw    string
 
-	// View
+	// View configures the view engine. New builds the engine when any of
+	// RootTemplate, ErrorPage (VIEW_ERROR_PAGE) or SSREnabled
+	// (VIEW_SSR_ENABLED) is set; an empty RootTemplate then means the
+	// built-in root template. With none of the three set, New builds no
+	// engine.
 	View view.Config
 
 	// Crypto
@@ -527,7 +531,9 @@ func ConfigFromEnv() Config {
 		},
 	}
 
-	// View / SSR
+	// View / SSR. VIEW_ERROR_PAGE or VIEW_SSR_ENABLED=true alone makes New
+	// build the view engine (with the built-in root template); the other
+	// VIEW_SSR_* variables tune SSR once it is enabled.
 	config.View = view.Config{
 		SSREnabled: os.Getenv("VIEW_SSR_ENABLED") == "true",
 		SSRURL:     envOrDefault("VIEW_SSR_URL", "http://127.0.0.1:13714"),
@@ -693,10 +699,10 @@ func (c Config) Validate() error {
 	if err := c.Storage.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
 	}
-	// View validation must run unconditionally at the root level: New()
-	// only constructs view.NewEngine when RootTemplate != "" (see app.go),
-	// so without this hook a VIEW_SSR_ENABLED=true + VIEW_SSR_TIMEOUT=0
-	// config would bypass the fast-fail check entirely.
+	// View validation runs at the root level so a bad view config fails
+	// here whether or not New builds the engine (see buildsViewEngine):
+	// VIEW_SSR_ENABLED=true with VIEW_SSR_TIMEOUT=0 is rejected before
+	// anything is constructed.
 	if err := c.View.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
 	}
@@ -782,4 +788,11 @@ func (c StorageConfig) Validate() error {
 		}
 	}
 	return nil
+}
+
+// buildsViewEngine reports whether New builds the view engine for cfg:
+// any of RootTemplate, ErrorPage or SSREnabled is set. view.NewEngine
+// fills an empty RootTemplate with the built-in template.
+func buildsViewEngine(cfg view.Config) bool {
+	return cfg.RootTemplate != "" || cfg.ErrorPage != "" || cfg.SSREnabled
 }
