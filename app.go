@@ -87,7 +87,7 @@ type App struct {
 	commands     *chain.Commands
 	seedersFn    func(*chain.Seeders)
 	seeders      *chain.Seeders
-	exceptionsFn func(contract.ErrorHandler)
+	errorsFn     func(contract.ErrorHandler)
 	bootstrapped bool
 	// bootstrapErr is the sticky result of the first bootstrap() run.
 	// A failed bootstrap must NOT be re-run (modules, middleware and
@@ -244,16 +244,20 @@ func New(opts ...Option) (*App, error) {
 	// no logger, which silently drops every Report. The app logger exists
 	// by this point (step 1), so replace the default with one bound to
 	// a.Log; the reporter count stays at one and consumers can still
-	// fully replace it via the Exceptions() chain method (SetReporters).
+	// fully replace it via the Errors() chain method (SetReporters).
 	// WithHandlerLogger routes the handler's own boot-time warnings
-	// (debug-mode notices) through a.Log as well.
-	a.Services.Errors = problem.NewHandler(
+	// (debug-mode notices) through a.Log as well. The framework default
+	// mappings (see errors_wiring.go) go on right after construction, so
+	// every rule an application registers later outranks them.
+	errHandler := problem.NewHandler(
 		problem.WithDebug(a.config.Debug),
 		problem.WithEnvironment(a.config.Env),
 		problem.WithTrustedProxies(clientip.CloneIPNets(trustedProxyNets)),
 		problem.WithHandlerLogger(a.Log),
 		problem.WithReporters(problem.NewLogReporter(problem.WithLogger(a.Log))),
 	)
+	installFrameworkErrorRules(errHandler)
+	a.Services.Errors = errHandler
 
 	// 3. Initialize crypto (auth/csrf may need it). Crypto is stateless
 	// after construction, no cleanup needed.
@@ -457,6 +461,7 @@ func New(opts ...Option) (*App, error) {
 			}
 		})
 	}
+	installErrorPageRenderer(a)
 
 	// 10. Initialize events dispatcher (skip if WithoutEvents was used, keep if pre-set by WithFakeEvents).
 	// The dispatcher itself has no Shutdown today; the router drains async
@@ -657,21 +662,26 @@ func New(opts ...Option) (*App, error) {
 	// reason as RedirectAllowlist above.
 	a.Services.InsecureFlashCookies = !a.config.Session.Secure
 	a.Router.SetServices(a.Services)
-	// V2-15: the router's default error path used to write a generic 500
-	// with no logging at all, so out of the box every handler error and
-	// recovered panic vanished. Wire the app logger so the default path
-	// emits exactly one error-level entry per 500-class failure (panics
-	// include the stack). Logging ownership is documented on
+	// Wire the app logger into the router's default error path (one
+	// error-level entry per 500-class failure, a warn entry per request
+	// deadline). Logging ownership is documented on
 	// router.SetErrorLogger: an error handler installed with
 	// Router.SetErrorHandler suppresses this default and owns reporting
-	// itself (typically by routing to ctx.Exceptions(), whose LogReporter
-	// is wired to a.Log above); the two paths never both fire for the
-	// same request.
-	// Closure (not a.Log.Error method value) so tests that swap a.Log
-	// after New() observe the replacement.
+	// itself, so the two paths never both fire for the same request.
+	// Closures (not a.Log method values) so tests that swap a.Log after
+	// New() observe the replacement.
 	a.Router.SetErrorLogger(func(msg string, kvs ...any) {
 		a.Log.Error(msg, kvs...)
 	})
+	a.Router.SetWarnLogger(func(msg string, kvs ...any) {
+		a.Log.Warn(msg, kvs...)
+	})
+	// Connect the router's error boundary to the error handler built at
+	// step 2. From here on the handler reports and renders every failed
+	// request, and its LogReporter (bound to a.Log) is the single log
+	// entry; the default path above serves only a consumer that removes
+	// the pipeline again with Router.SetErrorHandler(nil).
+	installErrorPipeline(a)
 	// Propagate the deployment-level trusted-proxy list parsed at step 2
 	// so Context.IP(), per-IP rate limits, and any future client-IP
 	// surface in the router agree with the throttle and error-handler layers.
@@ -960,9 +970,11 @@ func (a *App) Seeders(fn func(*chain.Seeders)) *App {
 	return a
 }
 
-// Exceptions registers a callback that configures the exception handler.
-func (a *App) Exceptions(fn func(contract.ErrorHandler)) *App {
-	a.exceptionsFn = fn
+// Errors registers a callback that configures the error handler
+// (a.Services.Errors). It runs during bootstrap, after every other chain
+// callback, and rules it registers outrank the framework defaults.
+func (a *App) Errors(fn func(contract.ErrorHandler)) *App {
+	a.errorsFn = fn
 	return a
 }
 

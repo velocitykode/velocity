@@ -1009,8 +1009,8 @@ func (c *Context) Validator() contract.Validator {
 	return s.Validator
 }
 
-// Exceptions returns the error handler.
-func (c *Context) Exceptions() contract.ErrorHandler {
+// Errors returns the error handler.
+func (c *Context) Errors() contract.ErrorHandler {
 	s := c.mustServices()
 	requireService(c, s.Errors, "errors")
 	return s.Errors

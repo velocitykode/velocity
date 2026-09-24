@@ -809,6 +809,31 @@ func TestContext_Report(t *testing.T) {
 	}
 }
 
+func TestContext_Errors(t *testing.T) {
+	tests := []struct {
+		name      string
+		services  *app.Services
+		wantPanic bool
+	}{
+		{name: "returns the error handler", services: &app.Services{Errors: &fakeErrorHandler{}}},
+		{name: "panics when the error handler is unset", services: &app.Services{}, wantPanic: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := NewTestContext(http.MethodGet, "/")
+			c.services = tt.services
+			defer func() {
+				if p := recover(); (p != nil) != tt.wantPanic {
+					t.Fatalf("recover() = %v, want panic %v", p, tt.wantPanic)
+				}
+			}()
+			if got := c.Errors(); got != tt.services.Errors {
+				t.Errorf("Errors() = %v, want %v", got, tt.services.Errors)
+			}
+		})
+	}
+}
+
 func TestWrap_CommittedAndWrittenSentinel(t *testing.T) {
 	tests := []struct {
 		name       string

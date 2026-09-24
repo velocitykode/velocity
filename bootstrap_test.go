@@ -87,7 +87,7 @@ func TestBootstrap_FullChain(t *testing.T) {
 		eventsCalled     bool
 		scheduleCalled   bool
 		commandsCalled   bool
-		exceptionsCalled bool
+		errorsCalled     bool
 	)
 
 	a.Modules(func(r *chain.ModuleRegistry) {
@@ -102,8 +102,8 @@ func TestBootstrap_FullChain(t *testing.T) {
 		scheduleCalled = true
 	}).Commands(func(r *chain.Commands) {
 		commandsCalled = true
-	}).Exceptions(func(h contract.ErrorHandler) {
-		exceptionsCalled = true
+	}).Errors(func(h contract.ErrorHandler) {
+		errorsCalled = true
 	})
 
 	if err := a.bootstrap(); err != nil {
@@ -128,8 +128,8 @@ func TestBootstrap_FullChain(t *testing.T) {
 	if !commandsCalled {
 		t.Error("Commands callback not called")
 	}
-	if !exceptionsCalled {
-		t.Error("Exceptions callback not called")
+	if !errorsCalled {
+		t.Error("Errors callback not called")
 	}
 }
 
@@ -142,8 +142,8 @@ func TestBootstrap_ChainOrderIndependent(t *testing.T) {
 	var order []string
 
 	// Register in reverse order
-	a.Exceptions(func(h contract.ErrorHandler) {
-		order = append(order, "exceptions")
+	a.Errors(func(h contract.ErrorHandler) {
+		order = append(order, "errors")
 	}).Commands(func(r *chain.Commands) {
 		order = append(order, "commands")
 	}).Schedule(func(s scheduler.TaskScheduler) {
@@ -163,7 +163,7 @@ func TestBootstrap_ChainOrderIndependent(t *testing.T) {
 	}
 
 	// Execution order must be fixed regardless of registration order
-	want := []string{"modules", "middleware", "routes", "events", "schedule", "commands", "exceptions"}
+	want := []string{"modules", "middleware", "routes", "events", "schedule", "commands", "errors"}
 	if len(order) != len(want) {
 		t.Fatalf("got %d calls, want %d: %v", len(order), len(want), order)
 	}
@@ -512,7 +512,7 @@ func TestBootstrap_ScheduleRegistered(t *testing.T) {
 	}
 }
 
-func TestBootstrap_ExceptionsConfigured(t *testing.T) {
+func TestBootstrap_ErrorsConfigured(t *testing.T) {
 	a, err := NewTestApp()
 	if err != nil {
 		t.Fatalf("NewTestApp() error: %v", err)
@@ -520,7 +520,7 @@ func TestBootstrap_ExceptionsConfigured(t *testing.T) {
 
 	var handlerRef contract.ErrorHandler
 
-	a.Exceptions(func(h contract.ErrorHandler) {
+	a.Errors(func(h contract.ErrorHandler) {
 		handlerRef = h
 	})
 
@@ -529,10 +529,10 @@ func TestBootstrap_ExceptionsConfigured(t *testing.T) {
 	}
 
 	if handlerRef == nil {
-		t.Fatal("exceptions handler is nil")
+		t.Fatal("error handler is nil")
 	}
 	if handlerRef != a.Services.Errors {
-		t.Error("exceptions handler does not match a.Services.Errors")
+		t.Error("error handler does not match a.Services.Errors")
 	}
 }
 
@@ -572,9 +572,9 @@ func TestBootstrap_ChainReturnsSameApp(t *testing.T) {
 		t.Error("Commands() did not return same *App")
 	}
 
-	got = a.Exceptions(func(contract.ErrorHandler) {})
+	got = a.Errors(func(contract.ErrorHandler) {})
 	if got != a {
-		t.Error("Exceptions() did not return same *App")
+		t.Error("Errors() did not return same *App")
 	}
 }
 

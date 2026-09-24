@@ -16,12 +16,12 @@ import (
 )
 
 // Bootstrap runs the declarative chain (modules, middleware, routes, events,
-// schedule, exceptions) without starting the HTTP server. Safe to call multiple
-// times, but only the first call does the work. The result is sticky: after a
-// successful run subsequent calls return nil, and after a failed run they
-// return the same error (a partially-completed bootstrap is never re-run,
-// because modules, middleware and routes registered before the failure
-// would be registered twice).
+// schedule, commands, seeders, errors) without starting the HTTP server.
+// Safe to call multiple times, but only the first call does the work. The
+// result is sticky: after a successful run subsequent calls return nil, and
+// after a failed run they return the same error (a partially-completed
+// bootstrap is never re-run, because modules, middleware and routes
+// registered before the failure would be registered twice).
 func (a *App) Bootstrap() error {
 	return a.bootstrap()
 }
@@ -168,9 +168,12 @@ func (a *App) runBootstrap() error {
 		a.seedersFn(a.seeders)
 	}
 
-	// 8. Configure exceptions
-	if a.exceptionsFn != nil {
-		a.exceptionsFn(a.Services.Errors)
+	// 8. Configure the error handler. The view engine's error page facet
+	// is re-read first because a module may have replaced the view
+	// engine since New.
+	installErrorPageRenderer(a)
+	if a.errorsFn != nil {
+		a.errorsFn(a.Services.Errors)
 	}
 
 	// 9. Refuse to run with CookieStore-only sessions in production

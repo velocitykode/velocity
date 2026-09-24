@@ -2,6 +2,7 @@ package velocity
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -260,15 +261,47 @@ func guardProductionDataLoss(a *App, name string, args []string) error {
 	return guardProduction(a, name, args, "this command destroys database data")
 }
 
-// Run dispatches CLI commands or starts the HTTP server.
-// If os.Args contains a command (e.g. "routes", "migrate fresh"), it runs
-// that command. With no arguments, it displays available commands.
+// Run dispatches CLI commands. If os.Args contains a command (e.g.
+// "routes", "migrate fresh"), it runs that command; with no arguments, it
+// displays available commands.
+//
+// A command that fails goes through the error handler's HandleConsole: the
+// error is reported once, one "error: <message>" line goes to stderr, and
+// the process exits with the code HandleConsole returns (the error's
+// contract.ExitCoder code, otherwise 1). Run returns the error instead only
+// when no error handler is configured.
 func (a *App) Run() error {
-	if len(os.Args) > 1 {
-		return a.runCommand(os.Args[1:])
+	if len(os.Args) <= 1 {
+		a.printHelp()
+		return nil
 	}
-	a.printHelp()
+	code, err := a.runConsole(os.Args[1:], os.Stderr)
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		os.Exit(code)
+	}
 	return nil
+}
+
+// runConsole runs argv as a command and returns the process exit code. A
+// failed command is handed to the error handler's HandleConsole, which
+// reports it, writes one line to stderr and names the code. With no error
+// handler configured the command error is returned unchanged with code 1.
+func (a *App) runConsole(argv []string, stderr io.Writer) (int, error) {
+	err := a.runCommand(argv)
+	if err == nil {
+		return 0, nil
+	}
+	var h contract.ErrorHandler
+	if a.Services != nil {
+		h = a.Services.Errors
+	}
+	if h == nil {
+		return 1, err
+	}
+	return h.HandleConsole(stderr, err), nil
 }
 
 // runCommand resolves argv against the registry, longest name first, so a
@@ -287,10 +320,9 @@ func (a *App) runCommand(argv []string) error {
 			return cmd.run(a, argv[n:])
 		}
 	}
-	// Return the error instead of os.Exit(1) so deferred cleanup (notably
-	// Serve()'s shutdownCancel and any caller-installed defers) gets a chance
-	// to run. The top-level caller (main.go via Serve() → Run()) is
-	// responsible for converting the returned error into a non-zero exit code.
+	// Return the error rather than exiting here: Run hands it to the error
+	// handler's HandleConsole, which reports it once and names the exit
+	// code.
 	a.printHelp()
 	return fmt.Errorf("vel: unknown command %q", strings.Join(words, " "))
 }

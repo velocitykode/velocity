@@ -1,0 +1,356 @@
+package routerbridge
+
+import (
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/problem"
+	"github.com/velocitykode/velocity/router"
+)
+
+// spyHandler records what HandleRequest received and then behaves like the
+// fake handler (writes the resolved status when nothing was written).
+type spyHandler struct {
+	*problem.FakeHandler
+
+	mu     sync.Mutex
+	calls  int
+	err    error
+	ctx    *contract.ErrorContext
+	rcWasW bool
+}
+
+func newSpy() *spyHandler {
+	return &spyHandler{FakeHandler: problem.NewFakeHandler()}
+}
+
+func (s *spyHandler) HandleRequest(rc contract.RenderContext, err error, ctx *contract.ErrorContext) {
+	s.mu.Lock()
+	s.calls++
+	s.err = err
+	s.ctx = ctx
+	s.rcWasW = rc.Written()
+	s.mu.Unlock()
+	s.FakeHandler.HandleRequest(rc, err, ctx)
+}
+
+// staticUser is a RequestUserIdentifier naming one user.
+type staticUser string
+
+func (u staticUser) RequestUserID(*http.Request) string { return string(u) }
+
+// panicUser is a RequestUserIdentifier that panics.
+type panicUser struct{}
+
+func (panicUser) RequestUserID(*http.Request) string { panic("identifier exploded") }
+
+// serve registers handler on a fresh router, installs the bridge with
+// opts, serves one GET and returns the recorder.
+func serve(t *testing.T, handler router.HandlerFunc, opts ...Option) *httptest.ResponseRecorder {
+	t.Helper()
+	r := router.New()
+	Install(r, opts...)
+	r.Get("/x", handler)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/x?token=secret", nil)
+	req.Header.Set("User-Agent", "bridge-test")
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func TestInstall_HandlerErrors(t *testing.T) {
+	tests := []struct {
+		name          string
+		handler       router.HandlerFunc
+		userID        contract.RequestUserIdentifier
+		wantStatus    int
+		wantRecovered bool
+		wantUser      string
+	}{
+		{
+			name:       "status error",
+			handler:    func(*router.Context) error { return problem.NotFound() },
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "plain error with user facet",
+			handler:    func(*router.Context) error { return errors.New("boom") },
+			userID:     staticUser("user-7"),
+			wantStatus: http.StatusInternalServerError,
+			wantUser:   "user-7",
+		},
+		{
+			name:       "panicking user facet leaves the user empty",
+			handler:    func(*router.Context) error { return errors.New("boom") },
+			userID:     panicUser{},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name:          "recovered panic",
+			handler:       func(*router.Context) error { panic("handler exploded") },
+			wantStatus:    http.StatusInternalServerError,
+			wantRecovered: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spy := newSpy()
+			opts := []Option{WithHandler(func() contract.ErrorHandler { return spy })}
+			if tt.userID != nil {
+				opts = append(opts, WithUserID(tt.userID))
+			}
+			w := serve(t, tt.handler, opts...)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+			if spy.calls != 1 {
+				t.Fatalf("HandleRequest calls = %d, want 1", spy.calls)
+			}
+			ctx := spy.ctx
+			if ctx.Method != http.MethodGet || ctx.URL != "/x" || ctx.IP != "192.0.2.1" || ctx.UserAgent != "bridge-test" {
+				t.Errorf("request facts = %q %q %q %q", ctx.Method, ctx.URL, ctx.IP, ctx.UserAgent)
+			}
+			if ctx.RequestID == "" || ctx.TraceID == "" || ctx.SpanID == "" {
+				t.Errorf("ids = %q %q %q, want all set", ctx.RequestID, ctx.TraceID, ctx.SpanID)
+			}
+			if ctx.Timestamp.IsZero() || ctx.Extra == nil {
+				t.Error("error context not initialised")
+			}
+			if ctx.UserID != tt.wantUser {
+				t.Errorf("UserID = %q, want %q", ctx.UserID, tt.wantUser)
+			}
+			if ctx.Recovered != tt.wantRecovered {
+				t.Errorf("Recovered = %v, want %v", ctx.Recovered, tt.wantRecovered)
+			}
+			if tt.wantRecovered {
+				if ctx.PanicStack == "" || ctx.StackTrace == nil || len(ctx.StackTrace.Frames) == 0 {
+					t.Error("recovered panic without a stack")
+				}
+				var pe *router.PanicError
+				if !errors.As(spy.err, &pe) {
+					t.Errorf("error = %v, want a *router.PanicError", spy.err)
+				}
+			}
+			if spy.rcWasW {
+				t.Error("render context reported written before rendering")
+			}
+		})
+	}
+}
+
+func TestInstall_CommittedReportsOnly(t *testing.T) {
+	spy := newSpy()
+	w := serve(t, func(c *router.Context) error {
+		c.Response.WriteHeader(http.StatusAccepted)
+		_, _ = c.Response.Write([]byte("partial"))
+		return errors.New("late failure")
+	}, WithHandler(func() contract.ErrorHandler { return spy }))
+
+	if w.Code != http.StatusAccepted || w.Body.String() != "partial" {
+		t.Fatalf("response = %d %q, want the handler's own 202 partial", w.Code, w.Body.String())
+	}
+	if spy.calls != 1 || len(spy.ReportedErrors()) != 1 {
+		t.Fatalf("calls = %d, reports = %d; want 1 and 1", spy.calls, len(spy.ReportedErrors()))
+	}
+	if !spy.rcWasW {
+		t.Error("render context for a committed response must report written")
+	}
+}
+
+func TestInstall_FallsBackToRouterDefault(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []Option
+	}{
+		{name: "no resolver"},
+		{name: "resolver returns nil", opts: []Option{WithHandler(func() contract.ErrorHandler { return nil })}},
+		{name: "nil option ignored", opts: []Option{nil}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := serve(t, func(*router.Context) error { return problem.NotFound("gone missing") }, tt.opts...)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", w.Code)
+			}
+			if !strings.Contains(w.Body.String(), "gone missing") {
+				t.Errorf("body = %q, want the router default rendering", w.Body.String())
+			}
+		})
+	}
+}
+
+func TestInstall_ResolvedPerRequest(t *testing.T) {
+	first, second := newSpy(), newSpy()
+	current := first
+	r := router.New()
+	Install(r, WithHandler(func() contract.ErrorHandler { return current }))
+	r.Get("/x", func(*router.Context) error { return errors.New("boom") })
+
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
+	current = second
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
+
+	if first.calls != 1 || second.calls != 1 {
+		t.Errorf("calls = %d and %d, want 1 each", first.calls, second.calls)
+	}
+}
+
+func TestInstall_NilRouter(t *testing.T) {
+	Install(nil, WithHandler(func() contract.ErrorHandler { return newSpy() }))
+}
+
+func TestInstall_ThroughProblemHandler(t *testing.T) {
+	rec := &recordingReporter{}
+	h := problem.NewHandler(problem.WithReporters(rec))
+	r := router.New()
+	Install(r, WithHandler(func() contract.ErrorHandler { return h }))
+	r.Get("/boom", func(*router.Context) error { return errors.New("db down") })
+	r.Get("/panic", func(*router.Context) error { panic("exploded") })
+	r.Get("/missing", func(*router.Context) error { return problem.NotFound() })
+
+	for _, tt := range []struct {
+		path       string
+		wantStatus int
+	}{
+		{path: "/boom", wantStatus: http.StatusInternalServerError},
+		{path: "/panic", wantStatus: http.StatusInternalServerError},
+		{path: "/missing", wantStatus: http.StatusNotFound},
+	} {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, tt.path, nil))
+		if w.Code != tt.wantStatus {
+			t.Errorf("%s: status = %d, want %d", tt.path, w.Code, tt.wantStatus)
+		}
+	}
+	if rec.count() != 2 {
+		t.Errorf("reports = %d, want 2 (the 500 and the panic)", rec.count())
+	}
+}
+
+// recordingReporter counts reports.
+type recordingReporter struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (r *recordingReporter) Report(error, *contract.ErrorContext) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.n++
+}
+
+func (r *recordingReporter) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.n
+}
+
+func TestHandle(t *testing.T) {
+	tests := []struct {
+		name       string
+		ctx        func() *router.Context
+		err        error
+		info       router.ErrorInfo
+		wantCalls  int
+		wantStatus int
+	}{
+		{
+			name:      "nil context",
+			ctx:       func() *router.Context { return nil },
+			err:       errors.New("boom"),
+			wantCalls: 0,
+		},
+		{
+			name: "nil error",
+			ctx: func() *router.Context {
+				c, _ := router.NewTestContext(http.MethodGet, "/x")
+				return c
+			},
+			wantCalls: 0,
+		},
+		{
+			name: "no request",
+			ctx: func() *router.Context {
+				return &router.Context{Response: httptest.NewRecorder()}
+			},
+			err:        errors.New("boom"),
+			wantCalls:  1,
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "info carries the ids and stack",
+			ctx: func() *router.Context {
+				c, _ := router.NewTestContext(http.MethodPost, "/y")
+				return c
+			},
+			err:        errors.New("boom"),
+			info:       router.ErrorInfo{RequestID: "req-1", TraceID: "trace-1", SpanID: "span-1", Recovered: true, Stack: "goroutine 1", StackTrace: contract.CaptureStackTrace(0)},
+			wantCalls:  1,
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spy := newSpy()
+			c := tt.ctx()
+			Handle(c, tt.err, tt.info, spy)
+			if spy.calls != tt.wantCalls {
+				t.Fatalf("calls = %d, want %d", spy.calls, tt.wantCalls)
+			}
+			if tt.wantCalls == 0 {
+				return
+			}
+			if rec, ok := c.Response.(*httptest.ResponseRecorder); ok && rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			ctx := spy.ctx
+			if ctx.RequestID != tt.info.RequestID || ctx.TraceID != tt.info.TraceID || ctx.SpanID != tt.info.SpanID {
+				t.Errorf("ids = %q %q %q", ctx.RequestID, ctx.TraceID, ctx.SpanID)
+			}
+			if ctx.Recovered != tt.info.Recovered || ctx.PanicStack != tt.info.Stack || ctx.StackTrace != tt.info.StackTrace {
+				t.Errorf("panic facts not carried: %+v", ctx)
+			}
+			if ctx.UserID != "" {
+				t.Errorf("UserID = %q, want empty from Handle", ctx.UserID)
+			}
+		})
+	}
+}
+
+func TestHandle_NilHandlerUsesRouterDefault(t *testing.T) {
+	c, w := router.NewTestContext(http.MethodGet, "/x")
+	Handle(c, problem.Forbidden("not yours"), router.ErrorInfo{}, nil)
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "not yours") {
+		t.Errorf("response = %d %q, want the router default 403", w.Code, w.Body.String())
+	}
+}
+
+func TestCommittedRenderContext(t *testing.T) {
+	c, w := router.NewTestContext(http.MethodGet, "/x")
+	rc := committedRenderContext{RenderContext: c.RenderContext()}
+
+	if !rc.Written() {
+		t.Error("Written = false, want true")
+	}
+	rc.SetHeader("X-Late", "1")
+	rc.WriteHeader(http.StatusTeapot)
+	n, err := rc.Write([]byte("late body"))
+	if n != 0 || !errors.Is(err, contract.ErrResponseWritten) {
+		t.Errorf("Write = %d, %v; want 0 and ErrResponseWritten", n, err)
+	}
+	if err := rc.Redirect(http.StatusFound, "/elsewhere"); !errors.Is(err, contract.ErrInvalidRedirect) {
+		t.Errorf("Redirect error = %v, want ErrInvalidRedirect", err)
+	}
+	if w.Code != http.StatusOK || w.Body.Len() != 0 || w.Header().Get("X-Late") != "" || w.Header().Get("Location") != "" {
+		t.Errorf("committed render context wrote: %d %q %v", w.Code, w.Body.String(), w.Header())
+	}
+	if rc.Request() != c.Request || rc.Writer() != c.Response {
+		t.Error("request or writer not passed through")
+	}
+}

@@ -78,8 +78,9 @@ func TestFailureBridge_BackgroundFailuresReachReporters(t *testing.T) {
 	}
 
 	// Caller-owned failure: NOT bridged. Request errors reach Report
-	// through the problem handler on the request path; bridging the
-	// event too would double-report.
+	// exactly once through the router's error boundary, which New
+	// connects to the error handler; bridging the event too would
+	// double-report.
 	if err := app.Services.Events.Dispatch(context.Background(), &router.RequestFailed{
 		Context: context.Background(),
 		Method:  "GET",
@@ -100,6 +101,6 @@ func TestFailureBridge_BackgroundFailuresReachReporters(t *testing.T) {
 func TestFailureBridge_RouterRequestFailedNotFailureEvent(t *testing.T) {
 	var ev any = &router.RequestFailed{}
 	if _, ok := ev.(contract.FailureEvent); ok {
-		t.Fatal("router.RequestFailed must not implement contract.FailureEvent: request errors already reach Report via the problem handler; bridging the event double-reports")
+		t.Fatal("router.RequestFailed must not implement contract.FailureEvent: request errors already reach Report once through the router error boundary New wires to the error handler; bridging the event double-reports")
 	}
 }

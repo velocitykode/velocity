@@ -1,7 +1,6 @@
 package velocity
 
 import (
-	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -147,28 +146,26 @@ func TestRunCmd_NoArgsListsUserCommands(t *testing.T) {
 	}
 }
 
-// TestApp_RunUnknownCommand_ReturnsError asserts that dispatching an unknown
-// CLI token returns an error instead of calling os.Exit(1). The os.Exit
-// path would bypass Serve()'s deferred shutdownCancel and any caller-
-// installed defers; returning the error lets those run. If this test
-// completes at all (instead of terminating the test binary) we know
-// os.Exit was not invoked.
-func TestApp_RunUnknownCommand_ReturnsError(t *testing.T) {
+// TestApp_RunConsole_UnknownCommand asserts that dispatching an unknown
+// CLI token goes through the error handler's HandleConsole: one line on
+// stderr naming the token and a non-zero exit code, returned (not exited)
+// so the command runner is testable in-process.
+func TestApp_RunConsole_UnknownCommand(t *testing.T) {
 	a, err := NewTestApp()
 	if err != nil {
 		t.Fatalf("NewTestApp: %v", err)
 	}
 
-	saved := os.Args
-	os.Args = []string{"vel", "nonexistent"}
-	t.Cleanup(func() { os.Args = saved })
-
-	err = a.Run()
-	if err == nil {
-		t.Fatal("Run() with unknown command returned nil error, want non-nil")
+	var stderr strings.Builder
+	code, err := a.runConsole([]string{"nonexistent"}, &stderr)
+	if err != nil {
+		t.Fatalf("runConsole returned error %v, want it handled", err)
 	}
-	if !strings.Contains(err.Error(), "nonexistent") {
-		t.Errorf("Run() error = %q, want message containing %q", err.Error(), "nonexistent")
+	if code == 0 {
+		t.Fatal("runConsole with unknown command returned exit code 0, want non-zero")
+	}
+	if !strings.Contains(stderr.String(), "nonexistent") {
+		t.Errorf("stderr = %q, want message containing %q", stderr.String(), "nonexistent")
 	}
 }
 

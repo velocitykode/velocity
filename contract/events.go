@@ -108,7 +108,9 @@ type Dispatcher interface {
 // queries, outbound HTTP, request handler errors) must NOT implement it:
 // the caller's boundary owns reporting, and bridging them would
 // double-report. router.RequestFailed is deliberately excluded for this
-// reason; request errors reach Report through the problem handler.
+// reason: every request error and recovered panic already reaches Report
+// exactly once through the router's error boundary, which velocity.New
+// connects to the error handler.
 type FailureEvent interface {
 	// FailureError returns the failure as an error for reporting.
 	FailureError() error
