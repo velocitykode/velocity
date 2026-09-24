@@ -85,9 +85,10 @@ func hashClientIP(manager *Manager, r *http.Request) string {
 }
 
 // denyUnauthenticated returns an *UnauthenticatedError naming the default
-// scheme and the manager's login target, and writes nothing: the error
-// pipeline answers it, and its render rule stashes the intended URL when
-// it redirects to the login target (see Manager.RenderUnauthenticated).
+// scheme and the manager's login target and carrying the manager, and
+// writes nothing: the error pipeline answers it, and its render rule
+// stashes the intended URL in this manager's session when it redirects to
+// the login target (see Manager.RenderUnauthenticated).
 // Shared by all auth-requiring middleware. The manager's logger records
 // the denial when installed.
 func denyUnauthenticated(manager *Manager, c *router.Context) error {
@@ -95,6 +96,7 @@ func denyUnauthenticated(manager *Manager, c *router.Context) error {
 	return &UnauthenticatedError{
 		Schemes:    []string{manager.defaultSchemeName()},
 		RedirectTo: manager.loginTarget(c.Request),
+		manager:    manager,
 	}
 }
 

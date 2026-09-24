@@ -549,3 +549,77 @@ func TestGuestErrorRule_ThroughApp(t *testing.T) {
 		})
 	}
 }
+
+// TestAuthErrorRules_StashesThroughTheDenyingManager asserts the
+// unauthenticated render rule stashes the intended URL through, and
+// redirects to the login target of, the manager whose middleware denied
+// the request, whatever manager the app's services hold: none, one with no
+// session, or another session manager (whose session stays untouched). A
+// hand-built error names no manager and still goes through the services'.
+func TestAuthErrorRules_StashesThroughTheDenyingManager(t *testing.T) {
+	tests := []struct {
+		name            string
+		services        string // "none", "sessionless", "session"
+		handBuilt       bool
+		wantLocation    string
+		wantCustomStash string
+		wantSvcStash    string
+	}{
+		{name: "no services manager", services: "none", wantLocation: "/custom/login", wantCustomStash: "/settings?tab=2"},
+		{name: "sessionless services manager", services: "sessionless", wantLocation: "/custom/login", wantCustomStash: "/settings?tab=2"},
+		{name: "two session managers", services: "session", wantLocation: "/custom/login", wantCustomStash: "/settings?tab=2"},
+		{name: "hand-built error", services: "session", handBuilt: true, wantLocation: "/services/login", wantSvcStash: "/settings?tab=2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, _, rec := newPipelineApp(t)
+			a.Services.Errors.SetDebug(false)
+
+			svcSess := auth.NewSession("svc")
+			switch tt.services {
+			case "none":
+				a.Services.Auth = nil
+			case "sessionless":
+				m := auth.NewManager()
+				m.SetLoginRedirect(func(*http.Request) string { return "/services/login" })
+				a.Services.Auth = m
+			case "session":
+				m := auth.NewManager()
+				m.RegisterScheme("web", &stubAuthScheme{sess: svcSess})
+				m.SetLoginRedirect(func(*http.Request) string { return "/services/login" })
+				a.Services.Auth = m
+			}
+
+			customSess := auth.NewSession("custom")
+			custom := auth.NewManager()
+			custom.RegisterScheme("web", &stubAuthScheme{sess: customSess})
+			custom.SetLoginRedirect(func(*http.Request) string { return "/custom/login" })
+
+			if tt.handBuilt {
+				a.Router.Get("/settings", func(*router.Context) error { return &auth.UnauthenticatedError{} })
+			} else {
+				a.Router.Use(auth.AuthMiddleware(custom))
+				a.Router.Get("/settings", func(*router.Context) error {
+					t.Error("guarded handler ran")
+					return nil
+				})
+			}
+
+			w := httptest.NewRecorder()
+			a.Router.ServeHTTP(w, authRequest(http.MethodGet, "/settings?tab=2", "browser"))
+
+			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != tt.wantLocation {
+				t.Fatalf("response = %d %q, want 303 %q (body %q)", w.Code, w.Header().Get("Location"), tt.wantLocation, w.Body.String())
+			}
+			if got, _ := customSess.Get(router.IntendedSessionKey).(string); got != tt.wantCustomStash {
+				t.Errorf("denying manager's stash = %q, want %q", got, tt.wantCustomStash)
+			}
+			if got, _ := svcSess.Get(router.IntendedSessionKey).(string); got != tt.wantSvcStash {
+				t.Errorf("services manager's stash = %q, want %q", got, tt.wantSvcStash)
+			}
+			if rec.count() != 0 {
+				t.Errorf("reports = %d, want 0", rec.count())
+			}
+		})
+	}
+}

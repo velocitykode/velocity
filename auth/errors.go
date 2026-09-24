@@ -21,13 +21,20 @@ const sessionUserIDKey = "user_id"
 // user and has none. It answers 401 and is not reported. The framework's
 // default render rule answers a request that wants JSON with a 401
 // problem+json body and any other request, Inertia included, with a
-// redirect to the login target (see Manager.RenderUnauthenticated).
+// redirect to the login target (see Manager.RenderUnauthenticated). One
+// returned by this package's middleware remembers the manager that denied
+// the request, so the render rule stashes the intended URL in that
+// manager's session.
 type UnauthenticatedError struct {
 	// Schemes names the authentication schemes that were checked.
 	Schemes []string
 	// RedirectTo is the login target for a browser request. Empty means
 	// the auth manager's login redirect.
 	RedirectTo string
+
+	// manager is the manager whose middleware denied the request, or nil
+	// for an error built outside this package.
+	manager *Manager
 }
 
 // Error returns a message naming the checked schemes.
@@ -198,6 +205,11 @@ func (m *Manager) RequestUserID(r *http.Request) (id string) {
 // same-origin and not an allowed host) is logged and returns false,
 // leaving the 401 to the pipeline. A nil manager uses "/login".
 //
+// The manager is the one that denied the request when err was returned
+// by this package's middleware (it is carried on the error), otherwise m:
+// its login target is the fallback for an empty RedirectTo, its session
+// takes the stash and its logger records a refused redirect.
+//
 // Before redirecting, a GET request's URL (path and query) is stashed in
 // the session under router.IntendedSessionKey and the session is saved,
 // so its cookie precedes the redirect status line and
@@ -211,12 +223,15 @@ func (m *Manager) RenderUnauthenticated(rc contract.RenderContext, err error, _ 
 	if rc == nil || rc.WantsJSON() {
 		return false
 	}
-	m.stashIntended(rc)
 	target := ""
 	var ue *UnauthenticatedError
-	if errors.As(err, &ue) {
+	if errors.As(err, &ue) && ue != nil {
 		target = ue.RedirectTo
+		if ue.manager != nil {
+			m = ue.manager
+		}
 	}
+	m.stashIntended(rc)
 	if target == "" {
 		target = m.loginTarget(rc.Request())
 	}
