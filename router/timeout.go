@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -23,14 +24,15 @@ var ErrHandlerTimeout = errors.New("velocity/router: handler timeout")
 // writes are buffered in memory rather than streamed to the wire. This
 // mirrors net/http.TimeoutHandler's design: the handler only ever sees
 // the buffer, and the middleware decides at completion (or timeout)
-// whether to flush the buffer to the real writer or replace it with a
-// 503 response.
+// whether to flush the buffer to the real writer or discard it and
+// return a 503 error for the router's error boundary to render.
 //
 // Because every handler-facing method only touches in-memory state
 // guarded by tw.mu, a blocked or stuck underlying network write cannot
-// pin tw.mu and prevent the timeout path from running. The middleware
-// is the only code path that touches the real ResponseWriter, and it
-// does so after acquiring tw.mu just like the handler would.
+// pin tw.mu and prevent the timeout path from running. The handler never
+// touches the real ResponseWriter: the middleware flushes to it under
+// tw.mu when the handler finished in time, and after a timeout only the
+// error boundary writes to it, once the middleware has returned.
 //
 // Streaming (http.Flusher) is intentionally unsupported under Timeout
 // middleware: a flush would have to commit headers to the wire, after
@@ -59,7 +61,7 @@ type timeoutWriter struct {
 	wroteHeader bool
 
 	// timedOut is set by the middleware once it has decided to abandon
-	// the buffered response and write its own 503. Subsequent handler
+	// the buffered response and return its 503 error. Subsequent handler
 	// Writes return ErrHandlerTimeout.
 	timedOut bool
 }
@@ -128,24 +130,17 @@ func (tw *timeoutWriter) flushBuffered() bool {
 	return true
 }
 
-// writeTimeout marks the writer as timed out and emits the 503 response
-// on the real ResponseWriter, discarding any buffered handler output.
-// Returns true if the timeout body was written.
-func (tw *timeoutWriter) writeTimeout(body string) bool {
+// markTimedOut switches the writer to the timed-out state and discards
+// any buffered handler output: every later handler Write returns
+// ErrHandlerTimeout and WriteHeader is a no-op, so nothing the handler
+// does from here on reaches the real ResponseWriter. The real writer has
+// never had a status written (the handler's WriteHeader only mutated the
+// buffer), so the error boundary can still render the 503.
+func (tw *timeoutWriter) markTimedOut() {
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
-	if tw.timedOut {
-		return false
-	}
 	tw.timedOut = true
-	// We intentionally do not consult tw.wroteHeader here: because
-	// the handler's WriteHeader only mutated the buffer, the real
-	// ResponseWriter has never had a status written. It is safe to
-	// emit our 503 directly.
-	tw.w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	tw.w.WriteHeader(http.StatusServiceUnavailable)
-	_, _ = tw.w.Write([]byte(body))
-	return true
+	tw.wbuf.Reset()
 }
 
 // Unwrap exposes the wrapped writer for http.ResponseController.
@@ -164,9 +159,12 @@ func (tw *timeoutWriter) Push(target string, opts *http.PushOptions) error {
 }
 
 // Timeout returns a middleware that cancels the request context after the
-// given duration. If the handler does not finish before the deadline, a
-// 503 Service Unavailable response is written and the request is
-// released to the client immediately. The inner handler may still be
+// given duration. If the handler does not finish before the deadline, the
+// middleware returns a 503 *contract.HTTPError wrapping the context error
+// without waiting for the handler, and the router's error boundary
+// renders it. The wrapped error is context.DeadlineExceeded, or
+// context.Canceled when the client went away first (the default boundary
+// then writes nothing). The inner handler may still be
 // running, but its subsequent writes are swallowed by a timeout-safe
 // wrapper, so no race or late body can reach the wire. This mirrors the
 // design of net/http.TimeoutHandler in the standard library.
@@ -239,15 +237,15 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 				mergeValues(c.values, clone.values)
 				return err
 			case <-ctx.Done():
-				// Write the 503 through the timeout-safe writer
-				// and return immediately. The handler goroutine
-				// continues to run on the cloned context but
-				// can only mutate the buffer, which is now
-				// discarded. This intentionally does NOT block
-				// on <-done; a misbehaving handler that
+				// Mark the writer timed out and return the 503
+				// immediately; the error boundary writes it. The
+				// handler goroutine continues to run on the
+				// cloned context but can only mutate the buffer,
+				// which is now discarded. This intentionally does
+				// NOT block on <-done; a misbehaving handler that
 				// ignores ctx.Done() must not pin this request.
-				tw.writeTimeout("Service Unavailable")
-				return nil
+				tw.markTimedOut()
+				return contract.NewHTTPError(http.StatusServiceUnavailable).WithCause(ctx.Err())
 			}
 		}
 	}

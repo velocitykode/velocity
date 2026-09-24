@@ -1,11 +1,15 @@
 package router
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +43,8 @@ type writerCase struct {
 	textBody string
 	// detail is the problem+json detail the default handler writes.
 	detail string
+	// is, when set, must match the returned error under errors.Is.
+	is error
 }
 
 func writerCases() []writerCase {
@@ -78,6 +84,21 @@ func writerCases() []writerCase {
 			numericHeaders: []string{"Retry-After", "X-RateLimit-Reset"},
 			textBody:       "Rate limit exceeded\n",
 			detail:         "Rate limit exceeded",
+		},
+		{
+			name: "timeout",
+			setup: func(r *VelocityRouterV2) {
+				r.Use(Timeout(20 * time.Millisecond))
+				r.Get("/slow", func(c *Context) error {
+					<-c.Request.Context().Done()
+					return nil
+				})
+			},
+			request:  func() *http.Request { return httptest.NewRequest(http.MethodGet, "/slow", nil) },
+			status:   http.StatusServiceUnavailable,
+			textBody: "Service Unavailable\n",
+			detail:   "Service Unavailable",
+			is:       context.DeadlineExceeded,
 		},
 	}
 }
@@ -168,6 +189,9 @@ func TestRouterWriters_SeamReceivesHTTPError(t *testing.T) {
 			}
 			if he.StatusCode() != tc.status {
 				t.Errorf("StatusCode() = %d, want %d", he.StatusCode(), tc.status)
+			}
+			if tc.is != nil && !errors.Is(call.err, tc.is) {
+				t.Errorf("error %v does not match %v", call.err, tc.is)
 			}
 			checkHeaders(t, "error", he.Headers(), tc)
 			if call.info.Committed || call.info.Recovered {
@@ -260,5 +284,160 @@ func TestUnmatched_GlobalMiddlewareSeesTheError(t *testing.T) {
 				t.Errorf("status = %d, want %d", w.Code, tt.status)
 			}
 		})
+	}
+}
+
+// A handler that keeps running past its deadline and keeps writing
+// (status, headers, body) must never produce a second response: the error
+// boundary writes the one answer and the late writes are discarded. The
+// handler starts writing the moment its deadline fires and does not stop
+// until the request is over, so its writes overlap the boundary's under
+// -race.
+func TestTimeout_LateWriterProducesOneBody(t *testing.T) {
+	tests := []struct {
+		name       string
+		accept     string
+		seam       bool
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "text client, default handler", wantStatus: http.StatusServiceUnavailable, wantBody: "Service Unavailable\n"},
+		{name: "json client, default handler", accept: "application/json", wantStatus: http.StatusServiceUnavailable},
+		{name: "installed error handler", seam: true, wantStatus: http.StatusInternalServerError, wantBody: "seam body"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stop := make(chan struct{})
+			finished := make(chan error, 1)
+
+			r := NewV2()
+			r.Use(Timeout(20 * time.Millisecond))
+			if tt.seam {
+				seam := &seamRecorder{body: "seam body"}
+				r.SetErrorHandler(seam.fn)
+			}
+			r.Get("/late", func(c *Context) error {
+				<-c.Request.Context().Done()
+				for {
+					c.Response.Header().Set("X-Late", "1")
+					c.Response.WriteHeader(http.StatusTeapot)
+					_, err := c.Response.Write([]byte("late body"))
+					select {
+					case <-stop:
+						finished <- err
+						return errors.New("late handler error")
+					default:
+						runtime.Gosched()
+					}
+				}
+			})
+
+			req := httptest.NewRequest(http.MethodGet, "/late", nil)
+			if tt.accept != "" {
+				req.Header.Set("Accept", tt.accept)
+			}
+			w := newHeaderCountingRecorder()
+			r.ServeHTTP(w, req)
+
+			close(stop)
+			select {
+			case err := <-finished:
+				if !errors.Is(err, ErrHandlerTimeout) {
+					t.Errorf("late Write error = %v, want ErrHandlerTimeout", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("late handler never finished")
+			}
+
+			if w.headerCalls != 1 {
+				t.Errorf("status line written %d times, want 1", w.headerCalls)
+			}
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+			body := w.Body.String()
+			if strings.Contains(body, "late body") || w.Header().Get("X-Late") != "" {
+				t.Errorf("late handler output reached the wire: body %q, X-Late %q", body, w.Header().Get("X-Late"))
+			}
+			if tt.wantBody != "" && body != tt.wantBody {
+				t.Errorf("body = %q, want exactly %q", body, tt.wantBody)
+			}
+			if tt.accept != "" {
+				var p problemBody
+				if err := json.Unmarshal([]byte(body), &p); err != nil || p.Status != tt.wantStatus {
+					t.Errorf("body %q is not one problem document for %d (%v)", body, tt.wantStatus, err)
+				}
+			}
+		})
+	}
+}
+
+// A deadline is a warning, not a failure the error logger owns: the
+// default path logs the 503 once at warn level and RequestFailed carries
+// the deadline.
+func TestTimeout_DefaultPathLogsWarnAndFails(t *testing.T) {
+	var mu sync.Mutex
+	var warns, errs int
+	collector := newTestEventCollector()
+
+	r := NewV2()
+	r.SetWarnLogger(func(string, ...any) { mu.Lock(); warns++; mu.Unlock() })
+	r.SetErrorLogger(func(string, ...any) { mu.Lock(); errs++; mu.Unlock() })
+	r.SetEventDispatcher(collector.dispatch)
+	r.Use(Timeout(20 * time.Millisecond))
+	r.Get("/slow", func(c *Context) error {
+		<-c.Request.Context().Done()
+		return nil
+	})
+
+	w := serve(r, http.MethodGet, "/slow")
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+	mu.Lock()
+	gotWarns, gotErrs := warns, errs
+	mu.Unlock()
+	if gotWarns != 1 || gotErrs != 0 {
+		t.Errorf("warn logs = %d, error logs = %d, want 1 and 0", gotWarns, gotErrs)
+	}
+	var failed *RequestFailed
+	for _, e := range collector.getEvents() {
+		if ev, ok := e.(*RequestFailed); ok {
+			failed = ev
+		}
+	}
+	if failed == nil || !errors.Is(failed.Error, context.DeadlineExceeded) {
+		t.Errorf("RequestFailed = %+v, want one carrying context.DeadlineExceeded", failed)
+	}
+}
+
+// When the client goes away before the deadline, the Timeout error wraps
+// context.Canceled on a dead request context and the default boundary
+// writes nothing: there is no one to answer.
+func TestTimeout_ClientGoneWritesNothing(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+
+	r := NewV2()
+	r.Use(Timeout(time.Minute))
+	r.Get("/slow", func(c *Context) error {
+		close(started)
+		<-release
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/slow", nil).WithContext(ctx)
+	go func() {
+		<-started
+		cancel()
+	}()
+	w := newHeaderCountingRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.headerCalls != 0 || w.Body.Len() != 0 {
+		t.Errorf("wrote %d status lines and body %q to a gone client, want nothing", w.headerCalls, w.Body.String())
 	}
 }
