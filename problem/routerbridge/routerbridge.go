@@ -22,6 +22,7 @@ type Option func(*config)
 type config struct {
 	resolve func() contract.ErrorHandler
 	userID  contract.RequestUserIdentifier
+	logger  func(msg string, kvs ...any)
 }
 
 // WithHandler sets the function that returns the error handler for a
@@ -37,6 +38,14 @@ func WithHandler(resolve func() contract.ErrorHandler) Option {
 // request for ErrorContext.UserID. Nil leaves UserID empty.
 func WithUserID(id contract.RequestUserIdentifier) Option {
 	return func(c *config) { c.userID = id }
+}
+
+// WithLogger sets the error-level log function for a failed request that
+// no error handler takes: with no handler resolved the bridge logs one
+// line (the error, method and path) and then answers through
+// router.DefaultErrorHandler, which logs nothing itself. Nil logs nothing.
+func WithLogger(fn func(msg string, kvs ...any)) Option {
+	return func(c *config) { c.logger = fn }
 }
 
 // Install sets r's error handler to the bridge. From then on the router
@@ -59,8 +68,29 @@ func Install(r *router.VelocityRouterV2, opts ...Option) {
 		if cfg.resolve != nil {
 			h = cfg.resolve()
 		}
+		if h == nil {
+			logUnhandled(cfg.logger, c, err)
+		}
 		handle(c, err, info, h, cfg.userID)
 	})
+}
+
+// logUnhandled logs the error-level line for a failed request no error
+// handler takes. A panicking logger is swallowed so the response is still
+// written.
+func logUnhandled(logger func(msg string, kvs ...any), c *router.Context, err error) {
+	if logger == nil || c == nil || err == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	kvs := []any{"error", err.Error()}
+	if r := c.Request; r != nil {
+		kvs = append(kvs, "method", r.Method)
+		if r.URL != nil {
+			kvs = append(kvs, "path", r.URL.Path)
+		}
+	}
+	logger("routerbridge: no error handler; answered by the router default", kvs...)
 }
 
 // Handle hands one failed request to h: it builds the ErrorContext from

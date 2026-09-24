@@ -2,6 +2,7 @@ package routerbridge
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -174,14 +175,47 @@ func TestInstall_FallsBackToRouterDefault(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			w := serve(t, func(*router.Context) error { return problem.NotFound("gone missing") }, tt.opts...)
+			var lines []string
+			var kvs []any
+			opts := append([]Option{WithLogger(func(msg string, kv ...any) {
+				lines = append(lines, msg)
+				kvs = kv
+			})}, tt.opts...)
+			w := serve(t, func(*router.Context) error { return problem.NotFound("gone missing") }, opts...)
 			if w.Code != http.StatusNotFound {
 				t.Fatalf("status = %d, want 404", w.Code)
 			}
 			if !strings.Contains(w.Body.String(), "gone missing") {
 				t.Errorf("body = %q, want the router default rendering", w.Body.String())
 			}
+			if len(lines) != 1 {
+				t.Fatalf("logged %d lines, want 1 (%v)", len(lines), lines)
+			}
+			if got := fmt.Sprint(kvs...); !strings.Contains(got, "gone missing") || !strings.Contains(got, "/x") {
+				t.Errorf("log kvs = %v, want the error and the path", kvs)
+			}
 		})
+	}
+}
+
+func TestInstall_LoggerOnlyWithoutHandler(t *testing.T) {
+	logged := 0
+	w := serve(t, func(*router.Context) error { return errors.New("boom") },
+		WithHandler(func() contract.ErrorHandler { return newSpy() }),
+		WithLogger(func(string, ...any) { logged++ }),
+	)
+	if logged != 0 {
+		t.Errorf("logged %d lines with a handler, want 0", logged)
+	}
+	if w.Code == 0 {
+		t.Error("handler path wrote nothing")
+	}
+
+	panicky := serve(t, func(*router.Context) error { return problem.NotFound() },
+		WithLogger(func(string, ...any) { panic("logger down") }),
+	)
+	if panicky.Code != http.StatusNotFound {
+		t.Errorf("status with a panicking logger = %d, want 404", panicky.Code)
 	}
 }
 

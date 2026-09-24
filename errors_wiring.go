@@ -18,12 +18,16 @@ import (
 // is reported once and rendered once by a.Services.Errors, resolved per
 // request so a handler swapped in by a module is honoured. The router's
 // own default logging is suppressed from here on; the handler's
-// LogReporter (bound to a.Log) is the single log entry. A consumer calling
-// a.Router.SetErrorHandler after New replaces the whole pipeline.
+// LogReporter (bound to a.Log) is the single log entry, and with no
+// handler the bridge logs one error line through a.Log before the router
+// default answers. A consumer calling a.Router.SetErrorHandler after New
+// replaces the whole pipeline.
 func installErrorPipeline(a *App) {
 	routerbridge.Install(a.Router,
 		routerbridge.WithHandler(func() contract.ErrorHandler { return a.Services.Errors }),
 		routerbridge.WithUserID(appUserIdentifier{a: a}),
+		// A closure, not a.Log.Error, so a logger swapped after New is used.
+		routerbridge.WithLogger(func(msg string, kvs ...any) { a.Log.Error(msg, kvs...) }),
 	)
 }
 

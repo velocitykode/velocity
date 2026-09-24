@@ -505,9 +505,10 @@ func TestErrorPipeline_HandlerResolvedPerRequest(t *testing.T) {
 }
 
 // TestErrorPipeline_NilHandlerFallsBackToRouterDefault asserts that with
-// no error handler the bridge answers through router.DefaultErrorHandler.
+// no error handler the bridge logs one error line through the app logger
+// and answers through router.DefaultErrorHandler.
 func TestErrorPipeline_NilHandlerFallsBackToRouterDefault(t *testing.T) {
-	a, _, _ := newPipelineApp(t)
+	a, logs, _ := newPipelineApp(t)
 	a.Services.Errors = nil
 	a.Router.Get("/missing", func(*router.Context) error { return problem.NotFound("no such thing") })
 
@@ -519,6 +520,9 @@ func TestErrorPipeline_NilHandlerFallsBackToRouterDefault(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "no such thing") {
 		t.Errorf("body = %q, want the router default rendering", w.Body.String())
+	}
+	if n := logs.count("error"); n != 1 {
+		t.Errorf("error log entries = %d, want 1 (%+v)", n, logs.entries)
 	}
 }
 
