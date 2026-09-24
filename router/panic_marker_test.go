@@ -227,3 +227,64 @@ func TestMarkedWritten_OutsidePanicParity(t *testing.T) {
 		})
 	}
 }
+
+// TestFinalize_PanickingHookIsRecoveredAndLogged asserts a BeforeFirstWrite
+// hook that panics when the router fires it after a handler that wrote
+// nothing never escapes ServeHTTP: the client gets its response, the
+// router's error logger records the panic with its stack, and
+// RequestHandled still fires.
+func TestFinalize_PanickingHookIsRecoveredAndLogged(t *testing.T) {
+	r := NewV2()
+	errLog := &logCapture{}
+	r.SetErrorLogger(errLog.fn)
+	var (
+		mu      sync.Mutex
+		handled int
+	)
+	r.SetEventDispatcher(func(_ context.Context, event interface{}) error {
+		if _, ok := event.(*RequestHandled); ok {
+			mu.Lock()
+			handled++
+			mu.Unlock()
+		}
+		return nil
+	})
+	r.Use(func(next HandlerFunc) HandlerFunc {
+		return func(c *Context) error {
+			if h, ok := c.Response.(interface{ BeforeFirstWrite(func()) }); ok {
+				h.BeforeFirstWrite(func() { panic("hook exploded") })
+			}
+			return next(c)
+		}
+	})
+	r.Get("/quiet", func(*Context) error { return nil })
+
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+	resp, err := srv.Client().Get(srv.URL + "/quiet")
+	if err != nil {
+		t.Fatalf("GET: %v (the hook panic escaped the router)", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want the implicit 200", resp.StatusCode)
+	}
+	if errLog.count() != 1 {
+		t.Fatalf("error log entries = %d, want 1", errLog.count())
+	}
+	if v, _ := errLog.kv(0, "panic"); v != "hook exploded" {
+		t.Errorf("logged panic = %v, want hook exploded", v)
+	}
+	if v, _ := errLog.kv(0, "stack"); v == nil || v == "" {
+		t.Error("logged no stack")
+	}
+	if v, _ := errLog.kv(0, "path"); v != "/quiet" {
+		t.Errorf("logged path = %v, want /quiet", v)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if handled != 1 {
+		t.Errorf("RequestHandled dispatched %d times, want 1", handled)
+	}
+}

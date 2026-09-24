@@ -641,14 +641,15 @@ func (c *Context) IsInertia() bool {
 // ErrorInfo.Committed set when the handler already wrote to w (so a
 // partial response never gets a second one). A BeforeFirstWrite hook that
 // neither the handler nor the error response fired runs before Wrap
-// returns, as it does for the router. Wrap does not recover panics.
+// returns, as it does for the router. Wrap does not recover panics, a
+// panicking hook included.
 func Wrap(h HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 		if err := h(NewContext(rw, r)); err != nil {
 			DefaultErrorHandler(NewContext(rw, r), err, ErrorInfo{Committed: rw.committed()})
 		}
-		rw.finalize()
+		rw.firePending()
 	}
 }
 

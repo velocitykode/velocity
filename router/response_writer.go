@@ -2,8 +2,10 @@ package router
 
 import (
 	"bufio"
+	"fmt"
 	"net"
 	"net/http"
+	"runtime"
 	"sync"
 )
 
@@ -97,6 +99,14 @@ func (rw *responseWriter) fireBeforeFirstWrite() {
 	})
 }
 
+// firePending fires the BeforeFirstWrite hook when nothing fired it. No-op
+// when the hook already fired or none is registered.
+func (rw *responseWriter) firePending() {
+	if rw.beforeFirstWriteFn != nil {
+		rw.fireBeforeFirstWrite()
+	}
+}
+
 // finalize fires the BeforeFirstWrite hook when nothing fired it: the
 // router calls it once per request after the error boundary has answered
 // (or found nothing to answer) and before the writer is released, so a
@@ -104,10 +114,47 @@ func (rw *responseWriter) fireBeforeFirstWrite() {
 // answers with an implicit 200, still runs its pre-commit hook (the
 // session middleware's save, for one). No-op when the hook already fired
 // or none is registered.
-func (rw *responseWriter) finalize() {
+//
+// The hook runs under its own recover: a panic in it never escapes the
+// router. It is logged through logf (the router's error logger; nil logs
+// nothing) with the panic value, req's method and path, and the stack,
+// and the request completes with whatever response it already has.
+func (rw *responseWriter) finalize(req *http.Request, logf func(msg string, kvs ...any)) {
 	if rw.beforeFirstWriteFn != nil {
-		rw.fireBeforeFirstWrite()
+		rw.finalizeGuarded(req, logf)
 	}
+}
+
+// finalizeGuarded is finalize's slow path, kept apart so finalize stays
+// small enough to inline.
+func (rw *responseWriter) finalizeGuarded(req *http.Request, logf func(msg string, kvs ...any)) {
+	defer recoverHookPanic(req, logf)
+	rw.fireBeforeFirstWrite()
+}
+
+// recoverHookPanic recovers a panic in a pre-commit hook and logs it
+// through logf with the panic value, req's method and path, and the stack
+// captured while the panicking frames are still on it. A panicking logf is
+// swallowed. It must be deferred directly.
+func recoverHookPanic(req *http.Request, logf func(msg string, kvs ...any)) {
+	p := recover()
+	if p == nil || logf == nil {
+		return
+	}
+	buf := make([]byte, panicStackSize)
+	n := runtime.Stack(buf, false)
+	kvs := []any{"panic", fmt.Sprint(p)}
+	if req != nil {
+		kvs = append(kvs, "method", req.Method)
+		if req.URL != nil {
+			kvs = append(kvs, "path", req.URL.Path)
+		}
+	}
+	kvs = append(kvs, "stack", string(buf[:n]))
+	func() {
+		defer func() { _ = recover() }()
+		logf("panic in response pre-commit hook", kvs...)
+	}()
 }
 
 // WriteHeader captures the status code
