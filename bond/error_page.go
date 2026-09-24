@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 )
 
 // ErrInvalidStatus is matched (errors.Is) by the error RenderWithStatus
@@ -39,9 +40,10 @@ func (b *Bond) ErrorComponent() string {
 
 // ReloadLocation returns the target an Inertia client reloads as a full
 // visit (X-Inertia-Location) when a request cannot be answered with a page:
-// the current URL for GET and HEAD, the Referer otherwise. Both pass the
-// same redirect host allowlist as Redirect and Back, so an unsafe or
-// foreign target, or a missing one, collapses to "/".
+// the current URL for GET and HEAD, the Referer otherwise. The Referer
+// passes the same redirect host allowlist as Redirect and Back, and only
+// its path and query are returned, so the location never names a host. An
+// unsafe or foreign target, or a missing one, collapses to "/".
 func (b *Bond) ReloadLocation(r *http.Request) string {
 	if r == nil {
 		return "/"
@@ -57,7 +59,19 @@ func (b *Bond) ReloadLocation(r *http.Request) string {
 	if referer == "" {
 		return "/"
 	}
-	return sanitizeRedirectURL(referer, b.allowedHostsFor(r))
+	return localPart(sanitizeRedirectURL(referer, b.allowedHostsFor(r)))
+}
+
+// localPart returns the path and query of a target sanitizeRedirectURL
+// accepted, as a relative path that passes it again; a relative target is
+// returned as is, anything else collapses to "/".
+func localPart(target string) string {
+	u, err := url.Parse(target)
+	if err != nil || (u.Scheme == "" && u.Host == "") {
+		return target
+	}
+	local := (&url.URL{Path: u.Path, RawPath: u.RawPath, RawQuery: u.RawQuery}).RequestURI()
+	return sanitizeRedirectURL(local, nil)
 }
 
 // statusWriter writes status before the first body byte unless a status

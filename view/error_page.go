@@ -33,8 +33,8 @@ func (e *Engine) RenderErrorPage(rc contract.RenderContext, status int, message 
 
 // ReloadLocation returns the target an Inertia client reloads when a
 // failed request gets no error page: the current URL for GET and HEAD, the
-// Referer otherwise, both through the redirect host allowlist (see
-// bond.Bond.ReloadLocation).
+// path and query of a Referer the redirect host allowlist accepts
+// otherwise (see bond.Bond.ReloadLocation).
 func (e *Engine) ReloadLocation(r *http.Request) string {
 	return e.bond.ReloadLocation(r)
 }

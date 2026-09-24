@@ -129,7 +129,7 @@ func TestInertiaErrorPage(t *testing.T) {
 		{
 			name: "NoComponentPOSTSameHostReferer", method: http.MethodPost, path: "/page",
 			headers:    map[string]string{"X-Inertia": "true", "Referer": "http://example.com/posts/new"},
-			wantStatus: http.StatusConflict, wantLocation: "http://example.com/posts/new",
+			wantStatus: http.StatusConflict, wantLocation: "/posts/new",
 		},
 		{
 			name: "NoComponentPOSTForeignReferer", method: http.MethodPost, path: "/page",
