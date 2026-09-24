@@ -157,6 +157,15 @@ func (h *Handler) JSONWhen(fn func(r *http.Request, err error) bool) {
 	h.jsonWhen = fn
 }
 
+// WantsJSON reports whether the response to r for err renders as JSON, in
+// the order negotiation uses: the JSONWhen predicate alone when set,
+// otherwise API mode, an API prefix of r's path, then contract.WantsJSON.
+// Render rules read the same answer through RenderContext.WantsJSON. err
+// may be nil.
+func (h *Handler) WantsJSON(r *http.Request, err error) bool {
+	return negotiatesJSON(h.snap(), r, err, func() bool { return contract.WantsJSON(r) })
+}
+
 // BeforeRender registers a hook run once, right before the pipeline's own
 // negotiated write, with the resolved status. It may set headers through rc
 // and returns the status to write; hooks chain in registration order.

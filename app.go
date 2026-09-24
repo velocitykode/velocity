@@ -751,12 +751,14 @@ func New(opts ...Option) (*App, error) {
 			return nil
 		}
 		failure := validation.NewFailure(result)
-		// A client that wants JSON, or an app with no view engine (API-only),
-		// gets the failure back with nothing written: the handler returns it
-		// and the error pipeline answers 422 problem+json. c.View() is fatal
-		// when the service is unset, so the container is read directly.
+		// A request the error handler answers with JSON (its negotiation:
+		// JSONWhen, API mode, API prefixes, then the Accept header), or an
+		// app with no view engine (API-only), gets the failure back with
+		// nothing written: the handler returns it and the error pipeline
+		// answers 422 problem+json. c.View() is fatal when the service is
+		// unset, so the container is read directly.
 		view := viewEngineOf(c.ServicesIfSet())
-		if view == nil || contract.WantsJSON(c.Request) {
+		if view == nil || errorsWantJSON(c, failure) {
 			return failure
 		}
 		// Browser with a view engine: flash errors and old input, redirect

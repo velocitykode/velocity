@@ -6,6 +6,7 @@ import (
 	stdlog "log"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 
@@ -319,6 +320,14 @@ func TestFakeHandler(t *testing.T) {
 		t.Error("ShouldReport")
 	}
 
+	browser := httptest.NewRequest(http.MethodGet, "/x", nil)
+	browser.Header.Set("Accept", "text/html")
+	jsonReq := httptest.NewRequest(http.MethodGet, "/x", nil)
+	jsonReq.Header.Set("Accept", "application/json")
+	if eh.WantsJSON(browser, nil) || !eh.WantsJSON(jsonReq, nil) || eh.WantsJSON(nil, nil) {
+		t.Error("WantsJSON before API settings")
+	}
+
 	eh.AddMapRule(contract.MapRule{})
 	eh.AddRenderRule(contract.RenderRule{})
 	eh.AddReportRule(contract.ReportRule{})
@@ -339,6 +348,15 @@ func TestFakeHandler(t *testing.T) {
 	eh.SetAPIPrefixes("/api")
 	if !eh.IsDebug() || eh.GetEnvironment() != "local" || !eh.IsAPIMode() || eh.GetAPIPrefixes()[0] != "/api" {
 		t.Error("fake settings not stored")
+	}
+	if !eh.WantsJSON(browser, nil) {
+		t.Error("WantsJSON in API mode = false, want true")
+	}
+	eh.SetAPIMode(false)
+	apiReq := httptest.NewRequest(http.MethodGet, "/api/users", nil)
+	apiReq.Header.Set("Accept", "text/html")
+	if !eh.WantsJSON(apiReq, nil) || eh.WantsJSON(browser, nil) {
+		t.Error("WantsJSON with an API prefix")
 	}
 
 	f.Reset()

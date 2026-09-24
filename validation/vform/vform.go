@@ -138,10 +138,12 @@ func safeDB(ctx *router.Context) orm.Database {
 // T implements FormRequest, and returns *T on success. On validation
 // failure:
 //
-//   - when the request wants JSON (contract.WantsJSON) or no view engine is
-//     wired, it writes nothing and returns a *validation.Failure; the
-//     handler returns it and the error pipeline answers 422
-//     application/problem+json with the per-field errors.
+//   - when the error pipeline answers the request with JSON (the error
+//     handler's WantsJSON: JSONWhen, API mode, API prefixes, then the
+//     Accept header; contract.WantsJSON when no handler is wired) or no
+//     view engine is wired, it writes nothing and returns a
+//     *validation.Failure; the handler returns it and the error pipeline
+//     answers 422 application/problem+json with the per-field errors.
 //   - otherwise it flashes errors plus old input, redirects back, and
 //     returns contract.ErrResponseWritten so the handler can return early
 //     without the router emitting an error response.
@@ -157,9 +159,10 @@ func Form[T any](ctx *router.Context) (*T, error) {
 		return req, nil
 	}
 
+	failure := validation.NewFailure(result)
 	v := safeView(ctx)
-	if v == nil || contract.WantsJSON(ctx.Request) {
-		return nil, validation.NewFailure(result)
+	if v == nil || wantsJSON(ctx, failure) {
+		return nil, failure
 	}
 
 	ctx.FlashErrors(result.All())
@@ -204,4 +207,14 @@ func safeView(ctx *router.Context) contract.ViewEngine {
 		return nil
 	}
 	return s.View
+}
+
+// wantsJSON reports whether the error pipeline answers err for ctx's
+// request with JSON: the error handler's negotiation when one is wired,
+// else contract.WantsJSON.
+func wantsJSON(ctx *router.Context, err error) bool {
+	if s := ctx.ServicesIfSet(); s != nil && s.Errors != nil {
+		return s.Errors.WantsJSON(ctx.Request, err)
+	}
+	return contract.WantsJSON(ctx.Request)
 }

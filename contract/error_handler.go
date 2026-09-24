@@ -47,6 +47,13 @@ type ErrorHandler interface {
 	// JSONWhen replaces the predicate deciding whether a response renders
 	// as JSON.
 	JSONWhen(fn func(r *http.Request, err error) bool)
+	// WantsJSON reports whether the response to r for err renders as JSON:
+	// the JSONWhen predicate alone when set, otherwise API mode, then the
+	// API prefixes, then WantsJSON(r). Render rules see the same answer
+	// through RenderContext.WantsJSON, so code that answers an error
+	// outside the pipeline (a validator writing a redirect) asks here to
+	// agree with it. err may be nil.
+	WantsJSON(r *http.Request, err error) bool
 	// BeforeRender registers a hook run before the response is written. It
 	// may set headers through rc and returns the status to write.
 	BeforeRender(fn func(rc RenderContext, err error, status int) int)

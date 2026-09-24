@@ -24,7 +24,9 @@ import (
 //     Renderable error; the framework prepare table (only for an error
 //     that names no status); user render rules;
 //     framework render rules; content negotiation. A render that fails or
-//     panics falls back to a plain-text 500.
+//     panics falls back to a plain-text 500. Everything in this stage
+//     reads the handler's negotiation answer (see WantsJSON) through
+//     rc.WantsJSON.
 //
 // A nil ctx is replaced by one carrying the request facts; a ctx missing
 // them is filled in.
@@ -268,6 +270,10 @@ func (h *Handler) render(s *snapshot, rc RenderContext, err error, ctx *ErrorCon
 	if rc.Written() {
 		return
 	}
+	// Every rule and renderer below reads the handler's negotiation
+	// answer through rc.WantsJSON, so a rule that picks between JSON and a
+	// browser answer agrees with the negotiation that follows it.
+	rc = negotiatedContext{RenderContext: rc, json: wantsJSON(s, rc, err)}
 	if isRecovered(err, ctx) {
 		// A panic is a bug: always a 500, whatever the panic value carries.
 		h.negotiate(s, rc, contract.NewHTTPError(http.StatusInternalServerError).WithCause(err), ctx, http.StatusInternalServerError)
@@ -336,6 +342,36 @@ func (h *Handler) applyRenderRules(s *snapshot, rules []contract.RenderRule, rc 
 // status, and renders JSON, the Inertia branch or HTML. A renderer error
 // with nothing written falls back to the plain-text 500.
 func (h *Handler) negotiate(s *snapshot, rc RenderContext, err error, ctx *ErrorContext, status int) {
+	h.respond(s, rc, err, ctx, status, false)
+}
+
+// RenderJSON renders err as JSON through the configured JSON renderer at
+// the status contract.StatusOf resolves, after copying the error's headers
+// and running the BeforeRender hooks, whatever the request negotiates. It
+// applies no map or render rule and never reports. It returns true when
+// the response was written, false when err or rc is nil or a response was
+// already written. A render rule uses it to answer with JSON a request the
+// negotiation would answer otherwise; a render failure falls back to the
+// plain-text 500.
+func (h *Handler) RenderJSON(rc RenderContext, err error, ctx *ErrorContext) bool {
+	if err == nil || rc == nil || rc.Written() {
+		return false
+	}
+	s := h.snap()
+	ctx = fillRequestContext(ctx, rc, s.trustedProxies)
+	defer func() {
+		if p := recover(); p != nil {
+			safeLog(s.logger, "problem: rendering panicked", "panic", fmt.Sprint(p), "error", err.Error())
+			lastResort(s.logger, rc)
+		}
+	}()
+	status, _, _ := contract.StatusOf(err)
+	h.respond(s, rc, err, ctx, status, true)
+	return rc.Written()
+}
+
+// respond is negotiate with the JSON branch forced when forceJSON is set.
+func (h *Handler) respond(s *snapshot, rc RenderContext, err error, ctx *ErrorContext, status int, forceJSON bool) {
 	_, headers, _ := contract.StatusOf(err)
 	setHeaders(rc, headers)
 	for _, hook := range s.beforeRender {
@@ -347,7 +383,7 @@ func (h *Handler) negotiate(s *snapshot, rc RenderContext, err error, ctx *Error
 
 	var renderErr error
 	switch {
-	case wantsJSON(s, rc, err):
+	case forceJSON || wantsJSON(s, rc, err):
 		renderErr = rendererFor(s, "json").Render(rc, err, ctx, status, s.debug)
 	case rc.IsInertia():
 		renderErr = h.renderInertia(s, rc, err, ctx, status)
@@ -405,10 +441,17 @@ func renderErrorPage(s *snapshot, rc RenderContext, err error, status int) (bool
 	return false, nil
 }
 
-// wantsJSON decides the JSON branch: the JSONWhen predicate alone when set,
-// otherwise API mode, an API prefix, then the request's own negotiation.
+// wantsJSON decides the JSON branch for rc: the JSONWhen predicate alone
+// when set, otherwise API mode, an API prefix, then the request's own
+// negotiation.
 func wantsJSON(s *snapshot, rc RenderContext, err error) bool {
-	r := rc.Request()
+	return negotiatesJSON(s, rc.Request(), err, rc.WantsJSON)
+}
+
+// negotiatesJSON is the negotiation order shared by the pipeline and
+// Handler.WantsJSON; fallback answers when neither JSONWhen, API mode nor
+// an API prefix decides.
+func negotiatesJSON(s *snapshot, r *http.Request, err error, fallback func() bool) bool {
 	if s.jsonWhen != nil {
 		return s.jsonWhen(r, err)
 	}
@@ -422,8 +465,20 @@ func wantsJSON(s *snapshot, rc RenderContext, err error) bool {
 			}
 		}
 	}
-	return rc.WantsJSON()
+	return fallback()
 }
+
+// negotiatedContext is the RenderContext the render stage hands to
+// Renderable errors, render rules and renderers: WantsJSON reports the
+// handler's negotiation answer (JSONWhen, API mode, API prefixes, then the
+// request) instead of the request's Accept header alone.
+type negotiatedContext struct {
+	RenderContext
+	json bool
+}
+
+// WantsJSON reports the handler's negotiation answer.
+func (c negotiatedContext) WantsJSON() bool { return c.json }
 
 // rendererFor returns the configured renderer for key, or the built-in one.
 func rendererFor(s *snapshot, key string) Renderer {

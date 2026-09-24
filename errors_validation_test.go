@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/problem"
@@ -438,4 +439,77 @@ func TestValidateCallback_ReturnsFailure(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestErrorPipeline_OneJSONAnswer asserts the validation entry points and
+// the auth render rule answer JSON exactly when the handler's negotiation
+// does: API prefixes turn a browser request into problem+json, and a
+// JSONWhen predicate that says no sends a JSON client down the browser
+// flow.
+func TestErrorPipeline_OneJSONAnswer(t *testing.T) {
+	jsonClient := map[string]string{"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"}
+	browser := map[string]string{"Accept": "text/html"}
+	tests := []struct {
+		name         string
+		configure    func(h contract.ErrorHandler)
+		path         string
+		headers      map[string]string
+		wantStatus   int
+		wantLocation string
+	}{
+		{name: "api prefix validate", configure: apiPrefix, path: "/api/validate", headers: browser, wantStatus: http.StatusUnprocessableEntity},
+		{name: "api prefix vform", configure: apiPrefix, path: "/api/vform", headers: browser, wantStatus: http.StatusUnprocessableEntity},
+		{name: "api prefix bindvalid", configure: apiPrefix, path: "/api/bindvalid", headers: browser, wantStatus: http.StatusUnprocessableEntity},
+		{name: "api prefix manual failure", configure: apiPrefix, path: "/api/manual", headers: browser, wantStatus: http.StatusUnprocessableEntity},
+		{name: "api prefix unauthenticated", configure: apiPrefix, path: "/api/unauth", headers: browser, wantStatus: http.StatusUnauthorized},
+		{name: "json when no validate", configure: neverJSON, path: "/validate", headers: jsonClient, wantStatus: http.StatusSeeOther, wantLocation: "/signup"},
+		{name: "json when no vform", configure: neverJSON, path: "/vform", headers: jsonClient, wantStatus: http.StatusSeeOther, wantLocation: "/signup"},
+		{name: "json when no bindvalid", configure: neverJSON, path: "/bindvalid", headers: jsonClient, wantStatus: http.StatusSeeOther, wantLocation: "/signup"},
+		{name: "json when no manual failure", configure: neverJSON, path: "/manual", headers: jsonClient, wantStatus: http.StatusSeeOther, wantLocation: "/signup"},
+		{name: "json when no unauthenticated", configure: neverJSON, path: "/unauth", headers: jsonClient, wantStatus: http.StatusSeeOther, wantLocation: "/login"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, _, rec, _ := validationApp(t, backToSignup{})
+			tt.configure(a.Services.Errors)
+			a.Router.Post("/api/validate", func(c *router.Context) error {
+				return c.Validate(signupForm{}.Rules())
+			})
+			a.Router.Post("/api/vform", func(c *router.Context) error {
+				_, err := vform.Form[signupForm](c)
+				return err
+			})
+			a.Router.Post("/api/bindvalid", func(c *router.Context) error {
+				var form signupForm
+				return c.BindValid(&form)
+			})
+			a.Router.Post("/api/manual", func(*router.Context) error { return signupFailure(t) })
+			unauth := func(*router.Context) error { return &auth.UnauthenticatedError{} }
+			a.Router.Post("/api/unauth", unauth)
+			a.Router.Post("/unauth", unauth)
+
+			w := postSignup(a, tt.path, tt.headers)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %q)", w.Code, tt.wantStatus, w.Body.String())
+			}
+			if got := w.Header().Get("Location"); got != tt.wantLocation {
+				t.Errorf("Location = %q, want %q", got, tt.wantLocation)
+			}
+			if tt.wantLocation == "" && w.Header().Get("Content-Type") != problem.ProblemTypeContent {
+				t.Errorf("Content-Type = %q, want %q", w.Header().Get("Content-Type"), problem.ProblemTypeContent)
+			}
+			if rec.count() != 0 {
+				t.Errorf("reports = %d, want 0", rec.count())
+			}
+		})
+	}
+}
+
+// apiPrefix answers every /api request with JSON.
+func apiPrefix(h contract.ErrorHandler) { h.SetAPIPrefixes("/api") }
+
+// neverJSON answers no request with JSON.
+func neverJSON(h contract.ErrorHandler) {
+	h.JSONWhen(func(*http.Request, error) bool { return false })
 }

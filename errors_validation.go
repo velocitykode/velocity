@@ -13,12 +13,13 @@ import (
 )
 
 // installValidationErrorRules installs the default rendering of a
-// *validation.Failure. A request that wants JSON falls through to
-// negotiation, which answers 422 application/problem+json with the
-// per-field "errors". A browser request with a view engine gets the errors
-// and old input flashed and a redirect back (or to Failure.RedirectTo),
-// the same answer the validator callback writes. With no view engine the
-// failure still renders as problem+json.
+// *validation.Failure. A request the handler answers with JSON (its
+// negotiation: JSONWhen, API mode, API prefixes, then the Accept header)
+// falls through to negotiation, which answers 422
+// application/problem+json with the per-field "errors". Any other request
+// with a view engine gets the errors and old input flashed and a redirect
+// back (or to Failure.RedirectTo), the same answer the validator callback
+// writes. With no view engine the failure still renders as problem+json.
 func installValidationErrorRules(h *problem.Handler) {
 	h.AddFrameworkRenderRule(contract.RenderRule{
 		Key: reflect.TypeFor[*validation.Failure](),
@@ -33,12 +34,10 @@ func installValidationErrorRules(h *problem.Handler) {
 }
 
 // renderValidationFailure is the render rule for a *validation.Failure. It
-// returns false for a request that wants JSON so negotiation renders it.
-// With no view engine it renders through h again with a RenderContext that
-// wants JSON: problem exposes no forced-JSON negotiation, and going through
-// h keeps the configured JSON renderer and BeforeRender hooks. That second
-// pass re-applies the user map and render rules to the failure; this rule
-// returns false in it, so it recurses at most once.
+// returns false for a request the handler answers with JSON (rc.WantsJSON
+// carries the handler's negotiation), so negotiation renders it. With no
+// view engine it renders the failure as JSON through h.RenderJSON, which
+// keeps the configured JSON renderer and BeforeRender hooks.
 func renderValidationFailure(h *problem.Handler, rc contract.RenderContext, err error, ctx *contract.ErrorContext) bool {
 	var f *validation.Failure
 	if !errors.As(err, &f) || rc.WantsJSON() {
@@ -47,11 +46,20 @@ func renderValidationFailure(h *problem.Handler, rc contract.RenderContext, err 
 	r := rc.Request()
 	view := viewEngineOf(router.ServicesFromRequest(r))
 	if view == nil {
-		h.Render(jsonRenderContext{RenderContext: rc}, err, ctx)
-		return true
+		return h.RenderJSON(rc, err, ctx)
 	}
 	flashFailure(router.NewContext(rc.Writer(), r), rc, view, f)
 	return true
+}
+
+// errorsWantJSON reports whether the error pipeline answers err for c's
+// request with JSON: the error handler's negotiation when one is wired,
+// else contract.WantsJSON.
+func errorsWantJSON(c *router.Context, err error) bool {
+	if s := c.ServicesIfSet(); s != nil && s.Errors != nil {
+		return s.Errors.WantsJSON(c.Request, err)
+	}
+	return contract.WantsJSON(c.Request)
 }
 
 // flashFailure writes the browser answer to a validation failure: the
@@ -83,15 +91,3 @@ func viewEngineOf(s *app.Services) contract.ViewEngine {
 	}
 	return s.View
 }
-
-// jsonRenderContext is a RenderContext that asks for JSON and is never an
-// Inertia request, so negotiation takes the JSON branch.
-type jsonRenderContext struct {
-	contract.RenderContext
-}
-
-// WantsJSON always reports true.
-func (jsonRenderContext) WantsJSON() bool { return true }
-
-// IsInertia always reports false.
-func (jsonRenderContext) IsInertia() bool { return false }
