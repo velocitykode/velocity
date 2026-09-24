@@ -211,6 +211,20 @@ Security headers (HSTS, CSP), HTTPS redirect, and request throttling ship as
 middleware you wire into the stack. Insecure modes exist, but you ask for them
 by name (`InsecureAllowAllCORS`, `GRPC_INSECURE`).
 
+### React or Vue, Without a Separate API
+
+Handlers render pages instead of serving JSON for a separate frontend.
+The Inertia adapter passes props straight to React 19 or Vue 3
+components, Vite hot-reloads the frontend while `vel serve` rebuilds Go,
+and `--ssr` turns on server-side rendering. Need JSON only? Scaffold with
+`velocity new myapi --api`.
+
+```go
+func Dashboard(ctx *router.Context) error {
+    return view.Render(ctx, "Dashboard", view.Props{"stats": stats})
+}
+```
+
 ### No Magic
 
 No runtime reflection for dependency injection. No implicit model
@@ -219,15 +233,17 @@ says.
 
 ## What's Included
 
-- **HTTP**: [router](https://vel.build/docs/core/http-router), [middleware](https://vel.build/docs/core/middleware), [validation](https://vel.build/docs/core/validation), [CSRF](https://vel.build/docs/core/csrf), [gRPC](https://vel.build/docs/advanced/grpc)
+- **HTTP**: [router](https://vel.build/docs/core/routing), [middleware](https://vel.build/docs/core/middleware), [validation](https://vel.build/docs/core/validation), [CSRF](https://vel.build/docs/core/csrf), [gRPC](https://vel.build/docs/advanced/grpc)
 - **Data**: [ORM](https://vel.build/docs/database/getting-started), [cache](https://vel.build/docs/core/cache), [queues](https://vel.build/docs/advanced/queue)
 - **Auth**: [schemes, access, policies](https://vel.build/docs/core/authentication)
 - **Messaging**: [events](https://vel.build/docs/advanced/events), [command bus](https://vel.build/docs/advanced/bus), [notifications](https://vel.build/docs/advanced/notifications), [broadcasting](https://vel.build/docs/realtime/broadcast)
 - **Frontend**: [Inertia.js adapter](https://vel.build/docs/frontend/inertia)
 - **Ops**: [scheduler](https://vel.build/docs/advanced/scheduler), [encryption](https://vel.build/docs/core/crypto), [tracing](https://vel.build/docs/advanced/trace), [storage](https://vel.build/docs/advanced/storage)
-- **DX**: [CLI](https://vel.build/docs/cli/commands), live reload, [test helpers](https://vel.build/docs/testing), and [string](https://vel.build/docs/core/string-utilities)/[async](https://vel.build/docs/core/async)/[pipeline](https://vel.build/docs/advanced/pipeline) helpers
+- **DX**: [CLI](https://vel.build/docs/getting-started/commands), live reload, [test helpers](https://vel.build/docs/testing), and [string](https://vel.build/docs/core/string-utilities)/[async](https://vel.build/docs/core/async)/[pipeline](https://vel.build/docs/advanced/pipeline) helpers
 
-Every subsystem is an importable package, usable on its own.
+Utility packages such as cache, crypto, validation, httpclient, log, str,
+and async also work on their own, outside a Velocity app; see
+[Standalone packages](https://vel.build/docs/getting-started/standalone).
 See [vel.build/docs](https://vel.build/docs) for the full list.
 
 ## Testing
