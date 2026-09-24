@@ -135,10 +135,16 @@ func safeDB(ctx *router.Context) orm.Database {
 }
 
 // Form binds the request body into a fresh *T, validates using T.Rules() if
-// T implements FormRequest, and returns *T on success. On validation failure
-// it flashes errors plus old input, redirects back, and returns
-// contract.ErrResponseWritten so the handler can return early without the
-// router emitting an error response.
+// T implements FormRequest, and returns *T on success. On validation
+// failure:
+//
+//   - when the request wants JSON (contract.WantsJSON) or no view engine is
+//     wired, it writes nothing and returns a *validation.Failure; the
+//     handler returns it and the error pipeline answers 422
+//     application/problem+json with the per-field errors.
+//   - otherwise it flashes errors plus old input, redirects back, and
+//     returns contract.ErrResponseWritten so the handler can return early
+//     without the router emitting an error response.
 //
 // Adopters that want to render a custom error view instead of redirecting
 // back should call Validate[T] directly and inspect the returned *Result.
@@ -151,12 +157,14 @@ func Form[T any](ctx *router.Context) (*T, error) {
 		return req, nil
 	}
 
+	v := safeView(ctx)
+	if v == nil || contract.WantsJSON(ctx.Request) {
+		return nil, validation.NewFailure(result)
+	}
+
 	ctx.FlashErrors(result.All())
 	ctx.FlashInput(result.Old())
-
-	if v := safeView(ctx); v != nil {
-		v.Back(ctx.Response, ctx.Request)
-	}
+	v.Back(ctx.Response, ctx.Request)
 
 	return nil, contract.ErrResponseWritten
 }
@@ -189,8 +197,7 @@ func mismatchedRulesMethod(req any) (string, bool) {
 // safeView mirrors safeDB: returns the view engine without panicking when
 // the services container or View field is unset. View.Back is the
 // redirect-back hook used by Form[T] on validation failure; when no view
-// engine is wired, the caller already received contract.ErrResponseWritten
-// and can render its own response.
+// engine is wired, Form[T] returns a *validation.Failure instead.
 func safeView(ctx *router.Context) contract.ViewEngine {
 	s := ctx.ServicesIfSet()
 	if s == nil || s.View == nil {

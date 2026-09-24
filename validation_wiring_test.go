@@ -77,8 +77,13 @@ func TestValidateCallback_WithoutDatabase(t *testing.T) {
 	t.Run("plain rules fail", func(t *testing.T) {
 		got = nil
 		postJSON(t, v, "/plain", `{"email":"nope"}`)
-		if !errors.Is(got, contract.ErrResponseWritten) {
-			t.Fatalf("ctx.Validate error = %v, want ErrResponseWritten", got)
+		// NewTestApp wires no view engine, so the failure comes back.
+		var f *validation.Failure
+		if !errors.As(got, &f) {
+			t.Fatalf("ctx.Validate error = %v, want a *validation.Failure", got)
+		}
+		if len(f.Errors()["email"]) == 0 {
+			t.Error("expected a message on the email field")
 		}
 	})
 

@@ -63,8 +63,13 @@ func TestCustomRule_ThroughVformForm(t *testing.T) {
 			}
 
 			if tc.wantFail {
-				if !errors.Is(err, contract.ErrResponseWritten) {
-					t.Fatalf("error = %v, want contract.ErrResponseWritten", err)
+				// jsonCtx wires no view engine, so the failure comes back.
+				var f *validation.Failure
+				if !errors.As(err, &f) {
+					t.Fatalf("error = %v, want a *validation.Failure", err)
+				}
+				if got := f.Errors()["code"]; len(got) == 0 || got[0] != "The code field must have an even number of characters." {
+					t.Errorf("code errors = %v, want the custom rule's message", got)
 				}
 				if req != nil {
 					t.Error("no form should be returned on failure")

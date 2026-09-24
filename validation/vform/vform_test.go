@@ -292,36 +292,106 @@ func TestForm_Success_ReturnsT(t *testing.T) {
 	}
 }
 
-func TestForm_Failure_ReturnsErrResponseWritten(t *testing.T) {
-	ctx, _ := jsonCtx(t, `{"email":"bad","password":"x"}`)
+// backView is a contract.ViewEngine whose Back answers 303 to a fixed path,
+// standing in for the view engine's redirect back.
+type backView struct{ to string }
 
-	form, err := Form[signupRequest](ctx)
-	if !errors.Is(err, contract.ErrResponseWritten) {
-		t.Fatalf("expected contract.ErrResponseWritten, got %v", err)
-	}
-	if form != nil {
-		t.Errorf("expected nil form on failure, got %+v", form)
-	}
+func (v backView) Back(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, v.to, http.StatusSeeOther)
 }
 
-func TestForm_Failure_FlashesErrorCookie(t *testing.T) {
-	ctx, w := jsonCtx(t, `{"email":"bad","password":"x"}`)
-
-	_, _ = Form[signupRequest](ctx)
-
-	// _velocity_errors flash cookie should be set by ctx.FlashErrors.
-	cookies := w.Result().Cookies()
-	var foundErrors bool
-	for _, c := range cookies {
-		if c.Name == "_velocity_errors" {
-			foundErrors = true
-			if c.Value == "" {
-				t.Error("expected non-empty errors cookie value")
-			}
-		}
+// formCtx builds a *router.Context for a JSON body whose services carry the
+// flash encryptor and, when view is non-nil, a view engine. headers are
+// set on the request.
+func formCtx(t *testing.T, body string, view contract.ViewEngine, headers map[string]string) (*router.Context, *httptest.ResponseRecorder, crypto.Encryptor) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/signup", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		r.Header.Set(k, v)
 	}
-	if !foundErrors {
-		t.Errorf("expected _velocity_errors cookie to be set; got cookies=%v", cookieNames(cookies))
+	enc := testFormEncryptor(t)
+	c := router.NewContext(w, r)
+	c.SetServices(&app.Services{Crypto: enc, View: view})
+	return c, w, enc
+}
+
+// TestForm_Failure asserts the two answers to a failed Form: a browser with
+// a view engine gets errors and redacted old input flashed plus a redirect
+// back (contract.ErrResponseWritten); a JSON client or an app with no view
+// engine gets a *validation.Failure and nothing written.
+func TestForm_Failure(t *testing.T) {
+	tests := []struct {
+		name        string
+		view        contract.ViewEngine
+		headers     map[string]string
+		wantFailure bool
+	}{
+		{name: "browser with view engine flashes and redirects", view: backView{to: "/signup"}},
+		{name: "inertia with view engine flashes and redirects", view: backView{to: "/signup"}, headers: map[string]string{"X-Inertia": "true"}},
+		{name: "json client gets the failure", view: backView{to: "/signup"}, headers: map[string]string{"Accept": "application/json"}, wantFailure: true},
+		{name: "no view engine gets the failure", wantFailure: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, w, enc := formCtx(t, `{"email":"bad","password":"x"}`, tt.view, tt.headers)
+
+			form, err := Form[signupRequest](ctx)
+			if form != nil {
+				t.Errorf("expected nil form on failure, got %+v", form)
+			}
+
+			if tt.wantFailure {
+				var f *validation.Failure
+				if !errors.As(err, &f) {
+					t.Fatalf("error = %v, want a *validation.Failure", err)
+				}
+				if f.StatusCode() != http.StatusUnprocessableEntity {
+					t.Errorf("StatusCode = %d, want 422", f.StatusCode())
+				}
+				if len(f.Errors()["email"]) == 0 || len(f.Errors()["password"]) == 0 {
+					t.Errorf("Errors = %v, want email and password", f.Errors())
+				}
+				if !errors.Is(err, validation.ErrValidationFailed) {
+					t.Error("failure does not match ErrValidationFailed")
+				}
+				if len(w.Result().Cookies()) != 0 || w.Header().Get("Location") != "" || w.Body.Len() != 0 {
+					t.Errorf("wrote cookies %v, Location %q, body %q; want nothing written",
+						cookieNames(w.Result().Cookies()), w.Header().Get("Location"), w.Body.String())
+				}
+				return
+			}
+
+			if !errors.Is(err, contract.ErrResponseWritten) {
+				t.Fatalf("error = %v, want contract.ErrResponseWritten", err)
+			}
+			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/signup" {
+				t.Errorf("response = %d Location %q, want 303 /signup", w.Code, w.Header().Get("Location"))
+			}
+			flashed := map[string]string{}
+			for _, c := range w.Result().Cookies() {
+				flashed[c.Name] = c.Value
+			}
+			errs, openErr := router.OpenFlash(enc, router.FlashErrorsCookie, flashed[router.FlashErrorsCookie])
+			if openErr != nil {
+				t.Fatalf("errors cookie: %v (cookies %v)", openErr, cookieNames(w.Result().Cookies()))
+			}
+			if m, _ := errs.(map[string]any); m["email"] == nil || m["password"] == nil {
+				t.Errorf("flashed errors = %v, want email and password", errs)
+			}
+			old, openErr := router.OpenFlash(enc, router.FlashInputCookie, flashed[router.FlashInputCookie])
+			if openErr != nil {
+				t.Fatalf("old input cookie: %v", openErr)
+			}
+			m, _ := old.(map[string]any)
+			if m["email"] != "bad" {
+				t.Errorf("flashed old email = %v, want bad", m["email"])
+			}
+			if _, leaked := m["password"]; leaked {
+				t.Error("flashed old input carries the password")
+			}
+		})
 	}
 }
 

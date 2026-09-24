@@ -750,16 +750,18 @@ func New(opts ...Option) (*App, error) {
 		if !result.HasErrors() {
 			return nil
 		}
-		c.FlashErrors(result.All())
-		c.FlashInput(result.Old())
-		// Redirect back when a view engine is installed. c.View() is fatal
-		// when the service is unset, and an app without one is supported
-		// (API-only), so the container is read directly: the caller already
-		// receives contract.ErrResponseWritten and can render its own
-		// response.
-		if s := c.ServicesIfSet(); s != nil && s.View != nil {
-			s.View.Back(c.Response, c.Request)
+		failure := validation.NewFailure(result)
+		// A client that wants JSON, or an app with no view engine (API-only),
+		// gets the failure back with nothing written: the handler returns it
+		// and the error pipeline answers 422 problem+json. c.View() is fatal
+		// when the service is unset, so the container is read directly.
+		view := viewEngineOf(c.ServicesIfSet())
+		if view == nil || contract.WantsJSON(c.Request) {
+			return failure
 		}
+		// Browser with a view engine: flash errors and old input, redirect
+		// back, and tell the router the response is written.
+		flashFailure(c, c.RenderContext(), view, failure)
 		return contract.ErrResponseWritten
 	})
 
