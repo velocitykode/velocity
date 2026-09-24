@@ -1143,3 +1143,66 @@ func TestRender_DropsStaleContentLengthOnARealServer(t *testing.T) {
 		})
 	}
 }
+
+// TestRender_ResponseWrittenMarkers exercises Render directly: an error
+// marking the response written (the bare sentinel or a contract.Handled
+// value) writes nothing, while a recovered panic carrying the marker in
+// its value, or a ctx flagged recovered with no panic node, renders the
+// 500. Render never reports.
+func TestRender_ResponseWrittenMarkers(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		recovered  bool
+		wantStatus int // 0: nothing written
+	}{
+		{name: "BareSentinel", err: contract.ErrResponseWritten},
+		{name: "Handled", err: contract.Handled(errors.New("rendered by middleware"))},
+		{name: "HandledClientError", err: contract.Handled(NotFound())},
+		{name: "WrappedSentinel", err: fmt.Errorf("mw: %w", contract.ErrResponseWritten)},
+		{name: "HandledAroundPanic", err: contract.Handled(panicerr.FromRecovered("boom")), recovered: true},
+		{name: "PanicCarryingSentinel", err: panicerr.FromRecovered(contract.ErrResponseWritten), recovered: true, wantStatus: http.StatusInternalServerError},
+		{name: "PanicCarryingHandled", err: panicerr.FromRecovered(contract.Handled(NotFound())), recovered: true, wantStatus: http.StatusInternalServerError},
+		{name: "RecoveredNoPanicNode", err: contract.ErrResponseWritten, recovered: true, wantStatus: http.StatusInternalServerError},
+		{name: "Unmarked", err: NotFound(), wantStatus: http.StatusNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, rep, _ := newTestHandler()
+			rc, w := newRC(http.MethodGet, "/x", "Accept", "application/json")
+			ctx := NewErrorContext()
+			ctx.Recovered = tt.recovered
+			h.Render(rc, tt.err, ctx)
+			if rep.count() != 0 {
+				t.Errorf("reports = %d, want 0", rep.count())
+			}
+			if tt.wantStatus == 0 {
+				if rc.Written() || w.Body.Len() != 0 {
+					t.Errorf("wrote %d %q, want nothing", w.Code, w.Body.String())
+				}
+				return
+			}
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d (body %q)", w.Code, tt.wantStatus, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestRender_HandledAfterAPlainWriterAppendsNothing asserts a caller that
+// wrote a deliberate response through a plain http.ResponseWriter (which
+// does not expose its commitment) and passes contract.Handled(err) to
+// Render through a fresh render context gets no appended body.
+func TestRender_HandledAfterAPlainWriterAppendsNothing(t *testing.T) {
+	h, _, _ := newTestHandler()
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/x", nil)
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte("mine"))
+
+	h.Render(contract.NewRenderContext(w, r), contract.Handled(errors.New("done")), nil)
+
+	if w.Code != http.StatusAccepted || w.Body.String() != "mine" {
+		t.Errorf("response = %d %q, want 202 %q", w.Code, w.Body.String(), "mine")
+	}
+}

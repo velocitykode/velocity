@@ -85,9 +85,13 @@ func (h *Handler) Report(err error, ctx *ErrorContext) {
 }
 
 // Render writes the response for err through rc, applying user map rules
-// first. It never reports.
+// first. It never reports. As in HandleRequest, an err marking the response
+// written (a bare contract.ErrResponseWritten or a contract.Handled value)
+// writes nothing, checked before the map rules; a marker the value of a
+// recovered panic carries counts for nothing, so that panic still renders
+// its 500.
 func (h *Handler) Render(rc RenderContext, err error, ctx *ErrorContext) {
-	if err == nil || rc == nil {
+	if err == nil || rc == nil || outsidePanic(err, ctx, contract.IsResponseWritten) {
 		return
 	}
 	s := h.snap()
