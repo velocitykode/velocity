@@ -1098,7 +1098,10 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 // ErrorInfo{Recovered: true}, which answers a 500 (reported once by an
 // installed error handler, logged once on the default path) before
 // RequestHandled records it. The panic consumed the hook's once, so that
-// 500 does not fire the hook again. A hook panicking with
+// 500 does not fire the hook again. When the request already failed (a
+// client-gone cancel, say), RequestFailed fires twice, once for that error
+// and once, with Recovered set, for the hook's panic: two facts about one
+// request, and the panic is still reported once. A hook panicking with
 // http.ErrAbortHandler is not handed to onPanic: finalize returns the
 // value for the caller to re-panic once its bookkeeping is done, as it
 // does with the handler's own abort.
