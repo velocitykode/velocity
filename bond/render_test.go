@@ -504,24 +504,38 @@ func TestRender_AlwaysProp_IncludedOnPartialReload(t *testing.T) {
 	}
 }
 
-func TestRender_AlwaysProp_ExcludedIfExcepted(t *testing.T) {
+// TestRender_AlwaysProp_IncludedWhenExcepted checks that an Always prop
+// survives a partial reload's except list naming it, while a regular prop
+// the list names is dropped.
+func TestRender_AlwaysProp_IncludedWhenExcepted(t *testing.T) {
 	b := setupBond(t)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set("X-Inertia", "true")
-	r.Header.Set("X-Inertia-Partial-Except", "auth")
+	r.Header.Set("X-Inertia-Partial-Except", "auth,users")
 	r.Header.Set("X-Inertia-Partial-Component", "Users/Index")
 
-	b.Render(w, r, "Users/Index", Props{
-		"auth": Always("excluded"),
-	})
+	if err := b.Render(w, r, "Users/Index", Props{
+		"auth":  Always("kept"),
+		"users": []string{"Ali"},
+		"total": 1,
+	}); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
 
 	var page Page
-	json.Unmarshal(w.Body.Bytes(), &page)
-
-	if _, ok := page.Props["auth"]; ok {
-		t.Error("always prop should be excluded if in except list")
+	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode page: %v (%s)", err, w.Body.String())
+	}
+	if got := page.Props["auth"]; got != "kept" {
+		t.Errorf("props.auth = %v, want the always prop %q kept despite the except list", got, "kept")
+	}
+	if _, ok := page.Props["users"]; ok {
+		t.Error("props.users present, want the regular prop the except list names dropped")
+	}
+	if _, ok := page.Props["total"]; !ok {
+		t.Error("props.total missing, want the regular prop the except list does not name kept")
 	}
 }
 

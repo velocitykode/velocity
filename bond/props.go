@@ -126,7 +126,9 @@ func (d *DeferredProp) MatchesOn() []string { return d.matchOn }
 // IsOnce returns whether this prop should only be resolved once.
 func (d *DeferredProp) IsOnce() bool { return d.once }
 
-// AlwaysProp is always included in responses, even during partial reloads
+// AlwaysProp is always included in responses, even during partial reloads,
+// whatever their only (X-Inertia-Partial-Data) or except
+// (X-Inertia-Partial-Except) list names.
 type AlwaysProp struct {
 	value any
 }

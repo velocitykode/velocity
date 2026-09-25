@@ -410,10 +410,9 @@ func (b *Bond) resolveProps(r *http.Request, props Props, isPartial bool) (Props
 			}
 
 		case AlwaysProp:
-			// Always: always include regardless of partial status
-			if !isPartial || !contains(exceptProps, key) {
-				resolved[key] = v.Value()
-			}
+			// Always: included on every response, whatever a partial
+			// reload's only or except list names.
+			resolved[key] = v.Value()
 
 		case *OptionalProp:
 			// Optional: only on explicit partial request

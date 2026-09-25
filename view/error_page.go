@@ -12,7 +12,11 @@ var _ contract.ErrorPageRenderer = (*Engine)(nil)
 // RenderErrorPage renders the configured error page component (see
 // Config.ErrorPage) at status with the props "status" and "message": the
 // JSON page object for an Inertia XHR request, the HTML shell for a
-// full-page visit. It reports false, having written nothing, when no
+// full-page visit. Both props are Always props: a partial reload of the
+// error page (the client already shows it) keeps its partial render, so
+// deferred groups are not announced again and the flash bag is not
+// drained, and still receives them whatever its only or except list
+// names. It reports false, having written nothing, when no
 // component is configured. A render that fails before writing reports
 // false with the error, so the caller can still answer; once anything was
 // written it reports true.
@@ -24,7 +28,7 @@ func (e *Engine) RenderErrorPage(rc contract.RenderContext, status int, message 
 	if component == "" {
 		return false, nil
 	}
-	props := Props{"status": status, "message": message}
+	props := Props{"status": Always(status), "message": Always(message)}
 	if err := e.bond.RenderWithStatus(renderContextWriter{rc: rc}, rc.Request(), component, props, status); err != nil {
 		return rc.Written(), err
 	}
