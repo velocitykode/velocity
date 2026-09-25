@@ -224,6 +224,17 @@ type SessionAware interface {
 	Session(r *http.Request) Session
 }
 
+// StatelessScheme is an optional capability interface implemented by
+// schemes that authenticate every request from a credential the request
+// carries (a bearer token) and keep no server-side session. A client such
+// a scheme turns away has no login page to be sent to, so the
+// unauthenticated render rule never redirects a request denied only by
+// stateless schemes (see Manager.RenderUnauthenticated).
+type StatelessScheme interface {
+	// Stateless reports whether the scheme keeps no session.
+	Stateless() bool
+}
+
 // Scheme defines authentication scheme interface
 type Scheme interface {
 	// Check if user is authenticated

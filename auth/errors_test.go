@@ -203,6 +203,117 @@ func TestManager_RenderUnauthenticated(t *testing.T) {
 	}
 }
 
+// statelessStubScheme is a scheme implementing StatelessScheme with a
+// fixed answer.
+type statelessStubScheme struct {
+	mockSchemeForMiddleware
+	stateless bool
+}
+
+func (s *statelessStubScheme) Stateless() bool { return s.stateless }
+
+// newSchemeManager returns a manager with a stateless "api" scheme, a
+// session-aware "web" scheme and a "half" scheme whose Stateless reports
+// false, with def as the default scheme.
+func newSchemeManager(def string) *Manager {
+	m := NewManager()
+	m.RegisterScheme("api", &statelessStubScheme{stateless: true})
+	m.RegisterScheme("web", &lookupCountingScheme{})
+	m.RegisterScheme("half", &statelessStubScheme{stateless: false})
+	m.SetDefaultScheme(def)
+	return m
+}
+
+// TestManager_RenderUnauthenticated_StatelessSchemes asserts a request
+// denied only by stateless schemes is never redirected, whatever it
+// accepts, while a session or unknown scheme among the checked ones keeps
+// the redirect. The schemes resolve through the manager carried on the
+// error, else the receiver.
+func TestManager_RenderUnauthenticated_StatelessSchemes(t *testing.T) {
+	sessionAPI := NewManager()
+	sessionAPI.RegisterScheme("api", &lookupCountingScheme{})
+	tests := []struct {
+		name       string
+		nilManager bool
+		schemes    []string
+		errManager *Manager
+		kind       string
+		want       bool
+	}{
+		{name: "stateless only", schemes: []string{"api"}, kind: kindBrowser},
+		{name: "stateless only inertia", schemes: []string{"api"}, kind: kindInertia},
+		{name: "session only", schemes: []string{"web"}, kind: kindBrowser, want: true},
+		{name: "stateless and session", schemes: []string{"api", "web"}, kind: kindBrowser, want: true},
+		{name: "session and stateless", schemes: []string{"web", "api"}, kind: kindBrowser, want: true},
+		{name: "unknown scheme", schemes: []string{"missing"}, kind: kindBrowser, want: true},
+		{name: "stateless and unknown", schemes: []string{"api", "missing"}, kind: kindBrowser, want: true},
+		{name: "stateless reports false", schemes: []string{"half"}, kind: kindBrowser, want: true},
+		{name: "no scheme named", kind: kindBrowser, want: true},
+		{name: "nil manager resolves nothing", nilManager: true, schemes: []string{"api"}, kind: kindBrowser, want: true},
+		{name: "error manager stateless", schemes: []string{"api"}, errManager: newSchemeManager("api"), kind: kindBrowser},
+		{name: "error manager session outranks receiver", schemes: []string{"api"}, errManager: sessionAPI, kind: kindBrowser, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var m *Manager
+			if !tt.nilManager {
+				m = newSchemeManager("web")
+			}
+			err := &UnauthenticatedError{Schemes: tt.schemes, manager: tt.errManager}
+			w := &writeTracker{ResponseRecorder: httptest.NewRecorder()}
+			rc := contract.NewRenderContext(w, newDenialRequest(http.MethodGet, "/dashboard", tt.kind))
+
+			if got := m.RenderUnauthenticated(rc, err, nil); got != tt.want {
+				t.Fatalf("RenderUnauthenticated = %v, want %v", got, tt.want)
+			}
+			if !tt.want {
+				if w.wrote || w.Header().Get("Location") != "" {
+					t.Errorf("fall-through wrote a response (code %d, Location %q)", w.Code, w.Header().Get("Location"))
+				}
+				return
+			}
+			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/login" {
+				t.Errorf("response = %d %q, want 303 /login", w.Code, w.Header().Get("Location"))
+			}
+		})
+	}
+}
+
+// TestAuthMiddleware_StatelessDenialThroughPipeline drives an auth guard
+// denial through the router boundary and the error pipeline: a browser
+// request denied by a stateless default scheme answers 401 with no
+// Location, one denied by a session scheme is redirected.
+func TestAuthMiddleware_StatelessDenialThroughPipeline(t *testing.T) {
+	tests := []struct {
+		name         string
+		scheme       string
+		kind         string
+		wantStatus   int
+		wantLocation string
+	}{
+		{name: "stateless browser", scheme: "api", kind: kindBrowser, wantStatus: http.StatusUnauthorized},
+		{name: "stateless json", scheme: "api", kind: kindJSON, wantStatus: http.StatusUnauthorized},
+		{name: "session browser", scheme: "web", kind: kindBrowser, wantStatus: http.StatusSeeOther, wantLocation: "/login"},
+		{name: "session json", scheme: "web", kind: kindJSON, wantStatus: http.StatusUnauthorized},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newSchemeManager(tt.scheme)
+			w, rep := servePipeline(t, m, AuthMiddleware(m), newDenialRequest(http.MethodGet, "/dashboard", tt.kind))
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %q)", w.Code, tt.wantStatus, w.Body.String())
+			}
+			if got := w.Header().Get("Location"); got != tt.wantLocation {
+				t.Errorf("Location = %q, want %q", got, tt.wantLocation)
+			}
+			if rep.count() != 0 {
+				t.Errorf("reports = %d, want 0", rep.count())
+			}
+		})
+	}
+}
+
 // idScheme is a scheme that is not SessionAware and answers ID with id,
 // or panics when boom is set.
 type idScheme struct {

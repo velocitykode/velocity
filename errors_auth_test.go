@@ -14,6 +14,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
+	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/log"
@@ -622,4 +623,78 @@ func TestAuthErrorRules_StashesThroughTheDenyingManager(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAuthErrorRules_StatelessSchemeThroughApp boots an app with
+// AUTH_SCHEME=api (the JWT scheme) and drives unauthenticated requests
+// through the auth guard, the router boundary and the error pipeline: a
+// stateless scheme never redirects, so a browser request answers 401 with
+// no Location, as problem+json under a Routing.API prefix and as the
+// negotiated HTML page outside one.
+func TestAuthErrorRules_StatelessSchemeThroughApp(t *testing.T) {
+	t.Setenv("AUTH_SCHEME", "api")
+	t.Setenv("AUTH_JWT_SECRET", strings.Repeat("s", 32))
+	t.Setenv("AUTH_JWT_BLACKLIST_ENABLED", "false")
+	authCfg := ConfigFromEnv().Auth
+	a, err := NewTestApp(func(a *App) { a.config.Auth = authCfg })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
+	m := auth.FromServices(a.Services)
+	if m == nil {
+		t.Fatal("app has no *auth.Manager")
+	}
+	if _, ok := mustScheme(t, m, "api").(auth.StatelessScheme); !ok {
+		t.Fatal("api scheme is not stateless")
+	}
+	guarded := func(*router.Context) error {
+		t.Error("guarded handler ran")
+		return nil
+	}
+	a.Routes(func(r *chain.Routing) {
+		r.API("/api", func(rt router.Router) { rt.Get("/me", guarded).Use(auth.AuthMiddleware(m)) })
+		r.Web(func(rt router.Router) { rt.Get("/dashboard", guarded).Use(auth.AuthMiddleware(m)) })
+	})
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("bootstrap() error: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		target   string
+		kind     string
+		wantType string
+	}{
+		{name: "api prefix browser", target: "/api/me", kind: "browser", wantType: problem.ProblemTypeContent},
+		{name: "api prefix json", target: "/api/me", kind: "json", wantType: problem.ProblemTypeContent},
+		{name: "web browser", target: "/dashboard", kind: "browser", wantType: "text/html"},
+		{name: "web json", target: "/dashboard", kind: "json", wantType: problem.ProblemTypeContent},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			a.Router.ServeHTTP(w, authRequest(http.MethodGet, tt.target, tt.kind))
+
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401 (Location %q, body %q)", w.Code, w.Header().Get("Location"), w.Body.String())
+			}
+			if got := w.Header().Get("Location"); got != "" {
+				t.Errorf("Location = %q, want none", got)
+			}
+			if got := w.Header().Get("Content-Type"); !strings.HasPrefix(got, tt.wantType) {
+				t.Errorf("Content-Type = %q, want %q", got, tt.wantType)
+			}
+		})
+	}
+}
+
+// mustScheme returns the scheme m resolves name to.
+func mustScheme(t *testing.T, m *auth.Manager, name string) auth.Scheme {
+	t.Helper()
+	s, err := m.Scheme(name)
+	if err != nil {
+		t.Fatalf("Scheme(%q): %v", name, err)
+	}
+	return s
 }

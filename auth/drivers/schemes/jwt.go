@@ -71,6 +71,13 @@ type JWTScheme struct {
 	eventDispatcher func(ctx context.Context, event any) error
 }
 
+var _ auth.StatelessScheme = (*JWTScheme)(nil)
+
+// Stateless returns true: the scheme authenticates each request from its
+// bearer token and keeps no session, so a denied request is answered with
+// a 401 rather than redirected to a login page.
+func (g *JWTScheme) Stateless() bool { return true }
+
 // loadUserStore returns the active auth.UserStore via atomic load.
 func (g *JWTScheme) loadUserStore() auth.UserStore {
 	h := g.userStore.Load()

@@ -19,12 +19,13 @@ const sessionUserIDKey = "user_id"
 
 // UnauthenticatedError is returned when a request needs an authenticated
 // user and has none. It answers 401 and is not reported. The framework's
-// default render rule answers a request that wants JSON with a 401
-// problem+json body and any other request, Inertia included, with a
-// redirect to the login target (see Manager.RenderUnauthenticated). One
-// returned by this package's middleware remembers the manager that denied
-// the request, so the render rule stashes the intended URL in that
-// manager's session.
+// default render rule answers a request that wants JSON, or one denied
+// only by stateless schemes, with a 401 problem+json body and any other
+// request, Inertia included, with a redirect to the login target (see
+// Manager.RenderUnauthenticated). One returned by this package's
+// middleware remembers the manager that denied the request, so the render
+// rule resolves the checked schemes through, and stashes the intended URL
+// in the session of, that manager.
 type UnauthenticatedError struct {
 	// Schemes names the authentication schemes that were checked.
 	Schemes []string
@@ -198,17 +199,24 @@ func (m *Manager) RequestUserID(r *http.Request) (id string) {
 // *UnauthenticatedError in err's chain. A request that wants JSON (the
 // error handler's negotiation answer, so API mode, API prefixes and JSON
 // predicates count) returns false so the error pipeline renders the 401
-// problem+json body. Any other request, an Inertia visit included (the
-// Inertia client follows the redirect), is redirected (303) to the
-// error's RedirectTo, or to the manager's login target when that is
-// empty, and true is returned. A target the render context refuses (not
-// same-origin and not an allowed host) is logged and returns false,
-// leaving the 401 to the pipeline. A nil manager uses "/login".
+// problem+json body. A stateless scheme never redirects: when every
+// scheme named in the error's Schemes resolves through the manager to a
+// scheme implementing StatelessScheme that reports true, false is
+// returned and the pipeline renders the 401 whatever the request
+// accepts. Any other request, an Inertia visit included (the Inertia
+// client follows the redirect), is redirected (303) to the error's
+// RedirectTo, or to the manager's login target when that is empty, and
+// true is returned: a session scheme or a name no scheme is registered
+// under among the checked schemes, or no scheme named at all, keeps the
+// redirect. A target the render context refuses (not same-origin and not
+// an allowed host) is logged and returns false, leaving the 401 to the
+// pipeline. A nil manager uses "/login" and resolves no scheme.
 //
 // The manager is the one that denied the request when err was returned
 // by this package's middleware (it is carried on the error), otherwise m:
-// its login target is the fallback for an empty RedirectTo, its session
-// takes the stash and its logger records a refused redirect.
+// it resolves the checked schemes, its login target is the fallback for
+// an empty RedirectTo, its session takes the stash and its logger records
+// a refused redirect.
 //
 // Before redirecting, a GET request's URL (path and query) is stashed in
 // the session under router.IntendedSessionKey and the session is saved,
@@ -230,6 +238,9 @@ func (m *Manager) RenderUnauthenticated(rc contract.RenderContext, err error, _ 
 		if ue.manager != nil {
 			m = ue.manager
 		}
+		if m.allStateless(ue.Schemes) {
+			return false
+		}
 	}
 	m.stashIntended(rc)
 	if target == "" {
@@ -242,6 +253,32 @@ func (m *Manager) RenderUnauthenticated(rc contract.RenderContext, err error, _ 
 		return false
 	}
 	return true
+}
+
+// allStateless reports whether names is not empty and every name
+// resolves through m to a StatelessScheme reporting true. A nil manager
+// resolves no scheme.
+func (m *Manager) allStateless(names []string) bool {
+	if m == nil || len(names) == 0 {
+		return false
+	}
+	for _, name := range names {
+		if !m.schemeIsStateless(name) {
+			return false
+		}
+	}
+	return true
+}
+
+// schemeIsStateless reports whether name resolves through m to a
+// StatelessScheme reporting true. An unknown name is not stateless.
+func (m *Manager) schemeIsStateless(name string) bool {
+	scheme, err := m.Scheme(name)
+	if err != nil {
+		return false
+	}
+	s, ok := scheme.(StatelessScheme)
+	return ok && s.Stateless()
 }
 
 // stashIntended stores the URL of a GET request in the request's session

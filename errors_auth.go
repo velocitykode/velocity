@@ -11,8 +11,9 @@ import (
 // *auth.UnauthenticatedError that owns the response status renders through
 // Manager.RenderUnauthenticated of the auth manager in the failed request's
 // services (a 303 to the login target for a browser or Inertia request; a
-// request that wants JSON falls through to the pipeline's 401 problem+json
-// body); an error auth's middleware returned stashes the intended URL
+// request that wants JSON, or one denied only by stateless schemes, falls
+// through to the pipeline's 401); an error auth's middleware returned
+// resolves the checked schemes through, stashes the intended URL
 // through, and falls back to the login target of, the manager that denied
 // the request instead. An *auth.AlreadyAuthenticatedError from the guest guard renders
 // through Manager.RenderAlreadyAuthenticated (a 303 to its redirect target

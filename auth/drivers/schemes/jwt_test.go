@@ -1371,3 +1371,24 @@ func (p *mockJWTUserStore) FindByCredentialsCtx(_ context.Context, credentials m
 func (p *mockJWTUserStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }
+
+// TestSchemes_Stateless asserts the JWT scheme reports itself stateless
+// and the session scheme does not implement auth.StatelessScheme.
+func TestSchemes_Stateless(t *testing.T) {
+	tests := []struct {
+		name   string
+		scheme auth.Scheme
+		want   bool
+	}{
+		{name: "jwt", scheme: &JWTScheme{}, want: true},
+		{name: "session", scheme: &SessionScheme{}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, ok := tt.scheme.(auth.StatelessScheme)
+			if got := ok && s.Stateless(); got != tt.want {
+				t.Errorf("stateless = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
