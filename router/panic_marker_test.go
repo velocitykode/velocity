@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -621,6 +622,85 @@ func TestServeHTTP_AbortPanicSkipsBoundaryAndHooks(t *testing.T) {
 			}
 			if handled != 1 {
 				t.Errorf("RequestHandled fired %d times, want 1", handled)
+			}
+		})
+	}
+}
+
+// TestServeHTTP_AbortRaisedByTheBoundaryResponse asserts that when the
+// boundary's answer to a recovered panic raises http.ErrAbortHandler (a
+// pre-commit hook the 500 fires aborts), on the default path and under an
+// installed error handler, the request's bookkeeping still runs before the
+// abort goes on to net/http: RequestHandled fires once, the Context is
+// reset for the pool, the client sees the connection cut, and the server
+// keeps serving.
+func TestServeHTTP_AbortRaisedByTheBoundaryResponse(t *testing.T) {
+	for _, installed := range []bool{false, true} {
+		name := "DefaultPath"
+		if installed {
+			name = "InstalledHandler"
+		}
+		t.Run(name, func(t *testing.T) {
+			var (
+				mu      sync.Mutex
+				handled int
+				held    *Context
+			)
+			r := NewV2()
+			if installed {
+				r.SetErrorHandler(func(c *Context, _ error, _ ErrorInfo) {
+					c.Response.WriteHeader(http.StatusInternalServerError)
+				})
+			}
+			r.SetEventDispatcher(func(_ context.Context, event interface{}) error {
+				if _, ok := event.(*RequestHandled); ok {
+					mu.Lock()
+					handled++
+					mu.Unlock()
+				}
+				return nil
+			})
+			r.Get("/boom", func(c *Context) error {
+				if h, ok := c.Response.(interface{ BeforeFirstWrite(func()) }); ok {
+					h.BeforeFirstWrite(func() { panic(http.ErrAbortHandler) })
+				}
+				c.Set("request", "boom")
+				mu.Lock()
+				held = c
+				mu.Unlock()
+				panic("a bug")
+			})
+			r.Get("/ok", func(c *Context) error { return c.String(http.StatusOK, "ok") })
+			srv := httptest.NewServer(r)
+
+			resp, err := srv.Client().Get(srv.URL + "/boom")
+			if err == nil {
+				_, readErr := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				if readErr == nil {
+					t.Errorf("client read a complete response (status %d), want the connection cut", resp.StatusCode)
+				}
+			}
+			ok, err := srv.Client().Get(srv.URL + "/ok")
+			if err != nil {
+				t.Fatalf("GET /ok after the abort: %v", err)
+			}
+			_ = ok.Body.Close()
+			srv.Close()
+			if ok.StatusCode != http.StatusOK {
+				t.Errorf("follow-up status = %d, want 200", ok.StatusCode)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if handled != 2 {
+				t.Errorf("RequestHandled fired %d times, want 2 (the abort and the follow-up)", handled)
+			}
+			if held == nil {
+				t.Fatal("the handler never ran")
+			}
+			if held.Request != nil || held.Response != nil || held.Get("request") != nil {
+				t.Error("the aborted request's Context was not reset for the pool")
 			}
 		})
 	}

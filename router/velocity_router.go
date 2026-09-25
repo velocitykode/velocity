@@ -790,7 +790,7 @@ func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request,
 			if isAbortPanic(recovered) {
 				abort = recovered
 			} else {
-				r.onPanic(ctx, rw, req, meta, recovered)
+				abort = r.onPanic(ctx, rw, req, meta, recovered)
 			}
 		} else if handlerErr != nil {
 			r.dispatchRequestFailed(req, meta, failure)
@@ -902,7 +902,7 @@ func (r *VelocityRouterV2) handleUnmatched(rw *responseWriter, req *http.Request
 			if isAbortPanic(recovered) {
 				abort = recovered
 			} else {
-				r.onPanic(ctx, rw, req, meta, recovered)
+				abort = r.onPanic(ctx, rw, req, meta, recovered)
 			}
 		} else if handlerErr != nil {
 			r.dispatchRequestFailed(req, meta, failure)
@@ -1048,7 +1048,7 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 			if isAbortPanic(recovered) {
 				abort = recovered
 			} else {
-				r.onPanic(ctx, rw, req, meta, recovered)
+				abort = r.onPanic(ctx, rw, req, meta, recovered)
 			}
 		} else if handlerErr != nil {
 			r.dispatchRequestFailed(req, meta, failure)
@@ -1121,7 +1121,7 @@ func (r *VelocityRouterV2) finalizeGuarded(ctx *Context, rw *responseWriter, req
 				abort = recovered
 				return
 			}
-			r.onPanic(ctx, rw, req, meta, recovered)
+			abort = r.onPanic(ctx, rw, req, meta, recovered)
 		}
 	}()
 	rw.fireBeforeFirstWrite()
@@ -1136,12 +1136,27 @@ func (r *VelocityRouterV2) finalizeGuarded(ctx *Context, rw *responseWriter, req
 // skips the boundary and pending pre-commit hooks for that value, still
 // dispatches RequestHandled and returns the Context to the pool, then
 // re-panics it so net/http aborts the connection.
-func (r *VelocityRouterV2) onPanic(ctx *Context, rw *responseWriter, req *http.Request, meta requestMeta, recovered interface{}) {
+//
+// The boundary's own response can raise that abort too (a pre-commit hook
+// the 500 fires panics with http.ErrAbortHandler). onPanic runs inside the
+// caller's deferred function, where a panic would skip the rest of the
+// request's bookkeeping, so it recovers such an abort and returns it for
+// the caller to re-panic last; any other panic there goes on unchanged.
+func (r *VelocityRouterV2) onPanic(ctx *Context, rw *responseWriter, req *http.Request, meta requestMeta, recovered interface{}) (abort any) {
 	// Skip onPanic and the deferred function so the trace starts at the
 	// panic site.
 	pe := newPanicError(panicerr.FromRecovered(recovered), 2)
 	r.dispatchRequestFailed(req, meta, requestFailure{err: pe, stack: pe.Stack, recovered: true, fire: true})
+	defer func() {
+		if p := recover(); p != nil {
+			if !isAbortPanic(p) {
+				panic(p)
+			}
+			abort = p
+		}
+	}()
 	r.handleError(ctx, rw, pe, ErrorInfo{Recovered: true, Stack: pe.Stack, StackTrace: pe.Trace})
+	return nil
 }
 
 // requestFailure is the boundary's RequestFailed decision for one failed
