@@ -218,18 +218,28 @@ type facetScheme struct {
 func (s *facetScheme) Stateless() bool   { return s.stateless }
 func (s *facetScheme) Challenge() string { return s.challenge }
 
+// challengeOnlyScheme implements ChallengeScheme and not StatelessScheme.
+type challengeOnlyScheme struct {
+	mockSchemeForMiddleware
+	challenge string
+}
+
+func (s *challengeOnlyScheme) Challenge() string { return s.challenge }
+
 // newSchemeManager returns a manager with def as the default scheme and
 // these schemes: "api" (stateless, challenges "Bearer", like the JWT
 // scheme), "api2" (the same), "basic" (stateless, challenges
 // `Basic realm="app"`), "evil" (stateless, a challenge carrying CRLF),
-// "web" (session-aware, no challenge) and "half" (Stateless reports
-// false, no challenge).
+// "hmac" (challenges "HMAC-SHA256", not a StatelessScheme), "web"
+// (session-aware, no challenge) and "half" (Stateless reports false, no
+// challenge).
 func newSchemeManager(def string) *Manager {
 	m := NewManager()
 	m.RegisterScheme("api", &facetScheme{stateless: true, challenge: "Bearer"})
 	m.RegisterScheme("api2", &facetScheme{stateless: true, challenge: "Bearer"})
 	m.RegisterScheme("basic", &facetScheme{stateless: true, challenge: `Basic realm="app"`})
 	m.RegisterScheme("evil", &facetScheme{stateless: true, challenge: "Bearer\r\nX-Evil: 1"})
+	m.RegisterScheme("hmac", &challengeOnlyScheme{challenge: "HMAC-SHA256"})
 	m.RegisterScheme("web", &lookupCountingScheme{})
 	m.RegisterScheme("half", &facetScheme{stateless: false})
 	m.SetDefaultScheme(def)
@@ -240,7 +250,9 @@ func newSchemeManager(def string) *Manager {
 // adds one WWW-Authenticate line per checked scheme with a challenge, in
 // order and once each, on every path that hands the 401 back to the
 // pipeline, and none on a 303, for a session-only denial or for a value
-// holding CRLF.
+// holding CRLF. The challenge follows ChallengeScheme alone: a scheme
+// that challenges without being stateless keeps the redirect for a
+// browser and still sends its challenge on every 401 path.
 func TestManager_RenderUnauthenticated_Challenges(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -265,6 +277,10 @@ func TestManager_RenderUnauthenticated_Challenges(t *testing.T) {
 		{name: "mixed json", schemes: []string{"api", "web"}, kind: kindJSON, wantHeaders: []string{"Bearer"}},
 		{name: "refused redirect challenges", schemes: []string{"api", "web"}, redirectTo: "https://evil.example/login", kind: kindBrowser, wantHeaders: []string{"Bearer"}},
 		{name: "unknown scheme", schemes: []string{"missing"}, kind: kindJSON},
+		{name: "non-stateless challenge json", schemes: []string{"hmac"}, kind: kindJSON, wantHeaders: []string{"HMAC-SHA256"}},
+		{name: "non-stateless challenge browser redirected", schemes: []string{"hmac"}, kind: kindBrowser, wantRender: true},
+		{name: "non-stateless challenge refused redirect", schemes: []string{"hmac"}, redirectTo: "https://evil.example/login", kind: kindBrowser, wantHeaders: []string{"HMAC-SHA256"}},
+		{name: "non-stateless challenge beside jwt json", schemes: []string{"hmac", "api"}, kind: kindJSON, wantHeaders: []string{"HMAC-SHA256", "Bearer"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
