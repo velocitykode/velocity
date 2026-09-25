@@ -659,3 +659,83 @@ func TestValidationFailure_ErrorBagReachesInertiaProps(t *testing.T) {
 		}
 	}
 }
+
+// TestValidationBodyErrors_ThroughApp drives unusable bodies through
+// c.Validate and vform.Form, the router boundary and the error pipeline: a
+// malformed JSON or form body answers 400 and one over the body limit 413,
+// both as problem+json, unreported and never as field errors, while a
+// valid body that fails the rules still answers 422.
+func TestValidationBodyErrors_ThroughApp(t *testing.T) {
+	const jsonType = "application/json"
+	const formType = "application/x-www-form-urlencoded"
+	tests := []struct {
+		name        string
+		view        contract.ViewEngine
+		path        string
+		contentType string
+		body        string
+		accept      string // empty: application/json
+		wantStatus  int
+		wantType    string
+		wantDetail  string
+	}{
+		{name: "validate malformed json", path: "/validate", contentType: jsonType, body: `{"email":`, wantStatus: http.StatusBadRequest, wantType: problem.ProblemTypeContent, wantDetail: "malformed request body"},
+		{name: "vform malformed json", path: "/vform", contentType: jsonType, body: `{"email":`, wantStatus: http.StatusBadRequest, wantType: problem.ProblemTypeContent, wantDetail: "malformed request body"},
+		{name: "validate malformed form", path: "/validate", contentType: formType, body: "email=%zz", wantStatus: http.StatusBadRequest, wantType: problem.ProblemTypeContent, wantDetail: "malformed request body"},
+		{name: "vform malformed form", path: "/vform", contentType: formType, body: "email=%zz", wantStatus: http.StatusBadRequest, wantType: problem.ProblemTypeContent, wantDetail: "malformed request body"},
+		{name: "validate over the body limit", path: "/validate-small", contentType: jsonType, body: invalidSignup, wantStatus: http.StatusRequestEntityTooLarge, wantType: problem.ProblemTypeContent, wantDetail: "Request Entity Too Large"},
+		{name: "vform over the body limit", path: "/vform-small", contentType: jsonType, body: invalidSignup, wantStatus: http.StatusRequestEntityTooLarge, wantType: problem.ProblemTypeContent, wantDetail: "Request Entity Too Large"},
+		{name: "validate form over the body limit", path: "/validate-small", contentType: formType, body: "email=" + strings.Repeat("a", 64), wantStatus: http.StatusRequestEntityTooLarge, wantType: problem.ProblemTypeContent, wantDetail: "Request Entity Too Large"},
+		{name: "validate browser malformed json", view: backToSignup{}, path: "/validate", contentType: jsonType, body: `{"email":`, accept: "text/html", wantStatus: http.StatusBadRequest, wantType: "text/html"},
+		{name: "validate rules fail", path: "/validate", contentType: jsonType, body: invalidSignup, wantStatus: http.StatusUnprocessableEntity, wantType: problem.ProblemTypeContent, wantDetail: "Unprocessable Entity"},
+		{name: "vform rules fail", path: "/vform", contentType: jsonType, body: invalidSignup, wantStatus: http.StatusUnprocessableEntity, wantType: problem.ProblemTypeContent, wantDetail: "Unprocessable Entity"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, _, rec, _ := validationApp(t, tt.view)
+			a.Router.Post("/validate-small", func(c *router.Context) error {
+				return c.Validate(signupForm{}.Rules())
+			}).Use(router.BodyLimit(8))
+			a.Router.Post("/vform-small", func(c *router.Context) error {
+				_, err := vform.Form[signupForm](c)
+				return err
+			}).Use(router.BodyLimit(8))
+
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", tt.contentType)
+			accept := tt.accept
+			if accept == "" {
+				accept = "application/json"
+			}
+			req.Header.Set("Accept", accept)
+			w := httptest.NewRecorder()
+			a.Router.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %q)", w.Code, tt.wantStatus, w.Body.String())
+			}
+			if got := w.Header().Get("Content-Type"); !strings.HasPrefix(got, tt.wantType) {
+				t.Errorf("Content-Type = %q, want %q", got, tt.wantType)
+			}
+			if got := w.Header().Get("Location"); got != "" {
+				t.Errorf("Location = %q, want none", got)
+			}
+			if tt.wantDetail != "" {
+				var doc problemDoc
+				if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+					t.Fatalf("body is not JSON: %v (%q)", err, w.Body.String())
+				}
+				if doc.Detail != tt.wantDetail {
+					t.Errorf("detail = %q, want %q", doc.Detail, tt.wantDetail)
+				}
+				wantFields := tt.wantStatus == http.StatusUnprocessableEntity
+				if gotFields := len(doc.Errors) > 0; gotFields != wantFields {
+					t.Errorf("errors = %v, want field errors %v", doc.Errors, wantFields)
+				}
+			}
+			if rec.count() != 0 {
+				t.Errorf("reports = %d, want 0", rec.count())
+			}
+		})
+	}
+}

@@ -3,6 +3,7 @@ package vform
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -171,23 +172,48 @@ func TestValidate_ValidationFailure_ReturnsResultNoError(t *testing.T) {
 	}
 }
 
-func TestValidate_MalformedJSON_ReturnsError(t *testing.T) {
-	// Malformed JSON yields an empty data map at extraction, which means
-	// validation runs and reports required-field errors. This is consistent
-	// with bond's flash flow: a malformed body looks like an empty form.
-	// We verify that this path doesn't blow up and surfaces a *Result.
-	ctx, _ := jsonCtx(t, `{not json`)
+// TestValidate_BodyErrors asserts a body the check cannot use is returned
+// as the error, never as field errors: a malformed JSON body is the 400
+// with the parse error as its cause, one over the body limit is the
+// *http.MaxBytesError itself.
+func TestValidate_BodyErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		limit      int64 // 0: no BodyLimit
+		wantStatus int   // 0: expect the *http.MaxBytesError itself
+	}{
+		{name: "malformed json", body: `{not json`, wantStatus: http.StatusBadRequest},
+		{name: "trailing text", body: `{"email":"a@b.com"} trailing`, wantStatus: http.StatusBadRequest},
+		{name: "over the body limit", body: `{"email":"a@b.com","password":"longenough"}`, limit: 8},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, w := jsonCtx(t, tt.body)
+			if tt.limit > 0 {
+				ctx.Request.Body = http.MaxBytesReader(w, ctx.Request.Body, tt.limit)
+			}
 
-	form, result, err := Validate[signupRequest](ctx)
-	if err != nil {
-		t.Fatalf("expected nil error for malformed JSON (validation-style failure), got %v", err)
-	}
-	if result == nil || !result.HasErrors() {
-		t.Fatal("expected *Result with errors for malformed JSON body")
-	}
-	// form is the zero-value *T, fields should be empty
-	if form == nil || form.Email != "" || form.Password != "" {
-		t.Errorf("expected zero-value form, got %+v", form)
+			form, result, err := Validate[signupRequest](ctx)
+			if form != nil || result != nil {
+				t.Errorf("form = %v, result = %v, want both nil", form, result)
+			}
+			if tt.wantStatus == 0 {
+				var mbe *http.MaxBytesError
+				if !errors.As(err, &mbe) || error(mbe) != err {
+					t.Fatalf("err = %T %v, want the *http.MaxBytesError itself", err, err)
+				}
+				return
+			}
+			var he *contract.HTTPError
+			if !errors.As(err, &he) || he.Status != tt.wantStatus || he.Message != "malformed request body" {
+				t.Fatalf("err = %T %v, want a %d malformed request body", err, err, tt.wantStatus)
+			}
+			var se *json.SyntaxError
+			if !errors.As(he.Cause, &se) {
+				t.Errorf("cause = %T %v, want *json.SyntaxError", he.Cause, he.Cause)
+			}
+		})
 	}
 }
 

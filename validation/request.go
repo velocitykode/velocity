@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // DefaultMaxBodyBytes is the hard cap applied to JSON / form bodies the
@@ -43,8 +45,12 @@ var sensitiveFieldSubstrings = []string{
 // Check validates request data against the given rules.
 // It extracts form values or JSON body from the request automatically.
 //
-// The error return reports a malformed rule set (wrapping ErrInvalidRule),
-// never a field-level failure: those travel on *Result.
+// The error return reports a malformed rule set (wrapping ErrInvalidRule)
+// or a request body that cannot be used: the *http.MaxBytesError itself
+// for a body over the limit (the error pipeline answers 413) and a 400
+// *contract.HTTPError, with the parse or read error as its Cause, for a
+// malformed JSON or form body (see ExtractRequestDataLimited). It is never
+// a field-level failure: those travel on *Result.
 //
 // Prefer CheckW(w, r, ...) when a *http.ResponseWriter is available so the
 // body read is wrapped with http.MaxBytesReader and an oversized body can
@@ -56,9 +62,8 @@ func Check(r *http.Request, rules Rules, messages ...Messages) (*Result, error) 
 }
 
 // CheckW is Check but with a *http.ResponseWriter so the body extraction
-// can wrap r.Body with http.MaxBytesReader properly. Returns a result with
-// a sentinel field-level error on oversized body (rather than truncating
-// silently the way io.LimitReader did).
+// can wrap r.Body with http.MaxBytesReader properly. A body over the limit
+// returns the *http.MaxBytesError itself rather than being truncated.
 func CheckW(w http.ResponseWriter, r *http.Request, rules Rules, messages ...Messages) (*Result, error) {
 	return CheckWithRulesW(w, r, rules, nil, messages...)
 }
@@ -92,9 +97,9 @@ func CheckWithRulesW(w http.ResponseWriter, r *http.Request, rules Rules, extra 
 	if err != nil {
 		return nil, err
 	}
-	data, bodyErr := extractRequestDataW(w, r, DefaultMaxBodyBytes)
-	if bodyErr != nil {
-		return resultForBodyError(bodyErr), nil
+	data, err := extractRequestDataW(w, r, DefaultMaxBodyBytes)
+	if err != nil {
+		return nil, err
 	}
 	return runNormalized(data, normalized, extra, messages...)
 }
@@ -207,17 +212,11 @@ func (r *Result) Old() map[string]interface{} {
 // ExtractRequestData reads form values or JSON body from the request.
 //
 // Both branches are wrapped with http.MaxBytesReader (limit:
-// DefaultMaxBodyBytes) instead of the legacy io.LimitReader that silently
-// truncated oversize JSON bodies and left form bodies completely
-// unbounded. When a *http.ResponseWriter is available, prefer
-// ExtractRequestDataLimited(w, r, n) so the MaxBytesReader can also signal
-// the server to close the connection on overrun.
-//
-// On oversized body the function still returns a (possibly empty) map
-// instead of an error to keep the legacy signature; for the error-surfacing
-// path used by Check / CheckWithDB, the package's CheckW / CheckWithDBW
-// helpers call extractRequestDataW directly so callers can react with a
-// proper field-level "body too large" validation error.
+// DefaultMaxBodyBytes), so an oversized body is never truncated or read
+// unbounded. It returns nil when the body cannot be used (over the limit,
+// malformed JSON or form data); ExtractRequestDataLimited reports why, and
+// with a *http.ResponseWriter lets the MaxBytesReader also signal the
+// server to close the connection on overrun.
 func ExtractRequestData(r *http.Request) map[string]interface{} {
 	data, _ := extractRequestDataW(nil, r, DefaultMaxBodyBytes)
 	return data
@@ -225,21 +224,24 @@ func ExtractRequestData(r *http.Request) map[string]interface{} {
 
 // ExtractRequestDataLimited is the ResponseWriter-aware, configurable-limit
 // variant of ExtractRequestData. n is the maximum number of bytes that
-// will be read from r.Body across the JSON and form branches. Returns
-// nil, *http.MaxBytesError when the body exceeds n.
+// will be read from r.Body across the JSON and form branches.
+//
+// A body over n returns nil and the *http.MaxBytesError itself, which the
+// error pipeline answers with a 413. A JSON body that does not decode into
+// one JSON object, a form body (or query string) that does not parse, and
+// a body that fails to read return nil and a 400 *contract.HTTPError whose
+// client-visible message is "malformed request body" and whose Cause is
+// the parse or read error (logs and the debug page only). An empty or
+// whitespace-only JSON body, or a JSON null, is not malformed: it yields an
+// empty map.
 func ExtractRequestDataLimited(w http.ResponseWriter, r *http.Request, n int64) (map[string]interface{}, error) {
 	return extractRequestDataW(w, r, n)
 }
 
 // extractRequestDataW is the implementation behind ExtractRequestData,
 // ExtractRequestDataLimited, CheckW, and CheckWithDBW. The body is wrapped
-// with http.MaxBytesReader so callers cannot silently truncate (the JSON
-// io.LimitReader bug) and forms are no longer unbounded.
-//
-// The returned error is non-nil only for body-size overruns; everything
-// else (malformed JSON, missing content type, etc.) falls back to an
-// empty map for compatibility with the legacy ExtractRequestData
-// signature.
+// with http.MaxBytesReader so it is never truncated or read unbounded. The
+// errors are those ExtractRequestDataLimited documents.
 func extractRequestDataW(w http.ResponseWriter, r *http.Request, n int64) (map[string]interface{}, error) {
 	ct := r.Header.Get("Content-Type")
 
@@ -249,23 +251,24 @@ func extractRequestDataW(w http.ResponseWriter, r *http.Request, n int64) (map[s
 		// optional requestTooLarge connection-close hint is skipped via
 		// the type-assertion in maxBytesReader.Read when w is nil.
 		r.Body = http.MaxBytesReader(w, r.Body, n)
-		var data map[string]interface{}
 		body, err := io.ReadAll(r.Body) //nolint:forbidigo // bounded by http.MaxBytesReader installed on r.Body above
 		if err != nil {
-			// MaxBytesError or any other read failure: surface up so
-			// CheckW can flip the result into a validation error
-			// instead of silently truncating the way the legacy
-			// io.LimitReader path did.
-			return nil, err
+			return nil, bodyError(err)
 		}
-		if len(body) > 0 {
-			// Restore body so ctx.Bind() can read it again
-			r.Body = io.NopCloser(bytes.NewReader(body))
-			if json.Unmarshal(body, &data) == nil {
-				return data, nil
-			}
+		// Restore body so ctx.Bind() can read it again
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if len(bytes.TrimSpace(body)) == 0 {
+			return make(map[string]interface{}), nil
 		}
-		return make(map[string]interface{}), nil
+		var data map[string]interface{}
+		if err := json.Unmarshal(body, &data); err != nil {
+			return nil, malformedBody(err)
+		}
+		if data == nil {
+			// A JSON null carries no fields.
+			return make(map[string]interface{}), nil
+		}
+		return data, nil
 	}
 
 	// Fall back to form data. Wrap the body with MaxBytesReader BEFORE
@@ -275,14 +278,7 @@ func extractRequestDataW(w http.ResponseWriter, r *http.Request, n int64) (map[s
 	// POST body reads, so the wrapper is load-bearing here.
 	r.Body = http.MaxBytesReader(w, r.Body, n)
 	if err := r.ParseForm(); err != nil {
-		// MaxBytesError surfaces through ParseForm's body read.
-		if isMaxBytesError(err) {
-			return nil, err
-		}
-		// Any other parse error (e.g. malformed urlencoding) falls
-		// through to the empty-map return below, matching legacy
-		// behaviour.
-		return make(map[string]interface{}), nil
+		return nil, bodyError(err)
 	}
 	if len(r.Form) > 0 {
 		data := make(map[string]interface{}, len(r.Form))
@@ -299,25 +295,20 @@ func extractRequestDataW(w http.ResponseWriter, r *http.Request, n int64) (map[s
 	return make(map[string]interface{}), nil
 }
 
-// isMaxBytesError checks whether err (possibly wrapped) is an
-// *http.MaxBytesError. ParseForm wraps the underlying body Read error
-// in a multipart / url.ParseQuery layer, so we walk the chain.
-func isMaxBytesError(err error) bool {
-	var mbe *http.MaxBytesError
-	return errors.As(err, &mbe)
+// bodyError maps a failure to read or parse the request body: the
+// *http.MaxBytesError in err's chain itself (ParseForm wraps it), which
+// the error pipeline answers with a 413, or else a malformed-body 400.
+func bodyError(err error) error {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		return tooLarge
+	}
+	return malformedBody(err)
 }
 
-// resultForBodyError builds a *Result that surfaces an oversized body
-// as a field-level validation error keyed on "_body" so callers see a
-// clear "request body too large" message instead of an empty validation
-// pass that would have followed silent truncation. The 413-style
-// connection-close hint, when supported, is fired by MaxBytesReader
-// itself via the response writer (CheckW / CheckWithDBW path).
-func resultForBodyError(err error) *Result {
-	return &Result{
-		errors: map[string][]string{
-			"_body": {"The request body is too large."},
-		},
-		input: nil,
-	}
+// malformedBody returns the 400 answered for a request body that cannot be
+// read or parsed. The message is the client-visible text; cause reaches
+// logs and the debug page only.
+func malformedBody(cause error) error {
+	return contract.NewHTTPError(http.StatusBadRequest, "malformed request body").WithCause(cause).WithOrigin(1)
 }

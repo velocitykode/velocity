@@ -2,12 +2,16 @@ package validation
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // ---------------------------------------------------------------------------
@@ -477,9 +481,8 @@ func TestExtractRequestData_JSONRestoresBody(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestExtractRequestDataLimited_JSON_RejectsOversize asserts that a JSON
-// body over the configured limit returns an *http.MaxBytesError so the
-// validator can surface a clear field-level error rather than treating
-// the truncated prefix as a valid (or invalid) form.
+// body over the configured limit returns an *http.MaxBytesError rather
+// than treating the truncated prefix as a valid (or invalid) form.
 func TestExtractRequestDataLimited_JSON_RejectsOversize(t *testing.T) {
 	// Craft a JSON body just over the small limit; the body itself is
 	// valid JSON to prove the rejection comes from the size cap, not
@@ -516,59 +519,170 @@ func TestExtractRequestDataLimited_Form_RejectsOversize(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected size error from form branch, got nil; data=%v", data)
 	}
-	// ParseForm wraps the body Read error; isMaxBytesError walks the
-	// chain via errors.As.
-	if !isMaxBytesError(err) {
-		t.Fatalf("expected wrapped *http.MaxBytesError, got %T: %v", err, err)
+	// ParseForm wraps the body Read error; the extraction returns the
+	// *http.MaxBytesError itself.
+	var mbe *http.MaxBytesError
+	if !errors.As(err, &mbe) || error(mbe) != err {
+		t.Fatalf("expected the *http.MaxBytesError itself, got %T: %v", err, err)
 	}
 }
 
-// TestCheckW_OversizedJSON_SurfacesValidationError exercises the
-// public-facing CheckW path: an oversized body should yield a *Result
-// with a _body field error, not a silent pass.
-func TestCheckW_OversizedJSON_SurfacesValidationError(t *testing.T) {
-	// Build a JSON body well over DefaultMaxBodyBytes (10 MiB) so we
-	// exercise the production limit, not just the small-limit unit
-	// tests above. Using strings.Repeat is cheap because the body is
-	// emitted on demand by strings.NewReader.
+// TestCheckW_OversizedBody_ReturnsMaxBytesError exercises the public
+// CheckW path at the production limit: an oversized JSON or form body
+// returns the *http.MaxBytesError itself (the error pipeline answers 413)
+// and no result, never a field-level error.
+func TestCheckW_OversizedBody_ReturnsMaxBytesError(t *testing.T) {
+	// Bodies well over DefaultMaxBodyBytes (10 MiB) exercise the
+	// production limit, not just the small-limit unit tests above.
+	// strings.NewReader emits the body on demand.
 	big := strings.Repeat("a", int(DefaultMaxBodyBytes)+1024)
-	body := `{"x":"` + big + `"}`
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
-	r.Header.Set("Content-Type", "application/json")
+	form := url.Values{}
+	form.Set("name", big)
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{name: "json", contentType: "application/json", body: `{"name":"` + big + `"}`},
+		{name: "form", contentType: "application/x-www-form-urlencoded", body: form.Encode()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tt.body))
+			r.Header.Set("Content-Type", tt.contentType)
 
-	w := httptest.NewRecorder()
-	result, err := CheckW(w, r, Rules{"x": {Required()}})
-	if err != nil {
-		t.Fatalf("unexpected rule-set error: %v", err)
-	}
-	if !result.HasErrors() {
-		t.Fatal("expected validation error from oversized body, got no errors")
-	}
-	if result.First("_body") == "" {
-		t.Errorf("expected _body field error, got: %v", result.All())
+			result, err := CheckW(httptest.NewRecorder(), r, Rules{"name": {Required()}})
+			if result != nil {
+				t.Errorf("result = %v, want nil", result.All())
+			}
+			var mbe *http.MaxBytesError
+			if !errors.As(err, &mbe) || error(mbe) != err {
+				t.Fatalf("err = %T %v, want the *http.MaxBytesError itself", err, err)
+			}
+		})
 	}
 }
 
-// TestCheckW_OversizedForm_SurfacesValidationError is the form-branch
-// counterpart. Before M-23 the form branch was unbounded; we now expect
-// a _body validation error.
-func TestCheckW_OversizedForm_SurfacesValidationError(t *testing.T) {
-	form := url.Values{}
-	form.Set("name", strings.Repeat("x", int(DefaultMaxBodyBytes)+1024))
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
-	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+// TestExtractRequestDataLimited_BodyErrors asserts the body the check
+// cannot use is reported, not turned into an empty map: a malformed JSON
+// or form body is a 400 carrying the parse error as its cause, a body over
+// the limit is the *http.MaxBytesError itself, and an empty JSON body is
+// an empty map.
+func TestExtractRequestDataLimited_BodyErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		limit       int64
+		wantData    map[string]interface{}
+		wantStatus  int              // 0: no HTTPError expected
+		wantCause   func(error) bool // checked on the HTTPError's cause
+		wantTooBig  bool             // expect the *http.MaxBytesError itself
+	}{
+		{name: "malformed json", contentType: "application/json", body: `{"email": "a@example.com", "name":`, wantStatus: http.StatusBadRequest, wantCause: isJSONSyntaxError},
+		{name: "json with trailing text", contentType: "application/json", body: `{"name":"a"} trailing`, wantStatus: http.StatusBadRequest, wantCause: isJSONSyntaxError},
+		{name: "json array", contentType: "application/json", body: `["a"]`, wantStatus: http.StatusBadRequest, wantCause: isJSONTypeError},
+		{name: "malformed form", contentType: "application/x-www-form-urlencoded", body: "name=%zz", wantStatus: http.StatusBadRequest, wantCause: isEscapeError},
+		{name: "oversized json", contentType: "application/json", body: `{"name":"` + strings.Repeat("a", 100) + `"}`, limit: 16, wantTooBig: true},
+		{name: "oversized form", contentType: "application/x-www-form-urlencoded", body: "name=" + strings.Repeat("a", 100), limit: 16, wantTooBig: true},
+		{name: "empty json body", contentType: "application/json", body: "", wantData: map[string]interface{}{}},
+		{name: "whitespace json body", contentType: "application/json", body: " \n\t", wantData: map[string]interface{}{}},
+		{name: "json null", contentType: "application/json", body: "null", wantData: map[string]interface{}{}},
+		{name: "valid json", contentType: "application/json", body: `{"name":"a"}`, wantData: map[string]interface{}{"name": "a"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			limit := tt.limit
+			if limit == 0 {
+				limit = DefaultMaxBodyBytes
+			}
+			r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tt.body))
+			r.Header.Set("Content-Type", tt.contentType)
 
-	w := httptest.NewRecorder()
-	result, err := CheckW(w, r, Rules{"name": {Required()}})
-	if err != nil {
-		t.Fatalf("unexpected rule-set error: %v", err)
+			data, err := ExtractRequestDataLimited(httptest.NewRecorder(), r, limit)
+
+			switch {
+			case tt.wantTooBig:
+				var mbe *http.MaxBytesError
+				if !errors.As(err, &mbe) || error(mbe) != err {
+					t.Fatalf("err = %T %v, want the *http.MaxBytesError itself", err, err)
+				}
+			case tt.wantStatus != 0:
+				var he *contract.HTTPError
+				if !errors.As(err, &he) {
+					t.Fatalf("err = %T %v, want *contract.HTTPError", err, err)
+				}
+				if he.Status != tt.wantStatus || he.Message != "malformed request body" {
+					t.Errorf("HTTPError = %d %q, want %d %q", he.Status, he.Message, tt.wantStatus, "malformed request body")
+				}
+				if !tt.wantCause(he.Cause) {
+					t.Errorf("cause = %T %v, want the parse error", he.Cause, he.Cause)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("err = %v, want nil", err)
+				}
+				if !reflect.DeepEqual(data, tt.wantData) {
+					t.Errorf("data = %v, want %v", data, tt.wantData)
+				}
+				return
+			}
+			if data != nil {
+				t.Errorf("data = %v, want nil", data)
+			}
+		})
 	}
-	if !result.HasErrors() {
-		t.Fatal("expected validation error from oversized form body, got no errors")
+}
+
+// TestCheckW_BodyErrors asserts CheckW returns the body errors with no
+// result, and still validates an empty JSON body (required fails).
+func TestCheckW_BodyErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int // 0: expect a result with a required failure
+	}{
+		{name: "malformed json", body: `{"name":`, wantStatus: http.StatusBadRequest},
+		{name: "empty json body", body: ""},
 	}
-	if result.First("_body") == "" {
-		t.Errorf("expected _body field error, got: %v", result.All())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tt.body))
+			r.Header.Set("Content-Type", "application/json")
+
+			result, err := CheckW(httptest.NewRecorder(), r, Rules{"name": {Required()}})
+			if tt.wantStatus != 0 {
+				if status, _, ok := contract.StatusOf(err); !ok || status != tt.wantStatus {
+					t.Fatalf("err = %v (status %d), want status %d", err, status, tt.wantStatus)
+				}
+				if result != nil {
+					t.Errorf("result = %v, want nil", result.All())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v, want nil", err)
+			}
+			if result.First("name") == "" {
+				t.Errorf("errors = %v, want a required failure on name", result.All())
+			}
+		})
 	}
+}
+
+func isJSONSyntaxError(err error) bool {
+	var se *json.SyntaxError
+	return errors.As(err, &se)
+}
+
+func isJSONTypeError(err error) bool {
+	var te *json.UnmarshalTypeError
+	return errors.As(err, &te)
+}
+
+func isEscapeError(err error) bool {
+	var ee url.EscapeError
+	return errors.As(err, &ee)
 }
 
 // TestCheck_UnderLimit_StillWorks confirms a normal-sized request

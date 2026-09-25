@@ -749,7 +749,10 @@ func New(opts ...Option) (*App, error) {
 		// request body reads).
 		result, err := dbrules.CheckWithDBW(c.Response, c.Request, rules, validationDB(c), messages...)
 		if err != nil {
-			// Malformed rule set: a handler bug, not user input.
+			// A malformed rule set (a handler bug), or a body the check
+			// could not use: the *http.MaxBytesError of one over the limit
+			// (answered 413) or the 400 for a malformed one. Returned as
+			// is for the error pipeline to answer.
 			return err
 		}
 		if !result.HasErrors() {

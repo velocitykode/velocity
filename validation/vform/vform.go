@@ -63,9 +63,11 @@ type Result = validation.Result
 //     returned *Result is nil.
 //   - *Result: nil on validation success, non-nil with errors keyed by field
 //     on validation failure.
-//   - error:   non-nil only for non-validation failures (decode/bind error).
-//     Validation errors travel through *Result, never the error
-//     return.
+//   - error:   non-nil only for non-validation failures: a body the check
+//     cannot use (the *http.MaxBytesError of one over the limit, a
+//     400 *contract.HTTPError for a malformed one), a malformed rule
+//     set, or a decode/bind error. Validation errors travel through
+//     *Result, never the error return.
 //
 // If T does not implement FormRequest, Validate skips validation entirely
 // and returns the bound *T with a nil *Result and any bind error.
@@ -94,10 +96,16 @@ func Validate[T any](ctx *router.Context) (*T, *Result, error) {
 		msgs = append(msgs, wm.ValidationMessages())
 	}
 
-	// CheckWithDBW threads ctx.Response into the body-read path so
+	// ctx.Response is threaded into the body-read path so
 	// http.MaxBytesReader can signal a connection-close hint on
-	// oversized bodies (rule 5).
-	result, err := dbrules.CheckWithDBW(ctx.Response, ctx.Request, rules, safeDB(ctx), msgs...)
+	// oversized bodies (rule 5). A body the check cannot use is returned
+	// as is: the *http.MaxBytesError of one over the limit (answered 413)
+	// or the 400 for a malformed one.
+	data, err := validation.ExtractRequestDataLimited(ctx.Response, ctx.Request, validation.DefaultMaxBodyBytes)
+	if err != nil {
+		return nil, nil, err
+	}
+	result, err := dbrules.CheckDataWithDBCtx(ctx.Request.Context(), data, rules, safeDB(ctx), msgs...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("velocity/vform: %T rule set is invalid: %w", req, err)
 	}
