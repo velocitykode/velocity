@@ -531,6 +531,95 @@ func TestRender_Inertia(t *testing.T) {
 	}
 }
 
+// markingErrorPage is an error page renderer that marks the response an
+// Inertia page object (X-Inertia and a JSON Content-Type), as bond does,
+// then writes the page when write is set and otherwise declines having
+// written nothing.
+type markingErrorPage struct{ write bool }
+
+func (p markingErrorPage) RenderErrorPage(rc RenderContext, status int, _ string) (bool, error) {
+	rc.SetHeader("Content-Type", "application/json")
+	rc.SetHeader("X-Inertia", "true")
+	if !p.write {
+		return false, errors.New("page failed to encode")
+	}
+	rc.WriteHeader(status)
+	_, _ = rc.Write([]byte(`{"component":"Error"}`))
+	return true, nil
+}
+
+// TestRender_InertiaDropsStalePageMarker checks that an answer to an
+// Inertia request that is not a page object (the 409 reload, the debug
+// page, the JSON branch, the plain-text 500) never carries the page
+// marker: an X-Inertia header or a JSON Content-Type a failed page render
+// left on the response. Only the error page's own page object keeps it.
+func TestRender_InertiaDropsStalePageMarker(t *testing.T) {
+	tests := []struct {
+		name        string
+		staleType   string // Content-Type on the response before the pipeline
+		opts        []Option
+		page        contract.ErrorPageRenderer
+		wantStatus  int
+		wantContent string
+		wantMarker  bool
+	}{
+		{
+			name: "NoPageReloads", staleType: "application/json",
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name: "NoPageReloadsJSONWithParams", staleType: "application/json; charset=utf-8",
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name: "PageMarksThenDeclinesReloads", page: markingErrorPage{},
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name: "DebugPage", staleType: "application/json", opts: []Option{WithDebug(true)},
+			wantStatus: http.StatusInternalServerError, wantContent: "text/html; charset=utf-8",
+		},
+		{
+			name: "JSONBranch", staleType: "application/json", opts: []Option{WithAPIMode(true)},
+			wantStatus: http.StatusInternalServerError, wantContent: ProblemTypeContent,
+		},
+		{
+			name: "LastResort", staleType: "application/json",
+			opts:       []Option{WithDebug(true), WithRenderers(map[string]Renderer{"html": failRenderer{}})},
+			wantStatus: http.StatusInternalServerError, wantContent: "text/plain; charset=utf-8",
+		},
+		{
+			// Control: the error page is a page object, marker and all.
+			name: "ErrorPageKeepsMarker", page: markingErrorPage{write: true},
+			wantStatus: http.StatusInternalServerError, wantContent: "application/json", wantMarker: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _, _ := newTestHandler(tt.opts...)
+			if tt.page != nil {
+				h.SetErrorPageRenderer(tt.page)
+			}
+			rc, w := newRC(http.MethodGet, "/p", "X-Inertia", "true")
+			w.Header().Set("X-Inertia", "true")
+			if tt.staleType != "" {
+				w.Header().Set("Content-Type", tt.staleType)
+			}
+			h.HandleRequest(rc, errors.New("boom"), nil)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %q)", w.Code, tt.wantStatus, w.Body.String())
+			}
+			if got := w.Header().Get("Content-Type"); got != tt.wantContent {
+				t.Errorf("Content-Type = %q, want %q", got, tt.wantContent)
+			}
+			if got := w.Header().Get("X-Inertia"); (got == "true") != tt.wantMarker {
+				t.Errorf("X-Inertia = %q, want marker %v", got, tt.wantMarker)
+			}
+		})
+	}
+}
+
 func TestRender_InertiaPageMessagePolicy(t *testing.T) {
 	tests := []struct {
 		name  string

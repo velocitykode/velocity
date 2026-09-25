@@ -1,10 +1,16 @@
 package bond
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
+	"maps"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -99,3 +105,96 @@ type discardResponseWriter struct{}
 func (discardResponseWriter) Header() http.Header         { return http.Header{} }
 func (discardResponseWriter) Write(p []byte) (int, error) { return io.Discard.Write(p) }
 func (discardResponseWriter) WriteHeader(int)             {}
+
+// failingMarshaler is a prop whose MarshalJSON fails.
+type failingMarshaler struct{}
+
+func (failingMarshaler) MarshalJSON() ([]byte, error) { return nil, errors.New("cannot marshal") }
+
+// headerRecorder records whether WriteHeader or Write reached it.
+type headerRecorder struct {
+	*httptest.ResponseRecorder
+	wroteHeader bool
+}
+
+func (w *headerRecorder) WriteHeader(code int) {
+	w.wroteHeader = true
+	w.ResponseRecorder.WriteHeader(code)
+}
+
+func (w *headerRecorder) Write(p []byte) (int, error) {
+	w.wroteHeader = true
+	return w.ResponseRecorder.Write(p)
+}
+
+// TestRenderJSON_EncodeFailureLeavesResponseUntouched checks that an
+// Inertia page that fails to encode returns the encoding error having set
+// no header (X-Inertia above all: it marks a page object) and written
+// nothing, so whatever answers the failure next starts from the headers the
+// response had before the render.
+func TestRenderJSON_EncodeFailureLeavesResponseUntouched(t *testing.T) {
+	tests := []struct {
+		name    string
+		props   Props
+		wantErr any
+	}{
+		{name: "ChanProp", props: Props{"feed": make(chan int)}, wantErr: new(*json.UnsupportedTypeError)},
+		{name: "FuncProp", props: Props{"fn": func() {}}, wantErr: new(*json.UnsupportedTypeError)},
+		{name: "NaNProp", props: Props{"ratio": math.NaN()}, wantErr: new(*json.UnsupportedValueError)},
+		{name: "MarshalJSONFails", props: Props{"item": failingMarshaler{}}, wantErr: new(*json.MarshalerError)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := setupBond(t)
+			r := httptest.NewRequest(http.MethodGet, "/report", nil)
+			r.Header.Set(HeaderInertia, "true")
+			w := &headerRecorder{ResponseRecorder: httptest.NewRecorder()}
+			w.Header().Set("Cache-Control", "private, no-store")
+			before := w.Header().Clone()
+
+			err := b.Render(w, r, "Report", tt.props)
+			if err == nil {
+				t.Fatal("Render returned nil, want the encoding error")
+			}
+			if !errors.As(err, tt.wantErr) {
+				t.Errorf("Render error = %T (%v), want %T", err, err, tt.wantErr)
+			}
+			if !maps.EqualFunc(w.Header(), before, slices.Equal[[]string]) {
+				t.Errorf("headers = %v, want them untouched: %v", w.Header(), before)
+			}
+			if w.wroteHeader || w.Body.Len() != 0 {
+				t.Errorf("wrote a response (status written %v, body %q), want nothing", w.wroteHeader, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestRenderJSON_BodyMatchesEncoder checks that the page object is written
+// byte for byte as json.Encoder writes it (HTML-escaped, newline
+// terminated) with the page marker headers.
+func TestRenderJSON_BodyMatchesEncoder(t *testing.T) {
+	b := setupBond(t)
+	page := trickyPage()
+	var want bytes.Buffer
+	if err := json.NewEncoder(&want).Encode(page); err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	if err := b.renderJSON(w, page); err != nil {
+		t.Fatalf("renderJSON: %v", err)
+	}
+	if got := w.Body.String(); got != want.String() {
+		t.Errorf("body = %q, want %q", got, want.String())
+	}
+	for key, value := range map[string]string{
+		"Content-Type":           "application/json",
+		"X-Content-Type-Options": "nosniff",
+		"X-Inertia":              "true",
+		"Vary":                   "X-Inertia",
+	} {
+		if got := w.Header().Get(key); got != value {
+			t.Errorf("%s = %q, want %q", key, got, value)
+		}
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -524,6 +525,9 @@ func (h *Handler) respond(s *snapshot, rc RenderContext, err error, ctx *ErrorCo
 	switch {
 	case asJSON:
 		varyOnNegotiation(rc, !forceJSON, byRequest)
+		if rc.IsInertia() {
+			dropPageMarker(rc)
+		}
 		renderErr = rendererFor(s, "json").Render(rc, err, ctx, status, s.debug)
 	case rc.IsInertia():
 		varyOnNegotiation(rc, true, false)
@@ -541,14 +545,17 @@ func (h *Handler) respond(s *snapshot, rc RenderContext, err error, ctx *ErrorCo
 // renderInertia answers an Inertia request: the debug page at status in
 // debug mode; otherwise the configured error page at status; failing that,
 // a 409 with X-Inertia-Location so the client reloads the page as a full
-// visit.
+// visit. Only the error page is a page object: the debug page and the 409
+// go out without the page marker (see dropPageMarker).
 func (h *Handler) renderInertia(s *snapshot, rc RenderContext, err error, ctx *ErrorContext, status int) error {
 	if s.debug {
+		dropPageMarker(rc)
 		return rendererFor(s, "html").Render(rc, err, ctx, status, true)
 	}
 	if answered, pageErr := renderErrorPage(s, rc, err, status); answered {
 		return pageErr
 	}
+	dropPageMarker(rc)
 	rc.SetHeader("X-Inertia-Location", reloadLocation(s.errorPage, rc.Request()))
 	rc.WriteHeader(http.StatusConflict)
 	return nil
@@ -690,8 +697,28 @@ func setHeaders(rc RenderContext, headers http.Header) {
 	}
 }
 
-// lastResort writes the plain-text 500 when nothing was written. It runs
-// under its own recover: a failure is logged and never re-panics.
+// dropPageMarker removes from the response the headers that mark it an
+// Inertia page object: X-Inertia, and the application/json Content-Type
+// set beside it. The pipeline calls it before an answer to an Inertia
+// request that is not a page object (the 409 reload, the debug page, the
+// JSON branch, the plain-text 500): a page render that set them and then
+// failed having written nothing must not make the client read that answer
+// as a page, which would skip the reload and the debug handling.
+func dropPageMarker(rc RenderContext) {
+	w := rc.Writer()
+	if w == nil {
+		return
+	}
+	h := w.Header()
+	h.Del("X-Inertia")
+	if mt, _, _ := mime.ParseMediaType(h.Get("Content-Type")); mt == "application/json" {
+		h.Del("Content-Type")
+	}
+}
+
+// lastResort writes the plain-text 500 when nothing was written, never
+// marked as an Inertia page object (see dropPageMarker). It runs under its
+// own recover: a failure is logged and never re-panics.
 func lastResort(logger contract.Logger, rc RenderContext) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -701,6 +728,7 @@ func lastResort(logger contract.Logger, rc RenderContext) {
 	if rc.Written() {
 		return
 	}
+	dropPageMarker(rc)
 	rc.SetHeader("Content-Type", "text/plain; charset=utf-8")
 	rc.SetHeader("X-Content-Type-Options", "nosniff")
 	rc.WriteHeader(http.StatusInternalServerError)

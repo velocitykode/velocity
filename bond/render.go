@@ -243,19 +243,33 @@ func buildTemplateData(ctx context.Context, base map[string]any) map[string]any 
 	return out
 }
 
-// renderJSON renders a JSON response for Inertia XHR requests
+// renderJSON renders a JSON response for Inertia XHR requests. The page is
+// encoded before any header is set: X-Inertia marks the response a page
+// object, so a page that fails to encode (a channel or func prop, NaN, a
+// failing MarshalJSON) returns the error with the response's headers and
+// body untouched, and whatever answers the failure next is not read as a
+// page by the client.
 func (b *Bond) renderJSON(w http.ResponseWriter, page Page) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("X-Inertia", "true")
-	contract.AppendVary(w.Header(), "X-Inertia")
-
-	// No buffer pooling here: Go 1.26 json.Marshal/Encoder already pools its
-	// internal scratch buffer, and the encoded bytes are streamed straight to
+	// No buffer pooling here: Go 1.26 json.Marshal already pools its
+	// internal scratch buffer, and the encoded bytes are written straight to
 	// the response writer (they escape), so an extra pool would buy nothing
 	// while adding newline/escaping risk. Contrast crypto's SerializePayload,
 	// where the JSON is consumed locally and discarded.
-	return json.NewEncoder(w).Encode(page)
+	body, err := json.Marshal(page)
+	if err != nil {
+		return err
+	}
+	// The trailing newline keeps the body byte-identical to json.Encoder's.
+	body = append(body, '\n')
+
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("X-Inertia", "true")
+	contract.AppendVary(h, "X-Inertia")
+
+	_, err = w.Write(body)
+	return err
 }
 
 // buildInertiaDiv constructs the Inertia container div in the legacy
