@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func TestTimeout_HandlerCompletesBeforeDeadline(t *testing.T) {
@@ -393,29 +395,43 @@ type handoffKey struct{}
 // live context although the timeout context was cancelled (Err and
 // context.Cause both nil, the parent's deadline), and that the error
 // boundary receives that request. Ending the parent request context
-// afterwards (cancelled, or past its deadline) shows through Err and
-// context.Cause alike, never as the timeout context's own cancellation,
-// with the inner value still readable.
+// afterwards (cancelled, cancelled with a cause, or past its deadline)
+// shows through Err and context.Cause, on the handed-back context and on
+// a context derived from it, never as the timeout context's own
+// cancellation, with the inner value still readable.
 func TestTimeout_HandsBackTheInnerRequest(t *testing.T) {
 	tests := []struct {
-		name    string
-		parent  func() (context.Context, context.CancelFunc)
-		end     func(ctx context.Context, cancel context.CancelFunc)
-		wantErr error
+		name      string
+		parent    func() (context.Context, context.CancelFunc)
+		end       func(ctx context.Context, cancel context.CancelFunc)
+		wantErr   error
+		wantCause error
 	}{
 		{
-			name:    "ParentCancelled",
-			parent:  func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) },
-			end:     func(_ context.Context, cancel context.CancelFunc) { cancel() },
-			wantErr: context.Canceled,
+			name:      "ParentCancelled",
+			parent:    func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) },
+			end:       func(_ context.Context, cancel context.CancelFunc) { cancel() },
+			wantErr:   context.Canceled,
+			wantCause: context.Canceled,
+		},
+		{
+			name: "ParentCancelledWithShutdownCause",
+			parent: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancelCause(context.Background())
+				return ctx, func() { cancel(contract.ErrServerShuttingDown) }
+			},
+			end:       func(_ context.Context, cancel context.CancelFunc) { cancel() },
+			wantErr:   context.Canceled,
+			wantCause: contract.ErrServerShuttingDown,
 		},
 		{
 			name: "ParentDeadlinePassed",
 			parent: func() (context.Context, context.CancelFunc) {
 				return context.WithTimeout(context.Background(), 300*time.Millisecond)
 			},
-			end:     func(ctx context.Context, _ context.CancelFunc) { <-ctx.Done() },
-			wantErr: context.DeadlineExceeded,
+			end:       func(ctx context.Context, _ context.CancelFunc) { <-ctx.Done() },
+			wantErr:   context.DeadlineExceeded,
+			wantCause: context.DeadlineExceeded,
 		},
 	}
 	for _, tt := range tests {
@@ -477,12 +493,18 @@ func TestTimeout_HandsBackTheInnerRequest(t *testing.T) {
 				t.Error("the handler's timeout context must be cancelled once Timeout returns")
 			}
 
+			derived, stopDerived := context.WithCancel(handoffCtx)
+			defer stopDerived()
 			tt.end(parent, cancel)
 			if got := handoffCtx.Err(); !errors.Is(got, tt.wantErr) {
 				t.Errorf("Err after the parent ended = %v, want %v", got, tt.wantErr)
 			}
-			if got := context.Cause(handoffCtx); !errors.Is(got, tt.wantErr) {
-				t.Errorf("Cause after the parent ended = %v, want %v", got, tt.wantErr)
+			if got := context.Cause(handoffCtx); !errors.Is(got, tt.wantCause) {
+				t.Errorf("Cause after the parent ended = %v, want %v", got, tt.wantCause)
+			}
+			<-derived.Done()
+			if got := context.Cause(derived); !errors.Is(got, tt.wantCause) {
+				t.Errorf("Cause of a context derived from the handoff = %v, want %v", got, tt.wantCause)
 			}
 			if got := handoffCtx.Value(handoffKey{}); got != "inner" {
 				t.Errorf("inner value after the parent ended = %v, want inner", got)

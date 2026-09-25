@@ -2,10 +2,12 @@ package routerbridge
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/problem"
@@ -150,6 +152,106 @@ func TestInstall_ServerShutdownCancel(t *testing.T) {
 			}
 			if rec.count() != 0 {
 				t.Errorf("pipeline reports = %d, want 0", rec.count())
+			}
+		})
+	}
+}
+
+// TestInstall_ServerShutdownCancelAfterTimeout asserts the shutdown answer
+// survives router.Timeout's handoff: the handler finishes in time, then the
+// server cancels the request context with contract.ErrServerShuttingDown
+// while outer middleware is still running, and that middleware returns the
+// context's error. The standalone router and the pipeline answer 503 with
+// Retry-After: 1 and log one warn line; the same chain cancelled without
+// that cause (the client went away) gets nothing written or logged.
+func TestInstall_ServerShutdownCancelAfterTimeout(t *testing.T) {
+	tests := []struct {
+		name     string
+		pipeline bool
+		cause    error
+		accept   string
+		wantCode int // 0: nothing written
+	}{
+		{name: "standalone shutdown", cause: contract.ErrServerShuttingDown, wantCode: http.StatusServiceUnavailable},
+		{name: "standalone shutdown json", cause: contract.ErrServerShuttingDown, accept: "application/json", wantCode: http.StatusServiceUnavailable},
+		{name: "standalone client gone", cause: context.Canceled},
+		{name: "pipeline shutdown", pipeline: true, cause: contract.ErrServerShuttingDown, wantCode: http.StatusServiceUnavailable},
+		{name: "pipeline shutdown json", pipeline: true, cause: contract.ErrServerShuttingDown, accept: "application/json", wantCode: http.StatusServiceUnavailable},
+		{name: "pipeline client gone", pipeline: true, cause: context.Canceled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var warns, errs int
+			logger := &warnCounter{}
+			rec := &recordingReporter{}
+			r := router.New()
+			if tt.pipeline {
+				h := problem.NewHandler(problem.WithReporters(rec), problem.WithHandlerLogger(logger))
+				h.SetDebug(false)
+				Install(r, WithHandler(func() contract.ErrorHandler { return h }))
+			} else {
+				r.SetWarnLogger(func(string, ...any) { mu.Lock(); warns++; mu.Unlock() })
+				r.SetErrorLogger(func(string, ...any) { mu.Lock(); errs++; mu.Unlock() })
+			}
+
+			parent, cancel := context.WithCancelCause(context.Background())
+			defer cancel(nil)
+			var cause error
+			r.Use(func(next router.HandlerFunc) router.HandlerFunc {
+				return func(c *router.Context) error {
+					if err := next(c); err != nil {
+						return err
+					}
+					cancel(tt.cause)
+					cause = context.Cause(c.Request.Context())
+					return c.Request.Context().Err()
+				}
+			})
+			r.Use(router.Timeout(time.Minute))
+			r.Get("/x", func(*router.Context) error { return nil })
+
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/x", nil).WithContext(parent)
+			if tt.accept != "" {
+				req.Header.Set("Accept", tt.accept)
+			}
+			r.ServeHTTP(w, req)
+
+			if !errors.Is(cause, tt.cause) {
+				t.Errorf("context.Cause after the handoff = %v, want %v", cause, tt.cause)
+			}
+			wantWarn := 0
+			if tt.wantCode == 0 {
+				if w.Body.Len() != 0 || w.Header().Get("Content-Type") != "" {
+					t.Errorf("wrote %d %q, want nothing", w.Code, w.Body.String())
+				}
+			} else {
+				wantWarn = 1
+				if w.Code != tt.wantCode {
+					t.Errorf("status = %d, want %d", w.Code, tt.wantCode)
+				}
+				if got := w.Header().Get("Retry-After"); got != "1" {
+					t.Errorf("Retry-After = %q, want 1", got)
+				}
+				if got := w.Header().Get("Connection"); got != "close" {
+					t.Errorf("Connection = %q, want close", got)
+				}
+				if tt.accept == "application/json" && w.Header().Get("Content-Type") != "application/problem+json" {
+					t.Errorf("Content-Type = %q, want problem+json", w.Header().Get("Content-Type"))
+				}
+			}
+			gotWarn, gotErr := logger.counts()
+			if !tt.pipeline {
+				mu.Lock()
+				gotWarn, gotErr = warns, errs
+				mu.Unlock()
+			}
+			if gotWarn != wantWarn || gotErr != 0 {
+				t.Errorf("logged %d warn and %d error lines, want %d and 0", gotWarn, gotErr, wantWarn)
+			}
+			if rec.count() != 0 {
+				t.Errorf("reports = %d, want 0", rec.count())
 			}
 		})
 	}

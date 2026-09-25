@@ -73,58 +73,92 @@ func (h *headerTracker) Write(p []byte) (int, error) {
 // TestShutdown_StragglerPastDeadlineGets503 asserts a request still
 // running when App.Shutdown's deadline ends is cut off through its context
 // and answered 503 with Retry-After and Connection: close, logged at warn
-// and not reported: not the empty 200 a client-gone cancel gets.
+// and not reported: not the empty 200 a client-gone cancel gets. The cut-off
+// lands either in the handler or in outer middleware still running after a
+// Timeout-wrapped handler finished in time (the context Timeout hands back
+// must carry the shutdown cause).
 func TestShutdown_StragglerPastDeadlineGets503(t *testing.T) {
-	a, srv, logs, finished := servingApp(t)
-	entered := make(chan struct{})
-	a.Router.Get("/slow", func(c *router.Context) error {
+	waitForCutOff := func(c *router.Context, entered chan struct{}) error {
 		close(entered)
 		<-c.Request.Context().Done()
 		return c.Request.Context().Err()
-	})
+	}
+	tests := []struct {
+		name     string
+		register func(a *App, entered chan struct{})
+	}{
+		{
+			name: "InHandler",
+			register: func(a *App, entered chan struct{}) {
+				a.Router.Get("/slow", func(c *router.Context) error { return waitForCutOff(c, entered) })
+			},
+		},
+		{
+			name: "InOuterMiddlewareAfterTimeout",
+			register: func(a *App, entered chan struct{}) {
+				a.Router.Use(func(next router.HandlerFunc) router.HandlerFunc {
+					return func(c *router.Context) error {
+						if err := next(c); err != nil {
+							return err
+						}
+						return waitForCutOff(c, entered)
+					}
+				})
+				a.Router.Use(router.Timeout(time.Minute))
+				a.Router.Get("/slow", func(*router.Context) error { return nil })
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, srv, logs, finished := servingApp(t)
+			entered := make(chan struct{})
+			tt.register(a, entered)
 
-	type result struct {
-		resp *http.Response
-		err  error
-	}
-	got := make(chan result, 1)
-	go func() {
-		resp, err := srv.Client().Get(srv.URL + "/slow")
-		got <- result{resp, err}
-	}()
-	<-entered
+			type result struct {
+				resp *http.Response
+				err  error
+			}
+			got := make(chan result, 1)
+			go func() {
+				resp, err := srv.Client().Get(srv.URL + "/slow")
+				got <- result{resp, err}
+			}()
+			<-entered
 
-	errorsBefore := logs.count("error")
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	_ = a.Shutdown(ctx)
+			errorsBefore := logs.count("error")
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			_ = a.Shutdown(ctx)
 
-	res := <-got
-	if res.err != nil {
-		t.Fatalf("client: %v", res.err)
-	}
-	defer res.resp.Body.Close()
-	_, _ = io.Copy(io.Discard, res.resp.Body)
-	if res.resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", res.resp.StatusCode)
-	}
-	if got := res.resp.Header.Get("Retry-After"); got != "1" {
-		t.Errorf("Retry-After = %q, want 1", got)
-	}
-	if !res.resp.Close {
-		t.Error("response does not close the connection")
-	}
-	if !<-finished {
-		t.Error("the handler chain wrote nothing")
-	}
-	if logs.count("warn") == 0 {
-		t.Error("no warn line for the cut-off request")
-	}
-	if n := logs.count("error") - errorsBefore; n != 0 {
-		t.Errorf("%d error lines (a report), want none", n)
-	}
-	if cause := context.Cause(a.shutdownCtx); !errors.Is(cause, contract.ErrServerShuttingDown) {
-		t.Errorf("shutdown context cause = %v, want ErrServerShuttingDown", cause)
+			res := <-got
+			if res.err != nil {
+				t.Fatalf("client: %v", res.err)
+			}
+			defer res.resp.Body.Close()
+			_, _ = io.Copy(io.Discard, res.resp.Body)
+			if res.resp.StatusCode != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503", res.resp.StatusCode)
+			}
+			if got := res.resp.Header.Get("Retry-After"); got != "1" {
+				t.Errorf("Retry-After = %q, want 1", got)
+			}
+			if !res.resp.Close {
+				t.Error("response does not close the connection")
+			}
+			if !<-finished {
+				t.Error("the handler chain wrote nothing")
+			}
+			if logs.count("warn") == 0 {
+				t.Error("no warn line for the cut-off request")
+			}
+			if n := logs.count("error") - errorsBefore; n != 0 {
+				t.Errorf("%d error lines (a report), want none", n)
+			}
+			if cause := context.Cause(a.shutdownCtx); !errors.Is(cause, contract.ErrServerShuttingDown) {
+				t.Errorf("shutdown context cause = %v, want ErrServerShuttingDown", cause)
+			}
+		})
 	}
 }
 

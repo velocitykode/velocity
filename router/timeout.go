@@ -181,7 +181,7 @@ func (tw *timeoutWriter) Push(target string, opts *http.PushOptions) error {
 // (context values inner middleware added, such as CSRF token state), so
 // outer middleware and the error boundary see them. That request's
 // context answers values from the inner request and its deadline,
-// cancellation and error from the caller's request, never from the
+// cancellation, error and cause from the caller's request, never from the
 // timeout context. After a timeout the caller's request is left as it
 // was: the handler may still own the clone.
 //
@@ -278,17 +278,30 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 // middleware's additions and, through the timeout context, every parent
 // value), while Deadline, Done and Err come from the embedded parent
 // request context, because the timeout context is cancelled when Timeout
-// returns and must not end the rest of the request. WithoutCancel hides
-// the timeout context's cancellation state from value lookups, so
-// context.Cause reports the parent's state too.
+// returns and must not end the rest of the request.
+//
+// WithoutCancel hides the timeout context's own cancellation from value
+// lookups, but it hides the parent's too: the context package finds a
+// context's cancellation (for context.Cause, and for the parent a derived
+// context attaches to) through a Value lookup that WithoutCancel answers
+// with nil. Value therefore falls through to the parent request context
+// when the inner lookup answers nil, which restores the parent's
+// cancellation and cause (a server shutdown cancels with
+// contract.ErrServerShuttingDown) without exposing the timeout context's.
+// The caveat: a key inner middleware deliberately set to a nil value
+// shows the parent's value for that key instead.
 type handoffContext struct {
 	context.Context
 	values context.Context
 }
 
-// Value returns the value for key from the inner request's context.
+// Value returns the value for key from the inner request's context, or
+// from the parent request context when the inner lookup answers nil.
 func (h handoffContext) Value(key any) any {
-	return h.values.Value(key)
+	if v := h.values.Value(key); v != nil {
+		return v
+	}
+	return h.Context.Value(key)
 }
 
 func cloneValues(src map[string]interface{}) map[string]interface{} {
