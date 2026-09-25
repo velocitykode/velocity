@@ -170,6 +170,9 @@ func TestAuthErrorRules_ThroughApp(t *testing.T) {
 			if got := w.Header().Get("X-Inertia-Location"); got != tt.wantInertiaLocation {
 				t.Errorf("X-Inertia-Location = %q, want %q", got, tt.wantInertiaLocation)
 			}
+			if got := w.Header().Values("WWW-Authenticate"); len(got) != 0 {
+				t.Errorf("WWW-Authenticate = %q, want none (session schemes have no challenge)", got)
+			}
 			if tt.wantDetail != "" {
 				var body map[string]any
 				if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
@@ -630,7 +633,8 @@ func TestAuthErrorRules_StashesThroughTheDenyingManager(t *testing.T) {
 // through the auth guard, the router boundary and the error pipeline: a
 // stateless scheme never redirects, so a browser request answers 401 with
 // no Location, as problem+json under a Routing.API prefix and as the
-// negotiated HTML page outside one.
+// negotiated HTML page outside one, each carrying exactly one
+// WWW-Authenticate: Bearer.
 func TestAuthErrorRules_StatelessSchemeThroughApp(t *testing.T) {
 	t.Setenv("AUTH_SCHEME", "api")
 	t.Setenv("AUTH_JWT_SECRET", strings.Repeat("s", 32))
@@ -685,7 +689,51 @@ func TestAuthErrorRules_StatelessSchemeThroughApp(t *testing.T) {
 			if got := w.Header().Get("Content-Type"); !strings.HasPrefix(got, tt.wantType) {
 				t.Errorf("Content-Type = %q, want %q", got, tt.wantType)
 			}
+			if got := w.Header().Values("WWW-Authenticate"); len(got) != 1 || got[0] != "Bearer" {
+				t.Errorf("WWW-Authenticate = %q, want exactly [Bearer]", got)
+			}
 		})
+	}
+}
+
+// TestAuthErrorRules_StatelessChallengeSurvivesInertiaPage asserts an
+// unauthenticated Inertia visit denied by the JWT scheme is not redirected
+// and gets the configured Error component rendered at 401, carrying the
+// scheme's WWW-Authenticate challenge.
+func TestAuthErrorRules_StatelessChallengeSurvivesInertiaPage(t *testing.T) {
+	a := newInertiaApp(t, "Error", false)
+	m := auth.FromServices(a.Services)
+	if m == nil {
+		t.Fatal("app has no *auth.Manager")
+	}
+	jwt, err := schemes.NewJWTScheme(&countingUserStore{}, auth.JWTConfig{
+		Secret:    strings.Repeat("s", 32),
+		Algorithm: "HS256",
+		TTL:       60,
+	})
+	if err != nil {
+		t.Fatalf("NewJWTScheme: %v", err)
+	}
+	m.RegisterScheme("api", jwt)
+	m.SetDefaultScheme("api")
+	a.Router.Get("/dashboard", func(*router.Context) error {
+		t.Error("guarded handler ran")
+		return nil
+	}).Use(auth.AuthMiddleware(m))
+
+	req := authRequest(http.MethodGet, "/dashboard", "inertia")
+	req.Header.Set("X-Inertia-Version", "v1")
+	w := httptest.NewRecorder()
+	a.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (Location %q, body %q)", w.Code, w.Header().Get("Location"), w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"component":"Error"`) {
+		t.Errorf("body = %q, want the Error page object", w.Body.String())
+	}
+	if got := w.Header().Values("WWW-Authenticate"); len(got) != 1 || got[0] != "Bearer" {
+		t.Errorf("WWW-Authenticate = %q, want exactly [Bearer]", got)
 	}
 }
 

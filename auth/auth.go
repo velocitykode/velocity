@@ -229,10 +229,27 @@ type SessionAware interface {
 // carries (a bearer token) and keep no server-side session. A client such
 // a scheme turns away has no login page to be sent to, so the
 // unauthenticated render rule never redirects a request denied only by
-// stateless schemes (see Manager.RenderUnauthenticated).
+// stateless schemes (see Manager.RenderUnauthenticated). The JWT scheme
+// implements it; any other scheme, a third-party one included, opts in by
+// implementing it too.
 type StatelessScheme interface {
 	// Stateless reports whether the scheme keeps no session.
 	Stateless() bool
+}
+
+// ChallengeScheme is an optional capability interface implemented by
+// schemes that answer an unauthenticated request with an HTTP
+// authentication challenge (RFC 9110 section 11.6.1). The unauthenticated
+// render rule adds the challenge as a WWW-Authenticate line to the 401 it
+// hands back to the error pipeline for every checked scheme implementing
+// it (see Manager.RenderUnauthenticated). The JWT scheme challenges with
+// "Bearer"; any other scheme, a third-party one included (Basic, a signed
+// request scheme), opts in by implementing it with its own challenge.
+type ChallengeScheme interface {
+	// Challenge returns the WWW-Authenticate value the scheme answers an
+	// unauthenticated request with, such as "Bearer" or
+	// `Basic realm="app"`. Empty means none.
+	Challenge() string
 }
 
 // Scheme defines authentication scheme interface

@@ -5,10 +5,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/problem"
+	"github.com/velocitykode/velocity/router"
 )
 
 var _ contract.RequestUserIdentifier = (*Manager)(nil)
@@ -203,25 +207,83 @@ func TestManager_RenderUnauthenticated(t *testing.T) {
 	}
 }
 
-// statelessStubScheme is a scheme implementing StatelessScheme with a
-// fixed answer.
-type statelessStubScheme struct {
+// facetScheme is a scheme implementing StatelessScheme and
+// ChallengeScheme with fixed answers.
+type facetScheme struct {
 	mockSchemeForMiddleware
 	stateless bool
+	challenge string
 }
 
-func (s *statelessStubScheme) Stateless() bool { return s.stateless }
+func (s *facetScheme) Stateless() bool   { return s.stateless }
+func (s *facetScheme) Challenge() string { return s.challenge }
 
-// newSchemeManager returns a manager with a stateless "api" scheme, a
-// session-aware "web" scheme and a "half" scheme whose Stateless reports
-// false, with def as the default scheme.
+// newSchemeManager returns a manager with def as the default scheme and
+// these schemes: "api" (stateless, challenges "Bearer", like the JWT
+// scheme), "api2" (the same), "basic" (stateless, challenges
+// `Basic realm="app"`), "evil" (stateless, a challenge carrying CRLF),
+// "web" (session-aware, no challenge) and "half" (Stateless reports
+// false, no challenge).
 func newSchemeManager(def string) *Manager {
 	m := NewManager()
-	m.RegisterScheme("api", &statelessStubScheme{stateless: true})
+	m.RegisterScheme("api", &facetScheme{stateless: true, challenge: "Bearer"})
+	m.RegisterScheme("api2", &facetScheme{stateless: true, challenge: "Bearer"})
+	m.RegisterScheme("basic", &facetScheme{stateless: true, challenge: `Basic realm="app"`})
+	m.RegisterScheme("evil", &facetScheme{stateless: true, challenge: "Bearer\r\nX-Evil: 1"})
 	m.RegisterScheme("web", &lookupCountingScheme{})
-	m.RegisterScheme("half", &statelessStubScheme{stateless: false})
+	m.RegisterScheme("half", &facetScheme{stateless: false})
 	m.SetDefaultScheme(def)
 	return m
+}
+
+// TestManager_RenderUnauthenticated_Challenges asserts the render rule
+// adds one WWW-Authenticate line per checked scheme with a challenge, in
+// order and once each, on every path that hands the 401 back to the
+// pipeline, and none on a 303, for a session-only denial or for a value
+// holding CRLF.
+func TestManager_RenderUnauthenticated_Challenges(t *testing.T) {
+	tests := []struct {
+		name        string
+		schemes     []string
+		redirectTo  string
+		kind        string
+		wantRender  bool
+		wantHeaders []string
+	}{
+		{name: "jwt only json", schemes: []string{"api"}, kind: kindJSON, wantHeaders: []string{"Bearer"}},
+		{name: "jwt only browser", schemes: []string{"api"}, kind: kindBrowser, wantHeaders: []string{"Bearer"}},
+		{name: "jwt only inertia", schemes: []string{"api"}, kind: kindInertia, wantHeaders: []string{"Bearer"}},
+		{name: "scheme challenge value", schemes: []string{"basic"}, kind: kindJSON, wantHeaders: []string{`Basic realm="app"`}},
+		{name: "two challenges in order", schemes: []string{"api", "basic"}, kind: kindJSON, wantHeaders: []string{"Bearer", `Basic realm="app"`}},
+		{name: "two challenges reversed", schemes: []string{"basic", "api"}, kind: kindJSON, wantHeaders: []string{`Basic realm="app"`, "Bearer"}},
+		{name: "same challenge once", schemes: []string{"api", "api2"}, kind: kindJSON, wantHeaders: []string{"Bearer"}},
+		{name: "crlf challenge dropped", schemes: []string{"evil"}, kind: kindJSON},
+		{name: "crlf dropped beside a valid one", schemes: []string{"evil", "api"}, kind: kindJSON, wantHeaders: []string{"Bearer"}},
+		{name: "session only json", schemes: []string{"web"}, kind: kindJSON},
+		{name: "session only browser redirected", schemes: []string{"web"}, kind: kindBrowser, wantRender: true},
+		{name: "mixed browser redirected without challenge", schemes: []string{"api", "web"}, kind: kindBrowser, wantRender: true},
+		{name: "mixed json", schemes: []string{"api", "web"}, kind: kindJSON, wantHeaders: []string{"Bearer"}},
+		{name: "refused redirect challenges", schemes: []string{"api", "web"}, redirectTo: "https://evil.example/login", kind: kindBrowser, wantHeaders: []string{"Bearer"}},
+		{name: "unknown scheme", schemes: []string{"missing"}, kind: kindJSON},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newSchemeManager("web")
+			err := &UnauthenticatedError{Schemes: tt.schemes, RedirectTo: tt.redirectTo}
+			w := &writeTracker{ResponseRecorder: httptest.NewRecorder()}
+			rc := contract.NewRenderContext(w, newDenialRequest(http.MethodGet, "/dashboard", tt.kind))
+
+			if got := m.RenderUnauthenticated(rc, err, nil); got != tt.wantRender {
+				t.Fatalf("RenderUnauthenticated = %v, want %v", got, tt.wantRender)
+			}
+			if tt.wantRender && w.Code != http.StatusSeeOther {
+				t.Errorf("status = %d, want 303", w.Code)
+			}
+			if got := w.Header().Values("WWW-Authenticate"); !slices.Equal(got, tt.wantHeaders) {
+				t.Errorf("WWW-Authenticate = %q, want %q", got, tt.wantHeaders)
+			}
+		})
+	}
 }
 
 // TestManager_RenderUnauthenticated_StatelessSchemes asserts a request
@@ -282,19 +344,22 @@ func TestManager_RenderUnauthenticated_StatelessSchemes(t *testing.T) {
 // TestAuthMiddleware_StatelessDenialThroughPipeline drives an auth guard
 // denial through the router boundary and the error pipeline: a browser
 // request denied by a stateless default scheme answers 401 with no
-// Location, one denied by a session scheme is redirected.
+// Location, one denied by a session scheme is redirected, and the
+// scheme's challenge survives the HTML and problem+json renders.
 func TestAuthMiddleware_StatelessDenialThroughPipeline(t *testing.T) {
 	tests := []struct {
-		name         string
-		scheme       string
-		kind         string
-		wantStatus   int
-		wantLocation string
+		name          string
+		scheme        string
+		kind          string
+		wantStatus    int
+		wantLocation  string
+		wantType      string
+		wantChallenge []string
 	}{
-		{name: "stateless browser", scheme: "api", kind: kindBrowser, wantStatus: http.StatusUnauthorized},
-		{name: "stateless json", scheme: "api", kind: kindJSON, wantStatus: http.StatusUnauthorized},
+		{name: "stateless browser", scheme: "api", kind: kindBrowser, wantStatus: http.StatusUnauthorized, wantType: "text/html", wantChallenge: []string{"Bearer"}},
+		{name: "stateless json", scheme: "api", kind: kindJSON, wantStatus: http.StatusUnauthorized, wantType: problem.ProblemTypeContent, wantChallenge: []string{"Bearer"}},
 		{name: "session browser", scheme: "web", kind: kindBrowser, wantStatus: http.StatusSeeOther, wantLocation: "/login"},
-		{name: "session json", scheme: "web", kind: kindJSON, wantStatus: http.StatusUnauthorized},
+		{name: "session json", scheme: "web", kind: kindJSON, wantStatus: http.StatusUnauthorized, wantType: problem.ProblemTypeContent},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -307,10 +372,43 @@ func TestAuthMiddleware_StatelessDenialThroughPipeline(t *testing.T) {
 			if got := w.Header().Get("Location"); got != tt.wantLocation {
 				t.Errorf("Location = %q, want %q", got, tt.wantLocation)
 			}
+			if got := w.Header().Get("Content-Type"); tt.wantType != "" && !strings.HasPrefix(got, tt.wantType) {
+				t.Errorf("Content-Type = %q, want %q", got, tt.wantType)
+			}
+			if got := w.Header().Values("WWW-Authenticate"); !slices.Equal(got, tt.wantChallenge) {
+				t.Errorf("WWW-Authenticate = %q, want %q", got, tt.wantChallenge)
+			}
 			if rep.count() != 0 {
 				t.Errorf("reports = %d, want 0", rep.count())
 			}
 		})
+	}
+}
+
+// TestRenderUnauthenticated_RefusedRedirectChallengesThroughPipeline
+// asserts a denial checked by a stateless and a session scheme, whose
+// unsafe RedirectTo the render context refuses, answers the pipeline's
+// 401 carrying the stateless scheme's challenge.
+func TestRenderUnauthenticated_RefusedRedirectChallengesThroughPipeline(t *testing.T) {
+	m := newSchemeManager("web")
+	deny := func(router.HandlerFunc) router.HandlerFunc {
+		return func(*router.Context) error {
+			return &UnauthenticatedError{Schemes: []string{"api", "web"}, RedirectTo: "https://evil.example/login", manager: m}
+		}
+	}
+	w, rep := servePipeline(t, m, deny, newDenialRequest(http.MethodGet, "/dashboard", kindBrowser))
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (Location %q)", w.Code, w.Header().Get("Location"))
+	}
+	if got := w.Header().Get("Location"); got != "" {
+		t.Errorf("Location = %q, want none", got)
+	}
+	if got := w.Header().Values("WWW-Authenticate"); !slices.Equal(got, []string{"Bearer"}) {
+		t.Errorf("WWW-Authenticate = %q, want [Bearer]", got)
+	}
+	if rep.count() != 0 {
+		t.Errorf("reports = %d, want 0", rep.count())
 	}
 }
 

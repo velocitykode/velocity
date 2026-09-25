@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
@@ -20,8 +21,9 @@ const sessionUserIDKey = "user_id"
 // UnauthenticatedError is returned when a request needs an authenticated
 // user and has none. It answers 401 and is not reported. The framework's
 // default render rule answers a request that wants JSON, or one denied
-// only by stateless schemes, with a 401 problem+json body and any other
-// request, Inertia included, with a redirect to the login target (see
+// only by stateless schemes, with a 401 carrying the checked schemes'
+// WWW-Authenticate challenges and any other request, Inertia included,
+// with a redirect to the login target (see
 // Manager.RenderUnauthenticated). One returned by this package's
 // middleware remembers the manager that denied the request, so the render
 // rule resolves the checked schemes through, and stashes the intended URL
@@ -212,6 +214,15 @@ func (m *Manager) RequestUserID(r *http.Request) (id string) {
 // an allowed host) is logged and returns false, leaving the 401 to the
 // pipeline. A nil manager uses "/login" and resolves no scheme.
 //
+// Whenever it hands the 401 back to the pipeline (a request that wants
+// JSON, a denial only stateless schemes made, a refused redirect), the
+// rule adds one WWW-Authenticate line per checked scheme that resolves to
+// a ChallengeScheme with a non-empty challenge, in the order of the
+// error's Schemes, each value once; a value holding CR or LF is dropped.
+// Every shape the pipeline renders the 401 in carries them. A 303 never
+// does. A denial made only by session schemes carries none: there is no
+// standard HTTP authentication challenge for a cookie session.
+//
 // The manager is the one that denied the request when err was returned
 // by this package's middleware (it is carried on the error), otherwise m:
 // it resolves the checked schemes, its login target is the fallback for
@@ -228,19 +239,22 @@ func (m *Manager) RequestUserID(r *http.Request) (id string) {
 // body to the redirect, and replaying it after login would be the wrong
 // intent. A nil manager, or a request with no session, stashes nothing.
 func (m *Manager) RenderUnauthenticated(rc contract.RenderContext, err error, _ *contract.ErrorContext) bool {
-	if rc == nil || rc.WantsJSON() {
+	if rc == nil {
 		return false
 	}
 	target := ""
+	var checked []string
 	var ue *UnauthenticatedError
 	if errors.As(err, &ue) && ue != nil {
 		target = ue.RedirectTo
+		checked = ue.Schemes
 		if ue.manager != nil {
 			m = ue.manager
 		}
-		if m.allStateless(ue.Schemes) {
-			return false
-		}
+	}
+	if rc.WantsJSON() || m.allStateless(checked) {
+		m.addChallenges(rc, checked)
+		return false
 	}
 	m.stashIntended(rc)
 	if target == "" {
@@ -250,6 +264,7 @@ func (m *Manager) RenderUnauthenticated(rc contract.RenderContext, err error, _ 
 		if m != nil {
 			m.logWarn("velocity/auth: login redirect refused", "error", redirectErr.Error())
 		}
+		m.addChallenges(rc, checked)
 		return false
 	}
 	return true
@@ -263,22 +278,52 @@ func (m *Manager) allStateless(names []string) bool {
 		return false
 	}
 	for _, name := range names {
-		if !m.schemeIsStateless(name) {
+		s, ok := m.resolveScheme(name).(StatelessScheme)
+		if !ok || !s.Stateless() {
 			return false
 		}
 	}
 	return true
 }
 
-// schemeIsStateless reports whether name resolves through m to a
-// StatelessScheme reporting true. An unknown name is not stateless.
-func (m *Manager) schemeIsStateless(name string) bool {
+// addChallenges adds to rc's response one WWW-Authenticate line per name
+// in names that resolves through m to a ChallengeScheme with a non-empty
+// challenge, in order, skipping a value the response already carries and
+// one holding CR or LF. A nil manager resolves no scheme.
+func (m *Manager) addChallenges(rc contract.RenderContext, names []string) {
+	if m == nil || len(names) == 0 {
+		return
+	}
+	w := rc.Writer()
+	if w == nil {
+		return
+	}
+	h := w.Header()
+	for _, name := range names {
+		c, ok := m.resolveScheme(name).(ChallengeScheme)
+		if !ok {
+			continue
+		}
+		value := c.Challenge()
+		if value == "" || strings.ContainsAny(value, "\r\n") || slices.Contains(h.Values(wwwAuthenticate), value) {
+			continue
+		}
+		h.Add(wwwAuthenticate, value)
+	}
+}
+
+// wwwAuthenticate is the response header carrying an authentication
+// challenge.
+const wwwAuthenticate = "WWW-Authenticate"
+
+// resolveScheme returns the scheme name resolves to through m, or nil for
+// an unknown name.
+func (m *Manager) resolveScheme(name string) Scheme {
 	scheme, err := m.Scheme(name)
 	if err != nil {
-		return false
+		return nil
 	}
-	s, ok := scheme.(StatelessScheme)
-	return ok && s.Stateless()
+	return scheme
 }
 
 // stashIntended stores the URL of a GET request in the request's session

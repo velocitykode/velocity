@@ -1372,22 +1372,31 @@ func (p *mockJWTUserStore) UpdateRememberTokenCtx(_ context.Context, user auth.A
 	return p.UpdateRememberToken(user, token)
 }
 
-// TestSchemes_Stateless asserts the JWT scheme reports itself stateless
-// and the session scheme does not implement auth.StatelessScheme.
-func TestSchemes_Stateless(t *testing.T) {
+// TestSchemes_Facets asserts the JWT scheme reports itself stateless and
+// challenges with "Bearer", and the session scheme implements neither
+// auth.StatelessScheme nor auth.ChallengeScheme.
+func TestSchemes_Facets(t *testing.T) {
 	tests := []struct {
-		name   string
-		scheme auth.Scheme
-		want   bool
+		name          string
+		scheme        auth.Scheme
+		wantStateless bool
+		wantChallenge string
 	}{
-		{name: "jwt", scheme: &JWTScheme{}, want: true},
-		{name: "session", scheme: &SessionScheme{}, want: false},
+		{name: "jwt", scheme: &JWTScheme{}, wantStateless: true, wantChallenge: "Bearer"},
+		{name: "session", scheme: &SessionScheme{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s, ok := tt.scheme.(auth.StatelessScheme)
-			if got := ok && s.Stateless(); got != tt.want {
-				t.Errorf("stateless = %v, want %v", got, tt.want)
+			if got := ok && s.Stateless(); got != tt.wantStateless {
+				t.Errorf("stateless = %v, want %v", got, tt.wantStateless)
+			}
+			challenge := ""
+			if c, ok := tt.scheme.(auth.ChallengeScheme); ok {
+				challenge = c.Challenge()
+			}
+			if challenge != tt.wantChallenge {
+				t.Errorf("challenge = %q, want %q", challenge, tt.wantChallenge)
 			}
 		})
 	}
