@@ -7,6 +7,7 @@ package router
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -233,5 +234,87 @@ func TestStaticMiddleware_DotDotPathMatchesFileServerCleaning(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&calls); n != 1 {
 		t.Errorf("middleware ran %d times, want exactly 1", n)
+	}
+}
+
+// TestStatic_FileServerFailuresReachTheBoundary asserts, on a standalone
+// router, that a request the static file server cannot answer as asked
+// comes back to the router's default boundary as an HTTP error instead of
+// net/http's own body: the 416 keeps its Content-Range and answers
+// problem+json to a JSON client, a server-side open failure is a 500
+// logged at error level with a RequestFailed, a path segment too long for
+// the file system is a static miss answered 404 by routing with nothing
+// logged, and the caching headers middleware set for the file are dropped
+// from every error answer.
+func TestStatic_FileServerFailuresReachTheBoundary(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		header     [2]string
+		wantStatus int
+		wantRange  string
+		wantErrors int // error log lines and RequestFailed events
+	}{
+		{name: "unsatisfiable range", path: "/ok.txt", header: [2]string{"Range", "bytes=100-200"}, wantStatus: http.StatusRequestedRangeNotSatisfiable, wantRange: "bytes */3"},
+		{name: "failed precondition", path: "/ok.txt", header: [2]string{"If-Match", `"nope"`}, wantStatus: http.StatusPreconditionFailed},
+		{name: "open failure", path: "/loop.txt", wantStatus: http.StatusInternalServerError, wantErrors: 1},
+		{name: "segment over NAME_MAX", path: "/" + strings.Repeat("a", 300), wantStatus: http.StatusNotFound},
+	}
+	for _, fallback := range []bool{false, true} {
+		for _, tt := range tests {
+			t.Run(fmt.Sprintf("fallback=%v/%s", fallback, tt.name), func(t *testing.T) {
+				dir := t.TempDir()
+				writeStaticFile(t, dir, "ok.txt", "abc")
+				if err := os.Symlink("loop.txt", filepath.Join(dir, "loop.txt")); err != nil {
+					t.Skipf("symlink: %v", err)
+				}
+				var errorLines atomic.Int32
+				collector := newTestEventCollector()
+				r := New()
+				r.SetErrorLogger(func(string, ...any) { errorLines.Add(1) })
+				r.SetEventDispatcher(collector.dispatch)
+				r.Use(func(next HandlerFunc) HandlerFunc {
+					return func(c *Context) error {
+						c.Response.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+						return next(c)
+					}
+				})
+				if fallback {
+					r.StaticFallback(dir)
+				} else {
+					r.Static(dir)
+				}
+
+				w := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+				req.Header.Set("Accept", "application/json")
+				if tt.header[0] != "" {
+					req.Header.Set(tt.header[0], tt.header[1])
+				}
+				r.ServeHTTP(w, req)
+
+				if w.Code != tt.wantStatus {
+					t.Fatalf("status = %d, want %d (body %q)", w.Code, tt.wantStatus, w.Body.String())
+				}
+				if ct := w.Header().Get("Content-Type"); ct != "application/problem+json" {
+					t.Errorf("Content-Type = %q, want application/problem+json (body %q)", ct, w.Body.String())
+				}
+				if got := w.Header().Get("Content-Range"); got != tt.wantRange {
+					t.Errorf("Content-Range = %q, want %q", got, tt.wantRange)
+				}
+				if got := w.Header().Get("Cache-Control"); got != "" && tt.wantStatus != http.StatusNotFound {
+					t.Errorf("Cache-Control = %q on the error answer, want the file's policy dropped", got)
+				}
+				failed := 0
+				for _, e := range collector.getEvents() {
+					if _, ok := e.(*RequestFailed); ok {
+						failed++
+					}
+				}
+				if got := int(errorLines.Load()); got != tt.wantErrors || failed != tt.wantErrors {
+					t.Errorf("error log lines = %d, RequestFailed = %d, want %d each", got, failed, tt.wantErrors)
+				}
+			})
+		}
 	}
 }

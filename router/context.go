@@ -1476,11 +1476,44 @@ func (c *Context) serveFile(path, filename string, attach bool) error {
 		sw.header.Set("Content-Disposition", buildContentDisposition(filename))
 	}
 	http.ServeContent(sw, c.Request, info.Name(), info.ModTime(), f)
+	he := c.servedFailure(sw)
+	if he == nil {
+		return nil
+	}
+	return he.WithOrigin(2)
+}
+
+// serveStatic serves the request through h, the router's static file
+// server, the way serveFile serves a file: through a serveContentWriter,
+// so an error the file server answers itself (416 for an unsatisfiable
+// Range, 412 for a failed precondition, 403 for a file it may not open,
+// 404 for a file gone since the probe, 500 for any other open, directory
+// or seek failure) is not written but returned as an HTTP error for the
+// error boundary to render, report and dispatch like every other failure
+// (see servedFailure). The error records no origin: it would point inside
+// the router, never at application code. A redirect, a 304 or a served
+// file or listing passes through unchanged.
+func (c *Context) serveStatic(h http.Handler) error {
+	sw := newServeContentWriter(c.Response)
+	h.ServeHTTP(sw, c.Request)
+	if he := c.servedFailure(sw); he != nil {
+		return he
+	}
+	return nil
+}
+
+// servedFailure returns nil when sw passed its answer through, or else the
+// HTTP error for the status net/http's file serving chose, after dropping
+// the file's representation headers from c.Response (see
+// dropFailedFileHeaders): the status text as its message, the Content-Range
+// a 416 carried, and for a status of 500 or above the discarded body text
+// as its cause. The error records no origin.
+func (c *Context) servedFailure(sw *serveContentWriter) *contract.HTTPError {
 	if sw.failed == 0 {
 		return nil
 	}
 	dropFailedFileHeaders(c.Response.Header())
-	he := contract.NewHTTPError(sw.failed).WithOrigin(2)
+	he := &contract.HTTPError{Status: sw.failed, Message: http.StatusText(sw.failed)}
 	if sw.contentRange != "" {
 		he = he.WithHeader("Content-Range", sw.contentRange)
 	}
@@ -1510,7 +1543,8 @@ func dropFailedFileHeaders(h http.Header) {
 // from a 5xx answer for its cause.
 const serveContentCauseLimit = 256
 
-// serveContentWriter is the writer serveFile hands http.ServeContent. It
+// serveContentWriter is the writer serveFile hands http.ServeContent (and
+// serveStatic the router's static file server). It
 // stages header writes in header, a copy of w's header map, until a status
 // is chosen. A status below 400 (200, 206, 304) copies the staged headers
 // to w and passes the status and every body byte through. A status of 400

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/velocitykode/velocity/app"
@@ -600,8 +601,19 @@ func (r *VelocityRouterV2) Resource(path string, controller interface{}) Resourc
 // no middleware has run yet, so the matched route's chain is the only
 // one that executes. When the probe finds the file, the request is
 // served inside the middleware chain; if the file disappears between
-// probe and serve (a rare race), the FileServer's 404 is returned
-// as-is rather than falling through.
+// probe and serve (a rare race), the request is answered 404 rather
+// than falling through.
+//
+// A request the file server cannot answer as asked (416 for an
+// unsatisfiable Range, keeping its Content-Range, 412 for a failed
+// precondition, 403 for a file it may not open, 404 for the vanished
+// file, 500 for any other open, directory or seek failure) is not
+// answered by the file server: the status comes back as an HTTP error
+// that the router's error boundary renders, and a 500 is reported and
+// dispatches RequestFailed, as for ctx.File. A path the client shaped so
+// that it cannot name a file (a segment too long for the file system, a
+// file used as a directory, an invalid byte) is a miss, like an absent
+// file.
 //
 // For a typical deployment (routes matched first, Static as last
 // resort) this is fine. If you want to guarantee routes always win,
@@ -735,12 +747,14 @@ func (r *VelocityRouterV2) beginRequest(req *http.Request) (requestMeta, *http.R
 
 // staticProbe reports whether the static FileServer would produce a
 // response (anything other than a not-found) for this request path,
-// mirroring http.FileServer's path normalization. Only a missing file
-// returns false (fall through to route matching); permission and other
-// open errors return true so the FileServer's 403/500 is produced
-// inside the middleware chain, matching what the FileServer itself
-// would do. The probe costs one extra Open per static hit (probe +
-// serve), the price of deciding fallthrough before any middleware runs.
+// mirroring http.FileServer's path normalization. A missing file, and an
+// open error the client's path alone causes (see clientShapedOpenError),
+// returns false (fall through to route matching), so a crafted URL never
+// becomes a reported server error; permission and other open errors
+// return true so the FileServer's 403/500 is produced inside the
+// middleware chain and reaches the error boundary as an HTTP error. The
+// probe costs one extra Open per static hit (probe + serve), the price of
+// deciding fallthrough before any middleware runs.
 func (r *VelocityRouterV2) staticProbe(req *http.Request) bool {
 	upath := req.URL.Path
 	if !strings.HasPrefix(upath, "/") {
@@ -751,10 +765,19 @@ func (r *VelocityRouterV2) staticProbe(req *http.Request) bool {
 	// which is not used here), so the probe must Clean identically.
 	f, err := http.Dir(r.staticDir).Open(path.Clean(upath))
 	if err != nil {
-		return !errors.Is(err, fs.ErrNotExist)
+		return !errors.Is(err, fs.ErrNotExist) && !clientShapedOpenError(err)
 	}
 	_ = f.Close()
 	return true
+}
+
+// clientShapedOpenError reports whether err, an error opening the static
+// file a request path names, comes from the shape of the path itself
+// rather than from the server: a name too long for the file system
+// (ENAMETOOLONG), a file used as a directory (ENOTDIR), or a byte the file
+// system rejects (EINVAL). No file answers such a path.
+func clientShapedOpenError(err error) bool {
+	return errors.Is(err, syscall.ENAMETOOLONG) || errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.EINVAL)
 }
 
 // dispatchStatic runs the middleware-wrapped static handler built by
@@ -821,11 +844,12 @@ func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request,
 	if handler == nil {
 		// commitOnce has not run (or ClearRoutes wiped state). Effectively
 		// unreachable from ServeHTTP because commitOnce runs at the top of
-		// every request; degrade to an unwrapped serve rather than panic.
-		r.staticFS.ServeHTTP(rw, req)
-		return
+		// every request; degrade to a serve without the middleware chain
+		// rather than panic.
+		handlerErr = ctx.serveStatic(r.staticFS)
+	} else {
+		handlerErr = (*handler)(ctx)
 	}
-	handlerErr = (*handler)(ctx)
 	if handlerErr != nil {
 		failure = r.handleError(ctx, rw, handlerErr, ErrorInfo{})
 	}
@@ -1417,8 +1441,7 @@ func (r *VelocityRouterV2) commitOnce() {
 	// ServeHTTP guards entry with staticProbe, so a static miss falls
 	// through to route matching without this chain ever starting.
 	staticTerminal := HandlerFunc(func(c *Context) error {
-		r.staticFS.ServeHTTP(c.Response, c.Request)
-		return nil
+		return c.serveStatic(r.staticFS)
 	})
 	wrappedStatic := applyMiddlewareChain(staticTerminal, r.middlewares)
 	r.staticHandler.Store(&wrappedStatic)
