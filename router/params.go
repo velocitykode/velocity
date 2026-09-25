@@ -24,10 +24,12 @@ type routeDataKey struct{}
 // cached here per request, so repeat consumers (event population plus any
 // Params/GetParams calls) share one map instead of rebuilding it. The map
 // is cached on this per-request bundle, never on the shared compiled or
-// static MatchResult.
+// static MatchResult. router is the router serving the request (see
+// servingRouter).
 type routeData struct {
 	result     *MatchResult
 	services   *app.Services
+	router     *VelocityRouterV2
 	params     map[string]string
 	paramsOnce sync.Once
 }
@@ -41,13 +43,16 @@ type routeDataContext struct {
 	rd *routeData
 }
 
-// Value returns the bundled routeData for routeDataKey and the matched
-// route pattern for the exported RoutePatternKey, so callers reading the
-// documented context key directly still see the pattern.
+// Value returns the bundled routeData for routeDataKey, the router
+// serving the request for servingRouterKey, and the matched route pattern
+// for the exported RoutePatternKey, so callers reading the documented
+// context key directly still see the pattern.
 func (c routeDataContext) Value(key any) any {
 	switch key.(type) {
 	case routeDataKey:
 		return c.rd
+	case servingRouterKey:
+		return c.rd.router
 	}
 	if key == RoutePatternKey && c.rd.result != nil {
 		return c.rd.result.Path

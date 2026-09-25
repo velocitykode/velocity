@@ -686,7 +686,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Bundle the per-route context values once. The params map is built
 	// lazily and cached on this bundle, so event population and any later
 	// Params/GetParams consumers share one map instead of rebuilding it.
-	rd := &routeData{result: result, services: r.services}
+	rd := &routeData{result: result, services: r.services, router: r}
 
 	// Materialize the param map only when an event consumer exists; with
 	// no dispatcher wired the map is never built (R3 laziness).
@@ -773,9 +773,7 @@ func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request,
 
 	// Attach services so middleware that pulls from ServicesFromRequest
 	// sees the configured container, matching the matched-route path.
-	if r.services != nil {
-		req = WithServices(req, r.services)
-	}
+	req = r.servedRequest(req)
 
 	ctx := r.ctxPool.Get().(*Context)
 	ctx.Response = rw
@@ -885,9 +883,7 @@ func (r *VelocityRouterV2) handleUnmatched(rw *responseWriter, req *http.Request
 	// ServicesFromRequest (or relies on ctx.services) sees the
 	// configured container, matching the matched-route path
 	// (enrichRequest does the same wiring there).
-	if r.services != nil {
-		req = WithServices(req, r.services)
-	}
+	req = r.servedRequest(req)
 
 	ctx := r.ctxPool.Get().(*Context)
 	ctx.Response = rw
@@ -994,6 +990,19 @@ func unmatchedHTTPError(allowed []string) *contract.HTTPError {
 // GetRoutePattern, ServicesFromRequest) read from the bundle.
 func (r *VelocityRouterV2) enrichRequest(req *http.Request, rd *routeData) *http.Request {
 	return req.WithContext(routeDataContext{Context: req.Context(), rd: rd})
+}
+
+// servedRequest returns req with the servedContext of a request this
+// router answers without a matched route: ServicesFromRequest then finds
+// the router's services and servingRouter the router. A router with no
+// services and nothing to report a failure through (no error handler,
+// error logger or event dispatcher) returns req unchanged: nothing needs
+// either, and the request costs nothing more.
+func (r *VelocityRouterV2) servedRequest(req *http.Request) *http.Request {
+	if r.services == nil && r.errorHandler == nil && r.errorLogger == nil && r.eventDispatcher == nil {
+		return req
+	}
+	return req.WithContext(servedContext{Context: req.Context(), services: r.services, router: r})
 }
 
 // currentWiring builds the per-request wiring snapshot handed to every
@@ -1157,6 +1166,45 @@ func (r *VelocityRouterV2) onPanic(ctx *Context, rw *responseWriter, req *http.R
 	}()
 	r.handleError(ctx, rw, pe, ErrorInfo{Recovered: true, Stack: pe.Stack, StackTrace: pe.Trace})
 	return nil
+}
+
+// reportLate reports err, an error carrying a panic recovered after the
+// request was already answered (a Timeout handler goroutine panicking
+// after the 503), classified into f: once, as a recovered panic, and
+// without writing anything. RequestFailed is dispatched with Recovered
+// set, as onPanic does, then the installed error handler gets err with
+// ErrorInfo.Committed set, so it reports err and renders nothing; with no
+// handler installed, the default path logs it at error level through the
+// error logger. No RequestHandled is dispatched: the request already
+// recorded its answer. c is the Context of the goroutine that panicked,
+// never a pooled one; the request IDs are read from its request's
+// context, whose holders the request shared with every event it
+// dispatched.
+func (r *VelocityRouterV2) reportLate(c *Context, err error, f *errorFacts) {
+	info := ErrorInfo{Recovered: true, Committed: true}
+	if pe := f.panicErr; pe != nil {
+		info.Stack, info.StackTrace = pe.Stack, pe.Trace
+	}
+	req := c.Request
+	var meta requestMeta
+	if req != nil {
+		reqCtx := req.Context()
+		if r.eventDispatcher != nil {
+			meta.id = GetRequestID(req)
+		}
+		meta.traceID, meta.spanID = trace.GetTraceID(reqCtx), trace.GetSpanID(reqCtx)
+		meta.parentID = trace.GetParentID(reqCtx)
+		r.dispatchRequestFailed(req, meta, requestFailure{err: err, stack: info.Stack, recovered: true, fire: true})
+	}
+	if fn := r.errorHandler; fn != nil {
+		if req != nil {
+			info.RequestID = GetRequestID(req)
+			info.TraceID, info.SpanID = meta.traceID, meta.spanID
+		}
+		fn(c, err, info)
+		return
+	}
+	r.logDefault(c, err, f, info, logError)
 }
 
 // requestFailure is the boundary's RequestFailed decision for one failed

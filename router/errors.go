@@ -26,8 +26,10 @@ type ErrorInfo struct {
 	// StackTrace is the structured stack captured at the panic, or nil.
 	StackTrace *contract.StackTrace
 	// Committed is true when the response status line (or any body byte)
-	// was already written. A handler must not write a second response
-	// then; it can only report.
+	// was already written, or when the request was answered before the
+	// error happened (a panic in a Timeout handler goroutine after the
+	// 503, see Timeout). A handler must not write a second response then;
+	// it can only report.
 	Committed bool
 	// RequestID, TraceID and SpanID identify the request for reporting.
 	RequestID string

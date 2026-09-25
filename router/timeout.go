@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // ErrHandlerTimeout is returned by the timeout-safe response writer when a
@@ -67,7 +69,8 @@ type timeoutWriter struct {
 
 	// timedOut is set by the middleware once it has decided to abandon
 	// the buffered response and return its 503 error. Subsequent handler
-	// Writes return ErrHandlerTimeout.
+	// Writes return ErrHandlerTimeout, and the handler goroutine keeps its
+	// late result (see deliver).
 	timedOut bool
 }
 
@@ -145,12 +148,41 @@ func (tw *timeoutWriter) flushBuffered() bool {
 // ErrHandlerTimeout and WriteHeader is a no-op, so nothing the handler
 // does from here on reaches the real ResponseWriter. The real writer has
 // never had a status written (the handler's WriteHeader only mutated the
-// buffer), so the error boundary can still render the 503.
-func (tw *timeoutWriter) markTimedOut() {
+// buffer), so the error boundary can still render the 503. From here on
+// the handler goroutine keeps its result (see deliver).
+//
+// The deadline answers even when the handler delivered its result to done
+// as it passed: markTimedOut then takes that result out of done and
+// returns it with true, a late result the middleware deals with as the
+// goroutine would have (see reportLatePanic).
+func (tw *timeoutWriter) markTimedOut(done <-chan error) (error, bool) {
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
 	tw.timedOut = true
 	tw.wbuf.Reset()
+	select {
+	case err := <-done:
+		return err, true
+	default:
+		return nil, false
+	}
+}
+
+// deliver hands the handler goroutine's result to the middleware through
+// done and reports true, or reports false, sending nothing, once the
+// middleware timed out: the late result then stays with the goroutine.
+// It runs under tw.mu, as markTimedOut does, so a result is either taken
+// by the middleware in time, or late by markTimedOut or the goroutine,
+// never lost between them. done holds the one result, so the send never
+// blocks.
+func (tw *timeoutWriter) deliver(done chan<- error, err error) bool {
+	tw.mu.Lock()
+	defer tw.mu.Unlock()
+	if tw.timedOut {
+		return false
+	}
+	done <- err
+	return true
 }
 
 // Unwrap exposes the wrapped writer for http.ResponseController.
@@ -182,6 +214,18 @@ func (tw *timeoutWriter) Push(target string, opts *http.PushOptions) error {
 // A handler that panics with http.ErrAbortHandler before the deadline has
 // its buffered response dropped, and the panic continues on the request
 // goroutine so net/http aborts the connection; nothing is reported.
+//
+// A panic after the 503 is reported once, report-only: the handler
+// goroutine recovers it and the router serving the request reports it as
+// the boundary reports a recovered panic, dispatching RequestFailed with
+// Recovered set and handing it to the installed error handler with
+// ErrorInfo.Committed set (or logging it through the error logger when
+// none is installed), but nothing is written: the client already has the
+// 503. The same holds for a panic delivered just as the deadline passed:
+// the deadline answers. A late returned error is dropped, unless it
+// carries a recovered panic (an inner Timeout forwarded one), which is
+// reported the same way. A late http.ErrAbortHandler panic has no
+// connection left to abort and is dropped.
 //
 // To make "release immediately" safe against the router's Context
 // sync.Pool, the goroutine receives a shallow-cloned Context with its
@@ -241,21 +285,29 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 			// panic being dropped into the package logger only. An
 			// http.ErrAbortHandler panic is forwarded as a *handlerAbort
 			// instead: re-panicking here would crash the process, so the
-			// request goroutine re-panics it. The goroutine is bound to
-			// the request lifetime.
+			// request goroutine re-panics it. Once the middleware timed
+			// out, deliver refuses the result and it stays here: a late
+			// panic is reported by reportLatePanic, a late abort or
+			// returned error is dropped. The goroutine is bound to the
+			// request lifetime.
 			go func() { //safe-goroutine: forwards panic via done as request error, see comment above
 				defer func() {
 					if r := recover(); r != nil {
 						if isAbortPanic(r) {
-							done <- &handlerAbort{value: r}
+							tw.deliver(done, &handlerAbort{value: r})
 							return
 						}
 						// Skip the deferred function so the trace starts
 						// at the panic site.
-						done <- newPanicError(fmt.Errorf("velocity/router: timeout handler panic: %w", panicerr.FromRecovered(r)), 1)
+						pe := newPanicError(fmt.Errorf("velocity/router: timeout handler panic: %w", panicerr.FromRecovered(r)), 1)
+						if !tw.deliver(done, pe) {
+							reportLatePanic(clone, pe)
+						}
 					}
 				}()
-				done <- next(clone)
+				if err := next(clone); !tw.deliver(done, err) {
+					reportLatePanic(clone, err)
+				}
 			}()
 
 			select {
@@ -298,11 +350,79 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 				// which is now discarded. This intentionally does
 				// NOT block on <-done; a misbehaving handler that
 				// ignores ctx.Done() must not pin this request.
-				tw.markTimedOut()
+				if late, delivered := tw.markTimedOut(done); delivered {
+					// The handler delivered its result as the
+					// deadline passed. The deadline answers, so the
+					// result is late; the goroutine has finished with
+					// the clone.
+					reportLatePanic(clone, late)
+				}
 				return contract.NewHTTPError(http.StatusServiceUnavailable).WithCause(ctx.Err())
 			}
 		}
 	}
+}
+
+// reportLatePanic deals with err, a result of the Timeout handler
+// goroutine produced after the middleware answered the timeout, on c, that
+// goroutine's own Context (which the goroutine has finished with). Only a
+// result carrying a recovered panic is reported: the goroutine's own
+// *PanicError, or a returned error holding one (an inner Timeout forwarded
+// it). A late abort or any other late result is dropped.
+//
+// The panic is reported through the router serving the request (see
+// VelocityRouterV2.reportLate). A request no router dispatched (a Context
+// built by NewContext or Wrap) has no boundary: it goes to the services'
+// error handler when one is wired, and to the standard logger otherwise.
+// The request context was cancelled when the middleware answered, so the
+// report carries its values without the cancellation. It may run at the
+// top of the goroutine, where a panic would end the process, so a failure
+// while reporting is logged and swallowed.
+func reportLatePanic(c *Context, err error) {
+	if err == nil {
+		return
+	}
+	f := classifyError(err)
+	if !f.panicked {
+		return
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			log.Printf("velocity/router: reporting a timeout handler panic after the timeout failed: %v (the panic: %v)", p, err)
+		}
+	}()
+	if c.Request != nil {
+		c.Request = c.Request.WithContext(context.WithoutCancel(c.Request.Context()))
+	}
+	if r := servingRouter(c.Request); r != nil {
+		r.reportLate(c, err, &f)
+		return
+	}
+	var stack string
+	var st *contract.StackTrace
+	if pe := f.panicErr; pe != nil {
+		stack, st = pe.Stack, pe.Trace
+	}
+	if c.services != nil && c.services.Errors != nil {
+		ec := &contract.ErrorContext{
+			Timestamp:  time.Now(),
+			Recovered:  true,
+			PanicStack: stack,
+			StackTrace: st,
+		}
+		if req := c.Request; req != nil {
+			ec.RequestID = GetRequestID(req)
+			ec.TraceID, ec.SpanID = trace.GetTraceID(req.Context()), trace.GetSpanID(req.Context())
+			ec.Method = req.Method
+			if req.URL != nil {
+				ec.URL = req.URL.Path
+			}
+			ec.UserAgent = req.UserAgent()
+		}
+		c.services.Errors.Report(err, ec)
+		return
+	}
+	log.Printf("velocity/router: timeout handler panic after the timeout: %v\n%s", err, stack)
 }
 
 // handlerAbort carries a Timeout handler goroutine's http.ErrAbortHandler

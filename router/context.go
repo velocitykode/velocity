@@ -44,6 +44,46 @@ func WithServices(r *http.Request, s *app.Services) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), servicesCtxKey{}, s))
 }
 
+// servingRouterKey is the private context key under which a request the
+// router dispatched answers the router serving it (see servingRouter).
+type servingRouterKey struct{}
+
+// servedContext is the request context the router gives a request it
+// answers without a matched route (static files and unmatched requests):
+// it answers servicesCtxKey with the router's services, as WithServices
+// does, and servingRouterKey with the router. A matched request carries
+// both in its routeData instead.
+type servedContext struct {
+	context.Context
+	services *app.Services
+	router   *VelocityRouterV2
+}
+
+// Value answers servicesCtxKey (when the router has services) and
+// servingRouterKey, and defers every other key to the parent.
+func (c servedContext) Value(key any) any {
+	switch key.(type) {
+	case servicesCtxKey:
+		if c.services != nil {
+			return c.services
+		}
+	case servingRouterKey:
+		return c.router
+	}
+	return c.Context.Value(key)
+}
+
+// servingRouter returns the router that dispatched req, or nil when no
+// router did (a Context built by NewContext or Wrap), or when the router
+// had nothing wired to report through (see servedRequest).
+func servingRouter(req *http.Request) *VelocityRouterV2 {
+	if req == nil {
+		return nil
+	}
+	r, _ := req.Context().Value(servingRouterKey{}).(*VelocityRouterV2)
+	return r
+}
+
 // ServicesFromRequest returns the *app.Services stashed on r's context by
 // WithServices, or nil when the request has not been routed through the
 // Velocity pipeline. Packages outside router (e.g. bond) use this to reach
