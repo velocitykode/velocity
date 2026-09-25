@@ -166,7 +166,9 @@ func (l LogLevel) String() string {
 type MapRule struct {
 	Key   any
 	Match ErrorMatcher
-	// Map returns the replacement error; nil keeps the original.
+	// Map returns the replacement error; nil keeps the original. Only the
+	// first rule whose Match succeeds runs, so a nil result still ends the
+	// search.
 	Map func(err error) error
 }
 

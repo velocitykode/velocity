@@ -48,9 +48,14 @@ func levelKey(r contract.LevelRule) any       { return r.Key }
 func throttleKey(r contract.ThrottleRule) any { return r.Key }
 
 // AddMapRule registers a rule that replaces a matched error before it is
-// reported and rendered. The first matching rule applies. A mapped
-// recovered panic stays a reported 500 whatever the rule returns: the
-// pipeline decides that the error is a panic before the rule runs.
+// reported and rendered. Map rules are tried in registration order (a rule
+// registered again under an equal key keeps the earlier rule's place), and
+// the first rule whose Match succeeds is the only one that runs: returning
+// nil from its Map keeps the original error and still ends the search, so
+// no later rule sees the error. To observe an error without consuming it,
+// register a rule whose Match returns false. A mapped recovered panic
+// stays a reported 500 whatever the rule returns: the pipeline decides
+// that the error is a panic before the rule runs.
 func (h *Handler) AddMapRule(rule contract.MapRule) {
 	if rule.Match == nil || rule.Map == nil {
 		return
@@ -454,9 +459,13 @@ func ReportFor[T error](h contract.ErrorHandler, fn func(err T, ctx *ErrorContex
 }
 
 // MapFor registers fn to replace errors whose chain holds a T before they
-// are reported and rendered. A nil result keeps the original error. A T
-// reached through a recovered panic (the panic value, or inside it) is
-// still replaced, but the result stays a reported 500 whatever fn returns.
+// are reported and rendered. Map rules are tried in registration order and
+// the first rule whose match succeeds is the only one that runs: a nil
+// result from fn keeps the original error and still ends the search, so no
+// later map rule sees the error. To observe an error without consuming it,
+// register a rule whose Match returns false (see AddMapRule). A T reached
+// through a recovered panic (the panic value, or inside it) is still
+// replaced, but the result stays a reported 500 whatever fn returns.
 func MapFor[T error](h contract.ErrorHandler, fn func(err T) error) {
 	if h == nil || fn == nil {
 		return
@@ -475,10 +484,14 @@ func MapFor[T error](h contract.ErrorHandler, fn func(err T) error) {
 }
 
 // MapIs registers fn to replace errors whose chain holds target (errors.Is)
-// before they are reported and rendered. fn receives the whole error; a nil
-// result keeps it. A target reached through a recovered panic (the panic
-// value, or inside it) is still replaced, but the result stays a reported
-// 500 whatever fn returns.
+// before they are reported and rendered. fn receives the whole error. Map
+// rules are tried in registration order and the first rule whose match
+// succeeds is the only one that runs: a nil result from fn keeps the
+// original error and still ends the search, so no later map rule sees the
+// error. To observe an error without consuming it, register a rule whose
+// Match returns false (see AddMapRule). A target reached through a
+// recovered panic (the panic value, or inside it) is still replaced, but
+// the result stays a reported 500 whatever fn returns.
 func MapIs(h contract.ErrorHandler, target error, fn func(err error) error) {
 	if h == nil || target == nil || fn == nil {
 		return
