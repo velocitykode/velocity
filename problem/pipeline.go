@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // HandleRequest reports err once and renders one response for it through
@@ -307,18 +310,27 @@ func callReporter(logger contract.Logger, reporter Reporter, err error, ctx *Err
 	reporter.Report(err, ctx)
 }
 
-// stage runs one render of err through rc: nothing when a response was
+// stage runs one render through rc: nothing when a response was
 // already written; otherwise a Content-Length the handler staged is
 // dropped, then write runs. Every write the pipeline makes (Renderable
 // errors, render rules, renderers, the error page and the last resort)
 // happens inside a stage, after that drop: the pipeline replaces the body,
-// and a server enforcing the stale length would reject it. A panic in
-// write is logged through the handler logger and answered with the
-// plain-text 500 when nothing was written yet.
-func stage(s *snapshot, rc RenderContext, err error, write func()) {
+// and a server enforcing the stale length would reject it.
+//
+// A panic in write (a renderer, a rule, or a pre-commit hook the response
+// writer fires) is a bug of its own: it is reported through the reporter
+// chain as a recovered panic (see reportRenderPanic) and answered with the
+// plain-text 500 when nothing was written yet. RequestFailed cannot fire
+// from here: it is the router's event, and the router sees only that the
+// pipeline returned. A panic with net/http's http.ErrAbortHandler is not a
+// bug: it is passed on, unreported, so net/http aborts the response.
+func (h *Handler) stage(s *snapshot, rc RenderContext, ctx *ErrorContext, write func()) {
 	defer func() {
 		if p := recover(); p != nil {
-			safeLog(s.logger, "problem: rendering panicked", "panic", fmt.Sprint(p), "error", err.Error())
+			if pe, ok := p.(error); ok && errors.Is(pe, http.ErrAbortHandler) {
+				panic(p)
+			}
+			h.reportRenderPanic(s, rc, ctx, p)
 			lastResort(s.logger, rc)
 		}
 	}()
@@ -331,9 +343,32 @@ func stage(s *snapshot, rc RenderContext, err error, write func()) {
 	write()
 }
 
+// reportRenderPanic reports p, a panic recovered while rendering, through
+// the report gate and the reporters as a recovered panic: the error is the
+// recovered value as a contract.RecoveredPanic, and a new ErrorContext
+// carries the request facts of ctx, Recovered set and both stacks. It must
+// be called by the deferred function that recovered p, so the stacks it
+// captures still hold the panicking frames. The gate honours a report-once
+// marker as for any report (one outside the panic value counts).
+func (h *Handler) reportRenderPanic(s *snapshot, rc RenderContext, ctx *ErrorContext, p any) {
+	pctx := NewErrorContext()
+	if ctx != nil {
+		pctx.RequestID, pctx.TraceID, pctx.SpanID, pctx.UserID = ctx.RequestID, ctx.TraceID, ctx.SpanID, ctx.UserID
+		pctx.URL, pctx.Method, pctx.IP, pctx.UserAgent = ctx.URL, ctx.Method, ctx.IP, ctx.UserAgent
+	}
+	pctx = fillRequestContext(pctx, rc, s.trustedProxies)
+	pctx.Timestamp = time.Now()
+	pctx.Recovered = true
+	pctx.PanicStack = string(debug.Stack())
+	// Skip this function and the deferred one so the trace starts at the
+	// panic site.
+	pctx.StackTrace = contract.CaptureStackTrace(2)
+	h.report(s, panicerr.FromRecovered(p), pctx, requestOf(rc))
+}
+
 // render runs the render stage (see stage).
 func (h *Handler) render(s *snapshot, rc RenderContext, err error, ctx *ErrorContext) {
-	stage(s, rc, err, func() { h.renderStage(s, rc, err, ctx) })
+	h.stage(s, rc, ctx, func() { h.renderStage(s, rc, err, ctx) })
 }
 
 // renderStage renders err through rc inside a stage.
@@ -457,7 +492,7 @@ func (h *Handler) RenderJSON(rc RenderContext, err error, ctx *ErrorContext) boo
 	}
 	s := h.snap()
 	ctx = fillRequestContext(ctx, rc, s.trustedProxies)
-	stage(s, rc, err, func() {
+	h.stage(s, rc, ctx, func() {
 		status, _, _ := contract.StatusOf(err)
 		h.respond(s, rc, err, ctx, status, true)
 	})

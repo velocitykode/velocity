@@ -226,18 +226,22 @@ func TestRender_WrittenNeverOverwritten(t *testing.T) {
 	}
 }
 
+// TestRender_LastResort asserts a renderer that panics or fails leaves the
+// plain-text 500: a failure is logged, and a panic is reported as a
+// recovered panic after the error itself (see assertRenderPanicReported).
 func TestRender_LastResort(t *testing.T) {
 	tests := []struct {
-		name     string
-		renderer Renderer
-		wantLog  string
+		name      string
+		renderer  Renderer
+		wantLog   string
+		wantPanic bool
 	}{
-		{"PanickingRenderer", panicRenderer{}, "problem: rendering panicked"},
-		{"FailingRenderer", failRenderer{}, "problem: rendering failed"},
+		{name: "PanickingRenderer", renderer: panicRenderer{}, wantPanic: true},
+		{name: "FailingRenderer", renderer: failRenderer{}, wantLog: "problem: rendering failed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h, _, logger := newTestHandler()
+			h, rep, logger := newTestHandler()
 			h.AddRenderer("html", tt.renderer)
 			rc, w := newRC(http.MethodGet, "/x")
 			h.HandleRequest(rc, errors.New("boom"), nil)
@@ -250,10 +254,31 @@ func TestRender_LastResort(t *testing.T) {
 			if w.Body.String() != "Internal Server Error" {
 				t.Errorf("body = %q", w.Body.String())
 			}
-			if !logger.has("error", tt.wantLog) {
+			if tt.wantLog != "" && !logger.has("error", tt.wantLog) {
 				t.Errorf("missing log %q in %v", tt.wantLog, logger.all())
 			}
+			if tt.wantPanic {
+				assertRenderPanicReported(t, rep, 2)
+			}
 		})
+	}
+}
+
+// assertRenderPanicReported asserts rep holds want reports, the last one a
+// recovered panic: its error a contract.RecoveredPanic and its context
+// flagged Recovered with the panic stack.
+func assertRenderPanicReported(t *testing.T, rep *recReporter, want int) {
+	t.Helper()
+	if n := rep.count(); n != want {
+		t.Fatalf("reports = %d, want %d", n, want)
+	}
+	ctx, err := rep.last()
+	var rp contract.RecoveredPanic
+	if !errors.As(err, &rp) {
+		t.Errorf("last report = %v (%T), want a contract.RecoveredPanic", err, err)
+	}
+	if ctx == nil || !ctx.Recovered || ctx.PanicStack == "" || ctx.StackTrace == nil {
+		t.Errorf("last report context = %+v, want Recovered with both stacks", ctx)
 	}
 }
 
@@ -1237,7 +1262,7 @@ func (w *panicOnceHeaderWriter) WriteHeader(code int) {
 // whose redirect panics in the status write falls back to the plain-text
 // 500 without the redirect's Location header.
 func TestRender_PanickingRedirectFallbackHasNoLocation(t *testing.T) {
-	h, _, logger := newTestHandler()
+	h, rep, _ := newTestHandler()
 	RenderFor(h, func(rc RenderContext, _ *HTTPError, _ *ErrorContext) bool {
 		return rc.Redirect(http.StatusSeeOther, "/login") == nil
 	})
@@ -1252,9 +1277,8 @@ func TestRender_PanickingRedirectFallbackHasNoLocation(t *testing.T) {
 	if loc := w.Header().Get("Location"); loc != "" {
 		t.Errorf("Location = %q, want none", loc)
 	}
-	if !logger.has("error", "problem: rendering panicked") {
-		t.Error("the render panic was not logged")
-	}
+	// NotFound is not reported; the render panic is.
+	assertRenderPanicReported(t, rep, 1)
 }
 
 // TestFakeHandler_RenderResponseWrittenMarkers mirrors

@@ -903,66 +903,103 @@ func (l *errLineLogger) value(msg, key string) any {
 // TestInstall_PanickingPreCommitHookFallsBackTo500 asserts a pre-commit
 // hook that panics while the pipeline renders a returned error leaves the
 // response unwritten, so the last-resort plain-text 500 reaches the
-// client (not an empty 200), the pipeline's logger records the panic, and
-// RequestHandled fires once.
+// client (not an empty 200), and the pipeline reports the panic once as a
+// recovered panic (the 404 itself is not reported) instead of logging it
+// on the side; RequestHandled fires once and RequestFailed not at all (the
+// router saw a 404). The standalone router answers the same request as
+// before: its boundary recovers the panic, answers 500, logs one line and
+// fires RequestFailed with Recovered set.
 func TestInstall_PanickingPreCommitHookFallsBackTo500(t *testing.T) {
-	logger := &errLineLogger{}
-	h := problem.NewHandler(problem.WithHandlerLogger(logger))
-	r := router.New()
-	Install(r, WithHandler(func() contract.ErrorHandler { return h }))
-	var (
-		mu      sync.Mutex
-		handled int
-	)
-	r.SetEventDispatcher(func(_ context.Context, event interface{}) error {
-		if _, ok := event.(*router.RequestHandled); ok {
-			mu.Lock()
-			handled++
-			mu.Unlock()
+	for _, pipeline := range []bool{true, false} {
+		name := "standalone"
+		if pipeline {
+			name = "pipeline"
 		}
-		return nil
-	})
-	r.Use(func(next router.HandlerFunc) router.HandlerFunc {
-		return func(c *router.Context) error {
-			if hk, ok := c.Response.(interface{ BeforeFirstWrite(func()) }); ok {
-				fired := false
-				hk.BeforeFirstWrite(func() {
-					if !fired {
-						fired = true
-						panic("hook exploded")
-					}
-				})
+		t.Run(name, func(t *testing.T) {
+			logger := &errLineLogger{}
+			rep := &ctxReporter{}
+			var (
+				mu        sync.Mutex
+				handled   int
+				failed    []bool
+				routerLog int
+			)
+			r := router.New()
+			if pipeline {
+				h := problem.NewHandler(problem.WithHandlerLogger(logger), problem.WithReporters(rep))
+				Install(r, WithHandler(func() contract.ErrorHandler { return h }))
+			} else {
+				r.SetErrorLogger(func(string, ...any) { mu.Lock(); routerLog++; mu.Unlock() })
 			}
-			return next(c)
-		}
-	})
-	r.Get("/missing", func(*router.Context) error { return problem.NotFound() })
+			r.SetEventDispatcher(func(_ context.Context, event interface{}) error {
+				mu.Lock()
+				defer mu.Unlock()
+				switch ev := event.(type) {
+				case *router.RequestHandled:
+					handled++
+				case *router.RequestFailed:
+					failed = append(failed, ev.Recovered)
+				}
+				return nil
+			})
+			r.Use(func(next router.HandlerFunc) router.HandlerFunc {
+				return func(c *router.Context) error {
+					if hk, ok := c.Response.(interface{ BeforeFirstWrite(func()) }); ok {
+						fired := false
+						hk.BeforeFirstWrite(func() {
+							if !fired {
+								fired = true
+								panic("hook exploded")
+							}
+						})
+					}
+					return next(c)
+				}
+			})
+			r.Get("/missing", func(*router.Context) error { return problem.NotFound() })
 
-	srv := httptest.NewServer(r)
-	defer srv.Close()
-	resp, err := srv.Client().Get(srv.URL + "/missing")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
+			srv := httptest.NewServer(r)
+			resp, err := srv.Client().Get(srv.URL + "/missing")
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			srv.Close()
 
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500 (body %q)", resp.StatusCode, body)
-	}
-	if ct := resp.Header.Get("Content-Type"); ct != "text/plain; charset=utf-8" {
-		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", ct)
-	}
-	if string(body) != http.StatusText(http.StatusInternalServerError) {
-		t.Errorf("body = %q, want %q", body, http.StatusText(http.StatusInternalServerError))
-	}
-	if v := logger.value("problem: rendering panicked", "panic"); v != "hook exploded" {
-		t.Errorf("logged panic = %v, want hook exploded", v)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if handled != 1 {
-		t.Errorf("RequestHandled dispatched %d times, want 1", handled)
+			if resp.StatusCode != http.StatusInternalServerError {
+				t.Errorf("status = %d, want 500 (body %q)", resp.StatusCode, body)
+			}
+			if ct := resp.Header.Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+				t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", ct)
+			}
+			if got := strings.TrimSpace(string(body)); got != http.StatusText(http.StatusInternalServerError) {
+				t.Errorf("body = %q, want %q", body, http.StatusText(http.StatusInternalServerError))
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if handled != 1 {
+				t.Errorf("RequestHandled dispatched %d times, want 1", handled)
+			}
+			if pipeline {
+				if got := rep.all(); len(got) != 1 || !got[0] {
+					t.Errorf("reports (recovered flags) = %v, want one flagged recovered", got)
+				}
+				if v := logger.value("problem: rendering panicked", "panic"); v != nil {
+					t.Errorf("render panic also logged on the side: %v", v)
+				}
+				if len(failed) != 0 {
+					t.Errorf("RequestFailed flags = %v, want none (the router saw a 404)", failed)
+				}
+				return
+			}
+			if routerLog != 1 {
+				t.Errorf("standalone error lines = %d, want 1", routerLog)
+			}
+			if len(failed) != 1 || !failed[0] {
+				t.Errorf("RequestFailed flags = %v, want [true]", failed)
+			}
+		})
 	}
 }
 
