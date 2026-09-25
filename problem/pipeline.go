@@ -333,12 +333,14 @@ func callReporter(logger contract.Logger, reporter Reporter, err error, ctx *Err
 }
 
 // stage runs one render through rc: nothing when a response was
-// already written; otherwise the Content-Length and Content-Encoding the
-// handler staged are dropped, then write runs. Every write the pipeline
-// makes (Renderable errors, render rules, renderers, the error page and
-// the last resort) happens inside a stage, after that drop: the pipeline
-// replaces the body, a server enforcing the stale length would reject it,
-// and a client would try to decode the new body with the old encoding.
+// already written; otherwise the Content-Length the handler staged is
+// dropped, then write runs. Every write the pipeline makes (Renderable
+// errors, render rules, renderers, the error page and the last resort)
+// happens inside a stage, after that drop: the pipeline replaces the
+// body, and a server enforcing the stale length would reject it.
+// Content-Encoding is left to whoever wraps the writer, as http.Error
+// does: a compressing middleware that set it up front compresses the
+// rendered body too.
 //
 // A panic in write (a renderer, a rule, or a pre-commit hook the response
 // writer fires) is a bug of its own: it is reported through the reporter
@@ -361,9 +363,7 @@ func (h *Handler) stage(s *snapshot, rc RenderContext, ctx *ErrorContext, write 
 		return
 	}
 	if w := rc.Writer(); w != nil {
-		hdr := w.Header()
-		hdr.Del("Content-Length")
-		hdr.Del("Content-Encoding")
+		w.Header().Del("Content-Length")
 	}
 	write()
 }

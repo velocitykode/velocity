@@ -1,10 +1,13 @@
 package router
 
 import (
+	"compress/gzip"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/velocitykode/velocity/contract"
@@ -134,5 +137,83 @@ func TestPanicError_Contract(t *testing.T) {
 	var nilErr *PanicError
 	if nilErr.Unwrap() != nil {
 		t.Error("nil PanicError Unwrap must be nil")
+	}
+}
+
+// gzipAllWriter compresses every body byte written through it.
+type gzipAllWriter struct {
+	http.ResponseWriter
+	zw *gzip.Writer
+}
+
+func (g *gzipAllWriter) Write(p []byte) (int, error) { return g.zw.Write(p) }
+
+// compressAll wraps next the way an on-the-fly compression handler does:
+// the response is labelled gzip before next runs, and every body byte next
+// writes goes through the compressor.
+func compressAll(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		zw := gzip.NewWriter(w)
+		defer zw.Close()
+		next.ServeHTTP(&gzipAllWriter{ResponseWriter: w, zw: zw}, r)
+	})
+}
+
+// TestDefaultErrorHandler_CompressingWriterKeepsContentEncoding asserts the
+// standalone router's default error answer keeps the Content-Encoding a
+// compression handler wrapping the router's writer set up front, as
+// http.Error does: the error body goes through that writer, so a client
+// decoding by the label reads it.
+func TestDefaultErrorHandler_CompressingWriterKeepsContentEncoding(t *testing.T) {
+	r := New()
+	r.Get("/fail", func(c *Context) error { return errors.New("db down") })
+	srv := httptest.NewServer(compressAll(r))
+	t.Cleanup(srv.Close)
+
+	tests := []struct {
+		name     string
+		accept   string
+		wantType string
+	}{
+		{name: "problem json", accept: "application/json", wantType: "application/problem+json"},
+		{name: "plain text", accept: "text/html", wantType: "text/plain; charset=utf-8"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, srv.URL+"/fail", nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.Header.Set("Accept", tt.accept)
+			// Asking for gzip explicitly makes the transport hand back
+			// the body exactly as the server coded it.
+			req.Header.Set("Accept-Encoding", "gzip")
+			resp, err := srv.Client().Do(req)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500", resp.StatusCode)
+			}
+			if enc := resp.Header.Get("Content-Encoding"); enc != "gzip" {
+				t.Fatalf("Content-Encoding = %q, want the wrapping handler's gzip", enc)
+			}
+			if ct := resp.Header.Get("Content-Type"); ct != tt.wantType {
+				t.Errorf("Content-Type = %q, want %q", ct, tt.wantType)
+			}
+			zr, err := gzip.NewReader(resp.Body)
+			if err != nil {
+				t.Fatalf("gzip error body: %v", err)
+			}
+			body, err := io.ReadAll(zr)
+			if err != nil {
+				t.Fatalf("decode gzip error body: %v", err)
+			}
+			if !strings.Contains(string(body), "Internal Server Error") {
+				t.Errorf("decoded body = %q, want the 500 answer", body)
+			}
+		})
 	}
 }

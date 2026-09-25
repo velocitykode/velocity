@@ -563,12 +563,13 @@ func DefaultErrorHandler(c *Context, err error, info ErrorInfo) {
 }
 
 // writeDefaultError writes the resolved default response for err. The body
-// replaces whatever the failed attempt staged, so the Content-Length and
-// Content-Encoding it set are dropped first.
+// replaces whatever the failed attempt staged, so the Content-Length it set
+// is dropped first. Content-Encoding is left to whoever wraps the writer,
+// as http.Error does: a compressing middleware that set it up front
+// compresses this body too.
 func writeDefaultError(c *Context, err error, res defaultResolution, info ErrorInfo) {
 	h := c.Response.Header()
 	h.Del("Content-Length")
-	h.Del("Content-Encoding")
 	for key, values := range res.headers {
 		if key == "" || strings.ContainsAny(key, "\r\n") {
 			continue

@@ -132,41 +132,64 @@ func TestInstall_FailedPrecompressedFileErrorDecodes(t *testing.T) {
 	}
 }
 
-// TestErrorAnswer_DropsStaleContentEncoding asserts the error answer to a
-// handler that labelled its response gzip before failing carries no
-// Content-Encoding, on the pipeline and on the standalone router default,
-// in every format: the boundary replaces the body, so the coding of the
-// failed attempt does not describe it.
-func TestErrorAnswer_DropsStaleContentEncoding(t *testing.T) {
-	failCompressed := func(c *router.Context) error {
-		c.SetHeader("Content-Encoding", "gzip")
-		return errors.New("db down")
-	}
+// gzipAllWriter compresses every body byte written through it.
+type gzipAllWriter struct {
+	http.ResponseWriter
+	zw *gzip.Writer
+}
+
+func (g *gzipAllWriter) Write(p []byte) (int, error) { return g.zw.Write(p) }
+
+// compressAll wraps next the way an on-the-fly compression handler does:
+// the response is labelled gzip before next runs, and every body byte next
+// writes goes through the compressor.
+func compressAll(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		zw := gzip.NewWriter(w)
+		defer zw.Close()
+		next.ServeHTTP(&gzipAllWriter{ResponseWriter: w, zw: zw}, r)
+	})
+}
+
+// TestInstall_CompressingWriterKeepsContentEncoding asserts the pipeline's
+// error answer keeps the Content-Encoding a compression handler wrapping
+// the router's writer set up front, in every format, as http.Error does:
+// the rendered body goes through that writer, so a client decoding by the
+// label reads it.
+func TestInstall_CompressingWriterKeepsContentEncoding(t *testing.T) {
 	h := problem.NewHandler(problem.WithReporters())
 	h.SetDebug(false)
-	installed := router.New()
-	Install(installed, WithHandler(func() contract.ErrorHandler { return h }))
-	installed.Get("/app.js", failCompressed)
-	standalone := router.New()
-	standalone.Get("/app.js", failCompressed)
+	r := router.New()
+	Install(r, WithHandler(func() contract.ErrorHandler { return h }))
+	r.Get("/app.js", func(c *router.Context) error { return errors.New("db down") })
+	srv := httptest.NewServer(compressAll(r))
+	t.Cleanup(srv.Close)
 
-	for name, r := range map[string]*router.VelocityRouterV2{"pipeline": installed, "standalone": standalone} {
-		srv := httptest.NewServer(r)
-		t.Cleanup(srv.Close)
-		for _, accept := range []string{"application/json", "text/html"} {
-			t.Run(name+"/"+accept, func(t *testing.T) {
-				resp, raw := getPrecompressedAsset(t, srv, accept, "", "")
-				if resp.StatusCode != http.StatusInternalServerError {
-					t.Fatalf("status = %d, want 500", resp.StatusCode)
+	for _, accept := range []string{"application/json", "text/html"} {
+		t.Run(accept, func(t *testing.T) {
+			resp, raw := getPrecompressedAsset(t, srv, accept, "", "")
+			if resp.StatusCode != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500", resp.StatusCode)
+			}
+			enc := resp.Header.Get("Content-Encoding")
+			if enc != "gzip" {
+				t.Fatalf("Content-Encoding = %q, want the wrapping handler's gzip", enc)
+			}
+			body, err := decodeByContentEncoding(enc, raw)
+			if err != nil {
+				t.Fatalf("gzip error answer cannot be decoded: %v\n\traw body = %.120q", err, raw)
+			}
+			if len(body) == 0 {
+				t.Fatal("decoded body is empty, want the 500 answer")
+			}
+			if accept == "application/json" {
+				var doc map[string]any
+				if err := json.Unmarshal(body, &doc); err != nil || doc["status"] != float64(http.StatusInternalServerError) {
+					t.Errorf("decoded body = %q (err %v), want a problem document with status 500", body, err)
 				}
-				if enc := resp.Header.Get("Content-Encoding"); enc != "" {
-					t.Errorf("error answer carries Content-Encoding %q, want none (body %.80q)", enc, raw)
-				}
-				if len(raw) == 0 {
-					t.Error("error answer body is empty")
-				}
-			})
-		}
+			}
+		})
 	}
 }
 
