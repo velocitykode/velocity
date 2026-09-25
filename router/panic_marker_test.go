@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -236,64 +238,131 @@ func TestMarkedWritten_OutsidePanicParity(t *testing.T) {
 	}
 }
 
-// TestFinalize_PanickingHookIsRecoveredAndLogged asserts a BeforeFirstWrite
-// hook that panics when the router fires it after a handler that wrote
-// nothing never escapes ServeHTTP: the client gets its response, the
-// router's error logger records the panic with its stack, and
-// RequestHandled still fires.
-func TestFinalize_PanickingHookIsRecoveredAndLogged(t *testing.T) {
-	r := NewV2()
-	errLog := &logCapture{}
-	r.SetErrorLogger(errLog.fn)
-	var (
-		mu      sync.Mutex
-		handled int
-	)
-	r.SetEventDispatcher(func(_ context.Context, event interface{}) error {
-		if _, ok := event.(*RequestHandled); ok {
-			mu.Lock()
-			handled++
-			mu.Unlock()
-		}
-		return nil
-	})
-	r.Use(func(next HandlerFunc) HandlerFunc {
-		return func(c *Context) error {
-			if h, ok := c.Response.(interface{ BeforeFirstWrite(func()) }); ok {
-				h.BeforeFirstWrite(func() { panic("hook exploded") })
+// TestFinalize_PanickingHookIsARecoveredPanic asserts a BeforeFirstWrite
+// hook that panics when the router fires it after the boundary (nothing
+// wrote a response) is a recovered panic like one in the handler, on the
+// matched, unmatched and static paths: the client gets a 500, one
+// RequestFailed fires with Recovered set and a *PanicError whose stack
+// holds the panicking frame, RequestHandled records the 500, and the
+// failure reaches the boundary once: one default-path log line on a
+// standalone router, one installed-handler call flagged recovered (and no
+// router log line) otherwise.
+func TestFinalize_PanickingHookIsARecoveredPanic(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "asset.txt"), []byte("asset"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name      string
+		path      string
+		installed bool
+	}{
+		{name: "MatchedDefault", path: "/quiet"},
+		{name: "MatchedInstalled", path: "/quiet", installed: true},
+		{name: "UnmatchedDefault", path: "/nowhere"},
+		{name: "UnmatchedInstalled", path: "/nowhere", installed: true},
+		{name: "StaticDefault", path: "/asset.txt"},
+		{name: "StaticInstalled", path: "/asset.txt", installed: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewV2()
+			errLog := &logCapture{}
+			r.SetErrorLogger(errLog.fn)
+			var (
+				mu        sync.Mutex
+				failed    []*RequestFailed
+				handled   []int
+				calls     int
+				callInfo  ErrorInfo
+				callPanic bool
+			)
+			if tt.installed {
+				r.SetErrorHandler(func(c *Context, err error, info ErrorInfo) {
+					var pe *PanicError
+					mu.Lock()
+					calls++
+					callInfo = info
+					callPanic = errors.As(err, &pe)
+					mu.Unlock()
+					c.Response.WriteHeader(http.StatusInternalServerError)
+				})
 			}
-			return next(c)
-		}
-	})
-	r.Get("/quiet", func(*Context) error { return nil })
+			r.SetEventDispatcher(func(_ context.Context, event interface{}) error {
+				mu.Lock()
+				defer mu.Unlock()
+				switch ev := event.(type) {
+				case *RequestFailed:
+					failed = append(failed, ev)
+				case *RequestHandled:
+					handled = append(handled, ev.StatusCode)
+				}
+				return nil
+			})
+			r.Static(dir)
+			r.Use(func(next HandlerFunc) HandlerFunc {
+				return func(c *Context) error {
+					if h, ok := c.Response.(interface{ BeforeFirstWrite(func()) }); ok {
+						h.BeforeFirstWrite(func() { panic("hook exploded") })
+					}
+					if c.Request.URL.Path != "/quiet" {
+						// Answer nothing on the unmatched and static paths
+						// either, so only the router fires the hook.
+						return nil
+					}
+					return next(c)
+				}
+			})
+			r.Get("/quiet", func(*Context) error { return nil })
 
-	srv := httptest.NewServer(r)
-	defer srv.Close()
-	resp, err := srv.Client().Get(srv.URL + "/quiet")
-	if err != nil {
-		t.Fatalf("GET: %v (the hook panic escaped the router)", err)
-	}
-	_ = resp.Body.Close()
+			srv := httptest.NewServer(r)
+			defer srv.Close()
+			resp, err := srv.Client().Get(srv.URL + tt.path)
+			if err != nil {
+				t.Fatalf("GET: %v (the hook panic escaped the router)", err)
+			}
+			_ = resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want the implicit 200", resp.StatusCode)
-	}
-	if errLog.count() != 1 {
-		t.Fatalf("error log entries = %d, want 1", errLog.count())
-	}
-	if v, _ := errLog.kv(0, "panic"); v != "hook exploded" {
-		t.Errorf("logged panic = %v, want hook exploded", v)
-	}
-	if v, _ := errLog.kv(0, "stack"); v == nil || v == "" {
-		t.Error("logged no stack")
-	}
-	if v, _ := errLog.kv(0, "path"); v != "/quiet" {
-		t.Errorf("logged path = %v, want /quiet", v)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if handled != 1 {
-		t.Errorf("RequestHandled dispatched %d times, want 1", handled)
+			if resp.StatusCode != http.StatusInternalServerError {
+				t.Errorf("status = %d, want 500", resp.StatusCode)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(failed) != 1 {
+				t.Fatalf("RequestFailed dispatched %d times, want 1", len(failed))
+			}
+			var pe *PanicError
+			if !failed[0].Recovered || !errors.As(failed[0].Error, &pe) {
+				t.Errorf("RequestFailed Recovered = %v, Error = %T; want true and a *PanicError", failed[0].Recovered, failed[0].Error)
+			}
+			if !strings.Contains(failed[0].Stack, "panic_marker_test.go") {
+				t.Errorf("RequestFailed stack does not hold the panicking frame:\n%s", failed[0].Stack)
+			}
+			if len(handled) != 1 || handled[0] != http.StatusInternalServerError {
+				t.Errorf("RequestHandled statuses = %v, want [500]", handled)
+			}
+			if tt.installed {
+				if calls != 1 || !callInfo.Recovered || !callPanic || callInfo.Stack == "" {
+					t.Errorf("installed handler: calls = %d, Recovered = %v, *PanicError = %v, stack set = %v; want 1, true, true, true", calls, callInfo.Recovered, callPanic, callInfo.Stack != "")
+				}
+				if errLog.count() != 0 {
+					t.Errorf("router error log entries = %d with a handler installed, want 0", errLog.count())
+				}
+				return
+			}
+			if errLog.count() != 1 {
+				t.Fatalf("error log entries = %d, want 1 (the boundary's)", errLog.count())
+			}
+			if v, _ := errLog.kv(0, "error"); !strings.Contains(fmt.Sprint(v), "hook exploded") {
+				t.Errorf("logged error = %v, want the hook panic", v)
+			}
+			if v, _ := errLog.kv(0, "stack"); v == nil || v == "" {
+				t.Error("logged no stack")
+			}
+			if v, _ := errLog.kv(0, "path"); v != tt.path {
+				t.Errorf("logged path = %v, want %s", v, tt.path)
+			}
+		})
 	}
 }
 

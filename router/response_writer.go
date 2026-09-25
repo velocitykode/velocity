@@ -2,10 +2,8 @@ package router
 
 import (
 	"bufio"
-	"fmt"
 	"net"
 	"net/http"
-	"runtime"
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
@@ -64,12 +62,18 @@ func releaseResponseWriter(rw *responseWriter) {
 // BeforeFirstWrite registers fn to run exactly once, just before the
 // first WriteHeader or Write call commits the response headers, or, when
 // nothing commits them, once the router's error boundary is done with the
-// request (see finalize). Use this from middleware that needs to write
-// headers (e.g. Set-Cookie for save-at-end session persistence) lazily but
-// still in time for the real net/http transport to flush them, including
-// on the response the error boundary writes after the middleware
-// returned. Subsequent calls overwrite the registered hook only if it has
-// not yet fired.
+// request (see VelocityRouterV2.finalize). Use this from middleware that
+// needs to write headers (e.g. Set-Cookie for save-at-end session
+// persistence) lazily but still in time for the real net/http transport
+// to flush them, including on the response the error boundary writes
+// after the middleware returned. Subsequent calls overwrite the
+// registered hook only if it has not yet fired.
+//
+// A panic in fn is a recovered panic of the request for the router: fired
+// by a write inside the handler chain it unwinds to the router's recover,
+// and fired by the router once the boundary is done it is recovered there;
+// either way the boundary answers a 500 and reports it. Wrap has no
+// boundary and lets the panic propagate.
 //
 // fn must NOT call methods on the wrapper that themselves trip
 // WriteHeader (the sync.Once gate makes that safe against re-entry but
@@ -107,56 +111,6 @@ func (rw *responseWriter) firePending() {
 	if rw.beforeFirstWriteFn != nil {
 		rw.fireBeforeFirstWrite()
 	}
-}
-
-// finalize fires the BeforeFirstWrite hook when nothing fired it: the
-// router calls it once per request after the error boundary has answered
-// (or found nothing to answer) and before the writer is released, so a
-// request whose handler and error path wrote nothing, which net/http then
-// answers with an implicit 200, still runs its pre-commit hook (the
-// session middleware's save, for one). No-op when the hook already fired
-// or none is registered.
-//
-// The hook runs under its own recover: a panic in it never escapes the
-// router. It is logged through logf (the router's error logger; nil logs
-// nothing) with the panic value, req's method and path, and the stack,
-// and the request completes with whatever response it already has.
-func (rw *responseWriter) finalize(req *http.Request, logf func(msg string, kvs ...any)) {
-	if rw.beforeFirstWriteFn != nil {
-		rw.finalizeGuarded(req, logf)
-	}
-}
-
-// finalizeGuarded is finalize's slow path, kept apart so finalize stays
-// small enough to inline.
-func (rw *responseWriter) finalizeGuarded(req *http.Request, logf func(msg string, kvs ...any)) {
-	defer recoverHookPanic(req, logf)
-	rw.fireBeforeFirstWrite()
-}
-
-// recoverHookPanic recovers a panic in a pre-commit hook and logs it
-// through logf with the panic value, req's method and path, and the stack
-// captured while the panicking frames are still on it. A panicking logf is
-// swallowed. It must be deferred directly.
-func recoverHookPanic(req *http.Request, logf func(msg string, kvs ...any)) {
-	p := recover()
-	if p == nil || logf == nil {
-		return
-	}
-	buf := make([]byte, panicStackSize)
-	n := runtime.Stack(buf, false)
-	kvs := []any{"panic", fmt.Sprint(p)}
-	if req != nil {
-		kvs = append(kvs, "method", req.Method)
-		if req.URL != nil {
-			kvs = append(kvs, "path", req.URL.Path)
-		}
-	}
-	kvs = append(kvs, "stack", string(buf[:n]))
-	func() {
-		defer func() { _ = recover() }()
-		logf("panic in response pre-commit hook", kvs...)
-	}()
 }
 
 // WriteHeader writes statusCode through and records it as the response

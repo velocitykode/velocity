@@ -788,7 +788,7 @@ func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request,
 		} else if handlerErr != nil {
 			r.dispatchRequestFailed(req, meta, failure)
 		}
-		rw.finalize(req, r.errorLogger)
+		r.finalize(ctx, rw, req, meta)
 		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
 			Context:      req.Context(),
 			RequestID:    meta.id,
@@ -889,7 +889,7 @@ func (r *VelocityRouterV2) handleUnmatched(rw *responseWriter, req *http.Request
 		} else if handlerErr != nil {
 			r.dispatchRequestFailed(req, meta, failure)
 		}
-		rw.finalize(req, r.errorLogger)
+		r.finalize(ctx, rw, req, meta)
 		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
 			Context:      req.Context(),
 			RequestID:    meta.id,
@@ -1024,7 +1024,7 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 		} else if handlerErr != nil {
 			r.dispatchRequestFailed(req, meta, failure)
 		}
-		rw.finalize(req, r.errorLogger)
+		r.finalize(ctx, rw, req, meta)
 		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
 			Context:      req.Context(),
 			RequestID:    meta.id,
@@ -1046,6 +1046,39 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 	if handlerErr != nil {
 		failure = r.handleError(ctx, rw, handlerErr, ErrorInfo{})
 	}
+}
+
+// finalize fires the BeforeFirstWrite hook when nothing fired it: the
+// router calls it once per request after the error boundary has answered
+// (or found nothing to answer) and before RequestHandled, so a request
+// whose handler and error path wrote nothing, which net/http then answers
+// with an implicit 200, still runs its pre-commit hook (the session
+// middleware's save, for one). No-op when the hook already fired or none
+// is registered.
+//
+// A panic in the hook is a recovered panic like one in the handler: it is
+// recovered here and handed to onPanic from the recovering frame, so it
+// becomes a *PanicError carrying the panicking stack, dispatches
+// RequestFailed with Recovered set, and reaches the boundary with
+// ErrorInfo{Recovered: true}, which answers a 500 (reported once by an
+// installed error handler, logged once on the default path) before
+// RequestHandled records it. The panic consumed the hook's once, so that
+// 500 does not fire the hook again.
+func (r *VelocityRouterV2) finalize(ctx *Context, rw *responseWriter, req *http.Request, meta requestMeta) {
+	if rw.beforeFirstWriteFn != nil {
+		r.finalizeGuarded(ctx, rw, req, meta)
+	}
+}
+
+// finalizeGuarded is finalize's slow path, kept apart so finalize stays
+// small enough to inline.
+func (r *VelocityRouterV2) finalizeGuarded(ctx *Context, rw *responseWriter, req *http.Request, meta requestMeta) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			r.onPanic(ctx, rw, req, meta, recovered)
+		}
+	}()
+	rw.fireBeforeFirstWrite()
 }
 
 // onPanic converts a recovered panic into a *PanicError, dispatches
