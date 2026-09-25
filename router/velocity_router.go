@@ -1328,6 +1328,13 @@ func failureOf(err error, f *errorFacts) requestFailure {
 //
 // ctx.Response is reset to the router's writer first: every middleware
 // has returned by now, so a writer one of them swapped in is stale.
+//
+// The boundary never touches Content-Encoding, as http.Error does not: a
+// compressing middleware that swaps c.Response must set its label on its
+// first write, so an error answered with nothing written carries no label
+// and the boundary's plain body is correct. A compressor that wraps the
+// server's writer below the router keeps its label, and the boundary's
+// body goes through it.
 func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err error, info ErrorInfo) requestFailure {
 	f := classifyError(err)
 	if !info.Recovered && f.panicked {

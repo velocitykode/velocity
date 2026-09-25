@@ -217,3 +217,89 @@ func TestDefaultErrorHandler_CompressingWriterKeepsContentEncoding(t *testing.T)
 		})
 	}
 }
+
+// lazyGzipWriter labels the response gzip and starts compressing on its
+// first Write, so a response with nothing written carries no label.
+type lazyGzipWriter struct {
+	http.ResponseWriter
+	zw *gzip.Writer
+}
+
+func (g *lazyGzipWriter) Write(p []byte) (int, error) {
+	if g.zw == nil {
+		g.Header().Set("Content-Encoding", "gzip")
+		g.zw = gzip.NewWriter(g.ResponseWriter)
+	}
+	return g.zw.Write(p)
+}
+
+// lazyCompress is a velocity middleware that swaps c.Response for a
+// lazyGzipWriter and finishes the stream when one was started.
+func lazyCompress(next HandlerFunc) HandlerFunc {
+	return func(c *Context) error {
+		gw := &lazyGzipWriter{ResponseWriter: c.Response}
+		c.Response = gw
+		err := next(c)
+		if gw.zw != nil {
+			if cerr := gw.zw.Close(); err == nil {
+				err = cerr
+			}
+		}
+		return err
+	}
+}
+
+// TestDefaultErrorHandler_LazyLabelCompressorLeavesErrorPlain asserts the
+// supported design for a compressing middleware that swaps c.Response: it
+// labels on its first write, so a handler that fails before writing leaves
+// no label, and the boundary's body, written to the router's own writer,
+// arrives plain and readable.
+func TestDefaultErrorHandler_LazyLabelCompressorLeavesErrorPlain(t *testing.T) {
+	r := New()
+	r.Use(lazyCompress)
+	r.Get("/fail", func(c *Context) error { return errors.New("db down") })
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	tests := []struct {
+		name     string
+		accept   string
+		wantType string
+	}{
+		{name: "problem json", accept: "application/json", wantType: "application/problem+json"},
+		{name: "plain text", accept: "text/html", wantType: "text/plain; charset=utf-8"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, srv.URL+"/fail", nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.Header.Set("Accept", tt.accept)
+			// Asking for gzip explicitly makes the transport hand back
+			// the body exactly as the server coded it.
+			req.Header.Set("Accept-Encoding", "gzip")
+			resp, err := srv.Client().Do(req)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if resp.StatusCode != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500", resp.StatusCode)
+			}
+			if enc := resp.Header.Get("Content-Encoding"); enc != "" {
+				t.Fatalf("Content-Encoding = %q, want none: nothing went through the compressor (body %.80q)", enc, body)
+			}
+			if ct := resp.Header.Get("Content-Type"); ct != tt.wantType {
+				t.Errorf("Content-Type = %q, want %q", ct, tt.wantType)
+			}
+			if !strings.Contains(string(body), "Internal Server Error") {
+				t.Errorf("body = %q, want the plain 500 answer", body)
+			}
+		})
+	}
+}
