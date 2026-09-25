@@ -593,6 +593,15 @@ func TestRequestFailed_Policy(t *testing.T) {
 		{"error handler writing nothing for a plain error fires", nil, mapGone, func(c *Context) error { return boom }, true, false},
 		{"error handler writing nothing for a 4xx does not fire", nil, mapGone, func(c *Context) error { return contract.NewHTTPError(http.StatusConflict) }, false, false},
 		{"error handler panic fires recovered", nil, mapGone, func(c *Context) error { panic("boom") }, true, true},
+		{"plain error after a committed 200 fires", nil, nil, func(c *Context) error {
+			if err := c.String(http.StatusOK, "partial"); err != nil {
+				return err
+			}
+			return boom
+		}, true, false},
+		{"plain error after a committed 404 fires", nil, nil, writeThen(http.StatusNotFound, boom), true, false},
+		{"4xx error after a committed 200 does not fire", nil, nil, writeThen(http.StatusOK, contract.NewHTTPError(http.StatusConflict)), false, false},
+		{"plain error after a committed 200 with an error handler fires", nil, mapGone, writeThen(http.StatusOK, boom), true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

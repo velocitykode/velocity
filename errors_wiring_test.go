@@ -1061,11 +1061,12 @@ func TestRun_FailedCommandShutsDownBeforeExit(t *testing.T) {
 
 // TestRequestFailed_DecidedByAnswer_ThroughApp drives failed requests
 // through a real app's router boundary and error pipeline and counts the
-// RequestFailed events the router dispatches: the event follows the
-// status the pipeline answered with, so an error it maps to a 4xx (a
-// framework not-found sentinel, an application MapIs rule) dispatches
-// nothing, while a 500, a Handled cause after a written 500 and a
-// recovered panic each dispatch once.
+// RequestFailed events the router dispatches and the reports: the event
+// follows the status the pipeline answered with, so an error it maps to a
+// 4xx (a framework not-found sentinel, an application MapIs rule)
+// dispatches nothing, while a 500, a Handled cause after a written 500, a
+// plain error after the handler committed a 200 itself and a recovered
+// panic each dispatch once and are reported once.
 func TestRequestFailed_DecidedByAnswer_ThroughApp(t *testing.T) {
 	errGone := errors.New("record archived")
 	writeThen := func(status int, err error) router.HandlerFunc {
@@ -1079,19 +1080,26 @@ func TestRequestFailed_DecidedByAnswer_ThroughApp(t *testing.T) {
 		handler       router.HandlerFunc
 		wantStatus    int
 		wantFailed    int
+		wantReports   int
 		wantRecovered bool
 	}{
 		{name: "orm not found", handler: func(*router.Context) error { return fmt.Errorf("load user: %w", orm.ErrNotFound) }, wantStatus: http.StatusNotFound},
 		{name: "map rule sentinel", handler: func(*router.Context) error { return fmt.Errorf("load post: %w", errGone) }, wantStatus: http.StatusGone},
-		{name: "plain error", handler: func(*router.Context) error { return errors.New("db exploded") }, wantStatus: http.StatusInternalServerError, wantFailed: 1},
+		{name: "plain error", handler: func(*router.Context) error { return errors.New("db exploded") }, wantStatus: http.StatusInternalServerError, wantFailed: 1, wantReports: 1},
 		{name: "handled not found after a written 404", handler: writeThen(http.StatusNotFound, contract.Handled(problem.NotFound())), wantStatus: http.StatusNotFound},
-		{name: "handled plain error after a written 500", handler: writeThen(http.StatusInternalServerError, contract.Handled(errors.New("rendered by middleware"))), wantStatus: http.StatusInternalServerError, wantFailed: 1},
-		{name: "recovered panic", handler: func(*router.Context) error { panic("boom") }, wantStatus: http.StatusInternalServerError, wantFailed: 1, wantRecovered: true},
+		{name: "handled plain error after a written 500", handler: writeThen(http.StatusInternalServerError, contract.Handled(errors.New("rendered by middleware"))), wantStatus: http.StatusInternalServerError, wantFailed: 1, wantReports: 1},
+		{name: "plain error after a committed 200", handler: func(c *router.Context) error {
+			if err := c.String(http.StatusOK, "partial"); err != nil {
+				return err
+			}
+			return errors.New("stream broke")
+		}, wantStatus: http.StatusOK, wantFailed: 1, wantReports: 1},
+		{name: "recovered panic", handler: func(*router.Context) error { panic("boom") }, wantStatus: http.StatusInternalServerError, wantFailed: 1, wantReports: 1, wantRecovered: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := events.NewFakeDispatcher()
-			a, _, _ := newPipelineApp(t, WithFakeEvents(fake))
+			a, _, rec := newPipelineApp(t, WithFakeEvents(fake))
 			a.Services.Errors.SetDebug(false)
 			problem.MapIs(a.Services.Errors, errGone, func(err error) error {
 				return problem.Gone().WithCause(err)
@@ -1117,6 +1125,9 @@ func TestRequestFailed_DecidedByAnswer_ThroughApp(t *testing.T) {
 			}
 			if tt.wantFailed == 1 && failed[0].Recovered != tt.wantRecovered {
 				t.Errorf("RequestFailed.Recovered = %v, want %v", failed[0].Recovered, tt.wantRecovered)
+			}
+			if rec.count() != tt.wantReports {
+				t.Errorf("reports = %d, want %d", rec.count(), tt.wantReports)
 			}
 		})
 	}

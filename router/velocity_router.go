@@ -1279,20 +1279,26 @@ func (r *VelocityRouterV2) dispatchRequestFailed(req *http.Request, meta request
 }
 
 // failureOf decides RequestFailed for a handler error err, classified
-// into f, once the boundary has answered it through rw. A bare
+// into f, once the boundary has answered it through rw; committedBefore
+// reports whether rw was committed before the boundary ran. A bare
 // contract.ErrResponseWritten is a deliberate response and fires nothing;
 // a contract.Handled value fires with its cause. A marker the value of a
 // recovered panic carries counts for nothing (see
 // errorFacts.markedWritten). The event fires for a recovered panic (a
 // contract.RecoveredPanic in the chain, such as a *PanicError the Timeout
-// middleware forwarded; only a *PanicError carries a raw stack), for a
-// response whose status rw recorded as 500 or above, and, when nothing
-// was written, for an error that names no status below 500. The status
-// the response went out with decides, not the error as the handler
-// returned it: an error the error handler maps to a 4xx (a not-found
-// sentinel, an application map rule) is a response, not a failure.
-func failureOf(err error, f *errorFacts, rw *responseWriter) requestFailure {
-	if f.markedWritten(err, false) {
+// middleware forwarded; only a *PanicError carries a raw stack), and
+// otherwise follows the status the response went out with when that
+// answer is the error's own: one the boundary wrote, or one a middleware
+// wrote before marking the response written (contract.Handled). Such a
+// status of 500 or above fires; a lower one (an error the error handler
+// maps to a 4xx, a not-found sentinel, an application map rule) is a
+// response, not a failure. A response the handler committed itself
+// before returning a plain error, or no response at all, leaves the
+// decision to the error: it fires unless the error names a status below
+// 500, since the client cannot see a failure after a committed answer.
+func failureOf(err error, f *errorFacts, rw *responseWriter, committedBefore bool) requestFailure {
+	marked := f.markedWritten(err, false)
+	if marked {
 		cause := contract.HandledCause(err)
 		if cause == nil {
 			return requestFailure{}
@@ -1308,7 +1314,7 @@ func failureOf(err error, f *errorFacts, rw *responseWriter) requestFailure {
 		}
 		return failure
 	}
-	if rw.Committed() {
+	if rw.Committed() && (marked || !committedBefore) {
 		if rw.Status() < http.StatusInternalServerError {
 			return requestFailure{}
 		}
@@ -1380,7 +1386,7 @@ func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err err
 	if r.eventDispatcher == nil {
 		return requestFailure{}
 	}
-	return failureOf(err, &f, rw)
+	return failureOf(err, &f, rw, info.Committed)
 }
 
 // logDefault emits the single default-path log entry for a failed request

@@ -78,16 +78,19 @@ func (e *RequestHandled) Name() string {
 // router's error boundary has answered the error: a recovered panic
 // (including one the Timeout middleware forwarded, and one its handler
 // goroutine recovered after the 503 went out, which dispatches this event
-// after the request's RequestHandled), a response the router's writer
-// recorded with status 500 or above, or, when nothing was written, an
-// error that names no status below 500. The status the response went out
-// with decides, not the error as the handler returned it: an error the
+// after the request's RequestHandled), an answer to the error with status
+// 500 or above, or an error that names no status below 500 when nothing
+// answered it. The answer is the response the boundary wrote, or the one
+// a middleware wrote before returning contract.Handled; its status
+// decides, not the error as the handler returned it, so an error the
 // installed error handler answers below 500 (a not-found sentinel it maps
 // to 404, an application map rule) is a response, not a failure, and
-// dispatches nothing. A contract.Handled value dispatches its cause under
-// the same rule (the status the middleware wrote decides), and a bare
-// contract.ErrResponseWritten dispatches nothing, except inside the value
-// of a recovered panic, which always dispatches.
+// dispatches nothing. A response the handler committed itself before
+// returning a plain error is not an answer to it: the error decides, as
+// when nothing was written. A contract.Handled value dispatches its cause
+// under the same rule, and a bare contract.ErrResponseWritten dispatches
+// nothing, except inside the value of a recovered panic, which always
+// dispatches.
 type RequestFailed struct {
 	Context   context.Context
 	RequestID string
