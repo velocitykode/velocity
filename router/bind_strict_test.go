@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -203,14 +205,102 @@ func TestContext_BindXML_SingleDocument(t *testing.T) {
 	}
 }
 
-func TestContext_BindXML_MalformedStaysSyntaxError(t *testing.T) {
-	c := bindTestContext(`<item><name>a</item>`, "application/xml")
-	var it struct {
-		Name string `xml:"name"`
+// TestContext_BindXMLFormQuery_ClientErrors asserts an XML body, a form
+// body or a query value the client got wrong binds to a 400 carrying the
+// parse error, while a form body over the limit keeps its
+// *http.MaxBytesError.
+func TestContext_BindXMLFormQuery_ClientErrors(t *testing.T) {
+	type item struct {
+		XMLName xml.Name `xml:"item"`
+		Name    string   `xml:"name"`
+		Count   int      `xml:"count"`
 	}
-	err := c.BindXML(&it)
-	if err == nil || errors.Is(err, ErrBindExtraData) {
-		t.Fatalf("expected a decode error distinct from ErrBindExtraData, got %v", err)
+	type form struct {
+		Name  string `form:"name" query:"name"`
+		Count int    `form:"count" query:"count"`
+	}
+	isXMLSyntax := func(err error) bool {
+		var se *xml.SyntaxError
+		return errors.As(err, &se)
+	}
+	isNumber := func(err error) bool {
+		var ne *strconv.NumError
+		return errors.As(err, &ne)
+	}
+	isEscape := func(err error) bool {
+		var ee url.EscapeError
+		return errors.As(err, &ee)
+	}
+	isEOF := func(err error) bool { return errors.Is(err, io.EOF) }
+	isAny := func(err error) bool { return err != nil }
+	xmlBind := func(c *Context) error { var v item; return c.BindXML(&v) }
+	formBind := func(c *Context) error { var v form; return c.BindForm(&v) }
+	autoForm := func(c *Context) error { var v form; return c.BindAuto(&v) }
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		target      string
+		bind        func(c *Context) error
+		wantMessage string
+		wantCause   func(error) bool
+	}{
+		{"xml syntax error", "application/xml", `<item><name>a</item>`, "/test", xmlBind, "malformed request body", isXMLSyntax},
+		{"xml cut short", "application/xml", `<item><name>a`, "/test", xmlBind, "malformed request body", isXMLSyntax},
+		{"xml value of the wrong type", "application/xml", `<item><count>many</count></item>`, "/test", xmlBind, "malformed request body", isNumber},
+		{"xml empty body", "application/xml", ``, "/test", xmlBind, "empty request body", isEOF},
+		{"xml whitespace only body", "application/xml", " \n ", "/test", xmlBind, "empty request body", isEOF},
+		{"form bad escape", "application/x-www-form-urlencoded", "name=%zz", "/test", formBind, "malformed request body", isEscape},
+		{"form malformed pair", "application/x-www-form-urlencoded", "name=a;count=1", "/test", formBind, "malformed request body", isAny},
+		{"form value of the wrong type", "application/x-www-form-urlencoded", "count=many", "/test", formBind, "malformed request body", isNumber},
+		{"form through BindAuto", "application/x-www-form-urlencoded", "name=%zz", "/test", autoForm, "malformed request body", isEscape},
+		{"query value of the wrong type", "", "", "/test?count=many", func(c *Context) error { var v form; return c.BindQuery(&v) }, "malformed query string", isNumber},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", tt.target, strings.NewReader(tt.body))
+			if tt.contentType != "" {
+				req.Header.Set("Content-Type", tt.contentType)
+			}
+			c := NewContext(httptest.NewRecorder(), req)
+
+			err := tt.bind(c)
+			var he *contract.HTTPError
+			if !errors.As(err, &he) {
+				t.Fatalf("error = %T %v, want *contract.HTTPError", err, err)
+			}
+			if he.Status != http.StatusBadRequest || he.Message != tt.wantMessage {
+				t.Errorf("HTTPError = %d %q, want 400 %q", he.Status, he.Message, tt.wantMessage)
+			}
+			if !tt.wantCause(he.Cause) {
+				t.Errorf("cause = %T %v, want the parse error", he.Cause, he.Cause)
+			}
+		})
+	}
+}
+
+// TestContext_BindForm_OverLimitStaysMaxBytesError asserts a form body
+// over the limit is not turned into a 400: the error still wraps the
+// *http.MaxBytesError and names no status of its own.
+func TestContext_BindForm_OverLimitStaysMaxBytesError(t *testing.T) {
+	body := "name=" + strings.Repeat("a", 64)
+	req := httptest.NewRequest("POST", "/test", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+	c.Request.Body = http.MaxBytesReader(w, c.Request.Body, 20)
+	c.Set(bodyLimitKey, true)
+
+	var v struct {
+		Name string `form:"name"`
+	}
+	err := c.BindForm(&v)
+	var tooLarge *http.MaxBytesError
+	if !errors.As(err, &tooLarge) {
+		t.Fatalf("error = %T %v, want one wrapping *http.MaxBytesError", err, err)
+	}
+	if _, _, named := contract.StatusOf(err); named {
+		t.Errorf("error %v names a status; the pipeline must map the *http.MaxBytesError to 413", err)
 	}
 }
 

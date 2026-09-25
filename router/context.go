@@ -550,27 +550,48 @@ func (c *Context) Bind(v interface{}) error {
 	return bindRemainderErr(dec.Decode(&extra))
 }
 
-// bindDecodeErr maps the error from decoding the bound JSON value: a body
-// the client got wrong (empty, a syntax error, a value of the wrong type, a
-// body cut short) becomes a 400 with the decoder error as its Cause. Any
-// other error, the *http.MaxBytesError of a body over the limit included,
-// passes through unchanged.
+// bindDecodeErr maps the error from decoding the bound value from a JSON
+// or XML body or from form values: a body the client got wrong (empty, a
+// syntax error, a value of the wrong type or one that does not parse as
+// its field's number or bool, a body cut short) becomes a 400 with the
+// decoder error as its Cause. Any other error, the *http.MaxBytesError of
+// a body over the limit included, passes through unchanged, and a nil err
+// stays nil.
 func bindDecodeErr(err error) error {
+	if err == nil {
+		return nil
+	}
 	var (
-		tooLarge  *http.MaxBytesError
-		syntaxErr *json.SyntaxError
-		typeErr   *json.UnmarshalTypeError
+		tooLarge     *http.MaxBytesError
+		jsonSyntax   *json.SyntaxError
+		jsonType     *json.UnmarshalTypeError
+		xmlSyntax    *xml.SyntaxError
+		xmlUnmarshal xml.UnmarshalError
+		number       *strconv.NumError
 	)
 	switch {
 	case errors.As(err, &tooLarge):
 		return err
 	case errors.Is(err, io.EOF):
 		return contract.NewHTTPError(http.StatusBadRequest, "empty request body").WithCause(err).WithOrigin(1)
-	case errors.Is(err, io.ErrUnexpectedEOF), errors.As(err, &syntaxErr), errors.As(err, &typeErr):
+	case errors.Is(err, io.ErrUnexpectedEOF), errors.As(err, &jsonSyntax), errors.As(err, &jsonType),
+		errors.As(err, &xmlSyntax), errors.As(err, &xmlUnmarshal), errors.As(err, &number):
 		return contract.NewHTTPError(http.StatusBadRequest, "malformed request body").WithCause(err).WithOrigin(1)
 	default:
 		return err
 	}
+}
+
+// bindFormErr maps a ParseForm failure: a body over the limit (a
+// *http.MaxBytesError in the chain) passes through unchanged, answered
+// 413; any other failure (a bad escape, a malformed pair, a Content-Type
+// that does not parse) becomes a 400 with the parse error as its Cause.
+func bindFormErr(err error) error {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		return err
+	}
+	return contract.NewHTTPError(http.StatusBadRequest, "malformed request body").WithCause(err).WithOrigin(1)
 }
 
 // bindRemainderErr maps the error from reading past the bound value: io.EOF
@@ -1072,7 +1093,12 @@ func (c *Context) Authorize(ability string, args ...interface{}) error {
 // Multi-format binding
 // ---------------------------------------------------------------------------
 
-// BindForm parses form data and maps it to v using `form` struct tags.
+// BindForm parses form data and maps it to v using `form` struct tags. A
+// body that does not parse (a bad escape, a malformed pair) or a value
+// that does not parse as its field's number or bool returns a 400
+// *contract.HTTPError, "malformed request body", with the parse error as
+// its Cause; a body over the limit returns the error wrapping the
+// *http.MaxBytesError (answered 413).
 func (c *Context) BindForm(v interface{}) error {
 	// Wrap only when the BodyLimit middleware has not already installed
 	// its own MaxBytesReader (bodyLimitKey set). Wrapping again would
@@ -1082,20 +1108,34 @@ func (c *Context) BindForm(v interface{}) error {
 		c.Request.Body = http.MaxBytesReader(c.Response, c.Request.Body, DefaultMaxBodySize)
 	}
 	if err := c.Request.ParseForm(); err != nil {
-		return err
+		return bindFormErr(err)
 	}
-	return bindValues(v, c.Request.Form, "form")
+	return bindDecodeErr(bindValues(v, c.Request.Form, "form"))
 }
 
-// BindQuery maps URL query parameters to v using `query` struct tags.
+// BindQuery maps URL query parameters to v using `query` struct tags. A
+// value that does not parse as its field's number or bool returns a 400
+// *contract.HTTPError, "malformed query string", with the parse error as
+// its Cause.
 func (c *Context) BindQuery(v interface{}) error {
-	return bindValues(v, c.Request.URL.Query(), "query")
+	err := bindValues(v, c.Request.URL.Query(), "query")
+	var number *strconv.NumError
+	if errors.As(err, &number) {
+		return contract.NewHTTPError(http.StatusBadRequest, "malformed query string").WithCause(err)
+	}
+	return err
 }
 
 // BindXML parses the request body as XML into v (10 MB limit). The body must
 // be exactly one document: a single root element, with only whitespace,
 // comments and processing instructions around it (plus a DOCTYPE before it).
-// Anything else fails with ErrBindExtraData. An empty body returns io.EOF.
+// Anything else fails with ErrBindExtraData (answered 400). A body the
+// client got wrong returns a 400 *contract.HTTPError with the decoder
+// error as its Cause: "empty request body" for an empty or
+// whitespace-only body (Cause io.EOF), "malformed request body" for a
+// syntax error, a document cut short, or a value that does not fit its
+// field. A body over the limit returns the *http.MaxBytesError (answered
+// 413).
 func (c *Context) BindXML(v interface{}) error {
 	if c.Get(bodyLimitKey) == nil {
 		c.Request.Body = http.MaxBytesReader(c.Response, c.Request.Body, DefaultMaxBodySize)
@@ -1108,7 +1148,7 @@ func (c *Context) BindXML(v interface{}) error {
 	for first := true; root == nil; first = false {
 		tok, err := dec.Token()
 		if err != nil {
-			return err
+			return bindDecodeErr(err)
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
@@ -1129,7 +1169,7 @@ func (c *Context) BindXML(v interface{}) error {
 		}
 	}
 	if err := dec.DecodeElement(v, root); err != nil {
-		return err
+		return bindDecodeErr(err)
 	}
 
 	for {

@@ -1133,36 +1133,63 @@ func TestRequestFailed_DecidedByAnswer_ThroughApp(t *testing.T) {
 	}
 }
 
-// TestBindClientErrors_ThroughApp drives JSON bodies the client got wrong
-// into a c.Bind handler through a real app's router boundary and error
-// pipeline: each answers 400 problem+json with the client message, is not
-// reported and dispatches no RequestFailed.
+// TestBindClientErrors_ThroughApp drives bodies the client got wrong into
+// c.Bind, c.BindXML and c.BindForm handlers through a real app's router
+// boundary and error pipeline: each answers 400 problem+json with the
+// client message (a form body over the limit 413), is not reported and
+// dispatches no RequestFailed.
 func TestBindClientErrors_ThroughApp(t *testing.T) {
+	const (
+		jsonType = "application/json"
+		xmlType  = "application/xml"
+		formType = "application/x-www-form-urlencoded"
+	)
 	tests := []struct {
-		name       string
-		body       string
-		wantDetail string
+		name        string
+		path        string
+		contentType string
+		body        string
+		wantStatus  int
+		wantDetail  string
 	}{
-		{name: "malformed json", body: `{"name":`, wantDetail: "malformed request body"},
-		{name: "syntax error", body: `{bad}`, wantDetail: "malformed request body"},
-		{name: "wrong type", body: `{"name":5}`, wantDetail: "malformed request body"},
-		{name: "empty body", body: ``, wantDetail: "empty request body"},
+		{name: "json malformed", path: "/bind", contentType: jsonType, body: `{"name":`, wantStatus: http.StatusBadRequest, wantDetail: "malformed request body"},
+		{name: "json syntax error", path: "/bind", contentType: jsonType, body: `{bad}`, wantStatus: http.StatusBadRequest, wantDetail: "malformed request body"},
+		{name: "json wrong type", path: "/bind", contentType: jsonType, body: `{"name":5}`, wantStatus: http.StatusBadRequest, wantDetail: "malformed request body"},
+		{name: "json empty body", path: "/bind", contentType: jsonType, body: ``, wantStatus: http.StatusBadRequest, wantDetail: "empty request body"},
+		{name: "xml syntax error", path: "/bind-xml", contentType: xmlType, body: `<item><name>a</item>`, wantStatus: http.StatusBadRequest, wantDetail: "malformed request body"},
+		{name: "xml empty body", path: "/bind-xml", contentType: xmlType, body: ``, wantStatus: http.StatusBadRequest, wantDetail: "empty request body"},
+		{name: "form bad escape", path: "/bind-form", contentType: formType, body: "name=%zz", wantStatus: http.StatusBadRequest, wantDetail: "malformed request body"},
+		{name: "form over the body limit", path: "/bind-form-small", contentType: formType, body: "name=" + strings.Repeat("a", 64), wantStatus: http.StatusRequestEntityTooLarge, wantDetail: "Request Entity Too Large"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := events.NewFakeDispatcher()
 			a, logs, rec := newPipelineApp(t, WithFakeEvents(fake))
 			a.Services.Errors.SetDebug(false)
+			bindForm := func(c *router.Context) error {
+				var v struct {
+					Name string `form:"name"`
+				}
+				return c.BindForm(&v)
+			}
 			a.Router.Post("/bind", bindHandler)
+			a.Router.Post("/bind-xml", func(c *router.Context) error {
+				var v struct {
+					Name string `xml:"name"`
+				}
+				return c.BindXML(&v)
+			})
+			a.Router.Post("/bind-form", bindForm)
+			a.Router.Post("/bind-form-small", bindForm).Use(router.BodyLimit(8))
 
-			req := httptest.NewRequest(http.MethodPost, "/bind", strings.NewReader(tt.body))
-			req.Header.Set("Content-Type", "application/json")
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", tt.contentType)
 			req.Header.Set("Accept", "application/json")
 			w := httptest.NewRecorder()
 			a.Router.ServeHTTP(w, req)
 
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, want 400 (body %q)", w.Code, w.Body.String())
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %q)", w.Code, tt.wantStatus, w.Body.String())
 			}
 			if got := w.Header().Get("Content-Type"); got != problem.ProblemTypeContent {
 				t.Errorf("Content-Type = %q, want %q", got, problem.ProblemTypeContent)
