@@ -2,6 +2,7 @@ package chain
 
 import (
 	"net/http"
+	"slices"
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/router"
@@ -26,10 +27,35 @@ func (r *Routing) Web(fn func(router.Router)) {
 	g.Use(r.middleware.web...)
 }
 
-// API creates a route group with the given prefix and API middleware applied.
+// API creates a route group with the given prefix and API middleware
+// applied, and registers prefix as an API prefix on the application's
+// error handler (Services.Errors): every request whose path starts with
+// prefix answers its errors as problem+json whatever its Accept header,
+// unless a JSONWhen predicate on the handler decides instead. The prefix
+// is added as given, once, beside any prefixes already configured; an
+// empty prefix registers nothing. With no error handler (a standalone
+// router) nothing is registered.
 func (r *Routing) API(prefix string, fn func(router.Router)) {
+	r.registerAPIPrefix(prefix)
 	g := r.router.Group(prefix, fn)
 	g.Use(r.middleware.api...)
+}
+
+// registerAPIPrefix appends prefix to the error handler's API prefixes
+// unless it is empty or already listed.
+func (r *Routing) registerAPIPrefix(prefix string) {
+	if prefix == "" || r.middleware == nil || r.middleware.services == nil {
+		return
+	}
+	h := r.middleware.services.Errors
+	if h == nil {
+		return
+	}
+	prefixes := h.GetAPIPrefixes()
+	if slices.Contains(prefixes, prefix) {
+		return
+	}
+	h.SetAPIPrefixes(append(prefixes, prefix)...)
 }
 
 // Health registers a GET endpoint that returns 200 "OK".

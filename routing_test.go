@@ -1,11 +1,14 @@
 package velocity
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/velocitykode/velocity/chain"
+	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -315,5 +318,78 @@ func TestRouting_MiddlewareExecutionOrder(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-Order"); got != "first,second,third" {
 		t.Fatalf("expected middleware order 'first,second,third', got %q", got)
+	}
+}
+
+// TestRouting_API_PrefixAnswersProblemJSON drives unmatched paths through a
+// bootstrapped app over a real server: every request under a Routing.API
+// prefix answers problem+json whatever its Accept header (HEAD with the
+// same headers and no body), while a path outside every prefix still
+// negotiates HTML for a browser.
+func TestRouting_API_PrefixAnswersProblemJSON(t *testing.T) {
+	a, err := NewTestApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Routes(func(r *chain.Routing) {
+		r.API("/api", func(rt router.Router) { rt.Get("/data", okHandler) })
+		r.API("/v2", func(rt router.Router) { rt.Get("/data", okHandler) })
+	})
+	if err := a.bootstrap(); err != nil {
+		t.Fatalf("bootstrap() error: %v", err)
+	}
+	if got, want := a.Services.Errors.GetAPIPrefixes(), []string{"/api", "/v2"}; !slices.Equal(got, want) {
+		t.Fatalf("GetAPIPrefixes() = %q, want %q", got, want)
+	}
+	srv := httptest.NewServer(a.Router)
+	defer srv.Close()
+
+	tests := []struct {
+		name            string
+		method          string
+		path            string
+		accept          string
+		wantContentType string
+		wantEmptyBody   bool
+	}{
+		{name: "no accept", method: http.MethodGet, path: "/api/nope", wantContentType: problem.ProblemTypeContent},
+		{name: "accept any", method: http.MethodGet, path: "/api/nope", accept: "*/*", wantContentType: problem.ProblemTypeContent},
+		{name: "accept html", method: http.MethodGet, path: "/api/nope", accept: "text/html", wantContentType: problem.ProblemTypeContent},
+		{name: "head", method: http.MethodHead, path: "/api/nope", accept: "text/html", wantContentType: problem.ProblemTypeContent, wantEmptyBody: true},
+		{name: "second group", method: http.MethodGet, path: "/v2/nope", accept: "text/html", wantContentType: problem.ProblemTypeContent},
+		{name: "outside every prefix", method: http.MethodGet, path: "/nope", accept: "text/html", wantContentType: "text/html; charset=utf-8"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(tt.method, srv.URL+tt.path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.accept != "" {
+				req.Header.Set("Accept", tt.accept)
+			}
+			resp, err := srv.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404 (body %q)", resp.StatusCode, body)
+			}
+			if got := resp.Header.Get("Content-Type"); got != tt.wantContentType {
+				t.Errorf("Content-Type = %q, want %q", got, tt.wantContentType)
+			}
+			if tt.wantEmptyBody && len(body) != 0 {
+				t.Errorf("body = %q, want empty", body)
+			}
+			if !tt.wantEmptyBody && len(body) == 0 {
+				t.Error("body is empty")
+			}
+		})
 	}
 }
