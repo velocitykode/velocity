@@ -45,14 +45,17 @@ type ErrorHandler interface {
 	// ErrorContext.Extra for every report.
 	ContextUsing(fn func(err error, ctx *ErrorContext) map[string]any)
 	// JSONWhen replaces the predicate deciding whether a response renders
-	// as JSON.
+	// as JSON. The pipeline asks it once per failure, with the error as it
+	// will be rendered (after the framework's own status mapping, a
+	// recovered panic as a 500 HTTPError wrapping it).
 	JSONWhen(fn func(r *http.Request, err error) bool)
 	// WantsJSON reports whether the response to r for err renders as JSON:
 	// the JSONWhen predicate alone when set, otherwise API mode, then the
-	// API prefixes, then WantsJSON(r). Render rules see the same answer
-	// through RenderContext.WantsJSON, so code that answers an error
-	// outside the pipeline (a validator writing a redirect) asks here to
-	// agree with it. err may be nil.
+	// API prefixes, then WantsJSON(r). Render rules see the pipeline's
+	// answer through RenderContext.WantsJSON, so code that answers an
+	// error outside the pipeline (a validator writing a redirect) asks
+	// here to agree with it; the pipeline asks with the error as it will
+	// be rendered. err may be nil.
 	WantsJSON(r *http.Request, err error) bool
 	// BeforeRender registers a hook run before the response is written. It
 	// may set headers through rc and returns the status to write.

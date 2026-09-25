@@ -150,7 +150,11 @@ func (h *Handler) ContextUsing(fn func(err error, ctx *ErrorContext) map[string]
 
 // JSONWhen replaces the negotiation predicate: when set, its answer alone
 // decides whether a response renders as JSON. Nil restores the default (API
-// mode, API prefixes, then contract.WantsJSON).
+// mode, API prefixes, then contract.WantsJSON). The pipeline asks it once
+// per failure, with the error as it will be rendered: after the framework
+// prepare table (a bare context.DeadlineExceeded arrives as its 503
+// HTTPError, orm.ErrNotFound as its 404), a request cut off by shutdown as
+// its 503, a recovered panic as a 500 HTTPError wrapping it.
 func (h *Handler) JSONWhen(fn func(r *http.Request, err error) bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -160,8 +164,9 @@ func (h *Handler) JSONWhen(fn func(r *http.Request, err error) bool) {
 // WantsJSON reports whether the response to r for err renders as JSON, in
 // the order negotiation uses: the JSONWhen predicate alone when set,
 // otherwise API mode, an API prefix of r's path, then contract.WantsJSON.
-// Render rules read the same answer through RenderContext.WantsJSON. err
-// may be nil.
+// Render rules read the pipeline's answer through RenderContext.WantsJSON;
+// the pipeline asks with the error as it will be rendered (see JSONWhen),
+// so passing that error here gives the same answer. err may be nil.
 func (h *Handler) WantsJSON(r *http.Request, err error) bool {
 	asJSON, _ := negotiatesJSON(h.snap(), r, err, func() bool { return contract.WantsJSON(r) })
 	return asJSON

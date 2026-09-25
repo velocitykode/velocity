@@ -929,6 +929,94 @@ func TestErrorPipeline_PanicReachesRenderRules(t *testing.T) {
 	})
 }
 
+// TestErrorPipeline_NegotiatesOnceOnTheRenderedError asserts a JSONWhen
+// predicate keyed on the error's status is asked once per failure, with
+// the error as it will be rendered: a bare context.DeadlineExceeded as its
+// 503, orm.ErrNotFound through the framework prepare table as its 404, a
+// request cut off by shutdown as its 503. A user render rule, a
+// RenderStatus rule and the final Content-Type all agree with that one
+// answer.
+func TestErrorPipeline_NegotiatesOnceOnTheRenderedError(t *testing.T) {
+	shutdownCtx := func() context.Context {
+		ctx, cancel := context.WithCancelCause(context.Background())
+		cancel(contract.ErrServerShuttingDown)
+		return ctx
+	}
+	tests := []struct {
+		name       string
+		handler    router.HandlerFunc
+		ctx        func() context.Context
+		jsonStatus int // the predicate answers true for this status only
+		wantStatus int
+	}{
+		{name: "deadline", handler: func(*router.Context) error { return context.DeadlineExceeded }, ctx: context.Background, jsonStatus: http.StatusServiceUnavailable, wantStatus: http.StatusServiceUnavailable},
+		{name: "orm not found", handler: func(*router.Context) error { return orm.ErrNotFound }, ctx: context.Background, jsonStatus: http.StatusNotFound, wantStatus: http.StatusNotFound},
+		{name: "shutdown cancel", handler: func(c *router.Context) error { return c.Request.Context().Err() }, ctx: shutdownCtx, jsonStatus: http.StatusServiceUnavailable, wantStatus: http.StatusServiceUnavailable},
+		{name: "predicate declines", handler: func(*router.Context) error { return context.DeadlineExceeded }, ctx: context.Background, jsonStatus: http.StatusTeapot, wantStatus: http.StatusServiceUnavailable},
+	}
+	for _, tt := range tests {
+		for _, statusRule := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/statusRule=%v", tt.name, statusRule), func(t *testing.T) {
+				a, _, _ := newPipelineApp(t)
+				h := a.Services.Errors
+				var (
+					mu      sync.Mutex
+					answers []bool
+					ruleSaw []bool
+				)
+				h.JSONWhen(func(_ *http.Request, err error) bool {
+					status, _, ok := contract.StatusOf(err)
+					answer := ok && status == tt.jsonStatus
+					mu.Lock()
+					answers = append(answers, answer)
+					mu.Unlock()
+					return answer
+				})
+				h.AddRenderRule(contract.RenderRule{
+					Match: func(error) bool { return true },
+					Render: func(rc contract.RenderContext, _ error, _ *contract.ErrorContext) bool {
+						mu.Lock()
+						ruleSaw = append(ruleSaw, rc.WantsJSON())
+						mu.Unlock()
+						return false
+					},
+				})
+				wantStatus := tt.wantStatus
+				if statusRule {
+					problem.RenderStatus[*contract.HTTPError](h, http.StatusTeapot)
+					wantStatus = http.StatusTeapot
+				}
+				a.Router.Get("/x", tt.handler)
+
+				w := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, "/x", nil).WithContext(tt.ctx())
+				req.Header.Set("Accept", "text/html")
+				a.Router.ServeHTTP(w, req)
+
+				mu.Lock()
+				defer mu.Unlock()
+				if len(answers) != 1 {
+					t.Fatalf("JSONWhen asked %d times (%v), want once", len(answers), answers)
+				}
+				wantJSON := tt.jsonStatus == tt.wantStatus
+				if answers[0] != wantJSON {
+					t.Errorf("JSONWhen answered %v, want %v for the rendered %d", answers[0], wantJSON, tt.wantStatus)
+				}
+				if len(ruleSaw) != 1 || ruleSaw[0] != answers[0] {
+					t.Errorf("render rule saw rc.WantsJSON() = %v, want [%v]", ruleSaw, answers[0])
+				}
+				if w.Code != wantStatus {
+					t.Errorf("status = %d, want %d", w.Code, wantStatus)
+				}
+				ct := w.Header().Get("Content-Type")
+				if gotJSON := ct == "application/problem+json"; gotJSON != answers[0] {
+					t.Errorf("Content-Type = %q, want JSON = %v", ct, answers[0])
+				}
+			})
+		}
+	}
+}
+
 // TestRun_FailedCommandShutsDownBeforeExit asserts that a failed command
 // shuts the app down before the process exits (the exit skips every
 // deferred cleanup), and that a successful one neither shuts down nor

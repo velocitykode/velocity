@@ -32,8 +32,10 @@ import (
 //     prepare table and the framework render rules, and reaches the user
 //     render rules wrapped in a 500 HTTPError, with every Status rule
 //     answering 500. A render that fails or panics
-//     falls back to a plain-text 500. Everything in this stage reads the
-//     handler's negotiation answer (see WantsJSON) through rc.WantsJSON.
+//     falls back to a plain-text 500. The stage negotiates once, on the
+//     error as it will be rendered (after the prepare table, or the 500
+//     or 503 above), and everything in it reads that answer (see
+//     WantsJSON) through rc.WantsJSON.
 //
 // A nil ctx is replaced by one carrying the request facts; a ctx missing
 // them is filled in.
@@ -335,13 +337,15 @@ func (h *Handler) render(s *snapshot, rc RenderContext, err error, ctx *ErrorCon
 }
 
 // renderStage renders err through rc inside a stage.
+//
+// It first builds the error the stage renders (a recovered panic wrapped
+// in a pinned 500 HTTPError, a shutdown cancel as its 503, otherwise the
+// framework prepare table's replacement) and negotiates once, on that
+// error. Every rule and renderer below reads the answer through
+// rc.WantsJSON and the final negotiation reuses it, so a JSONWhen
+// predicate is asked once per failure and a rule that picks between JSON
+// and a browser answer agrees with the response that follows it.
 func (h *Handler) renderStage(s *snapshot, rc RenderContext, err error, ctx *ErrorContext) {
-	// Every rule and renderer below reads the handler's negotiation
-	// answer through rc.WantsJSON, so a rule that picks between JSON and a
-	// browser answer agrees with the negotiation that follows it.
-	asJSON, _ := wantsJSON(s, rc, err)
-	rc = negotiatedContext{RenderContext: rc, json: asJSON}
-
 	// A panic is a bug: always a 500, whatever the panic value carries. The
 	// panic never renders itself (no Renderable) and skips the prepare
 	// table and the framework render rules (a subsystem default would
@@ -349,15 +353,26 @@ func (h *Handler) renderStage(s *snapshot, rc RenderContext, err error, ctx *Err
 	// rules see it wrapped in a 500 HTTPError, and a Status rule answers
 	// at 500 whatever status it names.
 	pinned := 0
+	dispatch := false
 	var prepared error
-	if isRecovered(err, ctx) {
+	switch {
+	case isRecovered(err, ctx):
 		pinned = http.StatusInternalServerError
 		prepared = contract.NewHTTPError(pinned).WithCause(err)
-	} else if serverCancelled(err, rc.Request()) {
+	case serverCancelled(err, rc.Request()):
 		// Checked before the error's own status, as the router does: a
 		// Timeout 503 wrapping the cancel answers as the shutdown.
 		prepared = serverShutdownError(err)
-	} else {
+	default:
+		dispatch = true
+		prepared = prepare(s, err)
+	}
+	asJSON, byRequest := wantsJSON(s, rc, prepared)
+	rc = negotiatedContext{RenderContext: rc, json: asJSON, byRequest: byRequest}
+
+	if dispatch {
+		// A Renderable error answers for itself, checked on the error as
+		// the handler returned it.
 		var renderable contract.Renderable
 		if errors.As(err, &renderable) && renderable.RenderError(rc, ctx) {
 			return
@@ -365,7 +380,6 @@ func (h *Handler) renderStage(s *snapshot, rc RenderContext, err error, ctx *Err
 		if rc.Written() {
 			return
 		}
-		prepared = prepare(s, err)
 	}
 
 	if h.applyRenderRules(s, s.renderRules, rc, prepared, ctx, pinned) {
@@ -463,7 +477,13 @@ func (h *Handler) respond(s *snapshot, rc RenderContext, err error, ctx *ErrorCo
 
 	asJSON, byRequest := forceJSON, false
 	if !forceJSON {
-		asJSON, byRequest = wantsJSON(s, rc, err)
+		// The render stage negotiated once, on the error it renders; only
+		// a RenderContext that did not come from it negotiates here.
+		if nc, ok := rc.(negotiatedContext); ok {
+			asJSON, byRequest = nc.json, nc.byRequest
+		} else {
+			asJSON, byRequest = wantsJSON(s, rc, err)
+		}
 	}
 	var renderErr error
 	switch {
@@ -582,10 +602,13 @@ func varyOnAccept(rc RenderContext, byRequest bool) {
 // negotiatedContext is the RenderContext the render stage hands to
 // Renderable errors, render rules and renderers: WantsJSON reports the
 // handler's negotiation answer (JSONWhen, API mode, API prefixes, then the
-// request) instead of the request's Accept header alone.
+// request) for the error the stage renders, instead of the request's
+// Accept header alone. byRequest records that the request's own
+// negotiation decided, for the Vary header.
 type negotiatedContext struct {
 	RenderContext
-	json bool
+	json      bool
+	byRequest bool
 }
 
 // WantsJSON reports the handler's negotiation answer.
