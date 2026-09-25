@@ -3,6 +3,7 @@ package router
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 )
 
@@ -41,7 +43,7 @@ var ErrIsDirectory = errors.New("velocity/router: path is a directory")
 
 // OpenFileIn opens relative against root, returning the open handle.
 //
-// Containment is kernel-enforced via (*os.Root).Open — on Linux it uses
+// Containment is kernel-enforced via (*os.Root).Open: on Linux it uses
 // openat2 with RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS, and on other
 // platforms the Go runtime provides the strongest equivalent. The open
 // handle is returned so callers never re-resolve the path; re-opening
@@ -50,10 +52,15 @@ var ErrIsDirectory = errors.New("velocity/router: path is a directory")
 //
 // Error behaviour:
 //   - A nil root returns ErrNilRoot.
-//   - A path that escapes the root (traversal or symlink) is wrapped as
-//     "velocity/router: path %q escapes root: %w" around ErrPathOutsideRoot.
-//   - A nonexistent file returns the standard os error from os.Root.Open
-//     unwrapped, so errors.Is(err, os.ErrNotExist) works.
+//   - A path os.Root refuses (one escaping the root through ".." or a
+//     symlink, a symlink loop, a path component that is not a directory)
+//     is wrapped as "velocity/router: path %q escapes root: %w" around
+//     ErrPathOutsideRoot and the os.Root error.
+//   - Any other failure (a nonexistent file, permission denied, descriptor
+//     exhaustion, an I/O error, a closed root) is the os.Root.Open error
+//     unchanged, so errors.Is(err, fs.ErrNotExist) or
+//     errors.Is(err, fs.ErrPermission) works and an operational failure
+//     is never mistaken for a containment rejection.
 //
 // Callers are responsible for closing the returned *os.File.
 func OpenFileIn(root *os.Root, relative string) (*os.File, error) {
@@ -62,16 +69,31 @@ func OpenFileIn(root *os.Root, relative string) (*os.File, error) {
 	}
 	f, err := root.Open(relative)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, err
+		if containmentRejection(err) {
+			return nil, fmt.Errorf("velocity/router: path %q escapes root: %w", relative, errors.Join(ErrPathOutsideRoot, err))
 		}
-		// os.Root surfaces containment violations as *PathError wrapping
-		// syscall.EXDEV / ENOTDIR / a dedicated sentinel depending on
-		// platform. We fold all of them into ErrPathOutsideRoot so
-		// callers can switch on a single sentinel.
-		return nil, fmt.Errorf("velocity/router: path %q escapes root: %w", relative, errors.Join(ErrPathOutsideRoot, err))
+		return nil, err
 	}
 	return f, nil
+}
+
+// containmentRejection reports whether err, from os.Root.Open, is the root
+// refusing the path rather than the file system failing to open it:
+// os.Root's own rejection (a *fs.PathError whose Err is not a
+// syscall.Errno, such as "path escapes from parent", other than a closed
+// root), or ELOOP, ENOTDIR or EXDEV, which the kernel reports for a
+// symlink loop, a path component that is not a directory, or a
+// resolution leaving the root.
+func containmentRejection(err error) bool {
+	if errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.EXDEV) {
+		return true
+	}
+	var pe *fs.PathError
+	if !errors.As(err, &pe) {
+		return false
+	}
+	var errno syscall.Errno
+	return !errors.As(pe.Err, &errno) && !errors.Is(pe.Err, fs.ErrClosed)
 }
 
 // FileValidationOption configures file validation behavior.

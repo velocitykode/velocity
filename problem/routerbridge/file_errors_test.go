@@ -17,7 +17,8 @@ import (
 // TestInstall_FileHelperErrors asserts every ctx.File, ctx.Download and
 // ctx.Attachment failure answers the same status through the standalone
 // router and through the pipeline, never shows its cause to the client,
-// and is reported (logged by the standalone router) only for the 500.
+// and is reported (logged by the standalone router) only for the 500: a
+// missing root, or an operational open failure such as permission denied.
 func TestInstall_FileHelperErrors(t *testing.T) {
 	dir := t.TempDir()
 	outside := t.TempDir()
@@ -30,12 +31,16 @@ func TestInstall_FileHelperErrors(t *testing.T) {
 	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(dir, "escape.txt")); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
-	causeText := []string{"os.Root", "invalid file path", "escapes root", "no such file", "is a directory", "velocity/router"}
+	if err := os.WriteFile(filepath.Join(dir, "locked.txt"), []byte("locked"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	causeText := []string{"os.Root", "invalid file path", "escapes root", "no such file", "is a directory", "permission denied", "velocity/router"}
 
 	tests := []struct {
 		name        string
 		root        string
 		path        string
+		needsUser   bool // skipped as root, which opens a mode-0 file
 		wantStatus  int
 		wantReports int
 	}{
@@ -44,6 +49,7 @@ func TestInstall_FileHelperErrors(t *testing.T) {
 		{name: "missing file", root: dir, path: "nope.txt", wantStatus: http.StatusNotFound},
 		{name: "symlink escape", root: dir, path: "escape.txt", wantStatus: http.StatusNotFound},
 		{name: "directory", root: dir, path: "sub", wantStatus: http.StatusNotFound},
+		{name: "permission denied", root: dir, path: "locked.txt", needsUser: true, wantStatus: http.StatusInternalServerError, wantReports: 1},
 	}
 	helpers := map[string]func(*router.Context, string) error{
 		"File":       func(c *router.Context, p string) error { return c.File(p) },
@@ -54,6 +60,9 @@ func TestInstall_FileHelperErrors(t *testing.T) {
 		for helper, call := range helpers {
 			for _, accept := range []string{"application/json", "text/html"} {
 				t.Run(tt.name+"/"+helper+"/"+accept, func(t *testing.T) {
+					if tt.needsUser && os.Geteuid() == 0 {
+						t.Skip("root opens a mode-0 file")
+					}
 					handler := func(c *router.Context) error { return call(c, tt.path) }
 
 					var mu sync.Mutex

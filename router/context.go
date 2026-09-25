@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"mime/multipart"
 	"net"
@@ -1300,10 +1301,12 @@ func (c *Context) fileRootOrError() (*os.Root, error) {
 //   - no file root: 500 (ErrNilRoot), a configuration fault
 //   - a malformed path: 400 (ErrInvalidFilePath)
 //   - a missing file: 404 (the fs error, errors.Is os.ErrNotExist)
-//   - a path escaping the root: 404 (ErrPathOutsideRoot), so whether the
+//   - a path the root refuses: 404 (ErrPathOutsideRoot), so whether the
 //     target exists is not revealed
 //   - a directory: 404 (ErrIsDirectory)
-//   - any other stat failure: 500 with the fs error
+//   - any other open or stat failure (permission denied, descriptor
+//     exhaustion, an I/O error): 500 with the fs error, a server fault
+//     that is reported
 //
 // The origin recorded on the error is the caller of File, Download or
 // Attachment.
@@ -1318,9 +1321,12 @@ func (c *Context) openServedFile(path string) (*os.File, os.FileInfo, error) {
 	}
 	f, err := OpenFileIn(root, rel)
 	if err != nil {
-		// OpenFileIn returns a not-exist error as is and folds every
-		// other open failure into ErrPathOutsideRoot: both are a 404.
-		return nil, nil, fileError(http.StatusNotFound, err)
+		// A missing file and a path the root refuses are the client's
+		// 404; any other open failure is the server's.
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, ErrPathOutsideRoot) {
+			return nil, nil, fileError(http.StatusNotFound, err)
+		}
+		return nil, nil, fileError(http.StatusInternalServerError, err)
 	}
 	info, err := f.Stat()
 	if err != nil {
@@ -1370,9 +1376,11 @@ func (c *Context) defaultPrivateNoStore() {
 //
 // A failure writes nothing and returns an HTTP error carrying its cause:
 // 400 for a malformed path (ErrInvalidFilePath), 404 for a missing file
-// (errors.Is os.ErrNotExist), a path escaping the root
+// (errors.Is os.ErrNotExist), a path the root refuses
 // (ErrPathOutsideRoot) or a directory (ErrIsDirectory), and 500 when the
-// context has no file root (ErrNilRoot).
+// context has no file root (ErrNilRoot) or the file cannot be opened or
+// stat'd for any other reason (the fs error, such as one matching
+// fs.ErrPermission).
 func (c *Context) File(path string) error {
 	return c.serveFile(path, "", false)
 }
