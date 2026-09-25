@@ -69,10 +69,20 @@ func TestResponseWriter_EarlyHintsKeepFinalStatus(t *testing.T) {
 }
 
 // hijackWriter is a ResponseRecorder whose Hijack hands back one end of a
-// pipe, or fails with err when set.
+// pipe, or fails with err when set. With rejectStatus set, WriteHeader
+// panics before recording anything, the way net/http rejects a status
+// outside 100-999.
 type hijackWriter struct {
 	*httptest.ResponseRecorder
-	err error
+	err          error
+	rejectStatus bool
+}
+
+func (h *hijackWriter) WriteHeader(code int) {
+	if h.rejectStatus {
+		panic("invalid WriteHeader code")
+	}
+	h.ResponseRecorder.WriteHeader(code)
 }
 
 func (h *hijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
@@ -94,10 +104,28 @@ func hijackAndClose(t *testing.T, rw *responseWriter) {
 	_ = conn.Close()
 }
 
+// writeRejectedStatus writes 99 through rw over a delegate that rejects it
+// and asserts the delegate's panic reached the caller with the recorded
+// status left at its default.
+func writeRejectedStatus(t *testing.T, rw *responseWriter) {
+	t.Helper()
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("WriteHeader(99) over a rejecting delegate did not panic")
+			}
+		}()
+		rw.WriteHeader(99)
+	}()
+	if got := rw.Status(); got != http.StatusOK {
+		t.Errorf("Status after the rejected write = %d, want the default 200", got)
+	}
+}
+
 // TestResponseWriter_CommittedRule asserts the writer's Committed follows
 // the contract.CommitReporter rule problem.TrackedWriter uses: a 1xx other
 // than 101 does not commit; 101, a final status, a Write, a Flush and a
-// successful Hijack do.
+// successful Hijack do. A status the delegate rejects (it panics) does not.
 func TestResponseWriter_CommittedRule(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -119,6 +147,20 @@ func TestResponseWriter_CommittedRule(t *testing.T) {
 		{name: "103 then hijack", write: func(t *testing.T, rw *responseWriter) {
 			rw.WriteHeader(http.StatusEarlyHints)
 			hijackAndClose(t, rw)
+		}, want: true},
+		{name: "status rejected by the delegate", write: func(t *testing.T, rw *responseWriter) {
+			rw.ResponseWriter.(*hijackWriter).rejectStatus = true
+			writeRejectedStatus(t, rw)
+		}, want: false},
+		{name: "rejected status then 500", write: func(t *testing.T, rw *responseWriter) {
+			hw := rw.ResponseWriter.(*hijackWriter)
+			hw.rejectStatus = true
+			writeRejectedStatus(t, rw)
+			hw.rejectStatus = false
+			rw.WriteHeader(http.StatusInternalServerError)
+			if hw.Code != http.StatusInternalServerError || rw.Status() != http.StatusInternalServerError {
+				t.Errorf("after the rejected status: delegate got %d, Status = %d, want the 500 to land", hw.Code, rw.Status())
+			}
 		}, want: true},
 	}
 	for _, tt := range tests {

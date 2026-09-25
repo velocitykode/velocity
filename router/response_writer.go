@@ -118,6 +118,11 @@ func (rw *responseWriter) firePending() {
 // Protocols, such as 103 Early Hints) goes through without committing the
 // response: the pre-commit hook does not fire, the recorded status stays,
 // and the handler's final WriteHeader still lands.
+//
+// The status and the commitment are recorded only once the underlying
+// writer accepted the status: net/http panics on a status outside 100-999
+// before committing anything, and that panic leaves the response
+// uncommitted, so the router's boundary still answers it with a 500.
 func (rw *responseWriter) WriteHeader(statusCode int) {
 	if rw.wroteHeader {
 		return
@@ -127,9 +132,9 @@ func (rw *responseWriter) WriteHeader(statusCode int) {
 		return
 	}
 	rw.fireBeforeFirstWrite()
+	rw.ResponseWriter.WriteHeader(statusCode)
 	rw.status = statusCode
 	rw.wroteHeader = true
-	rw.ResponseWriter.WriteHeader(statusCode)
 }
 
 // Write captures the bytes written
@@ -200,11 +205,11 @@ func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // past the hook and the save-at-end middleware's Set-Cookie would be
 // emitted into already-committed headers.
 //
-// Marks wroteHeader so a subsequent Write does not trigger a second
-// implicit WriteHeader on the inner ResponseWriter (which would log
-// "superfluous response.WriteHeader call"). The wrapper's status field
-// stays at its default http.StatusOK because that is what Go's inner
-// flush emits implicitly.
+// Marks wroteHeader, once the inner Flush returned, so a subsequent Write
+// does not trigger a second implicit WriteHeader on the inner
+// ResponseWriter (which would log "superfluous response.WriteHeader
+// call"). The wrapper's status field stays at its default http.StatusOK
+// because that is what Go's inner flush emits implicitly.
 //
 // Idempotent via the sync.Once gate inside fireBeforeFirstWrite, so
 // repeated Flush calls during a long stream (SSE keepalive ticks) only
@@ -212,8 +217,8 @@ func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 func (rw *responseWriter) Flush() {
 	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
 		rw.fireBeforeFirstWrite()
-		rw.wroteHeader = true
 		f.Flush()
+		rw.wroteHeader = true
 	}
 }
 
