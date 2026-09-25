@@ -525,15 +525,14 @@ func (h *Handler) RenderJSON(rc RenderContext, err error, ctx *ErrorContext) boo
 }
 
 // respond is negotiate with the JSON branch forced when forceJSON is set.
+//
+// An answer other than the JSON body is a page (see pagePolicy): its
+// Cache-Control is set to pageCacheControl after the error's own headers
+// are copied and before the BeforeRender hooks run, unless the error's
+// headers carry a Cache-Control.
 func (h *Handler) respond(s *snapshot, rc RenderContext, err error, ctx *ErrorContext, status int, forceJSON bool) {
 	_, headers, _ := contract.StatusOf(err)
 	setHeaders(rc, headers)
-	for _, hook := range s.beforeRender {
-		status = hook(rc, err, status)
-	}
-	if status < 100 || status > 999 {
-		status = http.StatusInternalServerError
-	}
 
 	asJSON, byRequest := forceJSON, false
 	if !forceJSON {
@@ -545,6 +544,21 @@ func (h *Handler) respond(s *snapshot, rc RenderContext, err error, ctx *ErrorCo
 			asJSON, byRequest = wantsJSON(s, rc, err)
 		}
 	}
+	var policy pagePolicy
+	if !asJSON {
+		policy.apply(rc, headers)
+		// A panic on the way (a hook, a renderer) leaves the answer to
+		// the plain-text last resort, which is not a page.
+		defer policy.undo(rc)
+	}
+
+	for _, hook := range s.beforeRender {
+		status = hook(rc, err, status)
+	}
+	if status < 100 || status > 999 {
+		status = http.StatusInternalServerError
+	}
+
 	var renderErr error
 	switch {
 	case asJSON:
@@ -555,14 +569,91 @@ func (h *Handler) respond(s *snapshot, rc RenderContext, err error, ctx *ErrorCo
 		renderErr = rendererFor(s, "json").Render(rc, err, ctx, status, s.debug)
 	case rc.IsInertia():
 		varyOnNegotiation(rc, true, false)
-		renderErr = h.renderInertia(s, rc, err, ctx, status)
+		renderErr = h.renderInertia(s, rc, err, ctx, status, &policy)
 	default:
 		varyOnNegotiation(rc, true, byRequest)
 		renderErr = h.renderHTML(s, rc, err, ctx, status)
 	}
 	if renderErr != nil {
+		policy.undo(rc)
 		safeLog(s.logger, "problem: rendering failed", "render_error", renderErr.Error(), "error", err.Error())
 		lastResort(s.logger, rc)
+		return
+	}
+	policy.keep()
+}
+
+// pageCacheControl is the Cache-Control of the error answers that embed
+// application or request content (see pagePolicy).
+const pageCacheControl = "private, no-store"
+
+// pagePolicy is the cache policy the pipeline gives the error answers
+// that embed application or request content: the Inertia error page (its
+// props include the application's shared props, the signed-in user among
+// them), the HTML branch's answer (the error page renderer's full-page
+// shell, the HTML templates, an application "html" renderer) and the debug
+// page (the request and the error in detail). Each is sent with
+// "Cache-Control: private, no-store" whatever policy the failed attempt
+// left on the response, so no shared cache stores one user's error page
+// and serves it to another. The error's own headers win: an error whose
+// headers (contract.HTTPError.Header) carry a Cache-Control keeps it. The
+// policy is set before the BeforeRender hooks run, so a hook can still
+// replace it.
+//
+// The problem+json body, the Inertia 409 reload and the plain-text last
+// resort embed nothing personal and set no policy: they keep the
+// Cache-Control the response already held. An answer that was to be a
+// page and turns into one of them (the error page renderer declines, a
+// renderer fails or panics) gets that value back, unless a hook replaced
+// the pipeline's.
+type pagePolicy struct {
+	value []string // the Cache-Control the pipeline set; nil when none is pending
+	prior []string // the value it replaced
+	had   bool     // whether there was one
+}
+
+// apply sets pageCacheControl on the response unless errHeaders carries a
+// Cache-Control.
+func (p *pagePolicy) apply(rc RenderContext, errHeaders http.Header) {
+	for k, vs := range errHeaders {
+		if len(vs) > 0 && http.CanonicalHeaderKey(k) == "Cache-Control" {
+			return
+		}
+	}
+	w := rc.Writer()
+	if w == nil {
+		return
+	}
+	h := w.Header()
+	p.prior, p.had = h["Cache-Control"]
+	p.value = []string{pageCacheControl}
+	h["Cache-Control"] = p.value
+}
+
+// keep settles the policy on the page answer that was written.
+func (p *pagePolicy) keep() { p.value = nil }
+
+// undo puts back the Cache-Control apply replaced, unless the response
+// was written or a hook replaced the pipeline's value. It settles the
+// policy, so a second call does nothing.
+func (p *pagePolicy) undo(rc RenderContext) {
+	value := p.value
+	p.value = nil
+	if value == nil || rc.Written() {
+		return
+	}
+	w := rc.Writer()
+	if w == nil {
+		return
+	}
+	h := w.Header()
+	if cur, ok := h["Cache-Control"]; !ok || len(cur) != 1 || &cur[0] != &value[0] {
+		return
+	}
+	if p.had {
+		h["Cache-Control"] = p.prior
+	} else {
+		delete(h, "Cache-Control")
 	}
 }
 
@@ -570,8 +661,9 @@ func (h *Handler) respond(s *snapshot, rc RenderContext, err error, ctx *ErrorCo
 // debug mode; otherwise the configured error page at status; failing that,
 // a 409 with X-Inertia-Location so the client reloads the page as a full
 // visit. Only the error page is a page object: the debug page and the 409
-// go out without the page marker (see dropPageMarker).
-func (h *Handler) renderInertia(s *snapshot, rc RenderContext, err error, ctx *ErrorContext, status int) error {
+// go out without the page marker (see dropPageMarker). The 409 is not a
+// page and goes out without the page policy (see pagePolicy).
+func (h *Handler) renderInertia(s *snapshot, rc RenderContext, err error, ctx *ErrorContext, status int, policy *pagePolicy) error {
 	if s.debug {
 		dropPageMarker(rc)
 		return rendererFor(s, "html").Render(rc, err, ctx, status, true)
@@ -579,6 +671,7 @@ func (h *Handler) renderInertia(s *snapshot, rc RenderContext, err error, ctx *E
 	if answered, pageErr := renderErrorPage(s, rc, err, status); answered {
 		return pageErr
 	}
+	policy.undo(rc)
 	dropPageMarker(rc)
 	rc.SetHeader("X-Inertia-Location", reloadLocation(s.errorPage, rc.Request()))
 	rc.WriteHeader(http.StatusConflict)

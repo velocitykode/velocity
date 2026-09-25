@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
@@ -23,13 +24,15 @@ func (b *Bond) Middleware(next http.Handler) http.Handler {
 // returned an error through a side channel the plain http.Handler
 // signature cannot carry: when it did and the buffer holds an
 // untouched empty 200, the headers the handler set (a session
-// Set-Cookie among them) are copied to the real writer, less its caching
-// headers (see cachingHeaders), and the status and body are dropped, so
-// the router's error path answers the request and the headers ride on
-// its response, as they would without the buffer; the error response
-// never carries the handler's cache directives or validators, and keeps
-// the ones middleware that ran before bond set (an app's
-// "private, no-store") exactly as they were.
+// Set-Cookie among them) are copied to the real writer, and the status
+// and body are dropped, so the router's error path answers the request
+// and the headers ride on its response, as they would without the
+// buffer. The error response never carries validators or a permissive
+// cache policy: ETag, Last-Modified and Expires are dropped, and
+// Cache-Control keeps only the restrictive directives (see
+// restrictiveCacheControl) found before bond ran or set inside it, by the
+// handler or by group or route middleware (an account area's
+// "private, no-store").
 // Middleware has no error channel and passes a constant false.
 func (b *Bond) serveBuffered(w http.ResponseWriter, r *http.Request, next http.Handler, handlerErred func() bool) {
 	// Always add Vary for proper caching, preserving values set by
@@ -67,23 +70,20 @@ func (b *Bond) serveBuffered(w http.ResponseWriter, r *http.Request, next http.H
 	next.ServeHTTP(bw, r)
 
 	// Empty 200 response. Two distinct cases: the handler errored
-	// without writing, so keep its headers except the caching ones,
-	// write nothing and let the router error path respond; or the
-	// handler forgot to return anything, in which case redirect back.
+	// without writing, so keep its headers less the caching ones, write
+	// nothing and let the router error path respond; or the handler
+	// forgot to return anything, in which case redirect back.
 	if bw.statusCode == http.StatusOK && bw.buf.Len() == 0 {
 		if handlerErred() {
 			// The handler wrote only to the clone, so the real writer
-			// still holds each caching header as it was before the
-			// handler ran: put that value back, or drop the header
-			// when there was none.
-			outer := w.Header()
-			for _, key := range cachingHeaders {
-				key = http.CanonicalHeaderKey(key)
-				if prior, ok := outer[key]; ok {
-					bw.header[key] = prior
-				} else {
-					delete(bw.header, key)
-				}
+			// still holds the Cache-Control set before bond ran.
+			if cc := restrictiveCacheControl(w.Header()["Cache-Control"], bw.header["Cache-Control"]); cc != "" {
+				bw.header["Cache-Control"] = []string{cc}
+			} else {
+				delete(bw.header, "Cache-Control")
+			}
+			for _, key := range droppedOnError {
+				bw.header.Del(key)
 			}
 			bw.commitHeader(w)
 			return
@@ -156,16 +156,54 @@ func (b *Bond) MiddlewareFunc() router.MiddlewareFunc {
 	}
 }
 
-// cachingHeaders are the headers an errored empty response resets, before
-// its headers are committed, to the values the real writer held before
-// the handler ran, so the error response the router's error path writes
-// is never cached (or revalidated) by a CDN or browser under the handler's
-// directives, while a directive set by middleware that ran before bond
-// (an app's "private, no-store" for its personalized pages) stays on it.
-// Vary is kept: it only narrows a cache key, so every value (bond's
-// X-Inertia, CORS's Origin, the handler's own) stays on the error
-// response.
-var cachingHeaders = [...]string{"Cache-Control", "ETag", "Last-Modified", "Expires"}
+// droppedOnError are the headers an errored empty response drops before
+// its headers are committed, whoever set them: the validators and the
+// expiry describe a representation the error response is not, so a CDN
+// or browser never revalidates or keeps it under them. Vary is kept: it
+// only narrows a cache key, so every value (bond's X-Inertia, CORS's
+// Origin, the handler's own) stays on the error response.
+var droppedOnError = [...]string{"ETag", "Last-Modified", "Expires"}
+
+// restrictiveDirectives are the Cache-Control directives an errored empty
+// response keeps, in the order restrictiveCacheControl lists them.
+var restrictiveDirectives = [...]string{"no-store", "no-cache", "private"}
+
+// restrictiveCacheControl returns the Cache-Control value an errored empty
+// response carries: every restrictive directive (no-store, no-cache,
+// private) that any value of any of the given headers lists, once each and
+// in that order, or "" when none does. A directive is matched by its name
+// (the part before any "="), ignoring case and surrounding space; every
+// other directive (public, max-age, s-maxage, immutable, must-revalidate
+// and the rest) is dropped, so the error response is never stored under a
+// permissive policy, while a restrictive one set before bond or inside it
+// always holds.
+func restrictiveCacheControl(values ...[]string) string {
+	var listed [len(restrictiveDirectives)]bool
+	for _, vs := range values {
+		for _, v := range vs {
+			for part := range strings.SplitSeq(v, ",") {
+				name, _, _ := strings.Cut(part, "=")
+				name = strings.TrimSpace(name)
+				for i, d := range restrictiveDirectives {
+					if strings.EqualFold(name, d) {
+						listed[i] = true
+					}
+				}
+			}
+		}
+	}
+	var b strings.Builder
+	for i, d := range restrictiveDirectives {
+		if !listed[i] {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(d)
+	}
+	return b.String()
+}
 
 // isSeeOtherMethod returns true for methods that should use 303 instead of 302.
 func isSeeOtherMethod(method string) bool {
@@ -179,8 +217,8 @@ func isSeeOtherMethod(method string) bool {
 // reference, so the handler's headers reach the wire only when the
 // middleware commits them: flush for a buffered response, commitHeader
 // for an errored empty one (the error response carries them, less the
-// handler's caching headers). An empty 200 answered with a redirect back
-// drops them.
+// validators and any permissive cache directive, see serveBuffered). An
+// empty 200 answered with a redirect back drops them.
 type responseBuffer struct {
 	header     http.Header
 	buf        bytes.Buffer

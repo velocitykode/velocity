@@ -188,7 +188,10 @@ func (h *Handler) WantsJSON(r *http.Request, err error) bool {
 
 // BeforeRender registers a hook run once, right before the pipeline's own
 // negotiated write, with the resolved status. It may set headers through rc
-// and returns the status to write; hooks chain in registration order.
+// and returns the status to write; hooks chain in registration order. An
+// answer other than the JSON body already carries
+// "Cache-Control: private, no-store" when the hooks run (unless the
+// error's own headers name a Cache-Control), so a hook can replace it.
 func (h *Handler) BeforeRender(fn func(rc RenderContext, err error, status int) int) {
 	if fn == nil {
 		return

@@ -15,8 +15,9 @@ import (
 // handler sets reach the connection only when the middleware commits
 // them: with the buffered response, or on an errored empty response,
 // where they ride on the error path's answer (a session Set-Cookie saved
-// before the error must reach the browser) less the handler's caching
-// headers. An empty 200 answered with a redirect back drops them.
+// before the error must reach the browser) less the validators and any
+// permissive cache directive. An empty 200 answered with a redirect back
+// drops them.
 
 func TestMiddlewareFunc_HandlerHeadersKeptOnErrorResponse(t *testing.T) {
 	b := setupBond(t)
@@ -109,10 +110,12 @@ func TestMiddlewareFunc_HandlerHeadersCommitOnSuccess(t *testing.T) {
 }
 
 // An errored empty response keeps the handler's cookie, its Vary values
-// and other headers but drops its caching headers, so the error answer is
-// never cached under the handler's directives. Caching headers set by
-// middleware that ran before bond stay exactly as that middleware set
-// them, whatever the handler did to them.
+// and other headers, but never a validator or a permissive cache policy:
+// ETag, Last-Modified and Expires are dropped whoever set them, and
+// Cache-Control keeps only the restrictive directives (no-store, no-cache,
+// private, in that order) set before bond or inside it, so the error
+// answer is never stored under the handler's directives while a privacy
+// policy set anywhere holds.
 func TestMiddlewareFunc_ErrorResponseDropsCachingHeaders(t *testing.T) {
 	handlerCaching := map[string]string{
 		"Cache-Control": "public, max-age=3600",
@@ -136,32 +139,71 @@ func TestMiddlewareFunc_ErrorResponseDropsCachingHeaders(t *testing.T) {
 			want: map[string][]string{},
 		},
 		{
-			name:    "OuterSetKept",
+			name:    "HandlerPublicDropped",
+			handler: func(h http.Header) { h.Set("Cache-Control", "public, max-age=60") },
+			want:    map[string][]string{},
+		},
+		{
+			name:    "OuterNoStoreKept",
+			outer:   map[string][]string{"Cache-Control": {"no-store"}},
+			handler: func(http.Header) {},
+			want:    map[string][]string{"Cache-Control": {"no-store"}},
+		},
+		{
+			name:    "OuterRestrictiveKeptExpiresDropped",
 			outer:   map[string][]string{"Cache-Control": {"private, no-store"}, "Expires": {"0"}},
 			handler: func(http.Header) {},
-			want:    map[string][]string{"Cache-Control": {"private, no-store"}, "Expires": {"0"}},
+			want:    map[string][]string{"Cache-Control": {"no-store, private"}},
 		},
 		{
-			name:    "OuterMultiValueKept",
+			name:    "OuterMultiValueMerged",
 			outer:   map[string][]string{"Cache-Control": {"private", "no-store"}},
 			handler: func(http.Header) {},
-			want:    map[string][]string{"Cache-Control": {"private", "no-store"}},
+			want:    map[string][]string{"Cache-Control": {"no-store, private"}},
 		},
 		{
-			name:  "OuterOverwrittenByHandlerRestored",
+			name:  "OuterOverwrittenByHandlerKept",
 			outer: map[string][]string{"Cache-Control": {"private, no-store"}},
 			handler: func(h http.Header) {
 				for k, v := range handlerCaching {
 					h.Set(k, v)
 				}
 			},
-			want: map[string][]string{"Cache-Control": {"private, no-store"}},
+			want: map[string][]string{"Cache-Control": {"no-store, private"}},
 		},
 		{
-			name:    "OuterDeletedByHandlerRestored",
+			name:    "OuterDeletedByHandlerKept",
 			outer:   map[string][]string{"Cache-Control": {"private, no-store"}},
 			handler: func(h http.Header) { h.Del("Cache-Control") },
-			want:    map[string][]string{"Cache-Control": {"private, no-store"}},
+			want:    map[string][]string{"Cache-Control": {"no-store, private"}},
+		},
+		{
+			name:    "InnerPrivateOverOuterPublic",
+			outer:   map[string][]string{"Cache-Control": {"public, max-age=3600"}},
+			handler: func(h http.Header) { h.Set("Cache-Control", "private") },
+			want:    map[string][]string{"Cache-Control": {"private"}},
+		},
+		{
+			name:    "InnerRestrictiveWithoutOuter",
+			handler: func(h http.Header) { h.Set("Cache-Control", "private, no-store") },
+			want:    map[string][]string{"Cache-Control": {"no-store, private"}},
+		},
+		{
+			name:    "DirectiveNameMatchedByCaseAndArgument",
+			outer:   map[string][]string{"Cache-Control": {"PUBLIC, Max-Age=600"}},
+			handler: func(h http.Header) { h.Set("Cache-Control", ` No-Cache="Set-Cookie" , must-revalidate`) },
+			want:    map[string][]string{"Cache-Control": {"no-cache"}},
+		},
+		{
+			name: "OuterValidatorsDropped",
+			outer: map[string][]string{
+				"Cache-Control": {"public, max-age=3600, immutable"},
+				"ETag":          {`"outer"`},
+				"Last-Modified": {"Mon, 01 Jan 2024 00:00:00 GMT"},
+				"Expires":       {"Mon, 01 Jan 2030 00:00:00 GMT"},
+			},
+			handler: func(http.Header) {},
+			want:    map[string][]string{},
 		},
 	}
 	for _, tt := range tests {
