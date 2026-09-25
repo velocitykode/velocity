@@ -548,6 +548,24 @@ func (r *VelocityRouterV2) Group(prefix string, fn ...func(Router)) Router {
 // Use adds middleware to the router.
 // Panics with *contract.RegistrationError if any middleware is nil.
 func (r *VelocityRouterV2) Use(middlewares ...MiddlewareFunc) Router {
+	r.checkMiddlewares(middlewares)
+	r.middlewares = append(r.middlewares, middlewares...)
+	return r
+}
+
+// UseFirst adds middleware to the front of the router's global list, so it
+// wraps every middleware added with Use, whether that was called before or
+// after. The given middlewares keep their order among themselves.
+// Panics with *contract.RegistrationError if any middleware is nil.
+func (r *VelocityRouterV2) UseFirst(middlewares ...MiddlewareFunc) Router {
+	r.checkMiddlewares(middlewares)
+	r.middlewares = slices.Concat(middlewares, r.middlewares)
+	return r
+}
+
+// checkMiddlewares panics with *contract.RegistrationError on a nil
+// middleware and warns when the router is already serving.
+func (r *VelocityRouterV2) checkMiddlewares(middlewares []MiddlewareFunc) {
 	for i, mw := range middlewares {
 		if mw == nil {
 			panic(contract.NewRegistrationError("router", fmt.Sprintf("nil middleware at index %d", i)))
@@ -556,8 +574,6 @@ func (r *VelocityRouterV2) Use(middlewares ...MiddlewareFunc) Router {
 	if r.frozen {
 		log.Println("velocity: middleware registered after server start, this middleware will not be applied")
 	}
-	r.middlewares = append(r.middlewares, middlewares...)
-	return r
 }
 
 // Prefix sets a prefix for all routes
@@ -1499,9 +1515,9 @@ type RouteInfo struct {
 
 // AllRoutes returns all registered routes by walking the group definition tree
 // and expanding resource routes. Every route's Middleware starts with the
-// global chain (Router.Use), then group middleware outermost-first, then
-// per-route middleware; it is always non-nil so JSON output stays a stable
-// array.
+// global chain (Router.UseFirst and Router.Use, outermost first), then
+// group middleware outermost-first, then per-route middleware; it is
+// always non-nil so JSON output stays a stable array.
 func (r *VelocityRouterV2) AllRoutes() []RouteInfo {
 	global := make([]string, 0, len(r.middlewares))
 	for _, mw := range r.middlewares {

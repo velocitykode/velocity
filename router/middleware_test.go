@@ -639,3 +639,29 @@ func TestRouteMiddlewareWithRouterMiddleware(t *testing.T) {
 		}
 	}
 }
+
+// TestUseFirst_WrapsUseMiddleware asserts middleware added with UseFirst
+// wraps every middleware added with Use, whichever was called first, keeps
+// its given order within one call, and goes outside earlier UseFirst calls.
+func TestUseFirst_WrapsUseMiddleware(t *testing.T) {
+	var order []string
+	mark := func(name string) MiddlewareFunc {
+		return func(next HandlerFunc) HandlerFunc {
+			return func(c *Context) error {
+				order = append(order, name)
+				return next(c)
+			}
+		}
+	}
+	r := New()
+	r.Use(mark("a"))
+	r.UseFirst(mark("s1"), mark("s2"))
+	r.Use(mark("b"))
+	r.UseFirst(mark("s0"))
+	r.Get("/", func(c *Context) error { return c.String(http.StatusOK, "ok") })
+
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	if got, want := strings.Join(order, ","), "s0,s1,s2,a,b"; got != want {
+		t.Errorf("middleware order = %s, want %s", got, want)
+	}
+}

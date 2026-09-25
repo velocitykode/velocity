@@ -423,6 +423,13 @@ func validateSessionStoreForProduction(a *App) error {
 // default auth scheme is a *SessionScheme. The fix for security audit H-05
 // (CONFIRMED HIGH: "No save-at-end session middleware installed").
 //
+// It goes to the front of the global list (Router.UseFirst), ahead of
+// middleware the app added with Router.Use before Bootstrap. A buffering
+// middleware outside it (bond's, the router's Timeout) would hide the
+// response writer's pre-commit hook, so the session would save as soon as
+// the handler returned and miss what the error page writes afterwards,
+// such as a drained flash.
+//
 // Without this hook, every ctx.Auth().Session(r).Put / Flash call inside
 // a handler is silently dropped because the cookie session store is only
 // flushed by an explicit Session.Save(w). The middleware supplies that
@@ -452,7 +459,7 @@ func installSessionMiddleware(a *App) {
 	if !ok {
 		return
 	}
-	a.Router.Use(sg.SessionMiddleware())
+	a.Router.UseFirst(sg.SessionMiddleware())
 }
 
 // installCSRFTokenRotator wires the final s.CSRF instance (post chain
