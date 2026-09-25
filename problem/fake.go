@@ -3,7 +3,6 @@ package problem
 import (
 	"io"
 	"net/http"
-	"strings"
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
@@ -134,8 +133,9 @@ func (f *FakeHandler) ContextUsing(func(error, *ErrorContext) map[string]any) {}
 // JSONWhen is a no-op.
 func (f *FakeHandler) JSONWhen(func(*http.Request, error) bool) {}
 
-// WantsJSON reports true in API mode, for a path under an API prefix, or
-// when contract.WantsJSON holds for r.
+// WantsJSON reports true in API mode, for a path under an API prefix
+// (matched as Handler.SetAPIPrefixes describes), or when
+// contract.WantsJSON holds for r.
 func (f *FakeHandler) WantsJSON(r *http.Request, _ error) bool {
 	f.mu.Lock()
 	apiMode, prefixes := f.apiMode, f.apiPrefixes
@@ -148,7 +148,7 @@ func (f *FakeHandler) WantsJSON(r *http.Request, _ error) bool {
 	}
 	if r.URL != nil {
 		for _, prefix := range prefixes {
-			if prefix != "" && strings.HasPrefix(r.URL.Path, prefix) {
+			if underAPIPrefix(r.URL.Path, prefix) {
 				return true
 			}
 		}

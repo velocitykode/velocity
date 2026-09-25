@@ -87,7 +87,11 @@ type ErrorHandler interface {
 	SetAPIMode(enabled bool)
 	// IsAPIMode reports whether API mode is on.
 	IsAPIMode() bool
-	// SetAPIPrefixes sets the path prefixes whose responses render as JSON.
+	// SetAPIPrefixes sets the path prefixes whose responses render as
+	// JSON, matched by path segment ("/api" covers "/api/users", not
+	// "/apiary"; a prefix ending in "/" covers every path starting with
+	// it). It replaces the whole list, including prefixes registered by
+	// API route groups; append to GetAPIPrefixes() to keep them.
 	SetAPIPrefixes(prefixes ...string)
 	// GetAPIPrefixes returns the configured API path prefixes.
 	GetAPIPrefixes() []string

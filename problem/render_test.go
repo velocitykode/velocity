@@ -333,6 +333,53 @@ func TestRender_ClientGoneWritesNothing(t *testing.T) {
 	}
 }
 
+func TestUnderAPIPrefix(t *testing.T) {
+	tests := []struct {
+		name   string
+		path   string
+		prefix string
+		want   bool
+	}{
+		{name: "exact", path: "/api", prefix: "/api", want: true},
+		{name: "below", path: "/api/users", prefix: "/api", want: true},
+		{name: "sibling word", path: "/apiary", prefix: "/api", want: false},
+		{name: "sibling with suffix", path: "/api-v2/users", prefix: "/api", want: false},
+		{name: "shorter path", path: "/ap", prefix: "/api", want: false},
+		{name: "trailing slash prefix below", path: "/api/users", prefix: "/api/", want: true},
+		{name: "trailing slash prefix exact", path: "/api/", prefix: "/api/", want: true},
+		{name: "trailing slash prefix misses bare", path: "/api", prefix: "/api/", want: false},
+		{name: "root prefix", path: "/anything", prefix: "/", want: true},
+		{name: "empty prefix", path: "/api", prefix: "", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := underAPIPrefix(tt.path, tt.prefix); got != tt.want {
+				t.Errorf("underAPIPrefix(%q, %q) = %v, want %v", tt.path, tt.prefix, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFakeHandler_WantsJSON_APIPrefixSegments(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "under prefix", path: "/api/users", want: true},
+		{name: "sibling word", path: "/apiary", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := NewFakeHandler()
+			f.SetAPIPrefixes("/api")
+			if got := f.WantsJSON(httptest.NewRequest(http.MethodGet, tt.path, nil), nil); got != tt.want {
+				t.Errorf("WantsJSON(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRender_Negotiation(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -349,6 +396,11 @@ func TestRender_Negotiation(t *testing.T) {
 		{name: "APIMode", setup: func(h *Handler) { h.SetAPIMode(true) }, path: "/x", wantContent: ProblemTypeContent},
 		{name: "APIPrefix", setup: func(h *Handler) { h.SetAPIPrefixes("/v1/") }, path: "/v1/users", wantContent: ProblemTypeContent},
 		{name: "APIPrefixMiss", setup: func(h *Handler) { h.SetAPIPrefixes("/v1/") }, path: "/v2/users", wantContent: "text/html; charset=utf-8"},
+		{name: "APIPrefixSegmentExact", setup: func(h *Handler) { h.SetAPIPrefixes("/api") }, path: "/api", wantContent: ProblemTypeContent},
+		{name: "APIPrefixSegmentBelow", setup: func(h *Handler) { h.SetAPIPrefixes("/api") }, path: "/api/users", wantContent: ProblemTypeContent},
+		{name: "APIPrefixSegmentNotSibling", setup: func(h *Handler) { h.SetAPIPrefixes("/api") }, path: "/apiary", wantContent: "text/html; charset=utf-8"},
+		{name: "APIPrefixTrailingSlashPlain", setup: func(h *Handler) { h.SetAPIPrefixes("/api/v") }, path: "/api/v2/users", wantContent: "text/html; charset=utf-8"},
+		{name: "APIPrefixTrailingSlashKeepsHasPrefix", setup: func(h *Handler) { h.SetAPIPrefixes("/files/") }, path: "/files/", wantContent: ProblemTypeContent},
 		{
 			name:        "JSONWhenDecidesTrue",
 			setup:       func(h *Handler) { h.JSONWhen(func(r *http.Request, _ error) bool { return r.URL.Path == "/x" }) },

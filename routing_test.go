@@ -324,8 +324,8 @@ func TestRouting_MiddlewareExecutionOrder(t *testing.T) {
 // TestRouting_API_PrefixAnswersProblemJSON drives unmatched paths through a
 // bootstrapped app over a real server: every request under a Routing.API
 // prefix answers problem+json whatever its Accept header (HEAD with the
-// same headers and no body), while a path outside every prefix still
-// negotiates HTML for a browser.
+// same headers and no body), while a path outside every prefix, "/apiary"
+// beside "/api" included, still negotiates HTML for a browser.
 func TestRouting_API_PrefixAnswersProblemJSON(t *testing.T) {
 	a, err := NewTestApp()
 	if err != nil {
@@ -358,6 +358,7 @@ func TestRouting_API_PrefixAnswersProblemJSON(t *testing.T) {
 		{name: "head", method: http.MethodHead, path: "/api/nope", accept: "text/html", wantContentType: problem.ProblemTypeContent, wantEmptyBody: true},
 		{name: "second group", method: http.MethodGet, path: "/v2/nope", accept: "text/html", wantContentType: problem.ProblemTypeContent},
 		{name: "outside every prefix", method: http.MethodGet, path: "/nope", accept: "text/html", wantContentType: "text/html; charset=utf-8"},
+		{name: "sibling of a prefix", method: http.MethodGet, path: "/apiary", accept: "text/html", wantContentType: "text/html; charset=utf-8"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -743,12 +743,23 @@ func negotiatesJSON(s *snapshot, r *http.Request, err error, fallback func() boo
 	}
 	if r != nil && r.URL != nil {
 		for _, prefix := range s.apiPrefixes {
-			if prefix != "" && strings.HasPrefix(r.URL.Path, prefix) {
+			if underAPIPrefix(r.URL.Path, prefix) {
 				return true, false
 			}
 		}
 	}
 	return fallback(), true
+}
+
+// underAPIPrefix reports whether path lies under the API prefix prefix,
+// segment by segment: "/api" matches "/api" and "/api/users" but not
+// "/apiary". A prefix ending in "/" matches every path starting with it.
+// An empty prefix matches nothing.
+func underAPIPrefix(path, prefix string) bool {
+	if prefix == "" || !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	return len(path) == len(prefix) || strings.HasSuffix(prefix, "/") || path[len(prefix)] == '/'
 }
 
 // varyOnNegotiation lists in the response's Vary header the request

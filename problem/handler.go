@@ -141,7 +141,8 @@ func WithAPIMode(enabled bool) Option {
 	return func(h *Handler) { h.apiMode = enabled }
 }
 
-// WithAPIPrefixes sets the path prefixes whose responses render as JSON.
+// WithAPIPrefixes sets the path prefixes whose responses render as JSON,
+// matched as SetAPIPrefixes describes.
 func WithAPIPrefixes(prefixes ...string) Option {
 	return func(h *Handler) { h.apiPrefixes = append([]string(nil), prefixes...) }
 }
@@ -249,6 +250,16 @@ func (h *Handler) IsAPIMode() bool {
 }
 
 // SetAPIPrefixes sets the path prefixes whose responses render as JSON.
+// A prefix matches by path segment: "/api" covers "/api" and "/api/users"
+// but not "/apiary"; a prefix ending in "/" covers every path starting
+// with it; an empty prefix covers nothing.
+//
+// It replaces the whole list, including the prefixes chain.Routing.API
+// registered. App.Errors callbacks run after routes are registered, so an
+// application that wants its own prefixes beside those appends to
+// GetAPIPrefixes():
+//
+//	h.SetAPIPrefixes(append(h.GetAPIPrefixes(), "/rpc")...)
 func (h *Handler) SetAPIPrefixes(prefixes ...string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

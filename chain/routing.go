@@ -29,12 +29,14 @@ func (r *Routing) Web(fn func(router.Router)) {
 
 // API creates a route group with the given prefix and API middleware
 // applied, and registers prefix as an API prefix on the application's
-// error handler (Services.Errors): every request whose path starts with
-// prefix answers its errors as problem+json whatever its Accept header,
-// unless a JSONWhen predicate on the handler decides instead. The prefix
-// is added as given, once, beside any prefixes already configured; an
-// empty prefix registers nothing. With no error handler (a standalone
-// router) nothing is registered.
+// error handler (Services.Errors): every request under prefix (the prefix
+// itself or a path below it, matched by segment so "/api" does not cover
+// "/apiary") answers its errors as problem+json whatever its Accept
+// header, unless a JSONWhen predicate on the handler decides instead. The
+// prefix is added as given, once, beside any prefixes already configured;
+// an empty prefix registers nothing. With no error handler (a standalone
+// router) nothing is registered. A later SetAPIPrefixes call on the
+// handler replaces the list, these prefixes included.
 func (r *Routing) API(prefix string, fn func(router.Router)) {
 	r.registerAPIPrefix(prefix)
 	g := r.router.Group(prefix, fn)
