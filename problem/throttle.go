@@ -2,7 +2,6 @@ package problem
 
 import (
 	"math/rand/v2"
-	"reflect"
 	"sync"
 	"time"
 
@@ -111,11 +110,8 @@ func (t *throttleBuckets) sweep(now time.Time) {
 	}
 }
 
-// throttleRuleID identifies a rule's buckets: its Key, or for an anonymous
-// rule the code pointer of its matcher.
+// throttleRuleID identifies a rule's buckets: its Key. AddThrottleRule
+// gives every rule it stores a Key, an anonymous rule one of its own.
 func throttleRuleID(rule contract.ThrottleRule) any {
-	if rule.Key != nil {
-		return rule.Key
-	}
-	return reflect.ValueOf(rule.Match).Pointer()
+	return rule.Key
 }

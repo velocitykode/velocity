@@ -117,16 +117,28 @@ func (h *Handler) AddLevelRule(rule contract.LevelRule) {
 }
 
 // AddThrottleRule registers report throttling for a matched error. The
-// first matching rule throttles.
+// first matching rule throttles. A rule without a usable Key is anonymous:
+// it never replaces another rule, and it gets a Key of its own (see
+// anonymousThrottleKey), so its MaxPerWindow buckets are its own even when
+// another rule was built from the same function literal.
 func (h *Handler) AddThrottleRule(rule contract.ThrottleRule) {
 	if rule.Match == nil {
 		return
 	}
 	rule.Key = ruleKey(rule.Key)
+	if rule.Key == nil {
+		rule.Key = new(anonymousThrottleKey)
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.throttleRules = upsert(h.throttleRules, rule, throttleKey)
 }
+
+// anonymousThrottleKey is the Key of a throttle rule registered without
+// one: AddThrottleRule allocates one per registration, and its buckets are
+// keyed by that pointer. It is not zero-size, so two allocations never
+// share an address.
+type anonymousThrottleKey struct{ _ byte }
 
 // IgnoreIf registers a predicate; an error for which it returns true is not
 // reported.
