@@ -529,19 +529,48 @@ var ErrBindExtraData = errors.New("velocity/router: request body contains data o
 
 // Bind parses the request body as JSON into the given struct. The body must
 // be exactly one JSON value, optionally surrounded by whitespace; anything
-// after it fails with ErrBindExtraData. An empty body returns io.EOF.
+// after it fails with ErrBindExtraData (answered 400). A body the client
+// got wrong returns a 400 *contract.HTTPError with the decoder error as its
+// Cause: "empty request body" for an empty or whitespace-only body (Cause
+// io.EOF), "malformed request body" for a syntax error, a value of the
+// wrong type, or a body cut short. A body over the limit returns the
+// *http.MaxBytesError (answered 413). BindAuto and BindValid bind JSON
+// through Bind.
 func (c *Context) Bind(v interface{}) error {
 	if c.Get(bodyLimitKey) == nil {
 		c.Request.Body = http.MaxBytesReader(c.Response, c.Request.Body, DefaultMaxBodySize)
 	}
 	dec := json.NewDecoder(c.Request.Body)
 	if err := dec.Decode(v); err != nil {
-		return err
+		return bindDecodeErr(err)
 	}
 	// A second Decode, not dec.More(): More reports false at a stray ']' or
 	// '}', which would let `{"a":1}]` through.
 	var extra json.RawMessage
 	return bindRemainderErr(dec.Decode(&extra))
+}
+
+// bindDecodeErr maps the error from decoding the bound JSON value: a body
+// the client got wrong (empty, a syntax error, a value of the wrong type, a
+// body cut short) becomes a 400 with the decoder error as its Cause. Any
+// other error, the *http.MaxBytesError of a body over the limit included,
+// passes through unchanged.
+func bindDecodeErr(err error) error {
+	var (
+		tooLarge  *http.MaxBytesError
+		syntaxErr *json.SyntaxError
+		typeErr   *json.UnmarshalTypeError
+	)
+	switch {
+	case errors.As(err, &tooLarge):
+		return err
+	case errors.Is(err, io.EOF):
+		return contract.NewHTTPError(http.StatusBadRequest, "empty request body").WithCause(err).WithOrigin(1)
+	case errors.Is(err, io.ErrUnexpectedEOF), errors.As(err, &syntaxErr), errors.As(err, &typeErr):
+		return contract.NewHTTPError(http.StatusBadRequest, "malformed request body").WithCause(err).WithOrigin(1)
+	default:
+		return err
+	}
 }
 
 // bindRemainderErr maps the error from reading past the bound value: io.EOF

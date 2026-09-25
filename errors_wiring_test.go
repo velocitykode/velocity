@@ -1132,3 +1132,56 @@ func TestRequestFailed_DecidedByAnswer_ThroughApp(t *testing.T) {
 		})
 	}
 }
+
+// TestBindClientErrors_ThroughApp drives JSON bodies the client got wrong
+// into a c.Bind handler through a real app's router boundary and error
+// pipeline: each answers 400 problem+json with the client message, is not
+// reported and dispatches no RequestFailed.
+func TestBindClientErrors_ThroughApp(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantDetail string
+	}{
+		{name: "malformed json", body: `{"name":`, wantDetail: "malformed request body"},
+		{name: "syntax error", body: `{bad}`, wantDetail: "malformed request body"},
+		{name: "wrong type", body: `{"name":5}`, wantDetail: "malformed request body"},
+		{name: "empty body", body: ``, wantDetail: "empty request body"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := events.NewFakeDispatcher()
+			a, logs, rec := newPipelineApp(t, WithFakeEvents(fake))
+			a.Services.Errors.SetDebug(false)
+			a.Router.Post("/bind", bindHandler)
+
+			req := httptest.NewRequest(http.MethodPost, "/bind", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json")
+			w := httptest.NewRecorder()
+			a.Router.ServeHTTP(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body %q)", w.Code, w.Body.String())
+			}
+			if got := w.Header().Get("Content-Type"); got != problem.ProblemTypeContent {
+				t.Errorf("Content-Type = %q, want %q", got, problem.ProblemTypeContent)
+			}
+			var doc struct {
+				Detail string `json:"detail"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+				t.Fatalf("body is not JSON: %v (%q)", err, w.Body.String())
+			}
+			if doc.Detail != tt.wantDetail {
+				t.Errorf("detail = %q, want %q", doc.Detail, tt.wantDetail)
+			}
+			if rec.count() != 0 || logs.count("error") != 0 {
+				t.Errorf("reports = %d, error logs = %d, want 0 and 0", rec.count(), logs.count("error"))
+			}
+			if err := fake.AssertNotDispatched(&router.RequestFailed{}); err != nil {
+				t.Errorf("RequestFailed: %v", err)
+			}
+		})
+	}
+}

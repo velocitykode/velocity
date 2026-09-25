@@ -1,6 +1,7 @@
 package router
 
 import (
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"io"
@@ -8,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func bindTestContext(body, contentType string) *Context {
@@ -56,12 +59,79 @@ func TestContext_Bind_SingleValue(t *testing.T) {
 	}
 }
 
-func TestContext_Bind_MalformedStaysSyntaxError(t *testing.T) {
-	c := bindTestContext(`{"name":`, "application/json")
+// TestContext_Bind_ClientErrors asserts a JSON body the client got wrong
+// binds to a 400 carrying the decoder error, through Bind and the binders
+// that reach it, while extra data stays ErrBindExtraData.
+func TestContext_Bind_ClientErrors(t *testing.T) {
+	type payload struct {
+		Name string `json:"name"`
+	}
+	isSyntax := func(err error) bool {
+		var se *json.SyntaxError
+		return errors.As(err, &se)
+	}
+	isType := func(err error) bool {
+		var te *json.UnmarshalTypeError
+		return errors.As(err, &te)
+	}
+	isUnexpectedEOF := func(err error) bool { return errors.Is(err, io.ErrUnexpectedEOF) }
+	isEOF := func(err error) bool { return errors.Is(err, io.EOF) }
+	binders := []struct {
+		name string
+		bind func(c *Context, v any) error
+	}{
+		{"Bind", func(c *Context, v any) error { return c.Bind(v) }},
+		{"BindAuto", func(c *Context, v any) error { return c.BindAuto(v) }},
+		{"BindValid", func(c *Context, v any) error { return c.BindValid(v) }},
+	}
+	tests := []struct {
+		name        string
+		body        string
+		wantMessage string
+		wantCause   func(error) bool
+	}{
+		{"syntax error", `{bad}`, "malformed request body", isSyntax},
+		{"wrong type", `{"name":5}`, "malformed request body", isType},
+		{"cut short", `{"name":`, "malformed request body", isUnexpectedEOF},
+		{"empty body", ``, "empty request body", isEOF},
+		{"whitespace only body", "  \n ", "empty request body", isEOF},
+	}
+	for _, b := range binders {
+		for _, tt := range tests {
+			t.Run(b.name+"/"+tt.name, func(t *testing.T) {
+				c := bindTestContext(tt.body, "application/json")
+				var p payload
+				err := b.bind(c, &p)
+				var he *contract.HTTPError
+				if !errors.As(err, &he) {
+					t.Fatalf("error = %T %v, want *contract.HTTPError", err, err)
+				}
+				if he.Status != http.StatusBadRequest || he.Message != tt.wantMessage {
+					t.Errorf("HTTPError = %d %q, want 400 %q", he.Status, he.Message, tt.wantMessage)
+				}
+				if !tt.wantCause(he.Cause) {
+					t.Errorf("cause = %T %v, want the decoder error", he.Cause, he.Cause)
+				}
+			})
+		}
+	}
+}
+
+// TestContext_Bind_OverLimitStaysMaxBytesError asserts a body over the
+// limit is not turned into a 400: Bind returns the *http.MaxBytesError.
+func TestContext_Bind_OverLimitStaysMaxBytesError(t *testing.T) {
+	body := `{"name":"` + strings.Repeat("a", 64) + `"}`
+	req := httptest.NewRequest("POST", "/test", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	c := NewContext(w, req)
+	c.Request.Body = http.MaxBytesReader(w, c.Request.Body, 20)
+	c.Set(bodyLimitKey, true)
+
 	var p map[string]any
 	err := c.Bind(&p)
-	if err == nil || errors.Is(err, ErrBindExtraData) {
-		t.Fatalf("expected a decode error distinct from ErrBindExtraData, got %v", err)
+	var tooLarge *http.MaxBytesError
+	if !errors.As(err, &tooLarge) || error(tooLarge) != err {
+		t.Fatalf("error = %T %v, want the *http.MaxBytesError itself", err, err)
 	}
 }
 
