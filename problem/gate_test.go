@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
+	"github.com/velocitykode/velocity/router"
 )
 
 var errSentinel = errors.New("sentinel")
@@ -755,6 +758,102 @@ func TestHandleRequest_ConsumerRecoveredPanic(t *testing.T) {
 				t.Errorf("body leaks the panic value's message: %q", w.Body.String())
 			}
 		})
+	}
+}
+
+// TestEntryPoints_MapRuleKeepsRecoveredPanic asserts that HandleRequest,
+// Report, Render and HandleConsole decide an error is a recovered panic
+// before the user map rules run: a MapIs rule reaching the panic value
+// through Unwrap and returning an error without it (a 404 here) leaves a
+// recovered panic, answered with a 500 (Render never reports, and a console
+// error has no status) and reported once with ctx.Recovered set, over the
+// router's panic error, the one async.FromRecovered builds and a
+// consumer's own contract.RecoveredPanic, none of them flagged in ctx by
+// the caller.
+func TestEntryPoints_MapRuleKeepsRecoveredPanic(t *testing.T) {
+	errMissing := errors.New("invoice missing")
+	sources := []struct {
+		name string
+		err  func() error
+	}{
+		{name: "RouterPanicError", err: func() error { return &router.PanicError{Err: errMissing} }},
+		{name: "AsyncFromRecovered", err: func() error { return async.FromRecovered(errMissing) }},
+		{name: "ConsumerRecoveredPanic", err: func() error { return &consumerRecovered{err: errMissing} }},
+	}
+	entries := []struct {
+		name        string
+		run         func(t *testing.T, h *Handler, err error, ctx *ErrorContext) (status int)
+		wantStatus  int // 0: the entry point renders nothing
+		wantReports int
+	}{
+		{
+			name: "HandleRequest",
+			run: func(_ *testing.T, h *Handler, err error, ctx *ErrorContext) int {
+				rc, w := newRC(http.MethodGet, "/invoices/7", "Accept", "application/json")
+				h.HandleRequest(rc, err, ctx)
+				return w.Code
+			},
+			wantStatus: http.StatusInternalServerError, wantReports: 1,
+		},
+		{
+			name: "Report",
+			run: func(_ *testing.T, h *Handler, err error, ctx *ErrorContext) int {
+				h.Report(err, ctx)
+				return 0
+			},
+			wantReports: 1,
+		},
+		{
+			name: "Render",
+			run: func(_ *testing.T, h *Handler, err error, ctx *ErrorContext) int {
+				rc, w := newRC(http.MethodGet, "/invoices/7", "Accept", "application/json")
+				h.Render(rc, err, ctx)
+				return w.Code
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "HandleConsole",
+			run: func(t *testing.T, h *Handler, err error, _ *ErrorContext) int {
+				if code := h.HandleConsole(io.Discard, err); code != 1 {
+					t.Errorf("exit code = %d, want 1", code)
+				}
+				return 0
+			},
+			wantReports: 1,
+		},
+	}
+	for _, src := range sources {
+		for _, entry := range entries {
+			t.Run(src.name+"_"+entry.name, func(t *testing.T) {
+				h, rep, _ := newTestHandler()
+				mapped := 0
+				MapIs(h, errMissing, func(error) error {
+					mapped++
+					return NotFound("invoice not found")
+				})
+				ctx := NewErrorContext()
+				status := entry.run(t, h, src.err(), ctx)
+
+				if mapped != 1 {
+					t.Fatalf("map rule ran %d times, want 1", mapped)
+				}
+				if status != entry.wantStatus {
+					t.Errorf("status = %d, want %d", status, entry.wantStatus)
+				}
+				if rep.count() != entry.wantReports {
+					t.Fatalf("reports = %d, want %d", rep.count(), entry.wantReports)
+				}
+				if entry.wantReports > 0 {
+					if reported, _ := rep.last(); reported == nil || !reported.Recovered {
+						t.Errorf("reported ctx = %+v, want Recovered", reported)
+					}
+				}
+				if entry.name != "HandleConsole" && !ctx.Recovered {
+					t.Error("ctx.Recovered = false, want true")
+				}
+			})
+		}
 	}
 }
 

@@ -22,7 +22,10 @@ import (
 //     contract.Handled cause is reported but never rendered. A recovered
 //     panic is a reported 500 whatever its value: a response-written or
 //     report-once marker the panic value carries counts for nothing.
-//  2. User map rules replace the error for both report and render.
+//  2. User map rules replace the error for both report and render. Whether
+//     the error is a recovered panic is decided first, on the error as it
+//     arrived (see markRecovered), so a recovered panic stays a reported
+//     500 whatever a map rule returns for it.
 //  3. The report gate (see ShouldReport), then SelfReporting, ReportFor
 //     rules, context merge, level selection and the reporters.
 //  4. Rendering: nothing when the response is already written; a
@@ -52,6 +55,7 @@ func (h *Handler) HandleRequest(rc RenderContext, err error, ctx *ErrorContext) 
 	if s.debug && ctx.StackTrace == nil {
 		ctx.StackTrace = contract.CaptureStackTrace(1)
 	}
+	markRecovered(err, ctx)
 
 	marked := outsidePanic(err, ctx, contract.IsReported)
 	written := false
@@ -81,8 +85,9 @@ func (h *Handler) HandleRequest(rc RenderContext, err error, ctx *ErrorContext) 
 // report-once marker is read from err before user map rules apply, as in
 // HandleRequest, so a map rule that builds a new error cannot drop it: a
 // marked err (outside the value of a recovered panic) is not reported.
-// Otherwise the mapped error is reported. A nil ctx is replaced by a new
-// one.
+// Otherwise the mapped error is reported; a recovered panic is decided on
+// err before the map rules (see markRecovered) and always reported. A nil
+// ctx is replaced by a new one.
 func (h *Handler) Report(err error, ctx *ErrorContext) {
 	if err == nil {
 		return
@@ -94,6 +99,7 @@ func (h *Handler) Report(err error, ctx *ErrorContext) {
 	if outsidePanic(err, ctx, contract.IsReported) {
 		return
 	}
+	markRecovered(err, ctx)
 	h.report(s, h.applyMap(s, err), ctx, nil)
 }
 
@@ -102,13 +108,14 @@ func (h *Handler) Report(err error, ctx *ErrorContext) {
 // written (a bare contract.ErrResponseWritten or a contract.Handled value)
 // writes nothing, checked before the map rules; a marker the value of a
 // recovered panic carries counts for nothing, so that panic still renders
-// its 500.
+// its 500, whatever a map rule returns for it (see markRecovered).
 func (h *Handler) Render(rc RenderContext, err error, ctx *ErrorContext) {
 	if err == nil || rc == nil || outsidePanic(err, ctx, contract.IsResponseWritten) {
 		return
 	}
 	s := h.snap()
 	ctx = fillRequestContext(ctx, rc, s.trustedProxies)
+	markRecovered(err, ctx)
 	h.render(s, rc, h.applyMap(s, err), ctx)
 }
 
@@ -145,6 +152,20 @@ func (h *Handler) applyMap(s *snapshot, err error) (out error) {
 		return err
 	}
 	return err
+}
+
+// markRecovered sets ctx.Recovered when err came from a recovered panic
+// (see isRecovered). The entry points call it on the error as it arrived,
+// before the user map rules, as the router boundary decides it: MapIs and
+// MapFor reach the panic value through Unwrap, so a rule can replace the
+// panic with an error that no longer carries it, and the report gate and
+// the render stage must still see a recovered panic (reported, answered
+// with a 500). Marker checks on err give the same answer before and after
+// it, because err itself carries the panic when ctx did not flag it.
+func markRecovered(err error, ctx *ErrorContext) {
+	if isRecovered(err, ctx) {
+		ctx.Recovered = true
+	}
 }
 
 // isRecovered reports whether err came from a recovered panic: ctx flags
