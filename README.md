@@ -92,7 +92,7 @@ func main() {
         Routes(routes.Register).            // your route definitions
         Events(app.Events(v.Log)).          // your event listeners
         Schedule(schedule.Configure).       // your scheduled jobs
-        Exceptions(app.ExceptionHandler).   // optional: configure the error handler
+        Errors(app.Errors).                 // optional: add rules to the error handler
         Run(); err != nil {                 // serves HTTP, or runs a `./vel ...` command
         log.Fatal(err)
     }
@@ -112,7 +112,7 @@ v.Router.Post("/signup", func(c *router.Context) error {
         "email": {validation.Required(), validation.Email()},
         "name":  {validation.Required()},
     }); err != nil {
-        return err // errors and old input are flashed; redirect already written
+        return err // the error pipeline answers: 422 problem+json, or flash and redirect back
     }
 
     var input struct {
@@ -120,7 +120,7 @@ v.Router.Post("/signup", func(c *router.Context) error {
         Name  string `json:"name"`
     }
     if err := c.Bind(&input); err != nil {
-        return c.BadRequest(err.Error())
+        return problem.BadRequest("invalid signup payload").WithCause(err)
     }
 
     user, err := models.User{}.Create(ctx, map[string]any{
@@ -140,6 +140,12 @@ v.Router.Post("/signup", func(c *router.Context) error {
 ```
 
 Validation, ORM, queue, and router — designed to work together.
+
+Handlers return errors rather than writing error responses. The error
+pipeline reports each failure once and renders one answer that fits the
+request: `application/problem+json` for JSON clients, an error page for
+browsers, and, when a view engine is wired, a failed validation flashes its
+errors and old input and redirects back.
 
 ## Why Velocity
 
