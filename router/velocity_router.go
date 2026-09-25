@@ -1279,15 +1279,19 @@ func (r *VelocityRouterV2) dispatchRequestFailed(req *http.Request, meta request
 }
 
 // failureOf decides RequestFailed for a handler error err, classified
-// into f. A bare contract.ErrResponseWritten is a deliberate response and
-// fires nothing; a contract.Handled value fires with its cause. A marker
-// the value of a recovered panic carries counts for nothing (see
-// errorFacts.markedWritten). The event fires only for a recovered panic
-// (a contract.RecoveredPanic in the chain, such as a *PanicError the
-// Timeout middleware forwarded; only a *PanicError carries a raw stack),
-// an error resolving to status 500 or above, or an error naming no
-// status. 4xx outcomes are responses, not failures.
-func failureOf(err error, f *errorFacts) requestFailure {
+// into f, once the boundary has answered it through rw. A bare
+// contract.ErrResponseWritten is a deliberate response and fires nothing;
+// a contract.Handled value fires with its cause. A marker the value of a
+// recovered panic carries counts for nothing (see
+// errorFacts.markedWritten). The event fires for a recovered panic (a
+// contract.RecoveredPanic in the chain, such as a *PanicError the Timeout
+// middleware forwarded; only a *PanicError carries a raw stack), for a
+// response whose status rw recorded as 500 or above, and, when nothing
+// was written, for an error that names no status below 500. The status
+// the response went out with decides, not the error as the handler
+// returned it: an error the error handler maps to a 4xx (a not-found
+// sentinel, an application map rule) is a response, not a failure.
+func failureOf(err error, f *errorFacts, rw *responseWriter) requestFailure {
 	if f.markedWritten(err, false) {
 		cause := contract.HandledCause(err)
 		if cause == nil {
@@ -1304,6 +1308,12 @@ func failureOf(err error, f *errorFacts) requestFailure {
 		}
 		return failure
 	}
+	if rw.Committed() {
+		if rw.Status() < http.StatusInternalServerError {
+			return requestFailure{}
+		}
+		return failure
+	}
 	if status, _, named := f.answer(); named && status < http.StatusInternalServerError {
 		return requestFailure{}
 	}
@@ -1315,7 +1325,8 @@ func failureOf(err error, f *errorFacts) requestFailure {
 // the request panicked (a returned error whose chain holds a
 // contract.RecoveredPanic counts as recovered, such as a *PanicError the
 // Timeout middleware forwarded), the RequestFailed decision it returns
-// for the caller to dispatch, and on the default path the status,
+// for the caller to dispatch (taken once the response is answered, see
+// failureOf), and on the default path the status,
 // headers, log level and body. A bare contract.ErrResponseWritten outside a recovered
 // panic ends here: the response was written deliberately and there is
 // nothing to report; a recovered panic is a 500 whatever its value (an
@@ -1344,12 +1355,8 @@ func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err err
 			info.StackTrace = pe.Trace
 		}
 	}
-	var failure requestFailure
-	if r.eventDispatcher != nil {
-		failure = failureOf(err, &f)
-	}
 	if f.markedWritten(err, info.Recovered) && contract.HandledCause(err) == nil {
-		return failure
+		return requestFailure{}
 	}
 	info.Committed = rw.Committed()
 	ctx.Response = rw
@@ -1363,14 +1370,17 @@ func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err err
 			info.SpanID = trace.GetSpanID(req.Context())
 		}
 		fn(ctx, err, info)
-		return failure
+	} else {
+		res := resolveClassified(ctx, err, &f, info)
+		r.logDefault(ctx, err, &f, info, res.level)
+		if res.write {
+			writeDefaultError(ctx, err, res, info)
+		}
 	}
-	res := resolveClassified(ctx, err, &f, info)
-	r.logDefault(ctx, err, &f, info, res.level)
-	if res.write {
-		writeDefaultError(ctx, err, res, info)
+	if r.eventDispatcher == nil {
+		return requestFailure{}
 	}
-	return failure
+	return failureOf(err, &f, rw)
 }
 
 // logDefault emits the single default-path log entry for a failed request

@@ -74,13 +74,18 @@ func (e *RequestHandled) Name() string {
 	return "request.handled"
 }
 
-// RequestFailed is dispatched when an HTTP request fails: a recovered panic
+// RequestFailed is dispatched when an HTTP request fails, decided once the
+// router's error boundary has answered the error: a recovered panic
 // (including one the Timeout middleware forwarded, and one its handler
 // goroutine recovered after the 503 went out, which dispatches this event
-// after the request's RequestHandled), an error resolving to
-// status 500 or above, or an error naming no status. An error answering
-// below 500 is a response, not a failure, and dispatches nothing; a
-// contract.Handled value dispatches its cause and a bare
+// after the request's RequestHandled), a response the router's writer
+// recorded with status 500 or above, or, when nothing was written, an
+// error that names no status below 500. The status the response went out
+// with decides, not the error as the handler returned it: an error the
+// installed error handler answers below 500 (a not-found sentinel it maps
+// to 404, an application map rule) is a response, not a failure, and
+// dispatches nothing. A contract.Handled value dispatches its cause under
+// the same rule (the status the middleware wrote decides), and a bare
 // contract.ErrResponseWritten dispatches nothing, except inside the value
 // of a recovered panic, which always dispatches.
 type RequestFailed struct {

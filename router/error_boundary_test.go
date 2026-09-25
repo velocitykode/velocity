@@ -545,35 +545,63 @@ func TestErrorHandlerMiddleware_HandledPathThroughRouter(t *testing.T) {
 
 func TestRequestFailed_Policy(t *testing.T) {
 	boom := errors.New("boom")
+	gone := errors.New("gone")
+	// mapGone is an installed error handler that answers gone with a 410
+	// and writes nothing for anything else.
+	mapGone := func(c *Context, err error, _ ErrorInfo) {
+		if errors.Is(err, gone) {
+			c.Response.WriteHeader(http.StatusGone)
+		}
+	}
+	// writeThen writes status and returns err, the way a middleware that
+	// answers for itself does.
+	writeThen := func(status int, err error) HandlerFunc {
+		return func(c *Context) error {
+			c.Response.WriteHeader(status)
+			return err
+		}
+	}
 
 	tests := []struct {
 		name          string
 		use           []MiddlewareFunc
+		errorHandler  func(c *Context, err error, info ErrorInfo)
 		handler       HandlerFunc
 		wantFired     bool
 		wantRecovered bool
 	}{
-		{"4xx does not fire", nil, func(c *Context) error { return contract.NewHTTPError(http.StatusNotFound) }, false, false},
-		{"429 does not fire", nil, func(c *Context) error {
+		{"4xx does not fire", nil, nil, func(c *Context) error { return contract.NewHTTPError(http.StatusNotFound) }, false, false},
+		{"429 does not fire", nil, nil, func(c *Context) error {
 			return contract.NewHTTPError(http.StatusTooManyRequests).WithHeader("Retry-After", "1")
 		}, false, false},
-		{"413 does not fire", nil, func(c *Context) error { return &http.MaxBytesError{Limit: 1} }, false, false},
-		{"plain error fires", nil, func(c *Context) error { return boom }, true, false},
-		{"5xx HTTPError fires", nil, func(c *Context) error { return contract.NewHTTPError(http.StatusServiceUnavailable) }, true, false},
-		{"deadline fires", nil, func(c *Context) error { return context.DeadlineExceeded }, true, false},
-		{"panic fires recovered", nil, func(c *Context) error { panic("boom") }, true, true},
-		{"Timeout panic fires recovered", []MiddlewareFunc{Timeout(2 * time.Second)}, func(c *Context) error { panic("boom") }, true, true},
-		{"bare ErrResponseWritten does not fire", nil, func(c *Context) error { return contract.ErrResponseWritten }, false, false},
-		{"Handled 4xx cause does not fire", nil, func(c *Context) error {
+		{"413 does not fire", nil, nil, func(c *Context) error { return &http.MaxBytesError{Limit: 1} }, false, false},
+		{"plain error fires", nil, nil, func(c *Context) error { return boom }, true, false},
+		{"5xx HTTPError fires", nil, nil, func(c *Context) error { return contract.NewHTTPError(http.StatusServiceUnavailable) }, true, false},
+		{"deadline fires", nil, nil, func(c *Context) error { return context.DeadlineExceeded }, true, false},
+		{"panic fires recovered", nil, nil, func(c *Context) error { panic("boom") }, true, true},
+		{"Timeout panic fires recovered", []MiddlewareFunc{Timeout(2 * time.Second)}, nil, func(c *Context) error { panic("boom") }, true, true},
+		{"bare ErrResponseWritten does not fire", nil, nil, func(c *Context) error { return contract.ErrResponseWritten }, false, false},
+		{"Handled 4xx cause does not fire", nil, nil, func(c *Context) error {
 			return contract.Handled(contract.NewHTTPError(http.StatusBadRequest))
 		}, false, false},
-		{"Handled plain cause fires", nil, func(c *Context) error { return contract.Handled(boom) }, true, false},
+		{"Handled plain cause fires", nil, nil, func(c *Context) error { return contract.Handled(boom) }, true, false},
+		{"Handled 4xx cause after a written 404 does not fire", nil, nil, writeThen(http.StatusNotFound, contract.Handled(contract.NewHTTPError(http.StatusNotFound))), false, false},
+		{"Handled plain cause after a written 404 does not fire", nil, nil, writeThen(http.StatusNotFound, contract.Handled(boom)), false, false},
+		{"Handled plain cause after a written 500 fires", nil, nil, writeThen(http.StatusInternalServerError, contract.Handled(boom)), true, false},
+		{"bare ErrResponseWritten after a written 500 does not fire", nil, nil, writeThen(http.StatusInternalServerError, contract.ErrResponseWritten), false, false},
+		{"error handler answering 410 does not fire", nil, mapGone, func(c *Context) error { return fmt.Errorf("load: %w", gone) }, false, false},
+		{"error handler writing nothing for a plain error fires", nil, mapGone, func(c *Context) error { return boom }, true, false},
+		{"error handler writing nothing for a 4xx does not fire", nil, mapGone, func(c *Context) error { return contract.NewHTTPError(http.StatusConflict) }, false, false},
+		{"error handler panic fires recovered", nil, mapGone, func(c *Context) error { panic("boom") }, true, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			collector := newTestEventCollector()
 			r := NewV2()
 			r.SetEventDispatcher(collector.dispatch)
+			if tt.errorHandler != nil {
+				r.SetErrorHandler(tt.errorHandler)
+			}
 			for _, mw := range tt.use {
 				r.Use(mw)
 			}

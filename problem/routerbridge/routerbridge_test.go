@@ -905,8 +905,9 @@ func (l *errLineLogger) value(msg, key string) any {
 // response unwritten, so the last-resort plain-text 500 reaches the
 // client (not an empty 200), and the pipeline reports the panic once as a
 // recovered panic (the 404 itself is not reported) instead of logging it
-// on the side; RequestHandled fires once and RequestFailed not at all (the
-// router saw a 404). The standalone router answers the same request as
+// on the side; RequestHandled fires once and RequestFailed once, not
+// flagged recovered and carrying the returned error, because the response
+// went out as a 500. The standalone router answers the same request as
 // before: its boundary recovers the panic, answers 500, logs one line and
 // fires RequestFailed with Recovered set.
 func TestInstall_PanickingPreCommitHookFallsBackTo500(t *testing.T) {
@@ -988,8 +989,8 @@ func TestInstall_PanickingPreCommitHookFallsBackTo500(t *testing.T) {
 				if v := logger.value("problem: rendering panicked", "panic"); v != nil {
 					t.Errorf("render panic also logged on the side: %v", v)
 				}
-				if len(failed) != 0 {
-					t.Errorf("RequestFailed flags = %v, want none (the router saw a 404)", failed)
+				if len(failed) != 1 || failed[0] {
+					t.Errorf("RequestFailed flags = %v, want [false] (the response went out as a 500)", failed)
 				}
 				return
 			}

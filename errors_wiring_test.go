@@ -17,6 +17,7 @@ import (
 	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf"
+	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/orm"
@@ -1053,6 +1054,69 @@ func TestRun_FailedCommandShutsDownBeforeExit(t *testing.T) {
 			}
 			if !tt.wantShutdown && mod.shutdowns.Load() > 0 {
 				t.Error("a successful command shut the app down")
+			}
+		})
+	}
+}
+
+// TestRequestFailed_DecidedByAnswer_ThroughApp drives failed requests
+// through a real app's router boundary and error pipeline and counts the
+// RequestFailed events the router dispatches: the event follows the
+// status the pipeline answered with, so an error it maps to a 4xx (a
+// framework not-found sentinel, an application MapIs rule) dispatches
+// nothing, while a 500, a Handled cause after a written 500 and a
+// recovered panic each dispatch once.
+func TestRequestFailed_DecidedByAnswer_ThroughApp(t *testing.T) {
+	errGone := errors.New("record archived")
+	writeThen := func(status int, err error) router.HandlerFunc {
+		return func(c *router.Context) error {
+			c.Response.WriteHeader(status)
+			return err
+		}
+	}
+	tests := []struct {
+		name          string
+		handler       router.HandlerFunc
+		wantStatus    int
+		wantFailed    int
+		wantRecovered bool
+	}{
+		{name: "orm not found", handler: func(*router.Context) error { return fmt.Errorf("load user: %w", orm.ErrNotFound) }, wantStatus: http.StatusNotFound},
+		{name: "map rule sentinel", handler: func(*router.Context) error { return fmt.Errorf("load post: %w", errGone) }, wantStatus: http.StatusGone},
+		{name: "plain error", handler: func(*router.Context) error { return errors.New("db exploded") }, wantStatus: http.StatusInternalServerError, wantFailed: 1},
+		{name: "handled not found after a written 404", handler: writeThen(http.StatusNotFound, contract.Handled(problem.NotFound())), wantStatus: http.StatusNotFound},
+		{name: "handled plain error after a written 500", handler: writeThen(http.StatusInternalServerError, contract.Handled(errors.New("rendered by middleware"))), wantStatus: http.StatusInternalServerError, wantFailed: 1},
+		{name: "recovered panic", handler: func(*router.Context) error { panic("boom") }, wantStatus: http.StatusInternalServerError, wantFailed: 1, wantRecovered: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := events.NewFakeDispatcher()
+			a, _, _ := newPipelineApp(t, WithFakeEvents(fake))
+			a.Services.Errors.SetDebug(false)
+			problem.MapIs(a.Services.Errors, errGone, func(err error) error {
+				return problem.Gone().WithCause(err)
+			})
+			a.Router.Get("/x", tt.handler)
+
+			req := httptest.NewRequest(http.MethodGet, "/x", nil)
+			req.Header.Set("Accept", "application/json")
+			w := httptest.NewRecorder()
+			a.Router.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %q)", w.Code, tt.wantStatus, w.Body.String())
+			}
+			var failed []*router.RequestFailed
+			for _, ev := range fake.GetDispatchedEvents() {
+				if rf, ok := ev.(*router.RequestFailed); ok {
+					failed = append(failed, rf)
+				}
+			}
+			if len(failed) != tt.wantFailed {
+				t.Fatalf("RequestFailed dispatched %d times, want %d", len(failed), tt.wantFailed)
+			}
+			if tt.wantFailed == 1 && failed[0].Recovered != tt.wantRecovered {
+				t.Errorf("RequestFailed.Recovered = %v, want %v", failed[0].Recovered, tt.wantRecovered)
 			}
 		})
 	}

@@ -682,7 +682,8 @@ func varyOnNegotiation(h http.Header, inertia bool) {
 //
 // fn returns true when it wrote the response. The middleware then returns
 // contract.Handled(err): the router boundary writes nothing more but still
-// reports the error once, and RequestFailed still fires with it. fn
+// reports the error once, and RequestFailed fires with it when the
+// response fn wrote has a status of 500 or above (see RequestFailed). fn
 // returns false to leave the error to the boundary unchanged. An error
 // that already marks a written response passes through without calling
 // fn; a panic the Timeout middleware forwarded is offered to fn whatever

@@ -345,10 +345,12 @@ func callReporter(logger contract.Logger, reporter Reporter, err error, ctx *Err
 // A panic in write (a renderer, a rule, or a pre-commit hook the response
 // writer fires) is a bug of its own: it is reported through the reporter
 // chain as a recovered panic (see reportRenderPanic) and answered with the
-// plain-text 500 when nothing was written yet. RequestFailed cannot fire
-// from here: it is the router's event, and the router sees only that the
-// pipeline returned. A panic with net/http's http.ErrAbortHandler is not a
-// bug: it is passed on, unreported, so net/http aborts the response.
+// plain-text 500 when nothing was written yet. RequestFailed is the
+// router's event: the router decides it from the status written once the
+// pipeline returned, so that 500 dispatches it with the error the
+// pipeline was rendering, not flagged recovered. A panic with net/http's
+// http.ErrAbortHandler is not a bug: it is passed on, unreported, so
+// net/http aborts the response.
 func (h *Handler) stage(s *snapshot, rc RenderContext, ctx *ErrorContext, write func()) {
 	defer func() {
 		if p := recover(); p != nil {
