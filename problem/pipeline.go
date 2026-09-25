@@ -363,7 +363,8 @@ func (h *Handler) stage(s *snapshot, rc RenderContext, ctx *ErrorContext, write 
 		return
 	}
 	if w := rc.Writer(); w != nil {
-		w.Header().Del("Content-Length")
+		// The key is a canonical constant, so the map delete equals Header.Del.
+		delete(w.Header(), "Content-Length")
 	}
 	write()
 }

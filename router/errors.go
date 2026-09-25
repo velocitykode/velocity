@@ -569,7 +569,8 @@ func DefaultErrorHandler(c *Context, err error, info ErrorInfo) {
 // compresses this body too.
 func writeDefaultError(c *Context, err error, res defaultResolution, info ErrorInfo) {
 	h := c.Response.Header()
-	h.Del("Content-Length")
+	// The key is a canonical constant, so the map delete equals Header.Del.
+	delete(h, "Content-Length")
 	for key, values := range res.headers {
 		if key == "" || strings.ContainsAny(key, "\r\n") {
 			continue

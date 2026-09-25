@@ -1533,10 +1533,11 @@ func (c *Context) servedFailure(sw *serveContentWriter) *contract.HTTPError {
 // failed precondition never reaches that answer at all. Content-Range is
 // not touched: the returned error carries it.
 func dropFailedFileHeaders(h http.Header) {
-	h.Del("Content-Encoding")
-	h.Del("Etag")
-	h.Del("Last-Modified")
-	h.Del("Cache-Control")
+	// The keys are canonical constants, so the map delete equals Header.Del.
+	delete(h, "Content-Encoding")
+	delete(h, "Etag")
+	delete(h, "Last-Modified")
+	delete(h, "Cache-Control")
 }
 
 // serveContentCauseLimit bounds the body bytes a serveContentWriter keeps
