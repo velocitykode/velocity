@@ -1417,7 +1417,10 @@ func (c *Context) Attachment(path string, filename string) error {
 // serveContentWriter so that answer never reaches the client: the status,
 // with the Content-Range it carried, comes back as a *contract.HTTPError
 // for the error boundary to render like every other failure, without the
-// file's Cache-Control or Content-Disposition.
+// file's Cache-Control or Content-Disposition. A status of 500 or above
+// carries the discarded body text (its first line) as the cause, so the
+// report says what failed; the client sees only the status text outside
+// debug mode. A 4xx carries no cause.
 func (c *Context) serveFile(path, filename string, attach bool) error {
 	f, info, err := c.openServedFile(path)
 	if err != nil {
@@ -1437,8 +1440,15 @@ func (c *Context) serveFile(path, filename string, attach bool) error {
 	if sw.contentRange != "" {
 		he = he.WithHeader("Content-Range", sw.contentRange)
 	}
+	if cause := sw.cause(); cause != nil {
+		he = he.WithCause(cause)
+	}
 	return he
 }
+
+// serveContentCauseLimit bounds the body bytes a serveContentWriter keeps
+// from a 5xx answer for its cause.
+const serveContentCauseLimit = 256
 
 // serveContentWriter is the writer serveFile hands http.ServeContent. It
 // stages header writes in header, a copy of w's header map, until a status
@@ -1446,13 +1456,15 @@ func (c *Context) serveFile(path, filename string, attach bool) error {
 // to w and passes the status and every body byte through. A status of 400
 // or above is recorded in failed, with the Content-Range header it
 // carried, and nothing reaches w: the status, the body and the staged
-// header edits are discarded.
+// header edits are discarded. For a status of 500 or above the first
+// serveContentCauseLimit body bytes are kept in body for the cause.
 type serveContentWriter struct {
 	w            http.ResponseWriter
 	header       http.Header
 	failed       int
 	contentRange string
 	passed       bool
+	body         []byte
 }
 
 func newServeContentWriter(w http.ResponseWriter) *serveContentWriter {
@@ -1489,15 +1501,37 @@ func (s *serveContentWriter) WriteHeader(code int) {
 }
 
 // Write passes p through once a status below 400 was written (a 200 when
-// none was), and discards it after an error status.
+// none was), and discards it after an error status, keeping the start of
+// a 5xx body for the cause.
 func (s *serveContentWriter) Write(p []byte) (int, error) {
 	if !s.passed && s.failed == 0 {
 		s.WriteHeader(http.StatusOK)
 	}
 	if s.failed != 0 {
+		if s.failed >= http.StatusInternalServerError && len(s.body) < serveContentCauseLimit {
+			s.body = append(s.body, p[:min(len(p), serveContentCauseLimit-len(s.body))]...)
+		}
 		return len(p), nil
 	}
 	return s.w.Write(p)
+}
+
+// cause returns the error a 5xx answer's discarded body names: its first
+// line, without CR or LF or edge space, or nil when the status is below
+// 500 or the body names nothing.
+func (s *serveContentWriter) cause() error {
+	if s.failed < http.StatusInternalServerError {
+		return nil
+	}
+	line := string(s.body)
+	if i := strings.IndexAny(line, "\r\n"); i >= 0 {
+		line = line[:i]
+	}
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil
+	}
+	return errors.New(line)
 }
 
 // buildContentDisposition constructs an attachment Content-Disposition

@@ -260,3 +260,45 @@ func TestContext_FileHelpers_ServeContentPassThrough(t *testing.T) {
 		}
 	}
 }
+
+// TestServeContentWriter_Cause asserts the cause a serveContentWriter
+// builds from a discarded answer: the first line of a 5xx body, without CR
+// or LF, bounded by serveContentCauseLimit; nothing for a 4xx or an empty
+// body.
+func TestServeContentWriter_Cause(t *testing.T) {
+	long := strings.Repeat("x", serveContentCauseLimit+50)
+	tests := []struct {
+		name   string
+		status int
+		body   []string
+		want   string // "" for no cause
+	}{
+		{name: "5xx first line", status: http.StatusInternalServerError, body: []string{"seeker can't seek\n"}, want: "seeker can't seek"},
+		{name: "5xx CRLF split", status: http.StatusInternalServerError, body: []string{"first\r", "\nsecond\n"}, want: "first"},
+		{name: "5xx bounded", status: http.StatusBadGateway, body: []string{long, long}, want: long[:serveContentCauseLimit]},
+		{name: "5xx empty body", status: http.StatusInternalServerError},
+		{name: "4xx keeps no cause", status: http.StatusRequestedRangeNotSatisfiable, body: []string{"invalid range: failed to overlap\n"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &writeSpy{ResponseRecorder: httptest.NewRecorder()}
+			sw := newServeContentWriter(w)
+			sw.WriteHeader(tt.status)
+			for _, b := range tt.body {
+				if n, err := sw.Write([]byte(b)); n != len(b) || err != nil {
+					t.Fatalf("Write = %d, %v; want %d, nil", n, err, len(b))
+				}
+			}
+			if w.wrote {
+				t.Error("the discarded answer reached the writer")
+			}
+			got := sw.cause()
+			switch {
+			case tt.want == "" && got != nil:
+				t.Errorf("cause = %q, want none", got)
+			case tt.want != "" && (got == nil || got.Error() != tt.want):
+				t.Errorf("cause = %v, want %q", got, tt.want)
+			}
+		})
+	}
+}
