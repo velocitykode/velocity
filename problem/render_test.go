@@ -714,6 +714,11 @@ func TestInertiaLocation_Edges(t *testing.T) {
 			r.Header.Set("Referer", "posts")
 			return r
 		}, "/"},
+		{"RefererInteriorSpace", func() *http.Request {
+			r := httptest.NewRequest(http.MethodPost, "/x", nil)
+			r.Header.Set("Referer", "http://example.com/search?q=a b")
+			return r
+		}, "/search?q=a b"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -724,6 +729,10 @@ func TestInertiaLocation_Edges(t *testing.T) {
 	}
 }
 
+// TestIsLocalPath asserts isLocalPath accepts exactly the paths starting
+// with "/" that contract.SanitizeRedirect keeps unchanged: an interior
+// space is fine, an edge space, a control byte, a backslash, a slash
+// lookalike or a leading "//" is not.
 func TestIsLocalPath(t *testing.T) {
 	tests := []struct {
 		in   string
@@ -734,7 +743,9 @@ func TestIsLocalPath(t *testing.T) {
 		{"", false},
 		{"a", false},
 		{"//x", false},
-		{"/a b", false},
+		{"/a b", true},
+		{"/a ", false},
+		{"/\t/evil", false},
 		{"/a\x00", false},
 		{"/a\x7f", false},
 		{"/a／b", false},

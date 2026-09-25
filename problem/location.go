@@ -48,25 +48,10 @@ func inertiaLocation(r *http.Request) string {
 }
 
 // isLocalPath reports whether target is a same-origin path safe to hand a
-// client as a location: exactly one leading "/", no control byte, no
-// backslash and no Unicode slash lookalike, any of which a browser could
-// normalise into a network-path reference ("//host").
+// client as a location: a path starting with "/" that
+// contract.SanitizeRedirect accepts unchanged with no allowed hosts.
 func isLocalPath(target string) bool {
-	if target == "" || target[0] != '/' || strings.HasPrefix(target, "//") {
-		return false
-	}
-	for i := 0; i < len(target); i++ {
-		if b := target[i]; b < 0x20 || b == 0x7f || b == ' ' {
-			return false
-		}
-	}
-	for _, r := range target {
-		switch r {
-		case '\\', '／', '⧸', '⁄', '∕':
-			return false
-		}
-	}
-	return true
+	return strings.HasPrefix(target, "/") && contract.SanitizeRedirect(target, nil) == target
 }
 
 // sameOriginReferer returns the path and query of r's Referer when it points
