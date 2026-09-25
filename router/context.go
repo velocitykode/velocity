@@ -1417,7 +1417,10 @@ func (c *Context) Attachment(path string, filename string) error {
 // serveContentWriter so that answer never reaches the client: the status,
 // with the Content-Range it carried, comes back as a *contract.HTTPError
 // for the error boundary to render like every other failure, without the
-// file's Cache-Control or Content-Disposition. A status of 500 or above
+// file's Cache-Control or Content-Disposition. The response's own
+// Content-Encoding, ETag, Last-Modified and Cache-Control are dropped too
+// (see dropFailedFileHeaders), so the error body the boundary writes is
+// not labelled with the file's encoding. A status of 500 or above
 // carries the discarded body text (its first line) as the cause, so the
 // report says what failed; the client sees only the status text outside
 // debug mode. A 4xx carries no cause.
@@ -1436,6 +1439,7 @@ func (c *Context) serveFile(path, filename string, attach bool) error {
 	if sw.failed == 0 {
 		return nil
 	}
+	dropFailedFileHeaders(c.Response.Header())
 	he := contract.NewHTTPError(sw.failed).WithOrigin(2)
 	if sw.contentRange != "" {
 		he = he.WithHeader("Content-Range", sw.contentRange)
@@ -1444,6 +1448,22 @@ func (c *Context) serveFile(path, filename string, attach bool) error {
 		he = he.WithCause(cause)
 	}
 	return he
+}
+
+// dropFailedFileHeaders deletes from h, the header of the response a
+// failed file answer leaves to the error boundary, the headers that
+// describe the file's representation rather than the error body the
+// boundary writes: Content-Encoding (a handler serving a precompressed
+// file sets it before serving), ETag, Last-Modified and Cache-Control.
+// net/http's own error answer for a failed ServeContent drops the same
+// set, but only from the staged copy serveContentWriter hands it, and a
+// failed precondition never reaches that answer at all. Content-Range is
+// not touched: the returned error carries it.
+func dropFailedFileHeaders(h http.Header) {
+	h.Del("Content-Encoding")
+	h.Del("Etag")
+	h.Del("Last-Modified")
+	h.Del("Cache-Control")
 }
 
 // serveContentCauseLimit bounds the body bytes a serveContentWriter keeps

@@ -249,6 +249,56 @@ func TestContext_FileHelpers_ServeContentErrors(t *testing.T) {
 	}
 }
 
+// TestContext_FileHelpers_FailureDropsFileHeaders asserts a failed file
+// answer leaves the response header without the file's representation
+// headers the handler set before calling File: Content-Encoding, ETag,
+// Last-Modified and Cache-Control are gone, so the body the error boundary
+// writes next is not labelled with them, and an unrelated header stays.
+func TestContext_FileHelpers_FailureDropsFileHeaders(t *testing.T) {
+	tests := []struct {
+		name       string
+		header     map[string]string
+		wantStatus int
+	}{
+		{name: "unsatisfiable range", header: map[string]string{"Range": "bytes=100-200"}, wantStatus: http.StatusRequestedRangeNotSatisfiable},
+		{name: "failed precondition", header: map[string]string{"If-Match": `"nope"`}, wantStatus: http.StatusPreconditionFailed},
+	}
+	root := fileErrorRoot(t)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &writeSpy{ResponseRecorder: httptest.NewRecorder()}
+			req := httptest.NewRequest(http.MethodGet, "/f", nil)
+			for k, v := range tt.header {
+				req.Header.Set(k, v)
+			}
+			c := NewContext(w, req)
+			c.fileRoot = root
+			h := c.Response.Header()
+			h.Set("ETag", `"v1"`)
+			h.Set("Last-Modified", "Mon, 02 Jan 2006 15:04:05 GMT")
+			h.Set("Content-Encoding", "gzip")
+			h.Set("Cache-Control", "public, max-age=31536000, immutable")
+			h.Set("Vary", "Accept-Encoding")
+			err := c.File("ok.txt")
+			var he *contract.HTTPError
+			if !errors.As(err, &he) || he.StatusCode() != tt.wantStatus {
+				t.Fatalf("err = %v, want a %d HTTP error", err, tt.wantStatus)
+			}
+			for _, k := range []string{"ETag", "Last-Modified", "Content-Encoding", "Cache-Control"} {
+				if got := w.Header().Get(k); got != "" {
+					t.Errorf("%s = %q after the failed File, want it dropped", k, got)
+				}
+			}
+			if got := w.Header().Get("Vary"); got != "Accept-Encoding" {
+				t.Errorf("Vary = %q, want the handler's Accept-Encoding kept", got)
+			}
+			if w.wrote {
+				t.Error("the failed File wrote to the response")
+			}
+		})
+	}
+}
+
 // TestContext_FileHelpers_ServeContentPassThrough asserts a full response,
 // a partial one and a 304 still pass through File and Download unchanged:
 // status, body, Content-Range, Cache-Control and Content-Disposition.

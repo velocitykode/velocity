@@ -560,9 +560,13 @@ func DefaultErrorHandler(c *Context, err error, info ErrorInfo) {
 	writeDefaultError(c, err, res, info)
 }
 
-// writeDefaultError writes the resolved default response for err.
+// writeDefaultError writes the resolved default response for err. The body
+// replaces whatever the failed attempt staged, so the Content-Length and
+// Content-Encoding it set are dropped first.
 func writeDefaultError(c *Context, err error, res defaultResolution, info ErrorInfo) {
 	h := c.Response.Header()
+	h.Del("Content-Length")
+	h.Del("Content-Encoding")
 	for key, values := range res.headers {
 		if key == "" || strings.ContainsAny(key, "\r\n") {
 			continue
@@ -612,7 +616,6 @@ func writeDefaultError(c *Context, err error, res defaultResolution, info ErrorI
 		}
 		raw, mErr := json.Marshal(body)
 		if mErr == nil {
-			h.Del("Content-Length")
 			h.Set("Content-Type", "application/problem+json")
 			h.Set("X-Content-Type-Options", "nosniff")
 			c.Response.WriteHeader(res.status)
