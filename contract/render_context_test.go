@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 )
 
@@ -83,6 +84,54 @@ func TestNewRenderContext_WriteOnce(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNewRenderContext_InformationalStatus asserts a 1xx other than 101
+// is written through without counting as the final status: Written stays
+// false and a later status lands, while 101 commits like a final status.
+func TestNewRenderContext_InformationalStatus(t *testing.T) {
+	tests := []struct {
+		name        string
+		first       int
+		wantWritten bool
+		wantCode    int
+	}{
+		{"103 then 404", http.StatusEarlyHints, false, http.StatusNotFound},
+		{"100 then 404", http.StatusContinue, false, http.StatusNotFound},
+		{"101 commits", http.StatusSwitchingProtocols, true, http.StatusSwitchingProtocols},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &statusLog{ResponseWriter: httptest.NewRecorder()}
+			rc := NewRenderContext(w, httptest.NewRequest(http.MethodGet, "/", nil))
+			rc.WriteHeader(tt.first)
+			if got := rc.Written(); got != tt.wantWritten {
+				t.Errorf("Written() after %d = %v, want %v", tt.first, got, tt.wantWritten)
+			}
+			rc.WriteHeader(http.StatusNotFound)
+			if !rc.Written() {
+				t.Error("Written() = false after a final status")
+			}
+			want := []int{tt.first}
+			if tt.first != tt.wantCode {
+				want = append(want, tt.wantCode)
+			}
+			if !slices.Equal(w.codes, want) {
+				t.Errorf("statuses written = %v, want %v", w.codes, want)
+			}
+		})
+	}
+}
+
+// statusLog records every status written through it.
+type statusLog struct {
+	http.ResponseWriter
+	codes []int
+}
+
+func (s *statusLog) WriteHeader(code int) {
+	s.codes = append(s.codes, code)
+	s.ResponseWriter.WriteHeader(code)
 }
 
 func TestNewRenderContext_SetHeader(t *testing.T) {

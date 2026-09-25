@@ -2,11 +2,16 @@ package routerbridge
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
+	"net/textproto"
+	"slices"
+	"sync"
 	"testing"
 
 	"github.com/velocitykode/velocity/contract"
@@ -143,6 +148,112 @@ func TestProblemOverRouterWriter_EarlyHintsDoNotCommit(t *testing.T) {
 			defer spy.mu.Unlock()
 			if spy.calls != 1 || spy.rcWasW {
 				t.Errorf("calls = %d, written before rendering = %v; want 1 and false", spy.calls, spy.rcWasW)
+			}
+		})
+	}
+}
+
+// TestRenderContext_EarlyHintsDoNotCommit asserts a 103 Early Hints sent
+// through RenderContext.WriteHeader (by a render rule that then falls
+// through, or by a BeforeRender hook) does not count as the response
+// being written, for the router's adapter and for contract.NewRenderContext
+// over a bare writer and over a problem.TrackedWriter: on a real
+// connection the client receives the 103 and then the error's own status.
+func TestRenderContext_EarlyHintsDoNotCommit(t *testing.T) {
+	const link = "</app.css>; rel=preload; as=style"
+	notFound := func(*router.Context) error { return contract.NewHTTPError(http.StatusNotFound) }
+	viaRouter := func(handler router.HandlerFunc) func(h *problem.Handler) *httptest.Server {
+		return func(h *problem.Handler) *httptest.Server {
+			r := router.New()
+			Install(r, WithHandler(func() contract.ErrorHandler { return h }))
+			r.Get("/x", handler)
+			return httptest.NewServer(r)
+		}
+	}
+	viaErrorHandler := func(tracked bool) func(h *problem.Handler) *httptest.Server {
+		return func(h *problem.Handler) *httptest.Server {
+			eh := problem.ErrorHandler(h)
+			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tracked {
+					w = problem.NewTrackedWriter(w)
+				}
+				eh(w, r, contract.NewHTTPError(http.StatusNotFound))
+			}))
+		}
+	}
+	tests := []struct {
+		name       string
+		serve      func(h *problem.Handler) *httptest.Server
+		ruleHint   bool // a render rule sends 103 through rc, then returns false
+		hookHint   bool // a BeforeRender hook sends 103 through rc
+		wantStatus int
+	}{
+		{name: "router adapter render rule", serve: viaRouter(notFound), ruleHint: true, wantStatus: http.StatusNotFound},
+		{name: "router adapter render rule plain error", serve: viaRouter(func(*router.Context) error { return errors.New("db down") }), ruleHint: true, wantStatus: http.StatusInternalServerError},
+		{name: "router adapter BeforeRender hook", serve: viaRouter(notFound), hookHint: true, wantStatus: http.StatusNotFound},
+		{name: "ErrorHandler bare writer render rule", serve: viaErrorHandler(false), ruleHint: true, wantStatus: http.StatusNotFound},
+		{name: "ErrorHandler TrackedWriter render rule", serve: viaErrorHandler(true), ruleHint: true, wantStatus: http.StatusNotFound},
+		{name: "ErrorHandler TrackedWriter BeforeRender hook", serve: viaErrorHandler(true), hookHint: true, wantStatus: http.StatusNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var writtenAfterHint []bool
+			var infos []int
+			hint := func(rc contract.RenderContext) {
+				rc.SetHeader("Link", link)
+				rc.WriteHeader(http.StatusEarlyHints)
+				written := rc.Written()
+				mu.Lock()
+				writtenAfterHint = append(writtenAfterHint, written)
+				mu.Unlock()
+			}
+			h := problem.NewHandler(problem.WithReporters())
+			h.AddRenderRule(contract.RenderRule{
+				Match: func(error) bool { return true },
+				Render: func(rc contract.RenderContext, _ error, _ *contract.ErrorContext) bool {
+					if tt.ruleHint {
+						hint(rc)
+					}
+					return false
+				},
+			})
+			if tt.hookHint {
+				h.BeforeRender(func(rc contract.RenderContext, _ error, status int) int {
+					hint(rc)
+					return status
+				})
+			}
+			srv := tt.serve(h)
+			defer srv.Close()
+
+			trace := &httptrace.ClientTrace{Got1xxResponse: func(code int, _ textproto.MIMEHeader) error {
+				mu.Lock()
+				infos = append(infos, code)
+				mu.Unlock()
+				return nil
+			}}
+			req, err := http.NewRequestWithContext(httptrace.WithClientTrace(context.Background(), trace), http.MethodGet, srv.URL+"/x", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := srv.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+
+			mu.Lock()
+			defer mu.Unlock()
+			if len(writtenAfterHint) != 1 || writtenAfterHint[0] {
+				t.Errorf("Written() after rc.WriteHeader(103) = %v, want one false", writtenAfterHint)
+			}
+			if !slices.Equal(infos, []int{http.StatusEarlyHints}) {
+				t.Errorf("client 1xx responses = %v, want [103]", infos)
+			}
+			if resp.StatusCode != tt.wantStatus {
+				t.Errorf("client status = %d, want %d", resp.StatusCode, tt.wantStatus)
 			}
 		})
 	}

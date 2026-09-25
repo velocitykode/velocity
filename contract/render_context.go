@@ -14,7 +14,9 @@ type RenderContext interface {
 	Request() *http.Request
 	// Writer returns the underlying response writer.
 	Writer() http.ResponseWriter
-	// WriteHeader writes the status line once; later calls are no-ops.
+	// WriteHeader writes the final status line once; later calls are
+	// no-ops. An informational status other than 101 (such as 103 Early
+	// Hints) is written through without counting as the status line.
 	WriteHeader(status int)
 	// Write writes body bytes, writing a 200 status first when none was
 	// written.
@@ -22,7 +24,7 @@ type RenderContext interface {
 	// SetHeader sets a response header. A key or value containing CR or
 	// LF is dropped.
 	SetHeader(key, value string)
-	// Written reports whether the status line has been written.
+	// Written reports whether the final status line has been written.
 	Written() bool
 	// WantsJSON reports whether the request asks for JSON (see WantsJSON).
 	WantsJSON() bool
@@ -46,7 +48,9 @@ type CommitReporter interface {
 }
 
 // NewRenderContext returns the net/http RenderContext for w and r.
-// WriteHeader is idempotent, SetHeader drops CR/LF, and Redirect accepts
+// WriteHeader writes the final status once (an informational 1xx other
+// than 101 passes through without counting), SetHeader drops CR/LF, and
+// Redirect accepts
 // only a path with a single leading slash that SanitizeRedirect accepts
 // with no allowed hosts (no "//", no backslash or slash lookalike, no
 // control bytes, no edge space).
@@ -85,15 +89,20 @@ func (c *httpRenderContext) Written() bool {
 
 // WriteHeader writes status once, and never over a committed response. A
 // status outside 100-999 is written as 500 because net/http rejects it.
-// The write is recorded once w returns, so a WriteHeader that panics
-// before committing (a panicking pre-commit hook) leaves the response
-// unwritten for a fallback.
+// An informational status other than 101 (103 Early Hints) is written
+// through but does not commit the response, so the final status can
+// still follow. The write is recorded once w returns, so a WriteHeader
+// that panics before committing (a panicking pre-commit hook) leaves the
+// response unwritten for a fallback.
 func (c *httpRenderContext) WriteHeader(status int) {
 	if c.Written() {
 		return
 	}
-	c.w.WriteHeader(validStatus(status))
-	c.written = true
+	status = validStatus(status)
+	c.w.WriteHeader(status)
+	if status >= 200 || status == http.StatusSwitchingProtocols {
+		c.written = true
+	}
 }
 
 // Write writes p, writing a 200 status first when none was written.

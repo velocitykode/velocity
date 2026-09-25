@@ -676,7 +676,8 @@ func (c *Context) RenderContext() contract.RenderContext {
 
 // ctxRenderContext is the router's contract.RenderContext. written covers
 // writers that do not report their own state (anything that is not a
-// contract.CommitReporter). It is set only after the writer took the write, so a
+// contract.CommitReporter). It is set only after the writer took a final
+// status (a 1xx other than 101 does not count), so a
 // write whose writer panics before committing (a panicking pre-commit
 // hook) leaves the response unwritten for a fallback.
 type ctxRenderContext struct {
@@ -689,8 +690,8 @@ func (rc *ctxRenderContext) Writer() http.ResponseWriter { return rc.c.Response 
 func (rc *ctxRenderContext) WantsJSON() bool             { return contract.WantsJSON(rc.c.Request) }
 func (rc *ctxRenderContext) IsInertia() bool             { return rc.c.IsInertia() }
 
-// Written reports whether the status line has been written, through this
-// adapter or, for a writer reporting its own commitment
+// Written reports whether the final status line has been written, through
+// this adapter or, for a writer reporting its own commitment
 // (contract.CommitReporter, the router's response writer among them), by
 // anyone.
 func (rc *ctxRenderContext) Written() bool {
@@ -702,8 +703,10 @@ func (rc *ctxRenderContext) Written() bool {
 }
 
 // WriteHeader writes status once; a status outside 100-999 is written as
-// 500 because net/http rejects it. The write is recorded once the writer
-// returns.
+// 500 because net/http rejects it. An informational status other than 101
+// (103 Early Hints) is written through but does not commit the response,
+// the same rule as the router's response writer, so the final status can
+// still follow. The write is recorded once the writer returns.
 func (rc *ctxRenderContext) WriteHeader(status int) {
 	if rc.Written() {
 		return
@@ -712,7 +715,9 @@ func (rc *ctxRenderContext) WriteHeader(status int) {
 		status = http.StatusInternalServerError
 	}
 	rc.c.Response.WriteHeader(status)
-	rc.written = true
+	if status >= 200 || status == http.StatusSwitchingProtocols {
+		rc.written = true
+	}
 }
 
 // Write writes p, writing a 200 status first when none was written.
