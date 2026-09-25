@@ -23,11 +23,13 @@ func (b *Bond) Middleware(next http.Handler) http.Handler {
 // returned an error through a side channel the plain http.Handler
 // signature cannot carry: when it did and the buffer holds an
 // untouched empty 200, the headers the handler set (a session
-// Set-Cookie among them) are copied to the real writer, less the caching
+// Set-Cookie among them) are copied to the real writer, less its caching
 // headers (see cachingHeaders), and the status and body are dropped, so
 // the router's error path answers the request and the headers ride on
 // its response, as they would without the buffer; the error response
-// never carries the handler's cache directives or validators.
+// never carries the handler's cache directives or validators, and keeps
+// the ones middleware that ran before bond set (an app's
+// "private, no-store") exactly as they were.
 // Middleware has no error channel and passes a constant false.
 func (b *Bond) serveBuffered(w http.ResponseWriter, r *http.Request, next http.Handler, handlerErred func() bool) {
 	// Always add Vary for proper caching, preserving values set by
@@ -70,8 +72,18 @@ func (b *Bond) serveBuffered(w http.ResponseWriter, r *http.Request, next http.H
 	// handler forgot to return anything, in which case redirect back.
 	if bw.statusCode == http.StatusOK && bw.buf.Len() == 0 {
 		if handlerErred() {
+			// The handler wrote only to the clone, so the real writer
+			// still holds each caching header as it was before the
+			// handler ran: put that value back, or drop the header
+			// when there was none.
+			outer := w.Header()
 			for _, key := range cachingHeaders {
-				bw.header.Del(key)
+				key = http.CanonicalHeaderKey(key)
+				if prior, ok := outer[key]; ok {
+					bw.header[key] = prior
+				} else {
+					delete(bw.header, key)
+				}
 			}
 			bw.commitHeader(w)
 			return
@@ -144,12 +156,15 @@ func (b *Bond) MiddlewareFunc() router.MiddlewareFunc {
 	}
 }
 
-// cachingHeaders are the headers an errored empty response drops before
-// its headers are committed, so the error response the router's error
-// path writes is never cached (or revalidated) by a CDN or browser under
-// the handler's directives. Vary is kept: it only narrows a cache key, so
-// every value (bond's X-Inertia, CORS's Origin, the handler's own) stays
-// on the error response.
+// cachingHeaders are the headers an errored empty response resets, before
+// its headers are committed, to the values the real writer held before
+// the handler ran, so the error response the router's error path writes
+// is never cached (or revalidated) by a CDN or browser under the handler's
+// directives, while a directive set by middleware that ran before bond
+// (an app's "private, no-store" for its personalized pages) stays on it.
+// Vary is kept: it only narrows a cache key, so every value (bond's
+// X-Inertia, CORS's Origin, the handler's own) stays on the error
+// response.
 var cachingHeaders = [...]string{"Cache-Control", "ETag", "Last-Modified", "Expires"}
 
 // isSeeOtherMethod returns true for methods that should use 303 instead of 302.
@@ -164,8 +179,8 @@ func isSeeOtherMethod(method string) bool {
 // reference, so the handler's headers reach the wire only when the
 // middleware commits them: flush for a buffered response, commitHeader
 // for an errored empty one (the error response carries them, less the
-// caching headers). An empty 200 answered with a redirect back drops
-// them.
+// handler's caching headers). An empty 200 answered with a redirect back
+// drops them.
 type responseBuffer struct {
 	header     http.Header
 	buf        bytes.Buffer
