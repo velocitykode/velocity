@@ -1764,6 +1764,9 @@ var ErrFileSizeExceeded = errors.New("velocity/router: uploaded file exceeds dec
 // within that root. Containment is kernel-enforced via *os.Root, so
 // a symlinked parent pointing outside the root is rejected at
 // OpenFile time with no TOCTOU window between validation and create.
+// A destination the root refuses matches ErrPathOutsideRoot, classified as
+// OpenFileIn does; any other open failure (permission denied, descriptor
+// exhaustion) is the fs error unchanged.
 //
 // Optional FileValidationOption values (MaxFileSize, AllowedExtensions,
 // AllowedMIMETypes) are evaluated via ValidateFile before any bytes are
@@ -1810,10 +1813,10 @@ func (c *Context) SaveFile(fh *multipart.FileHeader, dst string, opts ...FileVal
 	// pin the invariant regardless of starting state.
 	out, err := root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, uploadedFileMode)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return err
+		if containmentRejection(err) {
+			return fmt.Errorf("velocity/router: path %q escapes root: %w", rel, errors.Join(ErrPathOutsideRoot, err))
 		}
-		return fmt.Errorf("velocity/router: path %q escapes root: %w", rel, errors.Join(ErrPathOutsideRoot, err))
+		return err
 	}
 	defer out.Close()
 	if chmodErr := out.Chmod(uploadedFileMode); chmodErr != nil {

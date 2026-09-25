@@ -144,6 +144,47 @@ func TestSaveFile_TypedCauses(t *testing.T) {
 	}
 }
 
+// TestSaveFile_OpenFailureIsNotContainment asserts an operational failure
+// opening the destination (a mode-0 file: permission denied) comes back
+// as the fs error, not folded into ErrPathOutsideRoot, while a
+// destination under a path component that is not a directory still
+// matches ErrPathOutsideRoot.
+func TestSaveFile_OpenFailureIsNotContainment(t *testing.T) {
+	tests := []struct {
+		name      string
+		dst       string
+		needsUser bool // skipped as root, which opens a mode-0 file
+		wantCause error
+		notCause  error
+	}{
+		{name: "permission denied", dst: "locked.txt", needsUser: true, wantCause: fs.ErrPermission, notCause: ErrPathOutsideRoot},
+		{name: "not a directory", dst: "plain.txt/inner.txt", wantCause: ErrPathOutsideRoot},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.needsUser && os.Geteuid() == 0 {
+				t.Skip("root opens a mode-0 file")
+			}
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "locked.txt"), []byte("locked"), 0o000); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "plain.txt"), []byte("plain"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			c, fh := newUploadContext(t, "upload.txt", []byte("save me"))
+			c.fileRoot = openTestRoot(t, dir)
+			err := c.SaveFile(fh, tt.dst)
+			if !errors.Is(err, tt.wantCause) {
+				t.Errorf("err = %v, want errors.Is %v", err, tt.wantCause)
+			}
+			if tt.notCause != nil && errors.Is(err, tt.notCause) {
+				t.Errorf("err = %v, must not match %v", err, tt.notCause)
+			}
+		})
+	}
+}
+
 // writeSpy is a ResponseRecorder that records whether anything was written
 // through it.
 type writeSpy struct {
