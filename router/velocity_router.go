@@ -240,7 +240,9 @@ func (r *VelocityRouterV2) SetValidator(fn func(c *Context, rules contract.Valid
 // SetErrorHandler installs the router's error boundary: fn receives every
 // handler error that reaches the router (including one a middleware
 // marked with contract.Handled, which it must report but not render) and
-// every recovered panic, whatever its value, with the ErrorInfo the
+// every recovered panic, whatever its value (except http.ErrAbortHandler,
+// which the router re-panics for net/http to abort the connection), with
+// the ErrorInfo the
 // router knows. A bare contract.ErrResponseWritten returned outside a
 // panic never reaches fn. fn owns rendering and
 // reporting for the request: the router writes nothing and does not log
@@ -783,12 +785,19 @@ func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request,
 	var handlerErr error
 	var failure requestFailure
 	defer func() {
+		var abort any
 		if recovered := recover(); recovered != nil {
-			r.onPanic(ctx, rw, req, meta, recovered)
+			if isAbortPanic(recovered) {
+				abort = recovered
+			} else {
+				r.onPanic(ctx, rw, req, meta, recovered)
+			}
 		} else if handlerErr != nil {
 			r.dispatchRequestFailed(req, meta, failure)
 		}
-		r.finalize(ctx, rw, req, meta)
+		if abort == nil {
+			abort = r.finalize(ctx, rw, req, meta)
+		}
 		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
 			Context:      req.Context(),
 			RequestID:    meta.id,
@@ -804,6 +813,10 @@ func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request,
 		})
 		ctx.reset()
 		r.ctxPool.Put(ctx)
+		if abort != nil {
+			// http.ErrAbortHandler: net/http aborts the connection.
+			panic(abort)
+		}
 	}()
 
 	handler := r.staticHandler.Load()
@@ -884,12 +897,19 @@ func (r *VelocityRouterV2) handleUnmatched(rw *responseWriter, req *http.Request
 	var handlerErr error
 	var failure requestFailure
 	defer func() {
+		var abort any
 		if recovered := recover(); recovered != nil {
-			r.onPanic(ctx, rw, req, meta, recovered)
+			if isAbortPanic(recovered) {
+				abort = recovered
+			} else {
+				r.onPanic(ctx, rw, req, meta, recovered)
+			}
 		} else if handlerErr != nil {
 			r.dispatchRequestFailed(req, meta, failure)
 		}
-		r.finalize(ctx, rw, req, meta)
+		if abort == nil {
+			abort = r.finalize(ctx, rw, req, meta)
+		}
 		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
 			Context:      req.Context(),
 			RequestID:    meta.id,
@@ -904,6 +924,10 @@ func (r *VelocityRouterV2) handleUnmatched(rw *responseWriter, req *http.Request
 		})
 		ctx.reset()
 		r.ctxPool.Put(ctx)
+		if abort != nil {
+			// http.ErrAbortHandler: net/http aborts the connection.
+			panic(abort)
+		}
 	}()
 
 	handler := r.unmatchedHandler.Load()
@@ -1019,12 +1043,19 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 	var handlerErr error
 	var failure requestFailure
 	defer func() {
+		var abort any
 		if recovered := recover(); recovered != nil {
-			r.onPanic(ctx, rw, req, meta, recovered)
+			if isAbortPanic(recovered) {
+				abort = recovered
+			} else {
+				r.onPanic(ctx, rw, req, meta, recovered)
+			}
 		} else if handlerErr != nil {
 			r.dispatchRequestFailed(req, meta, failure)
 		}
-		r.finalize(ctx, rw, req, meta)
+		if abort == nil {
+			abort = r.finalize(ctx, rw, req, meta)
+		}
 		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
 			Context:      req.Context(),
 			RequestID:    meta.id,
@@ -1040,6 +1071,10 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 		})
 		ctx.reset()
 		r.ctxPool.Put(ctx)
+		if abort != nil {
+			// http.ErrAbortHandler: net/http aborts the connection.
+			panic(abort)
+		}
 	}()
 
 	handlerErr = result.Handler(ctx)
@@ -1063,28 +1098,41 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 // ErrorInfo{Recovered: true}, which answers a 500 (reported once by an
 // installed error handler, logged once on the default path) before
 // RequestHandled records it. The panic consumed the hook's once, so that
-// 500 does not fire the hook again.
-func (r *VelocityRouterV2) finalize(ctx *Context, rw *responseWriter, req *http.Request, meta requestMeta) {
+// 500 does not fire the hook again. A hook panicking with
+// http.ErrAbortHandler is not handed to onPanic: finalize returns the
+// value for the caller to re-panic once its bookkeeping is done, as it
+// does with the handler's own abort.
+func (r *VelocityRouterV2) finalize(ctx *Context, rw *responseWriter, req *http.Request, meta requestMeta) (abort any) {
 	if rw.beforeFirstWriteFn != nil {
-		r.finalizeGuarded(ctx, rw, req, meta)
+		return r.finalizeGuarded(ctx, rw, req, meta)
 	}
+	return nil
 }
 
 // finalizeGuarded is finalize's slow path, kept apart so finalize stays
 // small enough to inline.
-func (r *VelocityRouterV2) finalizeGuarded(ctx *Context, rw *responseWriter, req *http.Request, meta requestMeta) {
+func (r *VelocityRouterV2) finalizeGuarded(ctx *Context, rw *responseWriter, req *http.Request, meta requestMeta) (abort any) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			if isAbortPanic(recovered) {
+				abort = recovered
+				return
+			}
 			r.onPanic(ctx, rw, req, meta, recovered)
 		}
 	}()
 	rw.fireBeforeFirstWrite()
+	return nil
 }
 
 // onPanic converts a recovered panic into a *PanicError, dispatches
 // RequestFailed and hands the error to the boundary. It is called from
 // the deferred function that recovered, so the raw and structured stacks
-// captured here still include the panicking frames.
+// captured here still include the panicking frames. It is never called
+// for http.ErrAbortHandler (see isAbortPanic): the recovering function
+// skips the boundary and pending pre-commit hooks for that value, still
+// dispatches RequestHandled and returns the Context to the pool, then
+// re-panics it so net/http aborts the connection.
 func (r *VelocityRouterV2) onPanic(ctx *Context, rw *responseWriter, req *http.Request, meta requestMeta, recovered interface{}) {
 	// Skip onPanic and the deferred function so the trace starts at the
 	// panic site.
@@ -1164,7 +1212,8 @@ func failureOf(err error, f *errorFacts) requestFailure {
 // for the caller to dispatch, and on the default path the status,
 // headers, log level and body. A bare contract.ErrResponseWritten outside a recovered
 // panic ends here: the response was written deliberately and there is
-// nothing to report; a panic is a 500 whatever its value, so
+// nothing to report; a recovered panic is a 500 whatever its value (an
+// http.ErrAbortHandler panic never reaches the boundary), so
 // panic(contract.ErrResponseWritten) does not. Otherwise the boundary
 // fills in the rest of the ErrorInfo (Committed comes from the router's
 // own response writer) and calls the handler installed with

@@ -3,6 +3,8 @@
 // and every recovered panic that reaches the router is reported once and
 // rendered once by a contract.ErrorHandler (normally a *problem.Handler),
 // with an ErrorContext built from what the router knows about the request.
+// A panic with net/http's http.ErrAbortHandler is not one of them: the
+// router lets it abort the connection without reporting it.
 //
 // It is the only package that imports both router and problem, so router
 // stays standalone and problem stays free of router types.

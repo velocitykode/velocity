@@ -548,3 +548,80 @@ func TestBoundary_ConsumerRecoveredPanic(t *testing.T) {
 		})
 	}
 }
+
+// TestServeHTTP_AbortPanicSkipsBoundaryAndHooks asserts a
+// panic(http.ErrAbortHandler) leaves ServeHTTP as the same panic, with
+// nothing written, no pending pre-commit hook run (nothing will be
+// committed), no RequestFailed and no error handler call, while
+// RequestHandled still fires once. Under Timeout the handler's buffered
+// response is dropped rather than flushed.
+func TestServeHTTP_AbortPanicSkipsBoundaryAndHooks(t *testing.T) {
+	tests := []struct {
+		name    string
+		timeout bool
+		handler HandlerFunc
+	}{
+		{name: "Direct", handler: func(*Context) error { panic(http.ErrAbortHandler) }},
+		{name: "UnderTimeout", timeout: true, handler: func(c *Context) error {
+			_, _ = c.Response.Write([]byte("buffered, never flushed"))
+			panic(http.ErrAbortHandler)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var (
+				mu      sync.Mutex
+				hooks   int
+				failed  int
+				handled int
+				calls   int
+			)
+			r := NewV2()
+			r.SetErrorHandler(func(*Context, error, ErrorInfo) { mu.Lock(); calls++; mu.Unlock() })
+			r.SetEventDispatcher(func(_ context.Context, event interface{}) error {
+				mu.Lock()
+				defer mu.Unlock()
+				switch event.(type) {
+				case *RequestFailed:
+					failed++
+				case *RequestHandled:
+					handled++
+				}
+				return nil
+			})
+			r.Use(func(next HandlerFunc) HandlerFunc {
+				return func(c *Context) error {
+					if h, ok := c.Response.(interface{ BeforeFirstWrite(func()) }); ok {
+						h.BeforeFirstWrite(func() { mu.Lock(); hooks++; mu.Unlock() })
+					}
+					return next(c)
+				}
+			})
+			if tt.timeout {
+				r.Use(Timeout(time.Minute))
+			}
+			r.Get("/x", tt.handler)
+
+			w := &writeSpy{ResponseRecorder: httptest.NewRecorder()}
+			escaped := func() (p any) {
+				defer func() { p = recover() }()
+				r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil))
+				return nil
+			}()
+			if err, ok := escaped.(error); !ok || !errors.Is(err, http.ErrAbortHandler) {
+				t.Fatalf("ServeHTTP ended with %v, want the http.ErrAbortHandler panic", escaped)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if w.wrote {
+				t.Errorf("wrote %d %q for an aborted request", w.Code, w.Body.String())
+			}
+			if hooks != 0 || failed != 0 || calls != 0 {
+				t.Errorf("hooks = %d, RequestFailed = %d, error handler calls = %d; want 0, 0, 0", hooks, failed, calls)
+			}
+			if handled != 1 {
+				t.Errorf("RequestHandled fired %d times, want 1", handled)
+			}
+		})
+	}
+}

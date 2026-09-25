@@ -35,6 +35,22 @@ type ErrorInfo struct {
 	SpanID    string
 }
 
+// isAbortPanic reports whether a recovered panic value is net/http's
+// documented abort: an error matching http.ErrAbortHandler, which a
+// handler panics with to cut its response off without the server logging
+// an error (httputil.ReverseProxy does, mid-body). It is not a bug, so
+// every recover site in the router (the matched, unmatched and static
+// dispatch, the pre-commit hook at finalize, and the Timeout handler
+// goroutine) skips the boundary for it: no PanicError, no RequestFailed,
+// no report and no response, and pending pre-commit hooks do not run.
+// The request's bookkeeping (RequestHandled with the recorded status,
+// returning the Context to the pool) still runs, and the value is
+// re-panicked last so net/http aborts the connection.
+func isAbortPanic(recovered any) bool {
+	err, ok := recovered.(error)
+	return ok && errors.Is(err, http.ErrAbortHandler)
+}
+
 // PanicError is a recovered panic carried as an error, with the stack
 // captured inside the deferred recover. The router hands one to the error
 // boundary for every recovered panic, and the Timeout middleware forwards
@@ -43,7 +59,10 @@ type ErrorInfo struct {
 //
 // A PanicError always resolves to status 500 and always reports: a panic
 // is a bug, not a response, even when the panic value is itself an
-// HTTP-shaped error.
+// HTTP-shaped error. The one panic that is not a bug, net/http's
+// documented abort http.ErrAbortHandler, never becomes a PanicError: the
+// router re-panics it so net/http aborts the connection (see
+// isAbortPanic).
 //
 // PanicError implements contract.RecoveredPanic, so it is the boundary of
 // the panic in an error chain: a report-once or response-written marker
@@ -498,8 +517,9 @@ func serverShutdownError(cause error) *contract.HTTPError {
 // DefaultErrorHandler is the router's own error response, used when no
 // handler is installed with SetErrorHandler and by Wrap. It writes nothing
 // when info.Committed is true, for an error matching
-// contract.ErrResponseWritten outside a recovered panic (a panic answers
-// 500 whatever its value), and for a context.Canceled whose request
+// contract.ErrResponseWritten outside a recovered panic (a panic the
+// router recovers answers 500 whatever its value; an http.ErrAbortHandler
+// panic never reaches it), and for a context.Canceled whose request
 // context is dead (the client is gone), unless that context's cause is
 // contract.ErrServerShuttingDown: the server cut the request off while
 // shutting down, and it answers 503 with Retry-After: 1 and Connection:
@@ -514,8 +534,9 @@ func serverShutdownError(cause error) *contract.HTTPError {
 // instance as the request path, errors, and request_id and trace_id when
 // info carries them) when contract.WantsJSON holds for the request, plain
 // text otherwise: the body the error pipeline writes outside debug mode.
-// Unless the request is an Inertia request, the response lists Accept in
-// its Vary header.
+// The response lists X-Inertia in its Vary header and, unless the request
+// is an Inertia request, the headers contract.WantsJSON reads (Accept and
+// X-Requested-With).
 // The title is contract.StatusTitle. A 4xx answer echoes the message of
 // the first contract.MessageError in the chain (HTTPError.Message, for
 // one) when it names the answered status, and carries the per-field

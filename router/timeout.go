@@ -179,6 +179,10 @@ func (tw *timeoutWriter) Push(target string, opts *http.PushOptions) error {
 // wrapper, so no race or late body can reach the wire. This mirrors the
 // design of net/http.TimeoutHandler in the standard library.
 //
+// A handler that panics with http.ErrAbortHandler before the deadline has
+// its buffered response dropped, and the panic continues on the request
+// goroutine so net/http aborts the connection; nothing is reported.
+//
 // To make "release immediately" safe against the router's Context
 // sync.Pool, the goroutine receives a shallow-cloned Context with its
 // own Request, params, values, and a timeout-safe Response wrapper. The
@@ -234,11 +238,18 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 			// as a *PanicError (stack captured here, inside the deferred
 			// recover, on the goroutine that panicked) so the router
 			// boundary reports it as a recovered panic instead of the
-			// panic being dropped into the package logger only. The
-			// goroutine is bound to the request lifetime.
+			// panic being dropped into the package logger only. An
+			// http.ErrAbortHandler panic is forwarded as a *handlerAbort
+			// instead: re-panicking here would crash the process, so the
+			// request goroutine re-panics it. The goroutine is bound to
+			// the request lifetime.
 			go func() { //safe-goroutine: forwards panic via done as request error, see comment above
 				defer func() {
 					if r := recover(); r != nil {
+						if isAbortPanic(r) {
+							done <- &handlerAbort{value: r}
+							return
+						}
 						// Skip the deferred function so the trace starts
 						// at the panic site.
 						done <- newPanicError(fmt.Errorf("velocity/router: timeout handler panic: %w", panicerr.FromRecovered(r)), 1)
@@ -250,11 +261,14 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 			select {
 			case err := <-done:
 				// Handler finished in time. Commit the buffered
-				// response to the real writer, then mirror any
-				// values the handler stashed back onto the
-				// pooled parent so downstream middleware
-				// observes them.
-				tw.flushBuffered()
+				// response to the real writer (unless the handler
+				// aborted it), then mirror any values the handler
+				// stashed back onto the pooled parent so downstream
+				// middleware observes them.
+				var aborted *handlerAbort
+				if !errors.As(err, &aborted) {
+					tw.flushBuffered()
+				}
 				mergeValues(c.values, clone.values)
 				// Hand the request the inner chain ended with back
 				// to the parent, so outer middleware and the error
@@ -267,6 +281,13 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 				// safe.
 				if inner := clone.Request; inner != nil {
 					c.Request = inner.WithContext(handoffContext{Context: c.Request.Context(), values: context.WithoutCancel(inner.Context())})
+				}
+				if aborted != nil {
+					// The handler aborted with http.ErrAbortHandler: its
+					// buffered response is dropped and the abort goes on
+					// up to the router, which lets net/http abort the
+					// connection.
+					panic(aborted.value)
 				}
 				return err
 			case <-ctx.Done():
@@ -283,6 +304,15 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 		}
 	}
 }
+
+// handlerAbort carries a Timeout handler goroutine's http.ErrAbortHandler
+// panic to the request goroutine, which re-panics value there (see
+// isAbortPanic).
+type handlerAbort struct {
+	value any
+}
+
+func (a *handlerAbort) Error() string { return "velocity/router: timeout handler aborted" }
 
 // handoffContext is the request context Timeout hands back to the parent
 // Context when the handler finished in time: Value answers from values,
