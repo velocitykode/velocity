@@ -3,8 +3,11 @@ package router
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
+	"net/textproto"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -549,5 +552,121 @@ func TestTimeout_TimedOutLeavesTheRequestUntouched(t *testing.T) {
 	}
 	if before == nil || after != before {
 		t.Error("the timeout branch replaced the caller's request")
+	}
+}
+
+// TestTimeout_EarlyHintsKeepFinalStatus asserts a 1xx other than 101 a
+// handler writes under Timeout is dropped rather than buffered as the
+// status: the handler's final status (201, 302, 204) reaches the client and
+// RequestHandled records it, and an error returned after the hint is still
+// answered at its own status.
+func TestTimeout_EarlyHintsKeepFinalStatus(t *testing.T) {
+	hint := func(c *Context) {
+		c.Response.Header().Set("Link", "</app.css>; rel=preload; as=style")
+		c.Response.WriteHeader(http.StatusEarlyHints)
+	}
+	tests := []struct {
+		name         string
+		handler      HandlerFunc
+		wantStatus   int
+		wantBody     string
+		wantLocation string
+	}{
+		{
+			name: "HintThen201",
+			handler: func(c *Context) error {
+				hint(c)
+				c.Response.WriteHeader(http.StatusCreated)
+				_, err := c.Response.Write([]byte("made"))
+				return err
+			},
+			wantStatus: http.StatusCreated,
+			wantBody:   "made",
+		},
+		{
+			name: "HintThen302",
+			handler: func(c *Context) error {
+				hint(c)
+				c.Response.Header().Set("Location", "/elsewhere")
+				c.Response.WriteHeader(http.StatusFound)
+				return nil
+			},
+			wantStatus:   http.StatusFound,
+			wantLocation: "/elsewhere",
+		},
+		{
+			name: "HintThen204",
+			handler: func(c *Context) error {
+				hint(c)
+				c.Response.WriteHeader(http.StatusNoContent)
+				return nil
+			},
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name: "HintThenError",
+			handler: func(c *Context) error {
+				hint(c)
+				return contract.NewHTTPError(http.StatusConflict)
+			},
+			wantStatus: http.StatusConflict,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var handled []int
+			var infos []int
+			r := New()
+			r.SetEventDispatcher(func(_ context.Context, event interface{}) error {
+				if rh, ok := event.(*RequestHandled); ok {
+					mu.Lock()
+					handled = append(handled, rh.StatusCode)
+					mu.Unlock()
+				}
+				return nil
+			})
+			r.Use(Timeout(5 * time.Second))
+			r.Get("/x", tt.handler)
+			srv := httptest.NewServer(r)
+			defer srv.Close()
+
+			trace := &httptrace.ClientTrace{Got1xxResponse: func(code int, _ textproto.MIMEHeader) error {
+				mu.Lock()
+				infos = append(infos, code)
+				mu.Unlock()
+				return nil
+			}}
+			req, err := http.NewRequestWithContext(httptrace.WithClientTrace(context.Background(), trace), http.MethodGet, srv.URL+"/x", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := srv.Client()
+			client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			if resp.StatusCode != tt.wantStatus {
+				t.Errorf("client status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			if tt.wantBody != "" && string(body) != tt.wantBody {
+				t.Errorf("body = %q, want %q", body, tt.wantBody)
+			}
+			if got := resp.Header.Get("Location"); got != tt.wantLocation {
+				t.Errorf("Location = %q, want %q", got, tt.wantLocation)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(infos) != 0 {
+				t.Errorf("client saw 1xx responses %v; Timeout drops informational responses", infos)
+			}
+			if len(handled) != 1 || handled[0] != tt.wantStatus {
+				t.Errorf("RequestHandled statuses = %v, want [%d]", handled, tt.wantStatus)
+			}
+		})
 	}
 }

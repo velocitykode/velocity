@@ -40,6 +40,11 @@ var ErrHandlerTimeout = errors.New("velocity/router: handler timeout")
 // the stdlib net/http.TimeoutHandler limitation. Hijack and Push
 // likewise refuse once the writer has been wrapped because we cannot
 // hand a buffered writer to a connection upgrade.
+//
+// Informational responses (a 1xx other than 101, such as 103 Early Hints)
+// are dropped: a buffered writer cannot send a hint early, and forwarding
+// one would put a network write under tw.mu. WriteHeader ignores them
+// without recording a status, so the handler's final status still lands.
 type timeoutWriter struct {
 	w  http.ResponseWriter
 	mu sync.Mutex
@@ -100,6 +105,11 @@ func (tw *timeoutWriter) WriteHeader(code int) {
 		return
 	}
 	if tw.wroteHeader {
+		return
+	}
+	if code >= 100 && code <= 199 && code != http.StatusSwitchingProtocols {
+		// An informational response is dropped, not buffered as the
+		// status (see the type comment).
 		return
 	}
 	tw.wroteHeader = true
@@ -188,7 +198,9 @@ func (tw *timeoutWriter) Push(target string, opts *http.PushOptions) error {
 // Streaming (http.Flusher), Hijack, and Push are not supported under
 // this middleware. Handlers that need any of those should not be
 // wrapped by Timeout. This matches the stdlib net/http.TimeoutHandler
-// limitation.
+// limitation. Informational responses (103 Early Hints) a handler writes
+// under Timeout are dropped, since the response is buffered until the
+// handler returns; the final status still reaches the client.
 func Timeout(duration time.Duration) MiddlewareFunc {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
