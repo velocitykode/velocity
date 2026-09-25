@@ -1348,18 +1348,14 @@ func fileError(status int, cause error) error {
 	return contract.NewHTTPError(status).WithCause(cause).WithOrigin(4)
 }
 
-// defaultPrivateNoStore sets `Cache-Control: private, no-store` on the
-// response if (and only if) the caller has not already set the header.
-// File / Download serve auth-gated bytes; without an explicit cache
-// directive, shared intermediaries (corporate proxies, CDNs) may cache
-// the body keyed on URL alone, leaking it to subsequent unauthenticated
-// requesters. Caller-set values are preserved so a handler that wants
-// public caching can override with c.SetHeader before invoking.
-func (c *Context) defaultPrivateNoStore() {
-	if c.Response == nil {
-		return
-	}
-	h := c.Response.Header()
+// defaultPrivateNoStore sets `Cache-Control: private, no-store` in h if
+// (and only if) the caller has not already set the header. File /
+// Download serve auth-gated bytes; without an explicit cache directive,
+// shared intermediaries (corporate proxies, CDNs) may cache the body keyed
+// on URL alone, leaking it to subsequent unauthenticated requesters.
+// Caller-set values are preserved so a handler that wants public caching
+// can override with c.SetHeader before invoking.
+func defaultPrivateNoStore(h http.Header) {
 	if h.Get("Cache-Control") != "" {
 		return
 	}
@@ -1380,7 +1376,11 @@ func (c *Context) defaultPrivateNoStore() {
 // (ErrPathOutsideRoot) or a directory (ErrIsDirectory), and 500 when the
 // context has no file root (ErrNilRoot) or the file cannot be opened or
 // stat'd for any other reason (the fs error, such as one matching
-// fs.ErrPermission).
+// fs.ErrPermission). A request the file cannot answer as asked writes
+// nothing either and returns an HTTP error at the status net/http's
+// content serving chose: 416 for a Range it cannot satisfy (carrying the
+// Content-Range header), 412 for a failed precondition, 500 for a file it
+// cannot size or seek. A 304 Not Modified is a response, not an error.
 func (c *Context) File(path string) error {
 	return c.serveFile(path, "", false)
 }
@@ -1408,20 +1408,96 @@ func (c *Context) Attachment(path string, filename string) error {
 }
 
 // serveFile serves File, Download and Attachment at the same call depth,
-// so the origin fileError records is the handler for all three. attach
+// so the origin their errors record is the handler for all three. attach
 // adds the Content-Disposition header for filename.
+//
+// http.ServeContent answers some requests itself with an error status (416
+// for an unsatisfiable Range, 412 for a failed precondition, 500 for a
+// file it cannot size or seek) and a plain-text body. serveFile hands it a
+// serveContentWriter so that answer never reaches the client: the status,
+// with the Content-Range it carried, comes back as a *contract.HTTPError
+// for the error boundary to render like every other failure, without the
+// file's Cache-Control or Content-Disposition.
 func (c *Context) serveFile(path, filename string, attach bool) error {
 	f, info, err := c.openServedFile(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	c.defaultPrivateNoStore()
+	sw := newServeContentWriter(c.Response)
+	defaultPrivateNoStore(sw.header)
 	if attach {
-		c.Response.Header().Set("Content-Disposition", buildContentDisposition(filename))
+		sw.header.Set("Content-Disposition", buildContentDisposition(filename))
 	}
-	http.ServeContent(c.Response, c.Request, info.Name(), info.ModTime(), f)
-	return nil
+	http.ServeContent(sw, c.Request, info.Name(), info.ModTime(), f)
+	if sw.failed == 0 {
+		return nil
+	}
+	he := contract.NewHTTPError(sw.failed).WithOrigin(2)
+	if sw.contentRange != "" {
+		he = he.WithHeader("Content-Range", sw.contentRange)
+	}
+	return he
+}
+
+// serveContentWriter is the writer serveFile hands http.ServeContent. It
+// stages header writes in header, a copy of w's header map, until a status
+// is chosen. A status below 400 (200, 206, 304) copies the staged headers
+// to w and passes the status and every body byte through. A status of 400
+// or above is recorded in failed, with the Content-Range header it
+// carried, and nothing reaches w: the status, the body and the staged
+// header edits are discarded.
+type serveContentWriter struct {
+	w            http.ResponseWriter
+	header       http.Header
+	failed       int
+	contentRange string
+	passed       bool
+}
+
+func newServeContentWriter(w http.ResponseWriter) *serveContentWriter {
+	return &serveContentWriter{w: w, header: w.Header().Clone()}
+}
+
+// Header returns the staged header map.
+func (s *serveContentWriter) Header() http.Header { return s.header }
+
+// WriteHeader passes a status below 400 through with the staged headers,
+// and records a status of 400 or above without writing anything.
+func (s *serveContentWriter) WriteHeader(code int) {
+	switch {
+	case s.passed:
+		s.w.WriteHeader(code)
+	case s.failed != 0:
+		// An error status was recorded: nothing reaches w.
+	case code >= http.StatusBadRequest:
+		s.failed = code
+		s.contentRange = s.header.Get("Content-Range")
+	default:
+		dst := s.w.Header()
+		for k := range dst {
+			if _, ok := s.header[k]; !ok {
+				delete(dst, k)
+			}
+		}
+		for k, vv := range s.header {
+			dst[k] = vv
+		}
+		s.passed = true
+		s.w.WriteHeader(code)
+	}
+}
+
+// Write passes p through once a status below 400 was written (a 200 when
+// none was), and discards it after an error status.
+func (s *serveContentWriter) Write(p []byte) (int, error) {
+	if !s.passed && s.failed == 0 {
+		s.WriteHeader(http.StatusOK)
+	}
+	if s.failed != 0 {
+		return len(p), nil
+	}
+	return s.w.Write(p)
 }
 
 // buildContentDisposition constructs an attachment Content-Disposition

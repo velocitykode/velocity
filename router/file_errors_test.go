@@ -2,6 +2,7 @@ package router
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/velocitykode/velocity/contract"
 )
@@ -139,5 +141,122 @@ func TestSaveFile_TypedCauses(t *testing.T) {
 	c.fileRoot = openTestRoot(t, t.TempDir())
 	if err := c.SaveFile(nil, "../x.txt"); !errors.Is(err, ErrInvalidFilePath) {
 		t.Errorf("traversal: err = %v, want ErrInvalidFilePath", err)
+	}
+}
+
+// writeSpy is a ResponseRecorder that records whether anything was written
+// through it.
+type writeSpy struct {
+	*httptest.ResponseRecorder
+	wrote bool
+}
+
+func (w *writeSpy) WriteHeader(code int) { w.wrote = true; w.ResponseRecorder.WriteHeader(code) }
+
+func (w *writeSpy) Write(p []byte) (int, error) { w.wrote = true; return w.ResponseRecorder.Write(p) }
+
+// TestContext_FileHelpers_ServeContentErrors asserts a request the file
+// cannot answer as asked (a Range past its end, a failed If-Match) comes
+// back from File, Download and Attachment as a typed HTTP error at the
+// status content serving chose, the 416 carrying Content-Range, with
+// nothing written: no status, body, Cache-Control or Content-Disposition.
+func TestContext_FileHelpers_ServeContentErrors(t *testing.T) {
+	tests := []struct {
+		name             string
+		header           map[string]string
+		wantStatus       int
+		wantContentRange string
+	}{
+		{name: "unsatisfiable range", header: map[string]string{"Range": "bytes=100-200"}, wantStatus: http.StatusRequestedRangeNotSatisfiable, wantContentRange: "bytes */2"},
+		{name: "failed precondition", header: map[string]string{"If-Match": `"nope"`}, wantStatus: http.StatusPreconditionFailed},
+	}
+	helpers := map[string]func(*Context, string) error{
+		"File":       func(c *Context, p string) error { return c.File(p) },
+		"Download":   func(c *Context, p string) error { return c.Download(p, "f.txt") },
+		"Attachment": func(c *Context, p string) error { return c.Attachment(p, "f.txt") },
+	}
+	root := fileErrorRoot(t)
+	for _, tt := range tests {
+		for name, call := range helpers {
+			t.Run(tt.name+"/"+name, func(t *testing.T) {
+				w := &writeSpy{ResponseRecorder: httptest.NewRecorder()}
+				req := httptest.NewRequest(http.MethodGet, "/f", nil)
+				for k, v := range tt.header {
+					req.Header.Set(k, v)
+				}
+				c := NewContext(w, req)
+				c.fileRoot = root
+				err := call(c, "ok.txt")
+				var he *contract.HTTPError
+				if !errors.As(err, &he) {
+					t.Fatalf("err = %v (%T), want a *contract.HTTPError", err, err)
+				}
+				if he.StatusCode() != tt.wantStatus {
+					t.Errorf("status = %d, want %d", he.StatusCode(), tt.wantStatus)
+				}
+				if got := he.Headers().Get("Content-Range"); got != tt.wantContentRange {
+					t.Errorf("Content-Range = %q, want %q", got, tt.wantContentRange)
+				}
+				if got := he.Origin(); !strings.Contains(got, "file_errors_test.go") {
+					t.Errorf("origin = %q, want this test file", got)
+				}
+				if w.wrote || len(w.Header()) != 0 {
+					t.Errorf("wrote %v, headers %v; want nothing", w.wrote, w.Header())
+				}
+			})
+		}
+	}
+}
+
+// TestContext_FileHelpers_ServeContentPassThrough asserts a full response,
+// a partial one and a 304 still pass through File and Download unchanged:
+// status, body, Content-Range, Cache-Control and Content-Disposition.
+func TestContext_FileHelpers_ServeContentPassThrough(t *testing.T) {
+	future := time.Now().Add(time.Hour).UTC().Format(http.TimeFormat)
+	tests := []struct {
+		name             string
+		header           map[string]string
+		wantStatus       int
+		wantBody         string
+		wantContentRange string
+	}{
+		{name: "full", wantStatus: http.StatusOK, wantBody: "ok"},
+		{name: "partial", header: map[string]string{"Range": "bytes=0-0"}, wantStatus: http.StatusPartialContent, wantBody: "o", wantContentRange: "bytes 0-0/2"},
+		{name: "not modified", header: map[string]string{"If-Modified-Since": future}, wantStatus: http.StatusNotModified},
+	}
+	root := fileErrorRoot(t)
+	for _, tt := range tests {
+		for _, attach := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/attach=%v", tt.name, attach), func(t *testing.T) {
+				w := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, "/f", nil)
+				for k, v := range tt.header {
+					req.Header.Set(k, v)
+				}
+				c := NewContext(w, req)
+				c.fileRoot = root
+				var err error
+				if attach {
+					err = c.Download("ok.txt", "f.txt")
+				} else {
+					err = c.File("ok.txt")
+				}
+				if err != nil {
+					t.Fatalf("err = %v, want nil", err)
+				}
+				if w.Code != tt.wantStatus || w.Body.String() != tt.wantBody {
+					t.Errorf("response = %d %q, want %d %q", w.Code, w.Body.String(), tt.wantStatus, tt.wantBody)
+				}
+				if got := w.Header().Get("Content-Range"); got != tt.wantContentRange {
+					t.Errorf("Content-Range = %q, want %q", got, tt.wantContentRange)
+				}
+				if got := w.Header().Get("Cache-Control"); got != "private, no-store" {
+					t.Errorf("Cache-Control = %q, want private, no-store", got)
+				}
+				if got := w.Header().Get("Content-Disposition"); (got != "") != attach {
+					t.Errorf("Content-Disposition = %q, want set only for a download", got)
+				}
+			})
+		}
 	}
 }

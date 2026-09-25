@@ -19,6 +19,8 @@ import (
 // router and through the pipeline, never shows its cause to the client,
 // and is reported (logged by the standalone router) only for the 500: a
 // missing root, or an operational open failure such as permission denied.
+// A Range the file cannot satisfy is a 416 problem answer keeping its
+// Content-Range, not net/http's plain-text body.
 func TestInstall_FileHelperErrors(t *testing.T) {
 	dir := t.TempDir()
 	outside := t.TempDir()
@@ -34,15 +36,20 @@ func TestInstall_FileHelperErrors(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "locked.txt"), []byte("locked"), 0o000); err != nil {
 		t.Fatal(err)
 	}
-	causeText := []string{"os.Root", "invalid file path", "escapes root", "no such file", "is a directory", "permission denied", "velocity/router"}
+	if err := os.WriteFile(filepath.Join(dir, "ok.txt"), []byte("abc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	causeText := []string{"os.Root", "invalid file path", "escapes root", "no such file", "is a directory", "permission denied", "invalid range", "velocity/router"}
 
 	tests := []struct {
 		name        string
 		root        string
 		path        string
-		needsUser   bool // skipped as root, which opens a mode-0 file
+		needsUser   bool   // skipped as root, which opens a mode-0 file
+		rangeHdr    string // the request's Range header
 		wantStatus  int
 		wantReports int
+		wantRange   string // the answer's Content-Range header
 	}{
 		{name: "no root", root: filepath.Join(dir, "absent"), path: "x.txt", wantStatus: http.StatusInternalServerError, wantReports: 1},
 		{name: "malformed path", root: dir, path: "../x.txt", wantStatus: http.StatusBadRequest},
@@ -50,6 +57,7 @@ func TestInstall_FileHelperErrors(t *testing.T) {
 		{name: "symlink escape", root: dir, path: "escape.txt", wantStatus: http.StatusNotFound},
 		{name: "directory", root: dir, path: "sub", wantStatus: http.StatusNotFound},
 		{name: "permission denied", root: dir, path: "locked.txt", needsUser: true, wantStatus: http.StatusInternalServerError, wantReports: 1},
+		{name: "unsatisfiable range", root: dir, path: "ok.txt", rangeHdr: "bytes=100-200", wantStatus: http.StatusRequestedRangeNotSatisfiable, wantRange: "bytes */3"},
 	}
 	helpers := map[string]func(*router.Context, string) error{
 		"File":       func(c *router.Context, p string) error { return c.File(p) },
@@ -84,9 +92,18 @@ func TestInstall_FileHelperErrors(t *testing.T) {
 						w := httptest.NewRecorder()
 						req := httptest.NewRequest(http.MethodGet, "/f", nil)
 						req.Header.Set("Accept", accept)
+						if tt.rangeHdr != "" {
+							req.Header.Set("Range", tt.rangeHdr)
+						}
 						r.ServeHTTP(w, req)
 						if w.Code != tt.wantStatus {
 							t.Errorf("%s: status = %d, want %d", name, w.Code, tt.wantStatus)
+						}
+						if got := w.Header().Get("Content-Range"); got != tt.wantRange {
+							t.Errorf("%s: Content-Range = %q, want %q", name, got, tt.wantRange)
+						}
+						if ct := w.Header().Get("Content-Type"); accept == "application/json" && ct != "application/problem+json" {
+							t.Errorf("%s: Content-Type = %q, want application/problem+json", name, ct)
 						}
 						for _, s := range causeText {
 							if strings.Contains(w.Body.String(), s) {
