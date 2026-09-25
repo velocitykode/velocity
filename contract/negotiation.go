@@ -7,6 +7,27 @@ import (
 	"strings"
 )
 
+// The request headers the negotiation below consults.
+const (
+	headerAccept         = "Accept"
+	headerXRequestedWith = "X-Requested-With"
+
+	// InertiaNegotiationHeader is the request header IsInertia reads. A
+	// response whose format depends on whether the request is an Inertia
+	// request lists it in Vary (see AppendVary).
+	InertiaNegotiationHeader = "X-Inertia"
+)
+
+// JSONNegotiationHeaders returns the request headers WantsJSON reads to
+// choose JSON, in the order a Vary header lists them: Accept, and
+// X-Requested-With (read when no media range, or */*, is preferred). A
+// response whose format that choice decided lists both in Vary (see
+// AppendVary), so a shared cache keyed on the URL never serves one
+// client's format to another.
+func JSONNegotiationHeaders() [2]string {
+	return [2]string{headerAccept, headerXRequestedWith}
+}
+
 // WantsJSON reports whether r asks for a JSON response. The preferred
 // Accept media range decides (see PreferredMediaRange: highest q, the
 // first listed among equals, q=0 excluded): application/json or any type
@@ -19,12 +40,12 @@ func WantsJSON(r *http.Request) bool {
 	if r == nil || IsInertia(r) {
 		return false
 	}
-	media := PreferredMediaRange(r.Header.Get("Accept"))
+	media := PreferredMediaRange(r.Header.Get(headerAccept))
 	if media == "application/json" || strings.HasSuffix(media, "+json") {
 		return true
 	}
 	if media == "" || media == "*/*" {
-		return strings.EqualFold(r.Header.Get("X-Requested-With"), "XMLHttpRequest")
+		return strings.EqualFold(r.Header.Get(headerXRequestedWith), "XMLHttpRequest")
 	}
 	return false
 }
@@ -32,7 +53,7 @@ func WantsJSON(r *http.Request) bool {
 // IsInertia reports whether r is an Inertia request: its X-Inertia header
 // is "true" in any case. Any other value, or no header, is not.
 func IsInertia(r *http.Request) bool {
-	return r != nil && strings.EqualFold(r.Header.Get("X-Inertia"), "true")
+	return r != nil && strings.EqualFold(r.Header.Get(InertiaNegotiationHeader), "true")
 }
 
 // MediaRange is one media range of an Accept header value.

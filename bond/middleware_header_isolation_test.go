@@ -18,11 +18,19 @@ import (
 // empty 200 answered with a redirect back drops them.
 
 func TestMiddlewareFunc_HandlerHeadersKeptOnErrorResponse(t *testing.T) {
-	_, rt := newBondRouter(t)
+	b := setupBond(t)
+	rt := router.NewV2()
+	rt.Use(func(next router.HandlerFunc) router.HandlerFunc {
+		return func(c *router.Context) error {
+			c.Response.Header().Set("X-Outer", "set before bond")
+			return next(c)
+		}
+	})
+	rt.Use(b.MiddlewareFunc())
 	rt.Get("/boom", func(c *router.Context) error {
 		c.Response.Header().Set("X-Handler-Header", "kept")
 		http.SetCookie(c.Response, &http.Cookie{Name: "sid", Value: "abc"})
-		c.Response.Header().Del("Vary")
+		c.Response.Header().Del("X-Outer")
 		return errors.New("boom")
 	})
 
@@ -41,8 +49,11 @@ func TestMiddlewareFunc_HandlerHeadersKeptOnErrorResponse(t *testing.T) {
 	if got := w.Header().Get("Set-Cookie"); got != "sid=abc" {
 		t.Errorf("Set-Cookie = %q, want %q", got, "sid=abc")
 	}
-	if got := w.Header().Get("Vary"); got != "" {
-		t.Errorf("Vary = %q, want the handler's delete kept", got)
+	if got := w.Header().Get("X-Outer"); got != "" {
+		t.Errorf("X-Outer = %q, want the handler's delete kept", got)
+	}
+	if got := w.Header().Values("Vary"); len(got) != 1 || got[0] != "X-Inertia" {
+		t.Errorf("Vary = %q, want the error answer's [X-Inertia]", got)
 	}
 }
 

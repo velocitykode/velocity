@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/velocitykode/velocity/contract"
@@ -83,11 +84,13 @@ func TestContext_IsInertia_MatchesContract(t *testing.T) {
 	}
 }
 
-// TestDefaultErrorHandler_VaryAccept asserts the standalone error writer
-// lists Accept in Vary when the Accept header chose the body (JSON or
-// plain text), keeps a Vary the handler set, and adds nothing for an
-// Inertia request, whose answer X-Inertia fixes.
-func TestDefaultErrorHandler_VaryAccept(t *testing.T) {
+// TestDefaultErrorHandler_VaryNegotiation asserts the standalone error
+// writer lists in Vary every request header that chose the body: Accept,
+// X-Requested-With and X-Inertia (one shared value when the handler set
+// no Vary) outside Inertia, X-Inertia alone for an Inertia request, whose
+// answer it fixes; a Vary the handler set is kept and a header it already
+// lists is not repeated.
+func TestDefaultErrorHandler_VaryNegotiation(t *testing.T) {
 	tests := []struct {
 		name     string
 		accept   string
@@ -95,11 +98,12 @@ func TestDefaultErrorHandler_VaryAccept(t *testing.T) {
 		preVary  string
 		wantVary []string
 	}{
-		{name: "plain text", wantVary: []string{"Accept"}},
-		{name: "json", accept: "application/json", wantVary: []string{"Accept"}},
-		{name: "keeps handler vary", accept: "application/json", preVary: "Origin", wantVary: []string{"Origin", "Accept"}},
-		{name: "no duplicate", preVary: "accept", wantVary: []string{"accept"}},
-		{name: "inertia", inertia: true, wantVary: nil},
+		{name: "plain text", wantVary: []string{"Accept, X-Requested-With, X-Inertia"}},
+		{name: "json", accept: "application/json", wantVary: []string{"Accept, X-Requested-With, X-Inertia"}},
+		{name: "keeps handler vary", accept: "application/json", preVary: "Origin", wantVary: []string{"Origin", "Accept", "X-Requested-With", "X-Inertia"}},
+		{name: "no duplicate", preVary: "accept", wantVary: []string{"accept", "X-Requested-With", "X-Inertia"}},
+		{name: "inertia", inertia: true, wantVary: []string{"X-Inertia"}},
+		{name: "inertia keeps handler vary", inertia: true, preVary: "Origin", wantVary: []string{"Origin", "X-Inertia"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -119,28 +123,34 @@ func TestDefaultErrorHandler_VaryAccept(t *testing.T) {
 				req.Header.Set("X-Inertia", "true")
 			}
 			r.ServeHTTP(w, req)
-			got := w.Header().Values("Vary")
-			if len(got) != len(tt.wantVary) {
-				t.Fatalf("Vary = %v, want %v", got, tt.wantVary)
-			}
-			for i := range got {
-				if got[i] != tt.wantVary[i] {
-					t.Errorf("Vary = %v, want %v", got, tt.wantVary)
-				}
+			if got := w.Header().Values("Vary"); !slices.Equal(got, tt.wantVary) {
+				t.Errorf("Vary = %q, want %q", got, tt.wantVary)
 			}
 		})
 	}
 }
 
 // TestDefaultErrorHandler_SharedVaryIsNotMutated asserts a later Add on
-// one response's Vary never changes the next response's value.
+// one response's Vary never changes the next response's value, for both
+// shared values.
 func TestDefaultErrorHandler_SharedVaryIsNotMutated(t *testing.T) {
-	h := http.Header{}
-	varyOnAccept(h)
-	h.Add("Vary", "Origin")
-	h2 := http.Header{}
-	varyOnAccept(h2)
-	if got := h2.Values("Vary"); len(got) != 1 || got[0] != "Accept" || varyAccept[0] != "Accept" || len(varyAccept) != 1 {
-		t.Errorf("second response Vary = %v (shared %v), want [Accept]", got, varyAccept)
+	for _, tt := range []struct {
+		inertia bool
+		want    string
+	}{
+		{inertia: false, want: "Accept, X-Requested-With, X-Inertia"},
+		{inertia: true, want: "X-Inertia"},
+	} {
+		h := http.Header{}
+		varyOnNegotiation(h, tt.inertia)
+		h.Add("Vary", "Origin")
+		h2 := http.Header{}
+		varyOnNegotiation(h2, tt.inertia)
+		if got := h2.Values("Vary"); len(got) != 1 || got[0] != tt.want {
+			t.Errorf("inertia=%v: second response Vary = %q, want [%q]", tt.inertia, got, tt.want)
+		}
+		if len(varyNegotiated) != 1 || varyNegotiated[0] != "Accept, X-Requested-With, X-Inertia" || len(varyInertia) != 1 || varyInertia[0] != "X-Inertia" {
+			t.Errorf("shared values changed: %q %q", varyNegotiated, varyInertia)
+		}
 	}
 }

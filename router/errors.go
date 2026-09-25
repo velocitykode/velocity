@@ -560,13 +560,16 @@ func writeDefaultError(c *Context, err error, res defaultResolution, info ErrorI
 		detail = res.message
 	}
 
-	// Outside Inertia (whose answer X-Inertia fixes), the request's
-	// Accept header picks problem+json or plain text, so a cache must key
-	// the response on it.
+	// X-Inertia picks the Inertia answer; outside Inertia the headers
+	// contract.WantsJSON reads pick problem+json or plain text. A cache
+	// must key the response on every header that chose it.
 	asJSON := false
-	if c.Request != nil && !contract.IsInertia(c.Request) {
-		varyOnAccept(h)
-		asJSON = contract.WantsJSON(c.Request)
+	if c.Request != nil {
+		inertia := contract.IsInertia(c.Request)
+		varyOnNegotiation(h, inertia)
+		if !inertia {
+			asJSON = contract.WantsJSON(c.Request)
+		}
 	}
 	if asJSON {
 		instance := ""
@@ -599,20 +602,45 @@ func writeDefaultError(c *Context, err error, res defaultResolution, info ErrorI
 	http.Error(c.Response, detail, res.status)
 }
 
-// varyAccept is the Vary value varyOnAccept sets on a response that
-// declares none. It is shared and never written through: http.Header.Add
-// appends into a new array (the slice's length equals its capacity) and
-// Set replaces the slice, so one response cannot change another's value.
-// Sharing it keeps the default error path from allocating for the header.
-var varyAccept = []string{"Accept"}
+// varyNegotiated and varyInertia are the Vary values varyOnNegotiation
+// sets on a response that declares none: every header contract's
+// negotiation reads, joined into one value, and X-Inertia alone. They are
+// shared and never written through: http.Header.Add appends into a new
+// array (each slice's length equals its capacity) and Set replaces the
+// slice, so one response cannot change another's value. Sharing them
+// keeps the default error path from allocating for the header.
+var (
+	varyNegotiated = []string{negotiationVaryValue()}
+	varyInertia    = []string{contract.InertiaNegotiationHeader}
+)
 
-// varyOnAccept declares Accept in h's Vary header.
-func varyOnAccept(h http.Header) {
+// negotiationVaryValue joins the headers contract's negotiation reads into
+// one Vary value: the JSON ones, then X-Inertia.
+func negotiationVaryValue() string {
+	names := contract.JSONNegotiationHeaders()
+	return strings.Join(append(names[:], contract.InertiaNegotiationHeader), ", ")
+}
+
+// varyOnNegotiation declares in h's Vary header the request headers that
+// chose the default response's format: X-Inertia always, and the headers
+// contract.WantsJSON reads unless the request is an Inertia request (whose
+// answer X-Inertia alone fixes). A response that declares no Vary gets the
+// shared value; otherwise each header is appended unless already listed.
+func varyOnNegotiation(h http.Header, inertia bool) {
 	if _, ok := h["Vary"]; !ok {
-		h["Vary"] = varyAccept
+		if inertia {
+			h["Vary"] = varyInertia
+		} else {
+			h["Vary"] = varyNegotiated
+		}
 		return
 	}
-	contract.AppendVary(h, "Accept")
+	if !inertia {
+		for _, name := range contract.JSONNegotiationHeaders() {
+			contract.AppendVary(h, name)
+		}
+	}
+	contract.AppendVary(h, contract.InertiaNegotiationHeader)
 }
 
 // ErrorHandlerMiddleware returns a middleware that offers errors from

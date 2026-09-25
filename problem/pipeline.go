@@ -488,12 +488,13 @@ func (h *Handler) respond(s *snapshot, rc RenderContext, err error, ctx *ErrorCo
 	var renderErr error
 	switch {
 	case asJSON:
-		varyOnAccept(rc, byRequest)
+		varyOnNegotiation(rc, !forceJSON, byRequest)
 		renderErr = rendererFor(s, "json").Render(rc, err, ctx, status, s.debug)
 	case rc.IsInertia():
+		varyOnNegotiation(rc, true, false)
 		renderErr = h.renderInertia(s, rc, err, ctx, status)
 	default:
-		varyOnAccept(rc, byRequest)
+		varyOnNegotiation(rc, true, byRequest)
 		renderErr = h.renderHTML(s, rc, err, ctx, status)
 	}
 	if renderErr != nil {
@@ -588,15 +589,28 @@ func negotiatesJSON(s *snapshot, r *http.Request, err error, fallback func() boo
 	return fallback(), true
 }
 
-// varyOnAccept lists Accept in the response's Vary header when the
-// request's own negotiation (its Accept header) chose the format, so a
-// cache keyed on the URL does not serve a JSON error to a browser or an
-// HTML one to an API client. A format fixed by JSONWhen, API mode or an
-// API prefix does not vary with the request.
-func varyOnAccept(rc RenderContext, byRequest bool) {
-	if byRequest {
-		contract.AppendVary(rc.Writer().Header(), "Accept")
+// varyOnNegotiation lists in the response's Vary header the request
+// headers that chose its format, so a cache keyed on the URL does not
+// serve a JSON error to a browser, an HTML one to an API client or an
+// XHR, or either to an Inertia client. negotiated is false for a format a
+// render rule forced (RenderJSON), which lists nothing. Otherwise
+// X-Inertia is always listed: it picks the Inertia answer over the HTML
+// one even when JSONWhen, API mode or an API prefix decided against JSON.
+// byRequest adds the headers contract.WantsJSON reads (Accept and
+// X-Requested-With) when the request's own negotiation chose JSON or HTML;
+// a format fixed by JSONWhen, API mode or an API prefix does not vary
+// with them.
+func varyOnNegotiation(rc RenderContext, negotiated, byRequest bool) {
+	if !negotiated {
+		return
 	}
+	h := rc.Writer().Header()
+	if byRequest {
+		for _, name := range contract.JSONNegotiationHeaders() {
+			contract.AppendVary(h, name)
+		}
+	}
+	contract.AppendVary(h, contract.InertiaNegotiationHeader)
 }
 
 // negotiatedContext is the RenderContext the render stage hands to

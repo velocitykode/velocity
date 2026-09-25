@@ -57,10 +57,23 @@ func TestInstall_ContextWantsJSONAgreesWithPipeline(t *testing.T) {
 	}
 }
 
+// varyLists reports whether any of h's Vary values lists name.
+func varyLists(h http.Header, name string) bool {
+	for _, v := range h.Values("Vary") {
+		for _, part := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // TestInstall_VaryAcceptOnlyWhenTheRequestDecides asserts the pipeline
-// lists Accept in Vary when the request's negotiation chose the JSON or
-// HTML answer, and not when JSONWhen, API mode or an API prefix fixed it
-// or the request is an Inertia request.
+// lists Accept and X-Requested-With in Vary when the request's
+// negotiation chose the JSON or HTML answer, and not when JSONWhen, API
+// mode or an API prefix fixed it or the request is an Inertia request,
+// while X-Inertia is listed on every negotiated answer.
 func TestInstall_VaryAcceptOnlyWhenTheRequestDecides(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -97,16 +110,78 @@ func TestInstall_VaryAcceptOnlyWhenTheRequestDecides(t *testing.T) {
 			if w.Code != http.StatusNotFound && !(tt.inertia && w.Code == http.StatusConflict) {
 				t.Fatalf("status = %d", w.Code)
 			}
-			vary := false
-			for _, v := range w.Header().Values("Vary") {
-				for _, part := range strings.Split(v, ",") {
-					if strings.EqualFold(strings.TrimSpace(part), "Accept") {
-						vary = true
-					}
+			for _, name := range []string{"Accept", "X-Requested-With"} {
+				if got := varyLists(w.Header(), name); got != tt.wantVary {
+					t.Errorf("Vary lists %s = %v, want %v (Vary %q)", name, got, tt.wantVary, w.Header().Values("Vary"))
 				}
 			}
-			if vary != tt.wantVary {
-				t.Errorf("Vary lists Accept = %v, want %v (Vary %v)", vary, tt.wantVary, w.Header().Values("Vary"))
+			if !varyLists(w.Header(), "X-Inertia") {
+				t.Errorf("Vary does not list X-Inertia (Vary %q)", w.Header().Values("Vary"))
+			}
+		})
+	}
+}
+
+// TestInstall_VaryListsTheHeaderThatChoseTheFormat asserts, through the
+// standalone router and the pipeline, that two requests to one URL
+// differing only in X-Requested-With (Accept */* or absent) or only in
+// X-Inertia get different answers whose Vary both list that header, so a
+// shared cache never serves one answer for the other request.
+func TestInstall_VaryListsTheHeaderThatChoseTheFormat(t *testing.T) {
+	tests := []struct {
+		name         string
+		configure    func(h *problem.Handler)
+		accept       string
+		header       string // the header the pair differs in
+		value        string
+		pipelineOnly bool // the standalone router answers both alike
+	}{
+		{name: "xhr accept any", accept: "*/*", header: "X-Requested-With", value: "XMLHttpRequest"},
+		{name: "xhr no accept", header: "X-Requested-With", value: "XMLHttpRequest"},
+		{name: "inertia html accept", accept: "text/html", header: "X-Inertia", value: "true", pipelineOnly: true},
+		{name: "inertia json accept", accept: "application/json", header: "X-Inertia", value: "true"},
+		{name: "inertia json when declines", configure: func(h *problem.Handler) {
+			h.JSONWhen(func(*http.Request, error) bool { return false })
+		}, accept: "text/html", header: "X-Inertia", value: "true", pipelineOnly: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := problem.NewHandler(problem.WithReporters())
+			h.SetDebug(false)
+			if tt.configure != nil {
+				tt.configure(h)
+			}
+			installed := router.New()
+			Install(installed, WithHandler(func() contract.ErrorHandler { return h }))
+			installed.Get("/x", func(*router.Context) error { return problem.NotFound() })
+			standalone := router.New()
+			standalone.Get("/x", func(*router.Context) error { return problem.NotFound() })
+
+			for name, r := range map[string]*router.VelocityRouterV2{"standalone": standalone, "pipeline": installed} {
+				if tt.pipelineOnly && name == "standalone" {
+					continue
+				}
+				var answers [2]*httptest.ResponseRecorder
+				for i, with := range []bool{false, true} {
+					req := httptest.NewRequest(http.MethodGet, "/x", nil)
+					if tt.accept != "" {
+						req.Header.Set("Accept", tt.accept)
+					}
+					if with {
+						req.Header.Set(tt.header, tt.value)
+					}
+					answers[i] = httptest.NewRecorder()
+					r.ServeHTTP(answers[i], req)
+				}
+				without, with := answers[0], answers[1]
+				if without.Code == with.Code && without.Header().Get("Content-Type") == with.Header().Get("Content-Type") {
+					t.Fatalf("%s: the pair got the same answer %d %q; the header chose nothing", name, with.Code, with.Header().Get("Content-Type"))
+				}
+				for label, w := range map[string]*httptest.ResponseRecorder{"without": without, "with": with} {
+					if !varyLists(w.Header(), tt.header) {
+						t.Errorf("%s %s %s: %d %q, Vary %q does not list %s", name, label, tt.header, w.Code, w.Header().Get("Content-Type"), w.Header().Values("Vary"), tt.header)
+					}
+				}
 			}
 		})
 	}

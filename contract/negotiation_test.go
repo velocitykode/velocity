@@ -191,3 +191,33 @@ func TestAppendVary(t *testing.T) {
 		})
 	}
 }
+
+// TestNegotiationHeaders_AreTheHeadersNegotiationReads asserts each header
+// JSONNegotiationHeaders lists can flip WantsJSON on its own, and
+// InertiaNegotiationHeader flips IsInertia, so a writer declaring them in
+// Vary covers every header the negotiation reads.
+func TestNegotiationHeaders_AreTheHeadersNegotiationReads(t *testing.T) {
+	values := map[string]string{
+		"Accept":           "application/json",
+		"X-Requested-With": "XMLHttpRequest",
+	}
+	for _, name := range JSONNegotiationHeaders() {
+		t.Run(name, func(t *testing.T) {
+			value, ok := values[name]
+			if !ok {
+				t.Fatalf("no probe value for %s", name)
+			}
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			before := WantsJSON(r)
+			r.Header.Set(name, value)
+			if WantsJSON(r) == before {
+				t.Errorf("setting %s: %s left WantsJSON at %v", name, value, before)
+			}
+		})
+	}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set(InertiaNegotiationHeader, "true")
+	if !IsInertia(r) {
+		t.Errorf("%s: true is not an Inertia request", InertiaNegotiationHeader)
+	}
+}
