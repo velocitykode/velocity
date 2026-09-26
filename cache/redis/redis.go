@@ -13,6 +13,7 @@ package redis
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -306,8 +307,19 @@ return 1
 `)
 
 // CompareAndSwapCtx implements contract.CacheSwapper through
-// compareAndSwapScript: both values are serialized exactly as PutCtx does,
-// so expected matches the stored bytes of the value a read returned.
+// compareAndSwapScript, which writes only while the key holds exact bytes,
+// so the swap is atomic against the stored value it matched.
+//
+// expected is a value a read returned, and a read decodes the stored JSON:
+// a struct comes back as a map whose keys re-serialize sorted, a number as
+// a float64 whose digits may differ. Re-serializing expected therefore does
+// not always reproduce the stored bytes. The first attempt swaps on the
+// re-serialized bytes, which match whenever serialization round-trips (every
+// string, and most values). When it does not match, the stored bytes are
+// read, compared with expected in the shape a read produces
+// (drivers.MatchesStoredValue), and on a match the script runs again
+// conditioned on those exact bytes, so a write landing after the read still
+// makes the swap fail. That path costs a GET and a second script run.
 func (s *RedisStore) CompareAndSwapCtx(ctx context.Context, key string, expected, value interface{}, ttl time.Duration) (bool, error) {
 	want, err := drivers.MarshalValue(expected)
 	if err != nil {
@@ -323,7 +335,32 @@ func (s *RedisStore) CompareAndSwapCtx(ctx context.Context, key string, expected
 		// round down to "forever".
 		ttlMS = 1
 	}
-	swapped, err := compareAndSwapScript.Run(ctx, s.client, []string{s.prefixedKey(key)}, want, data, ttlMS).Int()
+	prefixed := s.prefixedKey(key)
+	swapped, err := s.swapStoredBytes(ctx, prefixed, want, data, ttlMS)
+	if err != nil || swapped {
+		return swapped, err
+	}
+	stored, err := s.client.Get(ctx, prefixed).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("velocity/cache: redis get failed: %w", err)
+	}
+	same, err := drivers.MatchesStoredValue(stored, expected)
+	if err != nil {
+		return false, fmt.Errorf("velocity/cache: failed to compare expected value: %w", err)
+	}
+	if !same {
+		return false, nil
+	}
+	return s.swapStoredBytes(ctx, prefixed, stored, data, ttlMS)
+}
+
+// swapStoredBytes runs compareAndSwapScript on the prefixed key: data is
+// written with ttlMS only while the key holds exactly want.
+func (s *RedisStore) swapStoredBytes(ctx context.Context, prefixed string, want, data []byte, ttlMS int64) (bool, error) {
+	swapped, err := compareAndSwapScript.Run(ctx, s.client, []string{prefixed}, want, data, ttlMS).Int()
 	if err != nil {
 		return false, fmt.Errorf("velocity/cache: redis compare-and-swap failed: %w", err)
 	}

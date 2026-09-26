@@ -1,7 +1,6 @@
 package drivers
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"sync"
@@ -223,17 +222,15 @@ func (s *MemoryStore) ReplaceCtx(ctx context.Context, key string, value interfac
 }
 
 // CompareAndSwapCtx implements contract.CacheSwapper: under the store
-// mutex, value is written only when a live entry exists for key and its
-// value serializes (MarshalValue) to the same bytes as expected. An absent,
-// expired or different entry yields (false, nil) and nothing is written.
+// mutex, value is written only when a live entry exists for key and holds
+// the same value as expected, compared as MatchesStoredValue does on the
+// serializing stores, so a value is matched the same way on every driver.
+// An absent, expired or different entry yields (false, nil) and nothing is
+// written.
 func (s *MemoryStore) CompareAndSwapCtx(ctx context.Context, key string, expected, value interface{}, ttl time.Duration) (bool, error) {
 	_ = ctx
 	if err := s.checkValueSize(value); err != nil {
 		return false, err
-	}
-	want, err := MarshalValue(expected)
-	if err != nil {
-		return false, fmt.Errorf("velocity/cache: failed to marshal expected value: %w", err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -247,7 +244,11 @@ func (s *MemoryStore) CompareAndSwapCtx(ctx context.Context, key string, expecte
 	if err != nil {
 		return false, fmt.Errorf("velocity/cache: failed to marshal stored value: %w", err)
 	}
-	if !bytes.Equal(have, want) {
+	same, err := MatchesStoredValue(have, expected)
+	if err != nil {
+		return false, fmt.Errorf("velocity/cache: failed to compare expected value: %w", err)
+	}
+	if !same {
 		return false, nil
 	}
 	s.setLocked(prefixedKey, value, expirationFor(ttl))

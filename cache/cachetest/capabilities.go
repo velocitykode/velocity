@@ -176,6 +176,71 @@ func RunSwapperContractTests(t *testing.T, factory SwapperFactory, advance func(
 		}
 	})
 
+	// A struct is stored in field order but a serializing store reads it
+	// back as a map, whose keys re-serialize sorted: the swap must still
+	// accept the value exactly as the read returned it.
+	type swapRecord struct {
+		Z int
+		A int
+	}
+
+	t.Run("CompareAndSwapCtx_StructReadBack_Swaps", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		if err := s.PutCtx(ctx, "cas-struct", swapRecord{Z: 1, A: 2}, time.Minute); err != nil {
+			t.Fatalf("PutCtx: %v", err)
+		}
+		read, found := s.GetCtx(ctx, "cas-struct")
+		if !found {
+			t.Fatal("GetCtx did not find the stored struct")
+		}
+		ok, err := s.CompareAndSwapCtx(ctx, "cas-struct", read, "next", time.Minute)
+		if err != nil || !ok {
+			t.Fatalf("CompareAndSwapCtx on the value a read returned: ok=%v err=%v", ok, err)
+		}
+		if v, _ := s.GetCtx(ctx, "cas-struct"); v != "next" {
+			t.Fatalf("value after swap = %v, want \"next\"", v)
+		}
+	})
+
+	t.Run("CompareAndSwapCtx_StructStaleExpectation_WritesNothing", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		_ = s.PutCtx(ctx, "cas-struct-stale", swapRecord{Z: 1, A: 2}, time.Minute)
+		stale, _ := s.GetCtx(ctx, "cas-struct-stale")
+		// A write lands between the caller's read and its swap.
+		_ = s.PutCtx(ctx, "cas-struct-stale", swapRecord{Z: 1, A: 3}, time.Minute)
+		ok, err := s.CompareAndSwapCtx(ctx, "cas-struct-stale", stale, "stale", time.Minute)
+		if err != nil {
+			t.Fatalf("CompareAndSwapCtx: %v", err)
+		}
+		if ok {
+			t.Fatal("CompareAndSwapCtx swapped over a struct it did not expect")
+		}
+		if v, _ := s.GetCtx(ctx, "cas-struct-stale"); v == "stale" {
+			t.Fatal("a failed swap overwrote the intervening write")
+		}
+	})
+
+	t.Run("CompareAndSwapCtx_NumbersReadAsFloat_Swaps", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		// 1<<63+1 has no exact float64: a serializing store reads it back
+		// as 9223372036854775808, which re-serializes to different digits.
+		value := map[string]any{"big": uint64(1<<63 + 1), "ratio": 0.1, "list": []int{3, 1, 2}}
+		if err := s.PutCtx(ctx, "cas-num", value, time.Minute); err != nil {
+			t.Fatalf("PutCtx: %v", err)
+		}
+		read, found := s.GetCtx(ctx, "cas-num")
+		if !found {
+			t.Fatal("GetCtx did not find the stored value")
+		}
+		ok, err := s.CompareAndSwapCtx(ctx, "cas-num", read, "next", time.Minute)
+		if err != nil || !ok {
+			t.Fatalf("CompareAndSwapCtx on the value a read returned: ok=%v err=%v", ok, err)
+		}
+	})
+
 	t.Run("CompareAndSwapCtx_AbsentOrForgotten_NeverInserts", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()

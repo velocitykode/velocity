@@ -2,6 +2,8 @@ package drivers
 
 import (
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"unicode/utf8"
 )
 
@@ -55,4 +57,31 @@ func UnmarshalValue(data []byte) (interface{}, error) {
 		return nil, err
 	}
 	return value, nil
+}
+
+// MatchesStoredValue reports whether stored, the bytes a serializing store
+// holds for a key, carry the same value as expected, a value a read of that
+// key returned. Both sides are compared in the shape a read produces
+// (UnmarshalValue), not byte for byte: a struct is stored in field order but
+// read back as a map whose keys re-serialize sorted, and a number is read
+// back as float64, whose digits may differ from the stored ones. Comparing
+// raw bytes would therefore refuse the unchanged value a read returned.
+//
+// Two stored values that no read can tell apart compare equal. A caller
+// that must also guard against such a write swaps on the stored bytes it
+// matched, so the write still lands only while the key holds exactly them.
+func MatchesStoredValue(stored []byte, expected interface{}) (bool, error) {
+	have, err := UnmarshalValue(stored)
+	if err != nil {
+		return false, fmt.Errorf("decode stored value: %w", err)
+	}
+	encoded, err := MarshalValue(expected)
+	if err != nil {
+		return false, fmt.Errorf("encode expected value: %w", err)
+	}
+	want, err := UnmarshalValue(encoded)
+	if err != nil {
+		return false, fmt.Errorf("decode expected value: %w", err)
+	}
+	return reflect.DeepEqual(have, want), nil
 }

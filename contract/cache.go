@@ -156,9 +156,12 @@ type CacheReplacer interface {
 // one atomic step on the backend. CompareAndSwapCtx returns (true, nil)
 // when the live entry for key held expected and now holds value, and
 // (false, nil) when the entry is absent, expired or holds anything else;
-// it never inserts. Values compare by the form the store keeps them in
-// (their serialized bytes), so expected is the value as a read returned
-// it. The TTL contract matches PutCtx: ttl <= 0 keeps the entry forever.
+// it never inserts. expected is the value as a read returned it: values
+// compare in the shape a read produces (on a serializing store a struct
+// reads back as a map and a number as float64), so the unchanged value a
+// read returned always matches, and the swap is atomic against the exact
+// stored value it matched. The TTL contract matches PutCtx: ttl <= 0 keeps
+// the entry forever.
 //
 // It is what lets a caller read a value, compute a new one from it and
 // write it back without holding a lock: a write that landed in between
