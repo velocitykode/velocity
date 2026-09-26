@@ -174,9 +174,13 @@ type CacheReplacer interface {
 // comparison domain: a NaN, a non-nil func, and a value holding either. A
 // store that accepts such a value refuses a swap against it even with the
 // unchanged read ((false, nil) with no write in between), so a loop that
-// reads and retries on a refused swap never makes progress on it. The one
-// exception is the memory store given the very map, slice or pointer a
-// read returned: that is the stored value, and it matches itself. Store
+// reads and retries on a refused swap never makes progress on it. The
+// exception is the memory store, whose reflect.DeepEqual takes a map,
+// slice or pointer as equal to the very same map, slice or pointer
+// without looking inside, at any depth: an expected value that reaches the
+// NaN or func through the stored value's own map, slice or pointer (the
+// value a read returned, or a new struct or slice around a map taken from
+// it) matches. Store
 // such state in a form that compares equal to itself (a sentinel or a
 // string in place of NaN), or overwrite it with PutCtx.
 //

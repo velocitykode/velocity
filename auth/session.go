@@ -218,10 +218,13 @@ func (s *BaseSession) Regenerate() error {
 	return nil
 }
 
-// Seal marks the session as saved by the request it serves. The session
-// middleware seals it when it commits the request's one save: the cookie
-// that save delivers names the session's id, so from then on Regenerate
-// refuses to change it, and the CSRF session bag refuses a token write.
+// Seal marks the request's one commit of the session as taken. The
+// session middleware seals it at the start of that commit, before it
+// attempts the save, so a sealed session is not proof the save succeeded:
+// it means the request has no later chance to persist or deliver an id.
+// The cookie a successful save delivers names the session's id, so from
+// then on Regenerate refuses to change it, and the CSRF session bag
+// refuses a token write.
 //
 // Seal and Sealed are optional capabilities, not part of Session: a custom
 // Session implementation without them is not sealed, and after the save

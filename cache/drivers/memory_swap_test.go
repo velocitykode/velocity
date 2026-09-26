@@ -17,10 +17,13 @@ import (
 // Values that do not equal themselves are outside the comparison domain
 // (contract.CacheSwapper): a NaN, a non-nil func, and a copy of a value
 // holding a NaN never match; the value a read returned holding a NaN in a
-// map does, since that is the stored map itself.
+// map does, since that is the stored map itself, and so does a new struct
+// or slice around that same map, since the identity shortcut applies at
+// every depth.
 func TestMemoryStore_CompareAndSwapCtx_ComparesExactStoredValue(t *testing.T) {
 	fn := func() {}
 	holdsNaN := map[string]any{"x": math.NaN()}
+	type wraps struct{ M map[string]any }
 	cases := []struct {
 		name             string
 		stored, expected any
@@ -36,6 +39,9 @@ func TestMemoryStore_CompareAndSwapCtx_ComparesExactStoredValue(t *testing.T) {
 		{"UnchangedFunc", fn, fn, false},
 		{"CopyOfMapHoldingNaN", holdsNaN, map[string]any{"x": math.NaN()}, false},
 		{"SameMapHoldingNaN", holdsNaN, holdsNaN, true},
+		{"NewStructAroundSameMapHoldingNaN", wraps{M: holdsNaN}, wraps{M: holdsNaN}, true},
+		{"NewSliceAroundSameMapHoldingNaN", []any{holdsNaN}, []any{holdsNaN}, true},
+		{"NewStructAroundCopyOfMapHoldingNaN", wraps{M: holdsNaN}, wraps{M: map[string]any{"x": math.NaN()}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

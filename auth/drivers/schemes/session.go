@@ -77,9 +77,10 @@ type sessionHolder struct {
 	// afterSaveWrite.
 	transition uint64
 	// sealed is set by the seam's commit, under lifecycle held
-	// exclusively, before the queued writes are delivered: the request's
-	// one save ran, so a sign-in or recall from here on could change
-	// nothing that is saved and is refused (see seal).
+	// exclusively, before it attempts the save: the request's one commit
+	// is taken (whether or not its save then succeeds), so a sign-in or
+	// recall from here on could change nothing that is saved and is
+	// refused (see seal).
 	sealed bool
 	// committedID is the id of the live session the commit saved (or
 	// found unchanged), the one the browser holds once the response is
@@ -150,15 +151,16 @@ func (h *sessionHolder) beginTransition() {
 	h.transition++
 }
 
-// seal marks the request's session as saved. The caller holds lifecycle
-// exclusively.
+// seal marks the request's one commit as taken, before its save is
+// attempted, so it says nothing about whether the save succeeded. The
+// caller holds lifecycle exclusively.
 func (h *sessionHolder) seal() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.sealed = true
 }
 
-// isSealed reports whether the request's session was saved already.
+// isSealed reports whether the request's one commit was taken already.
 func (h *sessionHolder) isSealed() bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

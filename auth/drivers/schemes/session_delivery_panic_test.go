@@ -2,6 +2,7 @@ package schemes
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -79,5 +80,75 @@ func TestSessionMiddleware_PanicDuringDeliveryStillEndsADeletedSession(t *testin
 				}
 			})
 		}
+	}
+}
+
+// The same holds for a commit outside the session middleware (a Login or
+// Logout driven from a plain handler, which commits its own save scope): a
+// queued write that panics after an earlier one deleted the session cookie
+// leaves one deletion in the response, the later write unrun, the queue
+// closed and the session ended on every instance sharing the store.
+func TestCommitStandalone_PanicDuringDeliveryStillEndsADeletedSession(t *testing.T) {
+	for _, mode := range storeModes {
+		t.Run(mode.name, func(t *testing.T) {
+			instance := sharedInstances(t, mode.serverSide)
+			scheme := instance()
+			a := newStoreBrowser(t, scheme)
+			captured := signInAndCapture(t, a)
+
+			r := httptest.NewRequest(http.MethodGet, "/standalone", nil)
+			for _, c := range captured {
+				r.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value})
+			}
+			w := httptest.NewRecorder()
+			holder, standalone := seamHolder(r)
+			if !standalone {
+				t.Fatal("premise: a request outside the middleware is not its own save scope")
+			}
+			var laterRan bool
+			holder.lifecycle.Lock()
+			s := scheme.Session(r)
+			if s == nil {
+				t.Fatal("premise: the captured cookie loads no session")
+			}
+			holder.setSession(s)
+			s.Put("touched", true)
+			holder.queueCredentialWrite(afterSaveWrite{write: func(w http.ResponseWriter) {
+				http.SetCookie(w, &http.Cookie{Name: "vel_session", Value: "", Path: "/", MaxAge: -1})
+			}})
+			holder.queueCredentialWrite(afterSaveWrite{write: func(http.ResponseWriter) { panic("queued write failed") }})
+			holder.queueCredentialWrite(afterSaveWrite{write: func(http.ResponseWriter) { laterRan = true }})
+			func() {
+				defer holder.lifecycle.Unlock()
+				defer func() {
+					if recover() == nil {
+						t.Fatal("premise: the queued write's panic did not reach the caller")
+					}
+				}()
+				_ = commitStandalone(scheme, r, w, holder)
+			}()
+
+			var lines []string
+			for _, line := range w.Result().Header.Values("Set-Cookie") {
+				if strings.HasPrefix(line, "vel_session=") {
+					lines = append(lines, line)
+				}
+			}
+			if len(lines) != 1 || !strings.Contains(lines[0], "Max-Age=0") {
+				t.Fatalf("session cookie lines = %q, want one deletion", lines)
+			}
+			if laterRan {
+				t.Fatal("a write queued after the panicking one ran")
+			}
+			if holder.queueAfterSave(func(http.ResponseWriter) {}) {
+				t.Fatal("a write queued after the panic was accepted, but no delivery will run it")
+			}
+			if replaySignsIn(a, captured) {
+				t.Fatal("the session whose cookie was deleted before the panic still signs in")
+			}
+			if replaySignsIn(newStoreBrowser(t, instance()), captured) {
+				t.Fatal("the session whose cookie was deleted before the panic still signs in on another instance")
+			}
+		})
 	}
 }

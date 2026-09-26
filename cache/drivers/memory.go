@@ -228,7 +228,11 @@ func (s *MemoryStore) ReplaceCtx(ctx context.Context, key string, value interfac
 // this store has, since a read returns the stored value itself: two values
 // a read tells apart (integers past float64 precision, an int and a
 // float64 of the same number) never match, and the value a read returned
-// matches while the entry still holds it. An absent, expired or different
+// matches while the entry still holds it, when that value is
+// reflect.DeepEqual to itself. A NaN and a non-nil func are not, nor is a
+// value holding one, except where the comparison reaches the very map,
+// slice or pointer stored and stops there without looking inside, at any
+// depth (see contract.CacheSwapper). An absent, expired or different
 // entry yields (false, nil) and nothing is written.
 func (s *MemoryStore) CompareAndSwapCtx(ctx context.Context, key string, expected, value interface{}, ttl time.Duration) (bool, error) {
 	_ = ctx

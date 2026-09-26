@@ -272,23 +272,33 @@ func (p *preCommitWriter) Unwrap() http.ResponseWriter {
 // Renewal can never issue the cookie again after the handler deleted it. A
 // deletion of the session cookie a queued write adds ends the session the
 // same way once the delivery is over, also when a later queued write
-// panics (see finishDelivery).
+// panics.
+//
+// A panic anywhere in the commit (in the save, in a settlement after it,
+// or in a queued write) leaves the lifecycle lock released and the queue
+// closed, so a reader of the signed-in user (the router's error handler
+// answering the panic) never waits on it and a write queued afterwards is
+// refused; the panic goes on to the router unchanged (see finishCommit).
 func commitSession(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) error {
 	holder.lifecycle.Lock()
+	locked := true
+	var saved bool
+	defer func() {
+		if !locked {
+			holder.lifecycle.Lock()
+		}
+		defer holder.lifecycle.Unlock()
+		finishCommit(g, r, w, holder, saved)
+	}()
 	if s, ok := holder.getSession().(sealableSession); ok {
 		s.Seal()
 	}
-	writes, err := commitSessionHeld(g, r, w, holder)
-	holder.lifecycle.Unlock()
+	writes, err := commitSessionHeld(g, r, w, holder, &saved)
 	if err != nil {
-		holder.closeQueue()
 		return err
 	}
-	defer func() {
-		holder.lifecycle.Lock()
-		defer holder.lifecycle.Unlock()
-		finishDelivery(g, r, w, holder)
-	}()
+	holder.lifecycle.Unlock()
+	locked = false
 	deliverAfterSave(g, w, holder, writes)
 	return nil
 }
@@ -299,33 +309,39 @@ func commitSession(g *SessionScheme, r *http.Request, w http.ResponseWriter, hol
 // nothing outside the operation queues on it or reads through it, and the
 // queued writes run while the lock is still held. The session is not
 // sealed: outside the middleware each operation is its own save, and a
-// later one on the same request saves again.
+// later one on the same request saves again. It finishes the commit the
+// same way, also when a step panics (see finishCommit).
 func commitStandalone(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) error {
-	writes, err := commitSessionHeld(g, r, w, holder)
+	var saved bool
+	defer func() { finishCommit(g, r, w, holder, saved) }()
+	writes, err := commitSessionHeld(g, r, w, holder, &saved)
 	if err != nil {
-		holder.closeQueue()
 		return err
 	}
-	defer finishDelivery(g, r, w, holder)
 	deliverAfterSave(g, w, holder, writes)
 	return nil
 }
 
-// finishDelivery ends the delivery of the writes queued behind a
-// successful save, however it ended: it closes the holder's queue and
-// drops what is left in it, then ends the session the commit issued when
-// the delivery added a deletion of the session cookie (see
-// endSessionDeletedAfterSave). The commit defers it before the first
-// queued write runs, so a write that panics still leaves the queue closed
-// (a write queued afterwards is refused, not accepted for a delivery that
-// never comes) and a deletion an earlier write added still ends the
-// session: the router answers the panic with its error response, which
-// carries the response's cookies, deletion included. Nothing is saved
-// again, and a panic goes on to the router once it returns. The caller
-// holds the holder's lifecycle lock exclusively.
-func finishDelivery(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) {
+// finishCommit ends the commit however it ended: returned (the save
+// failed, or the queued writes were delivered) or unwound by a panic
+// anywhere in it (in the save, in a settlement after it, or in a queued
+// write). It closes the holder's queue and drops what is left in it, so a
+// write queued afterwards is refused rather than accepted for a delivery
+// that never comes. When the commit succeeded (saved: the session was
+// saved, or found unchanged and left unsaved, before anything after the
+// save ran) it also ends the session the commit issued when the response
+// by then carries a deletion of the session cookie (see
+// endSessionDeletedAfterSave): the router answers a panic with its error
+// response, which carries the response's cookies, deletion included. A
+// commit whose save failed or panicked issued no session, so a deletion
+// ends nothing. Nothing is saved again, and a panic goes on unchanged once
+// it returns. The commit defers it at its start, and the caller holds the
+// holder's lifecycle lock exclusively when it runs.
+func finishCommit(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder, saved bool) {
 	holder.closeQueue()
-	g.endSessionDeletedAfterSave(r, w, holder)
+	if saved {
+		g.endSessionDeletedAfterSave(r, w, holder)
+	}
 }
 
 // sealableSession is the capability commitSession seals a session through:
@@ -337,12 +353,16 @@ type sealableSession interface {
 
 // commitSessionHeld saves the session and returns the queued writes for
 // the caller to deliver once it released the holder's lifecycle lock,
-// which it holds exclusively.
-func commitSessionHeld(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) ([]func(http.ResponseWriter), error) {
+// which it holds exclusively. It sets *saved once the commit succeeded:
+// the session was saved, or needed no save, and only the settlements and
+// the delivery are left, so a panic in either still finishes a successful
+// commit (see finishCommit).
+func commitSessionHeld(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder, saved *bool) ([]func(http.ResponseWriter), error) {
 	holder.seal()
 	session := holder.getSession()
 	if session == nil {
 		holder.takeAfterSave(true)
+		*saved = true
 		return nil, nil
 	}
 	ended := g.endSessionDeletedBy(r, w, session)
@@ -370,6 +390,7 @@ func commitSessionHeld(g *SessionScheme, r *http.Request, w http.ResponseWriter,
 			return nil, err
 		}
 	}
+	*saved = true
 	for _, fn := range queued.settle {
 		fn()
 	}
@@ -599,15 +620,16 @@ var ensureSession = func(g *SessionScheme, r *http.Request) {
 // solely to keep SessionMiddleware ergonomic to unit-test alongside the
 // store implementation it drives.
 //
-// A failed save of a live session writes no session cookie and the
-// response goes out without it: the browser keeps the session cookie it
-// already holds, and the client never receives what this request changed
-// in the session (after a sign-in, the visitor is still signed out). The
-// store's write is not atomic, though: a cache-backed server record can
-// already hold the changes when the save failed after swapping it (the
-// sign-in index update failed), and the client already holds that
-// record's id; the queued undo steps reverse only the changes made
-// outside the session (see queuedWrites). A destroyed
+// A failed save of a live session delivers no new session cookie and none
+// of the queued credentials: the response goes out without them, and the
+// browser keeps the session cookie it already holds (after a sign-in,
+// which moves the session to a new id, the visitor is still signed out).
+// The store's write is not atomic, though, so the failure does not mean
+// the changes were lost: a cache-backed server record can already hold
+// them when the save failed after swapping it (the sign-in index update
+// failed), and when that record is under an id the client already holds,
+// its next request loads them. The queued undo steps reverse only the
+// changes made outside the session (see queuedWrites). A destroyed
 // session's save writes the cookie deletion whether or not its server-side
 // teardown then fails. The failure is logged; an oversize cookie gets its
 // own line naming the fix.
