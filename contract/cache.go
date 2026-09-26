@@ -156,17 +156,29 @@ type CacheReplacer interface {
 // one atomic step on the backend. CompareAndSwapCtx returns (true, nil)
 // when the live entry for key held expected and now holds value, and
 // (false, nil) when the entry is absent, expired or holds anything else;
-// it never inserts. expected is the value as a read returned it: values
-// compare in the shape a read produces (on a serializing store a struct
-// reads back as a map and a number as float64), so the unchanged value a
-// read returned always matches, and the swap is atomic against the exact
-// stored value it matched. The TTL contract matches PutCtx: ttl <= 0 keeps
-// the entry forever.
+// it never inserts. expected is the value as a read returned it, and
+// values compare with the equality the driver's reads have, so the
+// unchanged value a read returned always matches and the swap is atomic
+// against the exact stored value it matched:
+//
+//   - memory: reflect.DeepEqual against the stored value, which a read
+//     returns as is. Every difference a read shows refuses the swap,
+//     including integers past float64 precision.
+//   - redis (serializing): both sides compare in the shape a read
+//     produces, where a struct reads back as a map and a number as
+//     float64. Stored values a read cannot tell apart, such as two
+//     integers that round to the same float64, match each other.
+//
+// The TTL contract matches PutCtx: ttl <= 0 keeps the entry forever.
 //
 // It is what lets a caller read a value, compute a new one from it and
 // write it back without holding a lock: a write that landed in between
-// makes the swap fail, and the caller reads again instead of overwriting
-// it.
+// and left a value a read tells apart makes the swap fail, and the caller
+// reads again instead of overwriting it. A write that leaves a value
+// equal under the driver's equality is not detected: a write of a
+// read-equivalent value on a serializing store, and a value changed and
+// changed back (ABA) on any store, let the swap land. A caller that must
+// see every write stores a version that each write changes.
 type CacheSwapper interface {
 	CompareAndSwapCtx(ctx context.Context, key string, expected, value interface{}, ttl time.Duration) (bool, error)
 }

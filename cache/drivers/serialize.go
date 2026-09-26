@@ -67,9 +67,14 @@ func UnmarshalValue(data []byte) (interface{}, error) {
 // back as float64, whose digits may differ from the stored ones. Comparing
 // raw bytes would therefore refuse the unchanged value a read returned.
 //
-// Two stored values that no read can tell apart compare equal. A caller
-// that must also guard against such a write swaps on the stored bytes it
-// matched, so the write still lands only while the key holds exactly them.
+// Two stored values that no read of a serializing store can tell apart
+// compare equal, so this is the equality only for the serializing stores,
+// whose reads return that decoded shape. A store that returns the stored
+// value itself (memory) compares it with reflect.DeepEqual instead, since
+// its reads distinguish values this match merges, such as integers past
+// float64 precision. A caller that must also guard against such a write
+// swaps on the stored bytes it matched, so the write still lands only
+// while the key holds exactly them.
 func MatchesStoredValue(stored []byte, expected interface{}) (bool, error) {
 	have, err := UnmarshalValue(stored)
 	if err != nil {

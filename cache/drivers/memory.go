@@ -3,6 +3,7 @@ package drivers
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -223,10 +224,12 @@ func (s *MemoryStore) ReplaceCtx(ctx context.Context, key string, value interfac
 
 // CompareAndSwapCtx implements contract.CacheSwapper: under the store
 // mutex, value is written only when a live entry exists for key and holds
-// the same value as expected, compared as MatchesStoredValue does on the
-// serializing stores, so a value is matched the same way on every driver.
-// An absent, expired or different entry yields (false, nil) and nothing is
-// written.
+// a value reflect.DeepEqual to expected. That is the equality a read of
+// this store has, since a read returns the stored value itself: two values
+// a read tells apart (integers past float64 precision, an int and a
+// float64 of the same number) never match, and the value a read returned
+// matches while the entry still holds it. An absent, expired or different
+// entry yields (false, nil) and nothing is written.
 func (s *MemoryStore) CompareAndSwapCtx(ctx context.Context, key string, expected, value interface{}, ttl time.Duration) (bool, error) {
 	_ = ctx
 	if err := s.checkValueSize(value); err != nil {
@@ -240,15 +243,7 @@ func (s *MemoryStore) CompareAndSwapCtx(ctx context.Context, key string, expecte
 	if !exists || (existing.expiration != nil && !time.Now().Before(*existing.expiration)) {
 		return false, nil
 	}
-	have, err := MarshalValue(existing.value)
-	if err != nil {
-		return false, fmt.Errorf("velocity/cache: failed to marshal stored value: %w", err)
-	}
-	same, err := MatchesStoredValue(have, expected)
-	if err != nil {
-		return false, fmt.Errorf("velocity/cache: failed to compare expected value: %w", err)
-	}
-	if !same {
+	if !reflect.DeepEqual(existing.value, expected) {
 		return false, nil
 	}
 	s.setLocked(prefixedKey, value, expirationFor(ttl))

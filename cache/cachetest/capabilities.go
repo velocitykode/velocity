@@ -3,6 +3,7 @@ package cachetest
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 	"sync"
 	"testing"
@@ -240,6 +241,78 @@ func RunSwapperContractTests(t *testing.T, factory SwapperFactory, advance func(
 			t.Fatalf("CompareAndSwapCtx on the value a read returned: ok=%v err=%v", ok, err)
 		}
 	})
+
+	// A swap distinguishes every pair of values a read of the store
+	// distinguishes, and accepts the value a read of the current entry
+	// returns. The pairs differ only past float64 precision, bare and
+	// nested in a map and a slice: a store that reads values back exactly
+	// (memory) must refuse the stale expectation, a store that reads
+	// numbers back as float64 (redis) cannot tell the two writes apart and
+	// swaps, as the read of the current entry would.
+	precisionPairs := []struct {
+		name          string
+		first, second any
+	}{
+		{"Bare", uint64(1 << 53), uint64(1<<53 + 1)},
+		{"InMap", map[string]any{"n": uint64(1 << 53)}, map[string]any{"n": uint64(1<<53 + 1)}},
+		{"InSlice", []any{"a", uint64(1 << 53)}, []any{"a", uint64(1<<53 + 1)}},
+	}
+	for _, pair := range precisionPairs {
+		t.Run("CompareAndSwapCtx_LargeIntegerStaleExpectation_"+pair.name, func(t *testing.T) {
+			s := factory(t)
+			ctx := context.Background()
+			if err := s.PutCtx(ctx, "cas-prec", pair.first, time.Minute); err != nil {
+				t.Fatalf("PutCtx: %v", err)
+			}
+			stale, found := s.GetCtx(ctx, "cas-prec")
+			if !found {
+				t.Fatal("GetCtx did not find the first value")
+			}
+			// A write lands between the caller's read and its swap.
+			if err := s.PutCtx(ctx, "cas-prec", pair.second, time.Minute); err != nil {
+				t.Fatalf("PutCtx: %v", err)
+			}
+			current, _ := s.GetCtx(ctx, "cas-prec")
+			readsDiffer := !reflect.DeepEqual(stale, current)
+			ok, err := s.CompareAndSwapCtx(ctx, "cas-prec", stale, "stale", time.Minute)
+			if err != nil {
+				t.Fatalf("CompareAndSwapCtx: %v", err)
+			}
+			if readsDiffer {
+				t.Logf("reads tell the two writes apart: the swap must refuse")
+				if ok {
+					t.Fatal("CompareAndSwapCtx swapped over a write a read tells apart from its expectation")
+				}
+				if v, _ := s.GetCtx(ctx, "cas-prec"); !reflect.DeepEqual(v, current) {
+					t.Fatalf("a failed swap changed the entry: %v", v)
+				}
+				return
+			}
+			t.Logf("reads cannot tell the two writes apart: the swap must accept")
+			if !ok {
+				t.Fatal("CompareAndSwapCtx refused the value a read of the current entry returns")
+			}
+		})
+
+		t.Run("CompareAndSwapCtx_LargeIntegerUnchanged_Swaps_"+pair.name, func(t *testing.T) {
+			s := factory(t)
+			ctx := context.Background()
+			if err := s.PutCtx(ctx, "cas-prec-same", pair.second, time.Minute); err != nil {
+				t.Fatalf("PutCtx: %v", err)
+			}
+			read, found := s.GetCtx(ctx, "cas-prec-same")
+			if !found {
+				t.Fatal("GetCtx did not find the stored value")
+			}
+			ok, err := s.CompareAndSwapCtx(ctx, "cas-prec-same", read, "next", time.Minute)
+			if err != nil || !ok {
+				t.Fatalf("CompareAndSwapCtx on the value a read returned: ok=%v err=%v", ok, err)
+			}
+			if v, _ := s.GetCtx(ctx, "cas-prec-same"); v != "next" {
+				t.Fatalf("value after swap = %v, want \"next\"", v)
+			}
+		})
+	}
 
 	t.Run("CompareAndSwapCtx_AbsentOrForgotten_NeverInserts", func(t *testing.T) {
 		s := factory(t)
