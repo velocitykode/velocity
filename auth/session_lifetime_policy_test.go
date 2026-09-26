@@ -49,3 +49,20 @@ func TestSessionConfig_Timeouts(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionConfig_RememberTimeout(t *testing.T) {
+	tests := []struct {
+		remember int
+		want     time.Duration
+	}{
+		{0, 30 * 24 * time.Hour},
+		{60, time.Hour},
+		{90 * 24 * 60, 90 * 24 * time.Hour},
+	}
+	for _, tt := range tests {
+		c := SessionConfig{IdleLifetime: 120, RememberLifetime: tt.remember}
+		if got := c.RememberTimeout(); got != tt.want {
+			t.Errorf("RememberTimeout(%d) = %v, want %v", tt.remember, got, tt.want)
+		}
+	}
+}

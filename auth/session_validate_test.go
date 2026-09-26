@@ -165,3 +165,41 @@ func TestSessionConfig_Validate_AbsoluteLifetime(t *testing.T) {
 		})
 	}
 }
+
+// TestSessionConfig_Validate_RememberLifetime: the remember lifetime is its
+// own and may be shorter or longer than the session lifetime; only a
+// negative value is rejected.
+func TestSessionConfig_Validate_RememberLifetime(t *testing.T) {
+	base := SessionConfig{
+		Name:         "velocity_session",
+		IdleLifetime: 120,
+		Path:         "/",
+		Secure:       true,
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
+	}
+	tests := []struct {
+		name     string
+		remember int
+		wantErr  bool
+	}{
+		{name: "zero (framework default) accepted", remember: 0},
+		{name: "shorter than IdleLifetime accepted", remember: 60},
+		{name: "longer than the absolute cap accepted", remember: 90 * 24 * 60},
+		{name: "negative rejected", remember: -1, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := base
+			cfg.RememberLifetime = tt.remember
+			err := cfg.Validate("production")
+			if tt.wantErr {
+				if !errors.Is(err, ErrInvalidLifetime) {
+					t.Fatalf("expected ErrInvalidLifetime, got %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}

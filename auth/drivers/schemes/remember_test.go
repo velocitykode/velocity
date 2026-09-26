@@ -110,14 +110,14 @@ func TestSetRememberCookie_StoresHashedToken(t *testing.T) {
 		t.Error("user store should have been called with the hashed token")
 	}
 
-	// Cookie TTL should be min(session lifetime, 30d). With lifetime=60 min,
-	// the clamp should yield 60*60=3600 seconds.
+	// The cookie lives the remember lifetime (default 30 days), not the
+	// 60-minute idle lifetime.
 	cookies := w.Result().Cookies()
 	if len(cookies) != 1 {
 		t.Fatalf("expected 1 cookie, got %d", len(cookies))
 	}
-	if cookies[0].MaxAge != 3600 {
-		t.Errorf("cookie MaxAge = %d, want 3600 (clamped to session lifetime)", cookies[0].MaxAge)
+	if cookies[0].MaxAge != defaultRememberSeconds {
+		t.Errorf("cookie MaxAge = %d, want %d (remember lifetime)", cookies[0].MaxAge, defaultRememberSeconds)
 	}
 }
 
@@ -167,25 +167,32 @@ func TestSetRememberCookie_NonStringIdentifier(t *testing.T) {
 	}
 }
 
-func TestSetRememberCookie_RefusesZeroLifetime(t *testing.T) {
-	enc := newRememberEncryptor(t)
-	g := func() *SessionScheme {
-		g := &SessionScheme{
-			config:    auth.SessionConfig{Name: "sess", IdleLifetime: 0},
-			encryptor: enc,
-		}
-		g.userStore.Store(&userStoreHolder{p: &mockRememberStore{}})
-		g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
-		return g
-	}()
-	user := &mockRememberUser{id: "u1"}
-	w := httptest.NewRecorder()
-	err := g.setRememberCookie(context.Background(), w, user)
-	if err == nil {
-		t.Fatal("expected error for zero session lifetime")
+// The remember cookie's lifetime is its own: a configured RememberLifetime
+// sets its Max-Age, and a session with no idle timeout (a browser-session
+// cookie) still remembers its user.
+func TestSetRememberCookie_UsesRememberLifetime(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   auth.SessionConfig
+		wantSecs int
+	}{
+		{"configured remember lifetime", auth.SessionConfig{Name: "sess", IdleLifetime: 120, RememberLifetime: 7 * 24 * 60}, 7 * 24 * 60 * 60},
+		{"no idle timeout", auth.SessionConfig{Name: "sess", IdleLifetime: 0}, defaultRememberSeconds},
 	}
-	if !strings.Contains(err.Error(), "lifetime must be positive") {
-		t.Errorf("unexpected error: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := &SessionScheme{config: tt.config, encryptor: newRememberEncryptor(t)}
+			g.userStore.Store(&userStoreHolder{p: &mockRememberStore{}})
+			g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
+			w := httptest.NewRecorder()
+			if err := g.setRememberCookie(context.Background(), w, &mockRememberUser{id: "u1"}); err != nil {
+				t.Fatalf("setRememberCookie: %v", err)
+			}
+			cookies := w.Result().Cookies()
+			if len(cookies) != 1 || cookies[0].MaxAge != tt.wantSecs {
+				t.Fatalf("remember cookies = %+v, want one with MaxAge %d", cookies, tt.wantSecs)
+			}
+		})
 	}
 }
 

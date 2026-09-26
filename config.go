@@ -342,6 +342,9 @@ func ConfigFromEnv() Config {
 		// default of 30 days; negative explicitly disables the cap
 		// (unbounded sessions).
 		AbsoluteLifetime: envIntOrDefault("SESSION_ABSOLUTE_LIFETIME", 0),
+		// Remember-me credential lifetime in minutes, independent of
+		// the session lifetime: 0 (the default) is 30 days.
+		RememberLifetime: envIntOrDefault("SESSION_REMEMBER_LIFETIME", 0),
 		Path:             envOrDefault("SESSION_PATH", "/"),
 		Domain:           os.Getenv("SESSION_DOMAIN"),
 		Secure:           os.Getenv("SESSION_SECURE") != "false",

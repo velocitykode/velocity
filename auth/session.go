@@ -420,6 +420,15 @@ type SessionConfig struct {
 	// (Validate rejects an absolute cap shorter than the idle window).
 	AbsoluteLifetime int // Minutes; 0 = default (30 days), negative = no cap (explicit opt-out)
 
+	// RememberLifetime is how long, in minutes, a remember-me credential
+	// signs its user back in after the session has ended. It is the remember
+	// cookie's Max-Age, independent of IdleLifetime and AbsoluteLifetime:
+	// those end the session, the remember credential then starts a new one
+	// (a revival is a sign-in and restarts the absolute cap). Every revival
+	// reissues the credential for another RememberLifetime. Zero means the
+	// framework default (30 days); negative is rejected by Validate.
+	RememberLifetime int // Minutes; 0 = default (30 days)
+
 	// AllowJSAccess opts in to HttpOnly=false. Without this flag the
 	// session cookie MUST be HttpOnly, otherwise JavaScript (and any
 	// injected script) can steal the session ID. Name is intentionally
@@ -450,6 +459,19 @@ type SessionConfig struct {
 // unconfigured field still bounds total session age instead of leaving
 // kept-warm sessions immortal.
 const defaultAbsoluteLifetime = 30 * 24 * time.Hour
+
+// defaultRememberLifetime is the remember-me credential lifetime applied
+// when SessionConfig.RememberLifetime is zero (unset).
+const defaultRememberLifetime = 30 * 24 * time.Hour
+
+// RememberTimeout returns how long a remember-me credential lasts:
+// RememberLifetime minutes when positive, 30 days otherwise.
+func (c SessionConfig) RememberTimeout() time.Duration {
+	if c.RememberLifetime > 0 {
+		return time.Duration(c.RememberLifetime) * time.Minute
+	}
+	return defaultRememberLifetime
+}
 
 // IdleTimeout returns how long a session may go without a request before
 // it ends. Zero means the session has no idle timeout.
@@ -534,12 +556,16 @@ func (c SessionConfig) CookiePolicy() contract.CookiePolicy {
 //   - IdleLifetime must be >= 0 (negative produces an already-expired cookie)
 //   - AbsoluteLifetime, when positive, must be >= IdleLifetime (an absolute cap
 //     shorter than the rolling window is a misconfiguration)
+//   - RememberLifetime must be >= 0
 func (c SessionConfig) Validate(env string) error {
 	if c.IdleLifetime < 0 {
 		return fmt.Errorf("%w: got %d minutes", ErrInvalidLifetime, c.IdleLifetime)
 	}
 	if c.AbsoluteLifetime > 0 && c.AbsoluteLifetime < c.IdleLifetime {
 		return fmt.Errorf("%w: AbsoluteLifetime %d minutes is shorter than IdleLifetime %d minutes", ErrInvalidLifetime, c.AbsoluteLifetime, c.IdleLifetime)
+	}
+	if c.RememberLifetime < 0 {
+		return fmt.Errorf("%w: RememberLifetime %d minutes is negative", ErrInvalidLifetime, c.RememberLifetime)
 	}
 	if !c.HttpOnly && !c.AllowJSAccess {
 		return fmt.Errorf("%w: HttpOnly=false requires AllowJSAccess=true opt-in", ErrInsecureSessionConfig)

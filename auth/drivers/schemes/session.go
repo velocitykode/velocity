@@ -564,7 +564,8 @@ func (g *SessionScheme) Check(r *http.Request) bool {
 //   - auth.ErrSessionExpired: the signed-in session ended under the
 //     lifetime policy: idle for longer than SessionConfig.IdleLifetime or
 //     older than SessionConfig.AbsoluteLifetime, on the cookie or on the
-//     server record
+//     server record, and no valid remember cookie signed the user back in
+//     (a valid one revives the user on a new session instead)
 //   - auth.ErrSessionRevoked: cookie is live but the matching server-side
 //     session record was deleted (e.g. via Manager.RevokeSession)
 //   - any other error: server-side store lookup failed; fail-closed
@@ -594,7 +595,11 @@ func (g *SessionScheme) CheckWithError(r *http.Request) (bool, error) {
 //  3. user_id present: resolve the user via the user store; a lookup error
 //     or vanished user means unauthenticated.
 //  4. Consult the server-side store (when installed); a store failure or
-//     revoked record fails closed.
+//     revoked record fails closed. A revoked record also burns the remember
+//     credential the request presents (burnPresentedRememberToken). A
+//     record the lifetime policy expired drops the stale user_id and falls
+//     back to the remember cookie as in step 2; without a valid remember
+//     cookie the expiry is returned.
 //
 // Returns the resolved user, whether the request is authenticated, and
 // the consultServerStore error from step 4 (nil on every other
@@ -641,9 +646,58 @@ func (g *SessionScheme) resolveAuthenticatedUser(r *http.Request) (auth.Authenti
 	}
 
 	if err := g.consultServerStore(r, session); err != nil {
+		switch {
+		case errors.Is(err, auth.ErrSessionExpired):
+			// The lifetime policy ended the session on its server record
+			// while the cookie is still live: the identity it carries is
+			// stale. A valid remember cookie signs the user back in on a
+			// new session, exactly as when the cookie itself expired.
+			if recalled := g.checkRememberCookie(r); recalled != nil {
+				session.Remove(auth.UserIDSessionKey)
+				if g.anchorRecalledUser(r, session, recalled) {
+					return recalled, true, nil
+				}
+			}
+		case errors.Is(err, auth.ErrSessionRevoked):
+			// Revocation is authoritative: never revive, and burn the
+			// remember credential this revoked session presents so it
+			// cannot sign the device back in once the session cookie
+			// is gone.
+			g.burnPresentedRememberToken(r)
+		}
 		return nil, false, err
 	}
 	return user, true, nil
+}
+
+// burnPresentedRememberToken clears the stored remember token when the
+// request presents a remember cookie that still validates, and deletes the
+// cookie. The stored token is a single per-user hash, so a validating
+// cookie is the one live remember credential: clearing it signs out
+// exactly the device (or copy) that holds it. The clear is a
+// compare-and-swap from the matched hash when the user store supports it,
+// so a credential a concurrent Login just minted elsewhere survives.
+func (g *SessionScheme) burnPresentedRememberToken(r *http.Request) {
+	user := g.checkRememberCookie(r)
+	if user == nil {
+		return
+	}
+	matched := user.GetRememberToken()
+	userStore := g.loadUserStore()
+	var err error
+	if cas, ok := userStore.(auth.RememberTokenCompareAndSwapper); ok {
+		_, err = cas.CompareAndSwapRememberToken(r.Context(), user, matched, "")
+	} else {
+		err = userStore.UpdateRememberTokenCtx(r.Context(), user, "")
+	}
+	if err != nil {
+		g.logWarn("velocity/auth: clear remember token (revoked session) failed", "error", err)
+	}
+	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil {
+		if w := holder.getResponseWriter(); w != nil {
+			g.clearRememberCookie(w)
+		}
+	}
 }
 
 // User returns the authenticated user, or nil when the request is not
@@ -668,7 +722,9 @@ func (g *SessionScheme) User(r *http.Request) auth.Authenticatable {
 }
 
 // anchorRecalledUser performs the in-memory equivalent of a fresh Login
-// for a user recovered via the remember-cookie fallback (H-08 fix).
+// for a user recovered via the remember-cookie fallback (H-08 fix). Like
+// Login it is a sign-in: the regenerated session and its server record
+// start a new absolute lifetime.
 // Rotates the session id (defeats fixation against attacker-planted
 // cookies), writes user_id into the now-fresh bag, and, when a server-
 // side store is configured, records the new id there and re-consults.
@@ -1438,21 +1494,6 @@ func (g *SessionScheme) checkRememberCookie(r *http.Request) auth.Authenticatabl
 	return nil
 }
 
-// rememberCookieLifetime returns the cookie TTL for remember-me:
-// min(session lifetime, remember-me default). Returns an error when the
-// session lifetime is zero so callers refuse to create the cookie.
-func (g *SessionScheme) rememberCookieLifetime() (time.Duration, error) {
-	const defaultRememberDuration = 30 * 24 * time.Hour
-	if g.config.IdleLifetime <= 0 {
-		return 0, errors.New("velocity/auth: session lifetime must be positive to enable remember-me")
-	}
-	sessionLifetime := time.Duration(g.config.IdleLifetime) * time.Minute
-	if sessionLifetime < defaultRememberDuration {
-		return sessionLifetime, nil
-	}
-	return defaultRememberDuration, nil
-}
-
 // setRememberCookie sets the remember me cookie at login, persisting the
 // new token hash unconditionally through the user store (there is no prior
 // credential to guard against; login may always overwrite). ctx is the
@@ -1466,17 +1507,14 @@ func (g *SessionScheme) setRememberCookie(ctx context.Context, w http.ResponseWr
 // issueRememberCookie mints a fresh remember token, encrypts the cookie
 // payload, persists the token's SHA-256 hash through persist, and writes
 // the cookie. The raw token is encrypted into the cookie; only its hash
-// reaches the user record. Cookie TTL is min(session lifetime, 30 days).
-// Refuses to issue a cookie when the session lifetime is zero.
+// reaches the user record. The cookie lives SessionConfig.RememberTimeout,
+// independent of the session lifetime.
 //
 // Encryption runs BEFORE persist so an encryptor failure cannot strand
 // the user: overwriting the stored hash while unable to deliver the
 // replacement cookie would silently sign the device out.
 func (g *SessionScheme) issueRememberCookie(w http.ResponseWriter, user auth.Authenticatable, persist func(hashed string) error) error {
-	ttl, err := g.rememberCookieLifetime()
-	if err != nil {
-		return err
-	}
+	ttl := g.config.RememberTimeout()
 
 	// Generate remember token.
 	token, err := generateRememberToken()

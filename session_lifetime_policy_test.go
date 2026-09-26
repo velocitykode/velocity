@@ -60,3 +60,22 @@ func TestCSRFTokenIdleLifetime_UnboundedSession(t *testing.T) {
 		t.Fatalf("got %v, want 0 (store default)", got)
 	}
 }
+
+// SESSION_REMEMBER_LIFETIME sets the remember-me lifetime on its own,
+// unset leaves the 30-day default.
+func TestConfigFromEnv_SessionRememberLifetime(t *testing.T) {
+	tests := []struct {
+		env  string
+		want time.Duration
+	}{
+		{"", 30 * 24 * time.Hour},
+		{"20160", 14 * 24 * time.Hour},
+	}
+	for _, tt := range tests {
+		t.Setenv("SESSION_IDLE_LIFETIME", "120")
+		t.Setenv("SESSION_REMEMBER_LIFETIME", tt.env)
+		if got := ConfigFromEnv().Session.RememberTimeout(); got != tt.want {
+			t.Errorf("SESSION_REMEMBER_LIFETIME=%q: RememberTimeout = %v, want %v", tt.env, got, tt.want)
+		}
+	}
+}
