@@ -158,8 +158,9 @@ type CacheReplacer interface {
 // (false, nil) when the entry is absent, expired or holds anything else;
 // it never inserts. expected is the value as a read returned it, and
 // values compare with the equality the driver's reads have, so the
-// unchanged value a read returned always matches and the swap is atomic
-// against the exact stored value it matched:
+// unchanged value a read returned matches, for every value that compares
+// equal to itself under that equality, and the swap is atomic against the
+// exact stored value it matched:
 //
 //   - memory: reflect.DeepEqual against the stored value, which a read
 //     returns as is. Every difference a read shows refuses the swap,
@@ -168,6 +169,16 @@ type CacheReplacer interface {
 //     produces, where a struct reads back as a map and a number as
 //     float64. Stored values a read cannot tell apart, such as two
 //     integers that round to the same float64, match each other.
+//
+// Values that do not compare equal to themselves are outside the swap's
+// comparison domain: a NaN, a non-nil func, and a value holding either. A
+// store that accepts such a value refuses a swap against it even with the
+// unchanged read ((false, nil) with no write in between), so a loop that
+// reads and retries on a refused swap never makes progress on it. The one
+// exception is the memory store given the very map, slice or pointer a
+// read returned: that is the stored value, and it matches itself. Store
+// such state in a form that compares equal to itself (a sentinel or a
+// string in place of NaN), or overwrite it with PutCtx.
 //
 // The TTL contract matches PutCtx: ttl <= 0 keeps the entry forever.
 //

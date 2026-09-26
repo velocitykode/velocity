@@ -221,7 +221,19 @@ func (s *BaseSession) Regenerate() error {
 // Seal marks the session as saved by the request it serves. The session
 // middleware seals it when it commits the request's one save: the cookie
 // that save delivers names the session's id, so from then on Regenerate
-// refuses to change it. Invalidate still ends a sealed session.
+// refuses to change it, and the CSRF session bag refuses a token write.
+//
+// Seal and Sealed are optional capabilities, not part of Session: a custom
+// Session implementation without them is not sealed, and after the save
+// its id can still be regenerated; the scheme's Logout still retires the
+// id the save issued, whatever the implementation. The seal only guards
+// the id and the CSRF token. It is not an immutability or persistence
+// guard: Put, Remove and flash writes are still accepted in memory, and
+// nothing saves them; Invalidate still changes the session, including its
+// id, but is not a Logout (it neither retires the issued credential nor
+// ends the sign-in; call the scheme's Logout); an explicit Save still
+// writes; and the seal is not stored, so the next request loads an
+// unsealed session.
 func (s *BaseSession) Seal() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -3,6 +3,7 @@ package cachetest
 import (
 	"context"
 	"fmt"
+	"math"
 	"reflect"
 	"sort"
 	"sync"
@@ -314,6 +315,35 @@ func RunSwapperContractTests(t *testing.T, factory SwapperFactory, advance func(
 		})
 	}
 
+	t.Run("CompareAndSwapCtx_NaN_OutsideTheComparisonDomain", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		if err := s.PutCtx(ctx, "cas-nan", math.NaN(), time.Minute); err != nil {
+			t.Logf("the store refuses NaN at write (%v): no entry to swap against", err)
+			return
+		}
+		read, found := s.GetCtx(ctx, "cas-nan")
+		if !found {
+			t.Logf("the store keeps no NaN entry: nothing to swap against")
+			return
+		}
+		ok, err := s.CompareAndSwapCtx(ctx, "cas-nan", read, "next", time.Minute)
+		if err != nil {
+			t.Fatalf("CompareAndSwapCtx against a stored NaN: %v", err)
+		}
+		if ok {
+			t.Logf("the driver's equality matches the NaN a read returned: the swap landed")
+			if v, _ := s.GetCtx(ctx, "cas-nan"); v != "next" {
+				t.Fatalf("value after swap = %v, want \"next\"", v)
+			}
+			return
+		}
+		t.Logf("NaN does not equal itself: the unchanged read is refused, and a retry on it never makes progress")
+		if v, _ := s.GetCtx(ctx, "cas-nan"); !isNaN(v) {
+			t.Fatalf("a refused swap changed the entry: %v", v)
+		}
+	})
+
 	t.Run("CompareAndSwapCtx_AbsentOrForgotten_NeverInserts", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()
@@ -555,4 +585,15 @@ func RunSetStoreContractTests(t *testing.T, factory SetStoreFactory, advance fun
 			t.Fatalf("lost updates: %d members, want %d", len(got), len(want))
 		}
 	})
+}
+
+// isNaN reports whether v is a float NaN.
+func isNaN(v any) bool {
+	switch f := v.(type) {
+	case float64:
+		return math.IsNaN(f)
+	case float32:
+		return math.IsNaN(float64(f))
+	}
+	return false
 }

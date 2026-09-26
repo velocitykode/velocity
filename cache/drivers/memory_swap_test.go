@@ -2,6 +2,7 @@ package drivers
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 )
@@ -12,7 +13,14 @@ import (
 // JSON read shape (integers past float64 precision, an int and the float64
 // of the same number) are different values here, because a memory read
 // tells them apart.
+//
+// Values that do not equal themselves are outside the comparison domain
+// (contract.CacheSwapper): a NaN, a non-nil func, and a copy of a value
+// holding a NaN never match; the value a read returned holding a NaN in a
+// map does, since that is the stored map itself.
 func TestMemoryStore_CompareAndSwapCtx_ComparesExactStoredValue(t *testing.T) {
+	fn := func() {}
+	holdsNaN := map[string]any{"x": math.NaN()}
 	cases := []struct {
 		name             string
 		stored, expected any
@@ -24,6 +32,10 @@ func TestMemoryStore_CompareAndSwapCtx_ComparesExactStoredValue(t *testing.T) {
 		{"SameNumberOtherType", 5, float64(5), false},
 		{"UnchangedLargeInteger", uint64(1<<53 + 1), uint64(1<<53 + 1), true},
 		{"UnchangedNestedValue", map[string]any{"n": []any{uint64(1<<53 + 1)}}, map[string]any{"n": []any{uint64(1<<53 + 1)}}, true},
+		{"UnchangedNaN", math.NaN(), math.NaN(), false},
+		{"UnchangedFunc", fn, fn, false},
+		{"CopyOfMapHoldingNaN", holdsNaN, map[string]any{"x": math.NaN()}, false},
+		{"SameMapHoldingNaN", holdsNaN, holdsNaN, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

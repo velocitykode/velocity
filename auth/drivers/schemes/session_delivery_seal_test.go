@@ -3,7 +3,6 @@ package schemes
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -302,24 +301,29 @@ func TestCSRFRotateToken_AfterTheSaveIsRefused(t *testing.T) {
 				t.Fatalf("csrf.NewE: %v", err)
 			}
 			a := newStoreBrowser(t, scheme)
-			var before, after atomic.Value
+			var beforeErr, afterErr error
+			var afterRan atomic.Bool
 			withRoute(a, "/late-rotate", func(c *router.Context) error {
 				req := c.Request
 				id := scheme.Session(req).ID()
-				before.Store(fmt.Sprint(protector.RotateToken(req.Context(), id, id)))
+				beforeErr = protector.RotateToken(req.Context(), id, id)
 				QueueAfterSessionSave(req, func(http.ResponseWriter) {
-					after.Store(fmt.Sprint(protector.RotateToken(req.Context(), id, id)))
+					afterErr = protector.RotateToken(req.Context(), id, id)
+					afterRan.Store(true)
 				})
 				return c.String(http.StatusOK, "done")
 			})
 			signInAndCapture(t, a)
 
 			a.do(http.MethodGet, "/late-rotate")
-			if got := before.Load(); got != "<nil>" {
-				t.Fatalf("premise: rotation before the save returned %v", got)
+			if beforeErr != nil {
+				t.Fatalf("premise: rotation before the save returned %v", beforeErr)
 			}
-			if got := after.Load(); got == "<nil>" {
-				t.Fatal("a rotation after the session was saved reported success")
+			if !afterRan.Load() {
+				t.Fatal("premise: the queued rotation never ran")
+			}
+			if !errors.Is(afterErr, csrfstores.ErrSessionSealed) {
+				t.Fatalf("a rotation after the session was saved returned %v, want stores.ErrSessionSealed", afterErr)
 			}
 		})
 	}

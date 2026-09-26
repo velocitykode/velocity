@@ -299,9 +299,16 @@ func (h *sessionHolder) takeAfterSave(sessionEnded bool) queuedWrites {
 // Header() is the response's header map, so http.SetCookie and header
 // changes land in the response, while Write returns an error and writes
 // nothing and WriteHeader is ignored; the response body and status are the
-// handler's. write must not write the response through any other handle
-// (a router.Context it captured) either: the response is being committed
-// when it runs.
+// handler's. The writer has no other capability (no Flush, Hijack or
+// Unwrap): an unchecked assertion to one panics. write must not write the
+// response through any other handle (a router.Context or writer it
+// captured) either: the response is being committed when it runs, and a
+// write through the router's writer never returns. This is not enforced.
+//
+// A write that panics ends the delivery: the writes after it do not run,
+// the queue is closed, and a deletion of the session cookie an earlier
+// write added still ends the session before the panic reaches the router,
+// whose error response carries the response's cookies.
 //
 // write runs after the request's lifecycle lock is released, so it may
 // read the signed-in user (User, Check, ID). The request's session is
@@ -311,7 +318,12 @@ func (h *sessionHolder) takeAfterSave(sessionEnded bool) queuedWrites {
 // ends the session the save issued server-side but cannot delete the
 // session cookie on this response; a deletion of the session cookie it
 // adds (Context.DeleteCookie) ends the session as a handler's deletion
-// does, and replaces the session cookie the save issued.
+// does, and replaces the session cookie the save issued. The seal covers
+// the id and the CSRF token only, and only on sessions that implement it
+// (auth.BaseSession.Seal; a custom session without it is protected by the
+// Logout's retirement of the issued id alone): Put, Remove and flash
+// writes are accepted and never saved, Invalidate is not a Logout (it
+// retires nothing), and an explicit Save still writes.
 func QueueAfterSessionSave(r *http.Request, write func(w http.ResponseWriter)) bool {
 	if r == nil || write == nil {
 		return false
