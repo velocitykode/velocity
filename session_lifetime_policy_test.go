@@ -7,12 +7,14 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/csrf/stores"
 )
 
-// The CSRF token lives on the session's lifetime policy: New sets its idle
-// lifetime from the session's idle timeout (the absolute cap when the
-// session has no idle timeout), whatever the CSRF config carried.
-func TestNew_CSRFTokenLivesOnSessionLifetime(t *testing.T) {
+// The CSRF token lives in the session, so it has the session's lifetime:
+// New installs the session-bag token store, which refuses a consumed
+// single-use token for as long as a captured session cookie can stay
+// valid, the idle timeout (the absolute cap when the session has none).
+func TestNew_CSRFTokenLivesInTheSession(t *testing.T) {
 	tests := []struct {
 		name     string
 		idle     string
@@ -39,24 +41,25 @@ func TestNew_CSRFTokenLivesOnSessionLifetime(t *testing.T) {
 			} {
 				t.Setenv(k, v)
 			}
-			cfg := ConfigFromEnv()
-			cfg.CSRF.TokenIdleLifetime = 24 * time.Hour
-			a, err := New(WithConfig(cfg))
+			a, err := New(WithConfig(ConfigFromEnv()))
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
 			t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
-			if got := a.config.CSRF.TokenIdleLifetime; got != tt.want {
-				t.Fatalf("CSRF TokenIdleLifetime = %v, want %v", got, tt.want)
+			if _, ok := a.config.CSRF.Store.(*stores.SessionBagStore); !ok {
+				t.Fatalf("CSRF store %T, want *stores.SessionBagStore", a.config.CSRF.Store)
+			}
+			if got := csrfConsumedTokenLifetime(a.config.Session); got != tt.want {
+				t.Fatalf("consumed token lifetime = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
-// csrfTokenIdleLifetime leaves the token store default for a session with
-// neither an idle timeout nor an absolute cap.
-func TestCSRFTokenIdleLifetime_UnboundedSession(t *testing.T) {
-	if got := csrfTokenIdleLifetime(auth.SessionConfig{IdleLifetime: 0, AbsoluteLifetime: -1}); got != 0 {
+// csrfConsumedTokenLifetime leaves the token store default for a session
+// with neither an idle timeout nor an absolute cap.
+func TestCSRFConsumedTokenLifetime_UnboundedSession(t *testing.T) {
+	if got := csrfConsumedTokenLifetime(auth.SessionConfig{IdleLifetime: 0, AbsoluteLifetime: -1}); got != 0 {
 		t.Fatalf("got %v, want 0 (store default)", got)
 	}
 }

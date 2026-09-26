@@ -110,9 +110,11 @@ func NewE(config *Config) (*CSRF, error) {
 		return nil, fmt.Errorf("%w: SessionIDResolver is required; raw cookie value MUST NOT be used as the CSRF binding key", ErrInsecureCSRFConfig)
 	}
 
-	// Set default store if none provided
+	// Session-less default: an in-memory map keyed by session id.
+	// velocity.New sets a stores.SessionBagStore instead when CSRF binds
+	// to the session, so the token lives in the session.
 	if config.Store == nil {
-		store := stores.NewSessionStore(config.TokenIdleLifetime)
+		store := stores.NewMemoryStore()
 		store.Start(context.Background())
 		config.Store = store
 	}
@@ -284,7 +286,7 @@ func (c *CSRF) maybeWriteXSRFCookie(w http.ResponseWriter, r *http.Request) {
 	// Without this, the cookie and the page-prop could diverge if the
 	// store mints the token twice (transient inconsistency, or a slow
 	// race between Get and Set). See request_token.go.
-	c.writeXSRFCookieForSession(w, r, sessionID)
+	c.writeXSRFCookieForSession(r.Context(), w, r, sessionID)
 }
 
 // WriteXSRFCookie writes the XSRF-TOKEN cookie for sessionID to w. It
@@ -302,7 +304,7 @@ func (c *CSRF) maybeWriteXSRFCookie(w http.ResponseWriter, r *http.Request) {
 // The cookie is built by Config.CookiePolicy, the same policy as the
 // safe-method bootstrap write and the logout clear, so its Secure,
 // SameSite, Path and Domain are identical on all three.
-func (c *CSRF) WriteXSRFCookie(w http.ResponseWriter, sessionID string) {
+func (c *CSRF) WriteXSRFCookie(ctx context.Context, w http.ResponseWriter, sessionID string) {
 	if c == nil || c.config == nil || w == nil || sessionID == "" {
 		return
 	}
@@ -311,7 +313,7 @@ func (c *CSRF) WriteXSRFCookie(w http.ResponseWriter, sessionID string) {
 	// observe the drift surface the cache exists to close (it runs
 	// once after RotateToken, not paired with a sharePropsFunc read),
 	// so a direct GetToken is fine.
-	c.writeXSRFCookieForSession(w, nil, sessionID)
+	c.writeXSRFCookieForSession(ctx, w, nil, sessionID)
 }
 
 // writeXSRFCookieForSession is the shared body used by both
@@ -324,8 +326,8 @@ func (c *CSRF) WriteXSRFCookie(w http.ResponseWriter, sessionID string) {
 // cache so the cookie value and any downstream TokenForRequest reader
 // (sharePropsFunc, template helper) agree byte-for-byte. When r is nil
 // (post-rotation WriteXSRFCookie call site), fall back to direct
-// Store.Get via GetToken.
-func (c *CSRF) writeXSRFCookieForSession(w http.ResponseWriter, r *http.Request, sessionID string) {
+// Store.Get via GetToken under ctx.
+func (c *CSRF) writeXSRFCookieForSession(ctx context.Context, w http.ResponseWriter, r *http.Request, sessionID string) {
 	if !c.config.WriteXSRFCookie {
 		return
 	}
@@ -350,7 +352,7 @@ func (c *CSRF) writeXSRFCookieForSession(w http.ResponseWriter, r *http.Request,
 		// the per-response masked form, so no further masking here.
 		token, err = TokenForRequest(r)
 	} else {
-		token, err = c.GetToken(sessionID)
+		token, err = c.GetToken(ctx, sessionID)
 		if err == nil && token != "" {
 			// No request-scoped cache on this path; mask at the sink
 			// so the cookie never carries the raw stored token.
@@ -365,11 +367,10 @@ func (c *CSRF) writeXSRFCookieForSession(w http.ResponseWriter, r *http.Request,
 		cookieName = "XSRF-TOKEN"
 	}
 	// No Max-Age: the cookie is a browser-session cookie with no clock of
-	// its own. The token's validity is the server-side idle clock (see
-	// Config.TokenIdleLifetime), which every request through this
-	// middleware restarts; a cookie Max-Age could only slide on safe
-	// requests, so a run of unsafe ones would let the browser drop the
-	// cookie of a still-active session.
+	// its own. The token's validity is the store's: the session's
+	// lifetime when the token lives in the session. A cookie Max-Age
+	// could only slide on safe requests, so a run of unsafe ones would
+	// let the browser drop the cookie of a still-active session.
 	maxAge := 0
 	// URL-encode so axios-style clients can echo the value verbatim in
 	// X-XSRF-TOKEN without double-encoding. Not HttpOnly: SPAs must read
@@ -455,9 +456,10 @@ func (c *CSRF) validateToken(w http.ResponseWriter, r *http.Request) error {
 	// Fast path for single-use tokens when the store supports an atomic
 	// compare-and-delete. This is the only primitive that prevents two
 	// replicas from accepting the same token simultaneously.
+	ctx := r.Context()
 	if c.config.SingleUse {
 		if consumer, ok := c.config.Store.(AtomicConsumer); ok {
-			consumed, err := consumer.ConsumeIfMatch(sessionID, requestToken)
+			consumed, err := consumer.ConsumeIfMatch(ctx, sessionID, requestToken)
 			if err != nil {
 				log.Printf("velocity/csrf: ConsumeIfMatch failed for session %s: %v", sessionID, err)
 				return ErrTokenInvalid
@@ -479,7 +481,7 @@ func (c *CSRF) validateToken(w http.ResponseWriter, r *http.Request) error {
 		defer c.singleUseMu.Unlock()
 	}
 
-	expectedToken, err := c.config.Store.Get(sessionID)
+	expectedToken, err := c.config.Store.Get(ctx, sessionID)
 	if err != nil {
 		return ErrTokenInvalid
 	}
@@ -492,7 +494,7 @@ func (c *CSRF) validateToken(w http.ResponseWriter, r *http.Request) error {
 
 	// Handle single-use tokens (degraded path - store lacks AtomicConsumer).
 	if c.config.SingleUse {
-		if err := c.config.Store.Delete(sessionID); err != nil {
+		if err := c.config.Store.Delete(ctx, sessionID); err != nil {
 			log.Printf("velocity/csrf: failed to delete single-use token for session %s: %v", sessionID, err)
 		}
 	}
@@ -733,7 +735,7 @@ func (c *CSRF) RefreshHandler() http.HandlerFunc {
 		}
 
 		// Store token
-		if err := c.config.Store.Set(sessionID, token); err != nil {
+		if err := c.config.Store.Set(r.Context(), sessionID, token); err != nil {
 			http.Error(w, "Failed to store token", http.StatusInternalServerError)
 			return
 		}
@@ -761,13 +763,15 @@ func (c *CSRF) RefreshHandler() http.HandlerFunc {
 // the remember-cookie revival path so the token follows the session-id
 // rotation, closing the orphan-token window described in the H-02 audit
 // finding. oldID may be empty (first login on a fresh session); newID
-// must be non-empty.
+// must be non-empty. ctx carries the regenerated session, so a store that
+// keeps the token in the session replaces it there, and the session
+// scheme saves it with the session.
 //
 // A delete error on oldID is logged but does NOT abort the rotation: the
 // new token must still be installed under newID so the post-login request
 // has a valid token to validate against. A set error on newID IS returned
 // so the caller can surface it (Login aborts on token-mint failure).
-func (c *CSRF) RotateToken(oldID, newID string) error {
+func (c *CSRF) RotateToken(ctx context.Context, oldID, newID string) error {
 	if c == nil || c.config == nil || c.config.Store == nil {
 		return ErrNoStore
 	}
@@ -775,7 +779,7 @@ func (c *CSRF) RotateToken(oldID, newID string) error {
 		return fmt.Errorf("velocity/csrf: RotateToken: newID is required")
 	}
 	if oldID != "" && oldID != newID {
-		if err := c.config.Store.Delete(oldID); err != nil {
+		if err := c.config.Store.Delete(ctx, oldID); err != nil {
 			log.Printf("velocity/csrf: RotateToken: delete old token for session %s failed: %v", oldID, err)
 		}
 	}
@@ -783,7 +787,7 @@ func (c *CSRF) RotateToken(oldID, newID string) error {
 	if err != nil {
 		return fmt.Errorf("velocity/csrf: RotateToken: generate: %w", err)
 	}
-	if err := c.config.Store.Set(newID, token); err != nil {
+	if err := c.config.Store.Set(ctx, newID, token); err != nil {
 		return fmt.Errorf("velocity/csrf: RotateToken: store set: %w", err)
 	}
 	return nil
@@ -816,21 +820,22 @@ func (c *CSRF) ClearXSRFCookie(w http.ResponseWriter, r *http.Request) {
 // bound to id. Session schemes call this from Logout (before
 // Session.Invalidate) so the token does not survive the session in the
 // CSRF store; without this a captured cookie+token pair would remain
-// valid for its idle lifetime past logout.
+// valid past logout. ctx carries the session being logged out.
 //
 // A delete on a missing entry is not an error (idempotent), matching the
 // underlying Store.Delete contract.
-func (c *CSRF) RevokeToken(id string) error {
+func (c *CSRF) RevokeToken(ctx context.Context, id string) error {
 	if c == nil || c.config == nil || c.config.Store == nil {
 		return ErrNoStore
 	}
 	if id == "" {
 		return nil
 	}
-	return c.config.Store.Delete(id)
+	return c.config.Store.Delete(ctx, id)
 }
 
-// GetToken retrieves or generates a token for the given session ID.
+// GetToken retrieves or generates a token for the given session ID. ctx
+// is the context of the request served under that session.
 //
 // The return value is the RAW stored token. Do not write it into a
 // response verbatim: every emission sink must wrap it with MaskToken so
@@ -838,13 +843,13 @@ func (c *CSRF) RevokeToken(id string) error {
 // XSRF-TOKEN cookie writes, TokenForRequest, RefreshHandler - already
 // do). Raw values remain valid on submission, so existing callers that
 // compare or replay the raw token keep working.
-func (c *CSRF) GetToken(sessionID string) (string, error) {
+func (c *CSRF) GetToken(ctx context.Context, sessionID string) (string, error) {
 	if c.config.Store == nil {
 		return "", ErrNoStore
 	}
 
 	// Try to get existing token
-	token, err := c.config.Store.Get(sessionID)
+	token, err := c.config.Store.Get(ctx, sessionID)
 	if err == nil {
 		return token, nil
 	}
@@ -864,7 +869,7 @@ func (c *CSRF) GetToken(sessionID string) (string, error) {
 	}
 
 	// Store token
-	if err := c.config.Store.Set(sessionID, token); err != nil {
+	if err := c.config.Store.Set(ctx, sessionID, token); err != nil {
 		return "", err
 	}
 

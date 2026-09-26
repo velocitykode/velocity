@@ -2,6 +2,7 @@ package csrf
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -99,13 +100,13 @@ func TestMiddleware_UnsafeMethods_NoToken(t *testing.T) {
 func TestMiddleware_ValidToken_Header(t *testing.T) {
 	config := DefaultConfig()
 	config.SessionIDResolver = testCookieResolver("session_id")
-	config.Store = stores.NewSessionStore()
+	config.Store = stores.NewMemoryStore()
 	csrf := New(config)
 
 	// Generate and store token
 	sessionID := "test-session"
 	token, _ := GenerateToken()
-	csrf.config.Store.Set(sessionID, token)
+	csrf.config.Store.Set(context.Background(), sessionID, token)
 
 	handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -127,13 +128,13 @@ func TestMiddleware_ValidToken_Header(t *testing.T) {
 func TestMiddleware_ValidToken_FormField(t *testing.T) {
 	config := DefaultConfig()
 	config.SessionIDResolver = testCookieResolver("session_id")
-	config.Store = stores.NewSessionStore()
+	config.Store = stores.NewMemoryStore()
 	csrf := New(config)
 
 	// Generate and store token
 	sessionID := "test-session"
 	token, _ := GenerateToken()
-	csrf.config.Store.Set(sessionID, token)
+	csrf.config.Store.Set(context.Background(), sessionID, token)
 
 	handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -160,12 +161,12 @@ func TestMiddleware_ValidToken_FormField(t *testing.T) {
 func TestMiddleware_ValidToken_XSRFHeader(t *testing.T) {
 	config := DefaultConfig()
 	config.SessionIDResolver = testCookieResolver("session_id")
-	config.Store = stores.NewSessionStore()
+	config.Store = stores.NewMemoryStore()
 	csrf := New(config)
 
 	sessionID := "test-session"
 	token, _ := GenerateToken()
-	csrf.config.Store.Set(sessionID, token)
+	csrf.config.Store.Set(context.Background(), sessionID, token)
 
 	handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -189,12 +190,12 @@ func TestMiddleware_ValidToken_XSRFHeader(t *testing.T) {
 func TestMiddleware_XSRFHeader_Tampered(t *testing.T) {
 	config := DefaultConfig()
 	config.SessionIDResolver = testCookieResolver("session_id")
-	config.Store = stores.NewSessionStore()
+	config.Store = stores.NewMemoryStore()
 	csrf := New(config)
 
 	sessionID := "test-session"
 	token, _ := GenerateToken()
-	csrf.config.Store.Set(sessionID, token)
+	csrf.config.Store.Set(context.Background(), sessionID, token)
 
 	handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -220,12 +221,12 @@ func TestMiddleware_XSRFHeader_Precedence(t *testing.T) {
 	newHandler := func() (http.Handler, string, string) {
 		config := DefaultConfig()
 		config.SessionIDResolver = testCookieResolver("session_id")
-		config.Store = stores.NewSessionStore()
+		config.Store = stores.NewMemoryStore()
 		csrf := New(config)
 
 		sessionID := "test-session"
 		token, _ := GenerateToken()
-		csrf.config.Store.Set(sessionID, token)
+		csrf.config.Store.Set(context.Background(), sessionID, token)
 
 		handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -270,12 +271,12 @@ func TestMiddleware_XSRFHeader_Precedence(t *testing.T) {
 func TestMiddleware_XSRFHeader_BadEscape(t *testing.T) {
 	config := DefaultConfig()
 	config.SessionIDResolver = testCookieResolver("session_id")
-	config.Store = stores.NewSessionStore()
+	config.Store = stores.NewMemoryStore()
 	csrf := New(config)
 
 	sessionID := "test-session"
 	token, _ := GenerateToken()
-	csrf.config.Store.Set(sessionID, token)
+	csrf.config.Store.Set(context.Background(), sessionID, token)
 
 	handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -318,7 +319,7 @@ func TestMiddleware_XSRFHeader_BadEscape(t *testing.T) {
 func TestMiddleware_XSRFHeader_CookieRoundTrip(t *testing.T) {
 	config := DefaultConfig()
 	config.SessionIDResolver = testCookieResolver("session_id")
-	config.Store = stores.NewSessionStore()
+	config.Store = stores.NewMemoryStore()
 	csrf := New(config)
 
 	handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -354,13 +355,13 @@ func TestMiddleware_XSRFHeader_CookieRoundTrip(t *testing.T) {
 func TestMiddleware_InvalidToken(t *testing.T) {
 	config := DefaultConfig()
 	config.SessionIDResolver = testCookieResolver("session_id")
-	config.Store = stores.NewSessionStore()
+	config.Store = stores.NewMemoryStore()
 	csrf := New(config)
 
 	// Generate and store token
 	sessionID := "test-session"
 	token, _ := GenerateToken()
-	csrf.config.Store.Set(sessionID, token)
+	csrf.config.Store.Set(context.Background(), sessionID, token)
 
 	handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -449,7 +450,7 @@ func TestMiddleware_ExcludeFunc(t *testing.T) {
 func TestRefreshHandler(t *testing.T) {
 	config := DefaultConfig()
 	config.SessionIDResolver = testCookieResolver("session_id")
-	config.Store = stores.NewSessionStore()
+	config.Store = stores.NewMemoryStore()
 	csrf := New(config)
 
 	handler := csrf.RefreshHandler()
@@ -473,13 +474,13 @@ func TestRefreshHandler(t *testing.T) {
 func TestGetToken(t *testing.T) {
 	config := DefaultConfig()
 	config.SessionIDResolver = testCookieResolver("session_id")
-	config.Store = stores.NewSessionStore()
+	config.Store = stores.NewMemoryStore()
 	csrf := New(config)
 
 	sessionID := "test-session"
 
 	// Get token (should generate new one)
-	token1, err := csrf.GetToken(sessionID)
+	token1, err := csrf.GetToken(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("Failed to get token: %v", err)
 	}
@@ -488,7 +489,7 @@ func TestGetToken(t *testing.T) {
 	}
 
 	// Get token again (should return same token)
-	token2, err := csrf.GetToken(sessionID)
+	token2, err := csrf.GetToken(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("Failed to get token: %v", err)
 	}
@@ -502,27 +503,29 @@ func TestGetToken(t *testing.T) {
 // non-sentinel error from Get to simulate a transient backend failure
 // (network, timeout). Set/Delete/Exists pass through.
 type flakyGetStore struct {
-	inner   *stores.SessionStore
+	inner   *stores.MemoryStore
 	failGet atomic.Bool
 }
 
 var errStoreTransient = errors.New("transient store failure")
 
-func (s *flakyGetStore) Get(id string) (string, error) {
+func (s *flakyGetStore) Get(ctx context.Context, id string) (string, error) {
 	if s.failGet.Load() {
 		return "", errStoreTransient
 	}
-	return s.inner.Get(id)
+	return s.inner.Get(ctx, id)
 }
-func (s *flakyGetStore) Set(id, token string) error { return s.inner.Set(id, token) }
-func (s *flakyGetStore) Delete(id string) error     { return s.inner.Delete(id) }
-func (s *flakyGetStore) Exists(id string) bool      { return s.inner.Exists(id) }
+func (s *flakyGetStore) Set(ctx context.Context, id string, token string) error {
+	return s.inner.Set(ctx, id, token)
+}
+func (s *flakyGetStore) Delete(ctx context.Context, id string) error { return s.inner.Delete(ctx, id) }
+func (s *flakyGetStore) Exists(ctx context.Context, id string) bool  { return s.inner.Exists(ctx, id) }
 
 // TestGetToken_TransientStoreError pins the regression where GetToken
 // treated ANY Store.Get error as a miss and minted+stored a fresh token,
 // silently invalidating the token every other tab/client already held.
 func TestGetToken_TransientStoreError(t *testing.T) {
-	store := &flakyGetStore{inner: stores.NewSessionStore()}
+	store := &flakyGetStore{inner: stores.NewMemoryStore()}
 	config := DefaultConfig()
 	config.SessionIDResolver = testCookieResolver("session_id")
 	config.Store = store
@@ -531,19 +534,19 @@ func TestGetToken_TransientStoreError(t *testing.T) {
 	sessionID := "test-session"
 
 	// Seed a token the "other tabs" hold.
-	seeded, err := csrf.GetToken(sessionID)
+	seeded, err := csrf.GetToken(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("seed GetToken: %v", err)
 	}
 
 	// Transient failure: error must surface, token must NOT rotate.
 	store.failGet.Store(true)
-	if _, err := csrf.GetToken(sessionID); !errors.Is(err, errStoreTransient) {
+	if _, err := csrf.GetToken(context.Background(), sessionID); !errors.Is(err, errStoreTransient) {
 		t.Fatalf("expected transient store error to surface, got %v", err)
 	}
 	store.failGet.Store(false)
 
-	got, err := csrf.GetToken(sessionID)
+	got, err := csrf.GetToken(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("GetToken after recovery: %v", err)
 	}
@@ -552,7 +555,7 @@ func TestGetToken_TransientStoreError(t *testing.T) {
 	}
 
 	// A genuine miss (sentinel) still mints.
-	minted, err := csrf.GetToken("fresh-session")
+	minted, err := csrf.GetToken(context.Background(), "fresh-session")
 	if err != nil {
 		t.Fatalf("GetToken on true miss: %v", err)
 	}
@@ -601,12 +604,12 @@ func BenchmarkMiddleware_SafeMethod(b *testing.B) {
 func BenchmarkMiddleware_ValidToken(b *testing.B) {
 	config := DefaultConfig()
 	config.SessionIDResolver = testCookieResolver("session_id")
-	config.Store = stores.NewSessionStore()
+	config.Store = stores.NewMemoryStore()
 	csrf := New(config)
 
 	sessionID := "test-session"
 	token, _ := GenerateToken()
-	csrf.config.Store.Set(sessionID, token)
+	csrf.config.Store.Set(context.Background(), sessionID, token)
 
 	handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
@@ -727,7 +730,7 @@ func TestCSRF_RawCookieValueNeverTrustedAsSessionID(t *testing.T) {
 	// to reading the cookie value. Wire a resolver that rejects every
 	// request; a raw session_id cookie must be ignored.
 	cfg = DefaultConfig()
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	cfg.SessionIDResolver = func(r *http.Request) (string, error) {
 		return "", ErrNoSession
 	}
@@ -745,7 +748,7 @@ func TestCSRF_RawCookieValueNeverTrustedAsSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateToken: %v", err)
 	}
-	if err := c.config.Store.Set(attackerKey, token); err != nil {
+	if err := c.config.Store.Set(context.Background(), attackerKey, token); err != nil {
 		t.Fatalf("seed token: %v", err)
 	}
 
@@ -813,7 +816,7 @@ func newCSRFWithToken(t *testing.T) (*CSRF, string, string) {
 	t.Helper()
 	cfg := DefaultConfig()
 	cfg.SessionIDResolver = testCookieResolver("session_id")
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	c := New(cfg)
 
 	sessionID := "test-session"
@@ -821,7 +824,7 @@ func newCSRFWithToken(t *testing.T) (*CSRF, string, string) {
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}
-	if err := c.config.Store.Set(sessionID, token); err != nil {
+	if err := c.config.Store.Set(context.Background(), sessionID, token); err != nil {
 		t.Fatalf("store set: %v", err)
 	}
 	return c, sessionID, token
@@ -1032,7 +1035,7 @@ func TestXSRFCookie_WrittenOnSafeMethodWithSession(t *testing.T) {
 
 	cfg := DefaultConfig()
 	cfg.SessionIDResolver = testCookieResolver("session_id")
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	c := New(cfg)
 
 	// Seed a known token so we can compare.
@@ -1040,7 +1043,7 @@ func TestXSRFCookie_WrittenOnSafeMethodWithSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateToken: %v", err)
 	}
-	if err := c.config.Store.Set(sessionID, token); err != nil {
+	if err := c.config.Store.Set(context.Background(), sessionID, token); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -1097,7 +1100,7 @@ func TestXSRFCookie_PlainHTTPWithSecureFalseConfigEmitsNonSecureCookie(t *testin
 
 	cfg := DefaultConfig()
 	cfg.SessionIDResolver = testCookieResolver("session_id")
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	cfg.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode)
 	c := New(cfg)
 
@@ -1105,7 +1108,7 @@ func TestXSRFCookie_PlainHTTPWithSecureFalseConfigEmitsNonSecureCookie(t *testin
 	if err != nil {
 		t.Fatalf("GenerateToken: %v", err)
 	}
-	if err := c.config.Store.Set(sessionID, token); err != nil {
+	if err := c.config.Store.Set(context.Background(), sessionID, token); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -1134,7 +1137,7 @@ func TestXSRFCookie_ProxyTerminatedTLSPlainHTTPWithSecureConfig(t *testing.T) {
 		t.Helper()
 		cfg := DefaultConfig()
 		cfg.SessionIDResolver = testCookieResolver("session_id")
-		cfg.Store = stores.NewSessionStore()
+		cfg.Store = stores.NewMemoryStore()
 		cfg.CookiePolicy = contract.CookiePolicy{}
 		return New(cfg)
 	}
@@ -1153,7 +1156,7 @@ func TestXSRFCookie_ProxyTerminatedTLSPlainHTTPWithSecureConfig(t *testing.T) {
 				if err != nil {
 					t.Fatalf("GenerateToken: %v", err)
 				}
-				if err := c.config.Store.Set(sessionID, token); err != nil {
+				if err := c.config.Store.Set(context.Background(), sessionID, token); err != nil {
 					t.Fatalf("seed: %v", err)
 				}
 
@@ -1219,7 +1222,7 @@ func TestXSRFCookie_OptOut(t *testing.T) {
 
 	cfg := DefaultConfig()
 	cfg.SessionIDResolver = testCookieResolver("session_id")
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	cfg.WriteXSRFCookie = false
 	c := New(cfg)
 
@@ -1245,7 +1248,7 @@ func TestXSRFCookie_SuppressedForSingleUse(t *testing.T) {
 	const sessionID = "sess"
 	cfg := DefaultConfig()
 	cfg.SessionIDResolver = testCookieResolver("session_id")
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	cfg.SingleUse = true
 	c := New(cfg)
 
@@ -1271,7 +1274,7 @@ func TestXSRFCookie_NotWrittenOnUnsafeMethod(t *testing.T) {
 	const sessionID = "sess"
 	cfg := DefaultConfig()
 	cfg.SessionIDResolver = testCookieResolver("session_id")
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	c := New(cfg)
 
 	req := httptest.NewRequest("POST", "/", nil)
@@ -1339,10 +1342,10 @@ func TestGetTokenFromRequest_MaxFormBodyBytesConfigurable(t *testing.T) {
 		}
 		cfg := DefaultConfig()
 		cfg.SessionIDResolver = testCookieResolver("session_id")
-		cfg.Store = stores.NewSessionStore()
+		cfg.Store = stores.NewMemoryStore()
 		cfg.MaxFormBodyBytes = 128
 		c := New(cfg)
-		if err := c.config.Store.Set(sessionID, token); err != nil {
+		if err := c.config.Store.Set(context.Background(), sessionID, token); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 
@@ -1375,10 +1378,10 @@ func TestGetTokenFromRequest_MaxFormBodyBytesConfigurable(t *testing.T) {
 		}
 		cfg := DefaultConfig()
 		cfg.SessionIDResolver = testCookieResolver("session_id")
-		cfg.Store = stores.NewSessionStore()
+		cfg.Store = stores.NewMemoryStore()
 		cfg.MaxFormBodyBytes = 0 // falls back to default
 		c := New(cfg)
-		if err := c.config.Store.Set(sessionID, token); err != nil {
+		if err := c.config.Store.Set(context.Background(), sessionID, token); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 
@@ -1455,7 +1458,7 @@ func TestSessionIDResolver_PlaintextSessionIDAcrossEncryption(t *testing.T) {
 	const plaintextID = "stable-plaintext-session-id"
 
 	cfg := DefaultConfig()
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	cfg.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode)
 	cfg.SessionIDResolver = func(r *http.Request) (string, error) {
 		// Mimics auth.Manager.Session(r).ID(): plaintext id, stable
@@ -1472,7 +1475,7 @@ func TestSessionIDResolver_PlaintextSessionIDAcrossEncryption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}
-	if err := c.config.Store.Set(plaintextID, token); err != nil {
+	if err := c.config.Store.Set(context.Background(), plaintextID, token); err != nil {
 		t.Fatalf("store set: %v", err)
 	}
 
@@ -1504,7 +1507,7 @@ func TestSessionIDResolver_PlaintextSessionIDAcrossEncryption(t *testing.T) {
 // ErrNoSession produces 419 and emits the SessionFallback event.
 func TestSessionIDResolver_ErrorPropagation(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	cfg.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode)
 	cfg.SessionIDResolver = func(r *http.Request) (string, error) {
 		return "", ErrNoSession
@@ -1532,16 +1535,16 @@ func TestSessionIDResolver_ErrorPropagation(t *testing.T) {
 func TestWriteXSRFCookie_PostRotation(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.SessionIDResolver = testCookieResolver("session_id")
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	c := New(cfg)
 
 	const sessionID = "post-login-id"
-	if err := c.RotateToken("", sessionID); err != nil {
+	if err := c.RotateToken(context.Background(), "", sessionID); err != nil {
 		t.Fatalf("RotateToken: %v", err)
 	}
 
 	w := httptest.NewRecorder()
-	c.WriteXSRFCookie(w, sessionID)
+	c.WriteXSRFCookie(context.Background(), w, sessionID)
 
 	res := w.Result()
 	defer res.Body.Close()
@@ -1560,7 +1563,7 @@ func TestWriteXSRFCookie_PostRotation(t *testing.T) {
 	// Decoded value must be the masked form of the token RotateToken
 	// minted: raw emission is a BREACH surface, but unmasking must
 	// recover the stored token exactly.
-	tokenInStore, err := c.config.Store.Get(sessionID)
+	tokenInStore, err := c.config.Store.Get(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("store.Get post-rotation: %v", err)
 	}
@@ -1598,15 +1601,15 @@ func TestWriteXSRFCookie_OptOutAndSingleUse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := DefaultConfig()
 			cfg.SessionIDResolver = testCookieResolver("session_id")
-			cfg.Store = stores.NewSessionStore()
+			cfg.Store = stores.NewMemoryStore()
 			tc.mutate(cfg)
 			c := New(cfg)
 			const sessionID = "sess"
-			if err := c.RotateToken("", sessionID); err != nil {
+			if err := c.RotateToken(context.Background(), "", sessionID); err != nil {
 				t.Fatalf("RotateToken: %v", err)
 			}
 			w := httptest.NewRecorder()
-			c.WriteXSRFCookie(w, sessionID)
+			c.WriteXSRFCookie(context.Background(), w, sessionID)
 			for _, k := range w.Result().Cookies() {
 				if k.Name == "XSRF-TOKEN" {
 					t.Errorf("%s must suppress XSRF-TOKEN; got %v", tc.name, k)
@@ -1623,11 +1626,11 @@ func TestWriteXSRFCookie_NoOpOnNilOrEmpty(t *testing.T) {
 	c := New(testConfig())
 
 	// nil w: must not panic.
-	c.WriteXSRFCookie(nil, "anything")
+	c.WriteXSRFCookie(context.Background(), nil, "anything")
 
 	// empty sessionID: must not panic and must not write.
 	w := httptest.NewRecorder()
-	c.WriteXSRFCookie(w, "")
+	c.WriteXSRFCookie(context.Background(), w, "")
 	for _, k := range w.Result().Cookies() {
 		if k.Name == "XSRF-TOKEN" {
 			t.Errorf("empty sessionID must not produce XSRF-TOKEN cookie; got %v", k)
@@ -1643,7 +1646,7 @@ func TestWriteXSRFCookie_NoOpOnNilOrEmpty(t *testing.T) {
 func TestRotateToken_DeletesOldAndMintsNew(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.SessionIDResolver = testCookieResolver("session_id")
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	c := New(cfg)
 
 	const oldID = "pre-login-id"
@@ -1653,19 +1656,19 @@ func TestRotateToken_DeletesOldAndMintsNew(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateToken: %v", err)
 	}
-	if err := c.config.Store.Set(oldID, seed); err != nil {
+	if err := c.config.Store.Set(context.Background(), oldID, seed); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	if err := c.RotateToken(oldID, newID); err != nil {
+	if err := c.RotateToken(context.Background(), oldID, newID); err != nil {
 		t.Fatalf("RotateToken: %v", err)
 	}
 
-	if _, err := c.config.Store.Get(oldID); err == nil {
+	if _, err := c.config.Store.Get(context.Background(), oldID); err == nil {
 		t.Error("RotateToken did not delete the old session's token; orphan remains in the store")
 	}
 
-	got, err := c.config.Store.Get(newID)
+	got, err := c.config.Store.Get(context.Background(), newID)
 	if err != nil {
 		t.Fatalf("RotateToken did not mint a new token under newID: %v", err)
 	}
@@ -1687,7 +1690,7 @@ type nonAtomicStore struct {
 
 func newNonAtomicStore() *nonAtomicStore { return &nonAtomicStore{tokens: make(map[string]string)} }
 
-func (s *nonAtomicStore) Get(id string) (string, error) {
+func (s *nonAtomicStore) Get(ctx context.Context, id string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if v, ok := s.tokens[id]; ok {
@@ -1696,19 +1699,19 @@ func (s *nonAtomicStore) Get(id string) (string, error) {
 	// Sentinel, not a bare error: GetToken only mints on a genuine miss.
 	return "", stores.ErrTokenNotFound
 }
-func (s *nonAtomicStore) Set(id string, token string) error {
+func (s *nonAtomicStore) Set(ctx context.Context, id string, token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tokens[id] = token
 	return nil
 }
-func (s *nonAtomicStore) Delete(id string) error {
+func (s *nonAtomicStore) Delete(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.tokens, id)
 	return nil
 }
-func (s *nonAtomicStore) Exists(id string) bool {
+func (s *nonAtomicStore) Exists(ctx context.Context, id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, ok := s.tokens[id]
@@ -1730,8 +1733,8 @@ func TestSingleUse_AtomicStore_ConcurrentValidate(t *testing.T) {
 		t.Fatalf("GenerateToken: %v", err)
 	}
 
-	sharedStore := stores.NewSessionStore()
-	if err := sharedStore.Set(sessionID, token); err != nil {
+	sharedStore := stores.NewMemoryStore()
+	if err := sharedStore.Set(context.Background(), sessionID, token); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -1785,7 +1788,7 @@ func TestSingleUse_AtomicStore_ConcurrentValidate(t *testing.T) {
 	}
 
 	// Token must be gone from the shared store after consumption.
-	if _, err := sharedStore.Get(sessionID); err == nil {
+	if _, err := sharedStore.Get(context.Background(), sessionID); err == nil {
 		t.Error("single-use token must be removed from shared store after consume")
 	}
 }
@@ -1803,7 +1806,7 @@ func TestSingleUse_NonAtomicStore_EmitsWarningOnce(t *testing.T) {
 	}
 
 	store := newNonAtomicStore()
-	if err := store.Set(sessionID, token); err != nil {
+	if err := store.Set(context.Background(), sessionID, token); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -1867,8 +1870,8 @@ func TestSingleUse_WrongTokenLeavesEntry(t *testing.T) {
 		t.Fatalf("GenerateToken: %v", err)
 	}
 
-	store := stores.NewSessionStore()
-	if err := store.Set(sessionID, token); err != nil {
+	store := stores.NewMemoryStore()
+	if err := store.Set(context.Background(), sessionID, token); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -1889,7 +1892,7 @@ func TestSingleUse_WrongTokenLeavesEntry(t *testing.T) {
 	if w.Code != 419 {
 		t.Fatalf("expected 419 for wrong token, got %d", w.Code)
 	}
-	if _, err := store.Get(sessionID); err != nil {
+	if _, err := store.Get(context.Background(), sessionID); err != nil {
 		t.Fatalf("legitimate token must survive wrong-token attempt: %v", err)
 	}
 
@@ -1913,7 +1916,7 @@ func TestSingleUse_WrongTokenLeavesEntry(t *testing.T) {
 func TestRevokeToken_DeletesEntry(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.SessionIDResolver = testCookieResolver("session_id")
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	c := New(cfg)
 
 	const id = "live-session"
@@ -1921,22 +1924,22 @@ func TestRevokeToken_DeletesEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateToken: %v", err)
 	}
-	if err := c.config.Store.Set(id, token); err != nil {
+	if err := c.config.Store.Set(context.Background(), id, token); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	if err := c.RevokeToken(id); err != nil {
+	if err := c.RevokeToken(context.Background(), id); err != nil {
 		t.Fatalf("RevokeToken: %v", err)
 	}
-	if _, err := c.config.Store.Get(id); err == nil {
+	if _, err := c.config.Store.Get(context.Background(), id); err == nil {
 		t.Error("RevokeToken did not delete the token; it must be unreachable after logout")
 	}
 
-	if err := c.RevokeToken("never-existed"); err != nil {
+	if err := c.RevokeToken(context.Background(), "never-existed"); err != nil {
 		t.Errorf("RevokeToken on missing id must be a no-op, got %v", err)
 	}
 
-	if err := c.RevokeToken(""); err != nil {
+	if err := c.RevokeToken(context.Background(), ""); err != nil {
 		t.Errorf("RevokeToken with empty id must be a no-op, got %v", err)
 	}
 }
@@ -1951,7 +1954,7 @@ func TestRevokeToken_DeletesEntry(t *testing.T) {
 func TestClearXSRFCookie_WritesDeleteCookie(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.SessionIDResolver = testCookieResolver("session_id")
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	c := New(cfg)
 
 	req := httptest.NewRequest("POST", "/logout", nil)
@@ -1994,7 +1997,7 @@ func TestClearXSRFCookie_WritesDeleteCookie(t *testing.T) {
 func TestClearXSRFCookie_PlainHTTPWithSecureFalseConfigEmitsNonSecureDeleteCookie(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.SessionIDResolver = testCookieResolver("session_id")
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	cfg.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode)
 	c := New(cfg)
 
@@ -2018,7 +2021,7 @@ func TestClearXSRFCookie_PlainHTTPWithSecureFalseConfigEmitsNonSecureDeleteCooki
 func TestClearXSRFCookie_SecureMatchesScheme(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.SessionIDResolver = testCookieResolver("session_id")
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	c := New(cfg)
 
 	req := httptest.NewRequest("POST", "https://example.com/logout", nil)
@@ -2042,7 +2045,7 @@ func TestClearXSRFCookie_SecureMatchesScheme(t *testing.T) {
 func TestClearXSRFCookie_NoopWhenDisabled(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.SessionIDResolver = testCookieResolver("session_id")
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	cfg.WriteXSRFCookie = false
 	c := New(cfg)
 
@@ -2084,10 +2087,10 @@ func TestXSRFCookie_SecureIdenticalOnBootstrapPostLoginAndLogout(t *testing.T) {
 				const sessionID = "consistency-session"
 				cfg := DefaultConfig()
 				cfg.SessionIDResolver = testCookieResolver("session_id")
-				cfg.Store = stores.NewSessionStore()
+				cfg.Store = stores.NewMemoryStore()
 				cfg.CookiePolicy = p.policy
 				c := New(cfg)
-				if err := c.RotateToken("", sessionID); err != nil {
+				if err := c.RotateToken(context.Background(), "", sessionID); err != nil {
 					t.Fatalf("RotateToken: %v", err)
 				}
 				newReq := func(method string) *http.Request {
@@ -2105,7 +2108,7 @@ func TestXSRFCookie_SecureIdenticalOnBootstrapPostLoginAndLogout(t *testing.T) {
 				})).ServeHTTP(bw, newReq(http.MethodGet))
 
 				pw := httptest.NewRecorder()
-				c.WriteXSRFCookie(pw, sessionID)
+				c.WriteXSRFCookie(context.Background(), pw, sessionID)
 
 				lw := httptest.NewRecorder()
 				c.ClearXSRFCookie(lw, newReq(http.MethodPost))

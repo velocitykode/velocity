@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/velocitykode/velocity/contract"
 )
@@ -48,16 +47,6 @@ var ErrInsecureCSRFConfig = errors.New("velocity/csrf: insecure config")
 
 // Config holds CSRF protection configuration
 type Config struct {
-	// TokenIdleLifetime is how long a token stays valid without use: every
-	// request that reads it (the XSRF cookie write on a safe request, the
-	// validation of an unsafe one) restarts it, so an active session's
-	// token never ages out on its own clock. velocity.New sets it from the
-	// session lifetime policy (the idle timeout, or the absolute cap when
-	// the session has no idle timeout), so the token lives exactly as long
-	// as the session it is bound to. Applies to the default store; a
-	// custom Store keeps its own expiry.
-	TokenIdleLifetime time.Duration
-
 	HeaderName        string
 	FormField         string
 	SessionCookieName string // Name of the session cookie to read session ID from
@@ -124,7 +113,11 @@ type Config struct {
 	// convention; the framework also accepts HeaderName.
 	XSRFCookieName string
 
-	// Storage strategy
+	// Store keeps the token of each session. velocity.New sets a
+	// stores.SessionBagStore when CSRF binds to the session, so the token
+	// lives in the session (saved with it, valid on every instance that
+	// can read the session, ended with it). Left nil, NewE installs a
+	// stores.MemoryStore: a map in this process, for session-less use.
 	Store Store
 
 	// SessionIDResolver returns the plaintext session ID that CSRF tokens
@@ -142,9 +135,10 @@ type Config struct {
 	// by the raw ciphertext cookie value is also incorrect: the IV
 	// changes on every Save() and the stored token becomes unreachable.
 	//
-	// velocity.New auto-installs an encrypted-session resolver when the
-	// app encryptor, session cookie name, and CSRFConfig.SessionCookieName
-	// all align. When any of those conditions miss, velocity.New installs
+	// velocity.New auto-installs a resolver that answers with the session
+	// the session store accepts (and, with it, a stores.SessionBagStore)
+	// when the session cookie name and CSRFConfig.SessionCookieName
+	// align. When they do not, velocity.New installs
 	// a strict-reject resolver (returns ErrNoSession on every request) so
 	// the deployment fails closed (419 on every unsafe request) instead
 	// of silently bypassing CSRF; operators wire a real resolver here to
@@ -169,7 +163,6 @@ type Config struct {
 // DefaultConfig returns the default CSRF configuration
 func DefaultConfig() *Config {
 	return &Config{
-		TokenIdleLifetime: 24 * time.Hour,
 		HeaderName:        "X-CSRF-Token",
 		FormField:         "_token",
 		SessionCookieName: "session_id", // Default session cookie name

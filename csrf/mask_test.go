@@ -1,6 +1,7 @@
 package csrf
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -18,13 +19,13 @@ func maskTestCSRF(t *testing.T, sessionID string) (*CSRF, string) {
 	t.Helper()
 	cfg := DefaultConfig()
 	cfg.SessionIDResolver = testCookieResolver("session_id")
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	c := New(cfg)
 	token, err := GenerateToken()
 	if err != nil {
 		t.Fatalf("GenerateToken: %v", err)
 	}
-	if err := c.config.Store.Set(sessionID, token); err != nil {
+	if err := c.config.Store.Set(context.Background(), sessionID, token); err != nil {
 		t.Fatalf("seed store: %v", err)
 	}
 	return c, token
@@ -285,7 +286,7 @@ func TestMasking_RefreshHandlerEmitsMaskedToken(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode refresh body: %v", err)
 	}
-	stored, err := c.config.Store.Get(sessionID)
+	stored, err := c.config.Store.Get(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("store.Get: %v", err)
 	}

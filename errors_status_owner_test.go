@@ -1,6 +1,7 @@
 package velocity
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -82,7 +83,7 @@ func TestFrameworkRenderRules_AnswerOnlyTheStatusOwner(t *testing.T) {
 					problem.MapFor(h, func(err *csrf.TokenMismatchError) error { return problem.Internal().WithCause(err) })
 				}
 				c := newEnforcingCSRF(t, customCSRF, "")
-				if err := c.RotateToken("", "s1"); err != nil {
+				if err := c.RotateToken(context.Background(), "", "s1"); err != nil {
 					t.Fatalf("RotateToken: %v", err)
 				}
 				other, err := csrf.GenerateToken()

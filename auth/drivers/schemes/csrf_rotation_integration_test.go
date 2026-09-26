@@ -1,6 +1,7 @@
 package schemes
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -107,7 +108,7 @@ func TestCSRFRotation_RememberCookieRevival_RotatesAndPersists(t *testing.T) {
 	// (mirrors app.go's auto-installed resolver).
 	csrfCfg := csrf.DefaultConfig()
 	csrfCfg.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode)
-	csrfCfg.Store = csrfstores.NewSessionStore()
+	csrfCfg.Store = csrfstores.NewMemoryStore()
 	csrfCfg.SessionIDResolver = func(r *http.Request) (string, error) {
 		c, err := r.Cookie("vel_session")
 		if err != nil || c.Value == "" {
@@ -161,7 +162,7 @@ func TestCSRFRotation_RememberCookieRevival_RotatesAndPersists(t *testing.T) {
 	if plantedCookie == nil {
 		t.Fatal("planted store.Save emitted no vel_session cookie")
 	}
-	if err := csrfCfg.Store.Set(plantedID, "T_planted_orphan_token_value"); err != nil {
+	if err := csrfCfg.Store.Set(context.Background(), plantedID, "T_planted_orphan_token_value"); err != nil {
 		t.Fatalf("seed planted CSRF token: %v", err)
 	}
 
@@ -237,8 +238,8 @@ func TestCSRFRotation_RememberCookieRevival_RotatesAndPersists(t *testing.T) {
 	}
 
 	// Assertion 2: CSRF store has a token under the rotated id.
-	// rotator.RotateToken(plantedID, rotatedID) seeded the new entry.
-	if _, err := csrfCfg.Store.Get(rotatedID); err != nil {
+	// rotator.RotateToken(context.Background(), plantedID, rotatedID) seeded the new entry.
+	if _, err := csrfCfg.Store.Get(context.Background(), rotatedID); err != nil {
 		t.Errorf("post-revival: CSRF store has no entry under rotated id %q: %v (RotateToken did not mint)", rotatedID, err)
 	}
 
@@ -247,7 +248,7 @@ func TestCSRFRotation_RememberCookieRevival_RotatesAndPersists(t *testing.T) {
 	// attacker who refreshed the planted-id token before the victim
 	// authenticated retains a valid CSRF token bound to a now-stale
 	// session id (the audited H-02 invariant).
-	if got, err := csrfCfg.Store.Get(plantedID); err == nil {
+	if got, err := csrfCfg.Store.Get(context.Background(), plantedID); err == nil {
 		t.Errorf("post-revival: CSRF store still has token %q under planted id %q; RotateToken did not delete orphan", got, plantedID)
 	}
 

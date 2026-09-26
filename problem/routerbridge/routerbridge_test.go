@@ -523,7 +523,7 @@ func TestInstall_TimeoutHandsTheInnerRequestToThePipeline(t *testing.T) {
 // inside Timeout and the handler returns an error in time.
 func TestInstall_TimeoutKeepsCSRFTokenStateForTheErrorPage(t *testing.T) {
 	cfg := csrf.DefaultConfig()
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	cfg.SessionIDResolver = func(r *http.Request) (string, error) {
 		ck, err := r.Cookie("session_id")
 		if err != nil || ck.Value == "" {
@@ -535,7 +535,7 @@ func TestInstall_TimeoutKeepsCSRFTokenStateForTheErrorPage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("csrf.NewE: %v", err)
 	}
-	if err := c.RotateToken("", "s1"); err != nil {
+	if err := c.RotateToken(context.Background(), "", "s1"); err != nil {
 		t.Fatalf("RotateToken: %v", err)
 	}
 

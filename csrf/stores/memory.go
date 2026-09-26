@@ -10,19 +10,20 @@ import (
 	"github.com/velocitykode/velocity/crypto"
 )
 
-var (
-	ErrTokenNotFound = errors.New("velocity/csrf: token not found")
-)
+// ErrTokenNotFound is returned by a store's Get when no token is held for
+// the session id. csrf.GetToken mints a token only on this error.
+var ErrTokenNotFound = errors.New("velocity/csrf: token not found")
 
-// SessionStore implements in-memory session-based CSRF token storage.
+// MemoryStore keeps CSRF tokens in a map in this process, keyed by
+// session id. It is the store for session-less use: csrf.NewE installs it
+// when Config.Store is nil. velocity.New installs a SessionBagStore instead
+// when CSRF binds to the session, because a token in this map is known only
+// to the process that minted it: a restart or another replica rejects it.
 //
 // A token lives on an idle clock: it expires after going idleLifetime
-// without being read, and every Get restarts that clock. The framework sets
-// the idle lifetime from the session's lifetime policy, so the token of an
-// active session never ages out on its own; it ends with the session (a
-// session that idles out or reaches its absolute cap gets a new id, and a
-// token is only reachable through its session's id).
-type SessionStore struct {
+// without being read, and every Get restarts that clock. The map has no
+// session to inherit a lifetime from, so this clock is what bounds it.
+type MemoryStore struct {
 	tokens       map[string]*tokenEntry
 	mu           sync.RWMutex
 	idleLifetime time.Duration
@@ -37,7 +38,7 @@ type tokenEntry struct {
 	expiresAt time.Time
 }
 
-// NewSessionStore creates a new session-based token store.
+// NewMemoryStore creates an in-memory token store.
 // Call Start() to begin the background cleanup goroutine.
 //
 // An optional idle lifetime can be provided: how long a token stays valid
@@ -45,9 +46,9 @@ type tokenEntry struct {
 //
 // Accepted call signatures:
 //
-//	NewSessionStore()                // 24h idle lifetime
-//	NewSessionStore(idleLifetime)    // custom idle lifetime
-func NewSessionStore(args ...any) *SessionStore {
+//	NewMemoryStore()                // 24h idle lifetime
+//	NewMemoryStore(idleLifetime)    // custom idle lifetime
+func NewMemoryStore(args ...any) *MemoryStore {
 	ttl := 24 * time.Hour
 
 	for _, arg := range args {
@@ -56,7 +57,7 @@ func NewSessionStore(args ...any) *SessionStore {
 		}
 	}
 
-	return &SessionStore{
+	return &MemoryStore{
 		tokens:       make(map[string]*tokenEntry),
 		idleLifetime: ttl,
 	}
@@ -68,7 +69,7 @@ func NewSessionStore(args ...any) *SessionStore {
 //
 // Calling Start again cancels the previous cleanup goroutine and replaces
 // it, so repeated Start calls never leak goroutines.
-func (s *SessionStore) Start(ctx context.Context) {
+func (s *MemoryStore) Start(ctx context.Context) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	if s.cancel != nil {
@@ -84,7 +85,7 @@ func (s *SessionStore) Start(ctx context.Context) {
 // deadline for uniformity with other ShutdownAware types. Stop is
 // instantaneous; the deadline is only consulted when it is already
 // cancelled.
-func (s *SessionStore) Shutdown(ctx context.Context) error {
+func (s *MemoryStore) Shutdown(ctx context.Context) error {
 	s.lifecycleMu.Lock()
 	if s.cancel != nil {
 		s.cancel()
@@ -100,7 +101,7 @@ func (s *SessionStore) Shutdown(ctx context.Context) error {
 // Get retrieves a token for the given session ID and restarts its idle
 // clock: every read (the XSRF cookie write on a safe request, the
 // validation of an unsafe one) is session activity.
-func (s *SessionStore) Get(id string) (string, error) {
+func (s *MemoryStore) Get(_ context.Context, id string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -120,7 +121,7 @@ func (s *SessionStore) Get(id string) (string, error) {
 }
 
 // Set stores a token for the given session ID
-func (s *SessionStore) Set(id string, token string) error {
+func (s *MemoryStore) Set(_ context.Context, id string, token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -132,7 +133,7 @@ func (s *SessionStore) Set(id string, token string) error {
 }
 
 // Delete removes a token
-func (s *SessionStore) Delete(id string) error {
+func (s *MemoryStore) Delete(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -151,7 +152,7 @@ func (s *SessionStore) Delete(id string) error {
 // Returns consumed=true only when the entry existed, was unexpired, and
 // matched expected. A missing/expired/mismatched entry returns
 // consumed=false with no error.
-func (s *SessionStore) ConsumeIfMatch(id string, expected string) (bool, error) {
+func (s *MemoryStore) ConsumeIfMatch(_ context.Context, id string, expected string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -174,7 +175,7 @@ func (s *SessionStore) ConsumeIfMatch(id string, expected string) (bool, error) 
 }
 
 // Exists checks if a token exists and is not expired
-func (s *SessionStore) Exists(id string) bool {
+func (s *MemoryStore) Exists(_ context.Context, id string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -188,7 +189,7 @@ func (s *SessionStore) Exists(id string) bool {
 }
 
 // cleanup removes expired tokens every hour until the context is cancelled.
-func (s *SessionStore) cleanup(ctx context.Context) {
+func (s *MemoryStore) cleanup(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 

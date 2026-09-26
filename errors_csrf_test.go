@@ -1,6 +1,7 @@
 package velocity
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -24,7 +25,7 @@ func newEnforcingCSRF(t *testing.T, errorHandler func(http.ResponseWriter, *http
 	if errorMessage != "" {
 		cfg.ErrorMessage = errorMessage
 	}
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	cfg.SessionIDResolver = func(r *http.Request) (string, error) {
 		ck, err := r.Cookie("session_id")
 		if err != nil || ck.Value == "" {
@@ -138,7 +139,7 @@ func TestErrorPipeline_CSRFRejection(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GenerateToken: %v", err)
 			}
-			if err := c.RotateToken("", "s1"); err != nil {
+			if err := c.RotateToken(context.Background(), "", "s1"); err != nil {
 				t.Fatalf("RotateToken: %v", err)
 			}
 			a.Router.Post("/posts", func(*router.Context) error {
@@ -201,7 +202,7 @@ func TestErrorPipeline_CSRFRejection(t *testing.T) {
 // reported.
 func TestErrorPipeline_CSRFRejectionMatchesSentinel(t *testing.T) {
 	c := newEnforcingCSRF(t, nil, "")
-	if err := c.RotateToken("", "s1"); err != nil {
+	if err := c.RotateToken(context.Background(), "", "s1"); err != nil {
 		t.Fatalf("RotateToken: %v", err)
 	}
 	other, err := csrf.GenerateToken()
@@ -270,7 +271,7 @@ func TestErrorPipeline_CSRFMapIsInvalidToken(t *testing.T) {
 	})
 
 	c := newEnforcingCSRF(t, nil, "")
-	if err := c.RotateToken("", "s1"); err != nil {
+	if err := c.RotateToken(context.Background(), "", "s1"); err != nil {
 		t.Fatalf("RotateToken: %v", err)
 	}
 	other, err := csrf.GenerateToken()

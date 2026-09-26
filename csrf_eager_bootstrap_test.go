@@ -58,7 +58,7 @@ func TestCSRF_EagerBootstrap_AnonymousGETMintsTokenAndCookie(t *testing.T) {
 	csrfCfg := csrf.DefaultConfig()
 	csrfCfg.SessionCookieName = sessionCookieName
 	csrfCfg.SessionIDResolver = resolver
-	csrfCfg.Store = stores.NewSessionStore()
+	csrfCfg.Store = stores.NewMemoryStore()
 	csrfInst := csrf.New(csrfCfg)
 
 	// SessionMiddleware (eager bootstrap) -> csrf.Middleware -> noop.
@@ -117,7 +117,7 @@ func TestCSRF_EagerBootstrap_AnonymousGETMintsTokenAndCookie(t *testing.T) {
 	if resolvedID == "" {
 		t.Fatal("resolver returned empty id after eager bootstrap; holder fallback is not wired")
 	}
-	stored, err := csrfInst.GetToken(resolvedID)
+	stored, err := csrfInst.GetToken(context.Background(), resolvedID)
 	if err != nil {
 		t.Fatalf("GetToken(%q): %v", resolvedID, err)
 	}

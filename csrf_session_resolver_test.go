@@ -205,17 +205,57 @@ func csrfResolverFlow(t *testing.T, a *App, h http.Handler) {
 
 // TestCSRFSessionResolver_ExpiredSessionPostGets419 drives the whole CSRF
 // flow with a token minted for a live session and replayed after the
-// session expired: in embed mode with the CSRF middleware mounted outside
-// a.Router (the resolver runs on its own), and in a bootstrapped app
-// where the session middleware answers the resolver first.
+// session expired, with the CSRF middleware on a.Router in embed mode and
+// in a bootstrapped app. The token lives in the session, so the CSRF
+// middleware must run inside the session middleware New installs on
+// a.Router; mounted outside it, it issues and accepts no token.
 func TestCSRFSessionResolver_ExpiredSessionPostGets419(t *testing.T) {
 	ok := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }
 
-	t.Run("embed mode, csrf middleware outside the router", func(t *testing.T) {
+	t.Run("embed mode, csrf middleware on the router", func(t *testing.T) {
+		a := csrfResolverApp(t)
+		a.Router.Use(a.Services.CSRF.(*csrf.CSRF).RouterMiddleware())
+		h := func(c *router.Context) error { return c.String(http.StatusOK, "ok") }
+		a.Router.Get("/form", h)
+		a.Router.Post("/form", h)
+		csrfResolverFlow(t, a, a.Router)
+	})
+
+	t.Run("csrf middleware outside the session middleware fails closed", func(t *testing.T) {
 		a := csrfResolverApp(t)
 		mux := http.NewServeMux()
 		mux.Handle("/form", a.Services.CSRF.(*csrf.CSRF).Middleware(http.HandlerFunc(ok)))
-		csrfResolverFlow(t, a, mux)
+		lw := httptest.NewRecorder()
+		if err := auth.FromServices(a.Services).Login(lw, httptest.NewRequest(http.MethodPost, "/login", nil), &saveSeamUser{id: 9}); err != nil {
+			t.Fatalf("Login: %v", err)
+		}
+		var live *http.Cookie
+		var token string
+		for _, c := range lw.Result().Cookies() {
+			switch c.Name {
+			case a.config.Session.Name:
+				live = &http.Cookie{Name: c.Name, Value: c.Value}
+			case "XSRF-TOKEN":
+				token, _ = url.QueryUnescape(c.Value)
+			}
+		}
+		if live == nil || token == "" {
+			t.Fatal("login wrote no session cookie or no XSRF-TOKEN")
+		}
+		gw := httptest.NewRecorder()
+		mux.ServeHTTP(gw, csrfResolverRequest(http.MethodGet, live))
+		for _, c := range gw.Result().Cookies() {
+			if c.Name == "XSRF-TOKEN" {
+				t.Fatal("GET outside the session middleware minted an XSRF-TOKEN")
+			}
+		}
+		r := csrfResolverRequest(http.MethodPost, live)
+		r.Header.Set("X-CSRF-Token", token)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		if w.Code != 419 {
+			t.Fatalf("POST outside the session middleware with the session's token = %d, want 419", w.Code)
+		}
 	})
 
 	t.Run("bootstrapped, csrf middleware on the router", func(t *testing.T) {

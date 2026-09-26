@@ -1,6 +1,7 @@
 package csrf
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -183,7 +184,7 @@ func newFixtureTokens(t *testing.T) fixtureTokens {
 func newProtectInstance(t *testing.T, fx protectFixture, token string, reason *error) *CSRF {
 	t.Helper()
 	cfg := testConfig()
-	cfg.Store = stores.NewSessionStore()
+	cfg.Store = stores.NewMemoryStore()
 	cfg.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode)
 	if fx.config != nil {
 		fx.config(cfg)
@@ -193,7 +194,7 @@ func newProtectInstance(t *testing.T, fx protectFixture, token string, reason *e
 	if err != nil {
 		t.Fatalf("NewE: %v", err)
 	}
-	if err := c.config.Store.Set("s1", token); err != nil {
+	if err := c.config.Store.Set(context.Background(), "s1", token); err != nil {
 		t.Fatalf("seed token: %v", err)
 	}
 	return c

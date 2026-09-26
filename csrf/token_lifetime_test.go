@@ -8,14 +8,15 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/csrf/stores"
 )
 
-// tokenLifetimeFixture is a CSRF middleware on one live session with a
-// short idle lifetime standing in for the session's idle timeout.
+// tokenLifetimeFixture is a CSRF middleware on one live session over the
+// session-less memory store with a short idle lifetime.
 func tokenLifetimeFixture(t *testing.T, idle time.Duration) (http.Handler, string) {
 	t.Helper()
 	cfg := DefaultConfig()
-	cfg.TokenIdleLifetime = idle
+	cfg.Store = stores.NewMemoryStore(idle)
 	cfg.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode)
 	cfg.SessionIDResolver = func(*http.Request) (string, error) { return "live-session", nil }
 	c, err := NewE(cfg)
@@ -49,10 +50,10 @@ func postWithPageToken(h http.Handler, tok string) int {
 	return w.Code
 }
 
-// An active session keeps its CSRF token: every validation restarts the
-// token's idle clock, so a page's token is accepted long past the idle
-// lifetime as long as requests keep coming.
-func TestCSRFToken_ActiveSessionNeverAgesOut(t *testing.T) {
+// The memory store keeps an active session's token: every validation
+// restarts the token's idle clock, so a page's token is accepted long past
+// the idle lifetime as long as requests keep coming.
+func TestMemoryStoreToken_ActiveSessionNeverAgesOut(t *testing.T) {
 	h, tok := tokenLifetimeFixture(t, 300*time.Millisecond)
 	start := time.Now()
 	for time.Since(start) < time.Second {
@@ -63,9 +64,9 @@ func TestCSRFToken_ActiveSessionNeverAgesOut(t *testing.T) {
 	}
 }
 
-// An idle token still expires: no request for longer than the idle
-// lifetime and the old page's token is refused.
-func TestCSRFToken_IdleTokenExpires(t *testing.T) {
+// An idle token in the memory store still expires: no request for longer
+// than the idle lifetime and the old page's token is refused.
+func TestMemoryStoreToken_IdleTokenExpires(t *testing.T) {
 	h, tok := tokenLifetimeFixture(t, 100*time.Millisecond)
 	time.Sleep(200 * time.Millisecond)
 	if code := postWithPageToken(h, tok); code != 419 {

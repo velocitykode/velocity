@@ -1,6 +1,7 @@
 package csrf
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -25,21 +26,21 @@ type countingStore struct {
 }
 
 func newCountingStore() *countingStore {
-	return &countingStore{inner: stores.NewSessionStore()}
+	return &countingStore{inner: stores.NewMemoryStore()}
 }
 
-func (s *countingStore) Get(id string) (string, error) {
+func (s *countingStore) Get(ctx context.Context, id string) (string, error) {
 	s.getCalls.Add(1)
-	return s.inner.Get(id)
+	return s.inner.Get(ctx, id)
 }
 
-func (s *countingStore) Set(id, token string) error {
+func (s *countingStore) Set(ctx context.Context, id string, token string) error {
 	s.setCalls.Add(1)
-	return s.inner.Set(id, token)
+	return s.inner.Set(ctx, id, token)
 }
 
-func (s *countingStore) Delete(id string) error { return s.inner.Delete(id) }
-func (s *countingStore) Exists(id string) bool  { return s.inner.Exists(id) }
+func (s *countingStore) Delete(ctx context.Context, id string) error { return s.inner.Delete(ctx, id) }
+func (s *countingStore) Exists(ctx context.Context, id string) bool  { return s.inner.Exists(ctx, id) }
 
 // buildTestCSRF returns a CSRF instance with the given store and a
 // SessionIDResolver that reads "session_id" from the request cookie
@@ -69,7 +70,7 @@ func requestWithSession(method, path, sessionID string) *http.Request {
 // the underlying Store at most once and returns byte-identical tokens
 // across every reader.
 //
-// Pre-helper code did `csrf.GetToken(sessionID)` twice per request
+// Pre-helper code did `csrf.GetToken(context.Background(), sessionID)` twice per request
 // (once in the safe-method bootstrap path, once in the consumer's
 // sharePropsFunc), which paid two Store.Get round trips. Under a
 // transient store inconsistency, the second call could mint a different

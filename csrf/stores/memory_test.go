@@ -1,16 +1,19 @@
 package stores
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 )
 
-func TestNewSessionStore(t *testing.T) {
-	store := NewSessionStore()
+var ctx = context.Background()
+
+func TestNewMemoryStore(t *testing.T) {
+	store := NewMemoryStore()
 	if store == nil {
-		t.Fatal("NewSessionStore returned nil")
+		t.Fatal("NewMemoryStore returned nil")
 	}
 
 	if store.tokens == nil {
@@ -18,19 +21,19 @@ func TestNewSessionStore(t *testing.T) {
 	}
 }
 
-func TestSessionStore_SetAndGet(t *testing.T) {
-	store := NewSessionStore()
+func TestMemoryStore_SetAndGet(t *testing.T) {
+	store := NewMemoryStore()
 	sessionID := "session123"
 	token := "token456"
 
 	// Set token
-	err := store.Set(sessionID, token)
+	err := store.Set(ctx, sessionID, token)
 	if err != nil {
 		t.Fatalf("Failed to set token: %v", err)
 	}
 
 	// Get token
-	retrieved, err := store.Get(sessionID)
+	retrieved, err := store.Get(ctx, sessionID)
 	if err != nil {
 		t.Fatalf("Failed to get token: %v", err)
 	}
@@ -40,72 +43,72 @@ func TestSessionStore_SetAndGet(t *testing.T) {
 	}
 }
 
-func TestSessionStore_GetNonExistent(t *testing.T) {
-	store := NewSessionStore()
+func TestMemoryStore_GetNonExistent(t *testing.T) {
+	store := NewMemoryStore()
 
 	// Try to get non-existent token
-	_, err := store.Get("nonexistent")
+	_, err := store.Get(ctx, "nonexistent")
 	if err != ErrTokenNotFound {
 		t.Errorf("Expected ErrTokenNotFound, got %v", err)
 	}
 }
 
-func TestSessionStore_Delete(t *testing.T) {
-	store := NewSessionStore()
+func TestMemoryStore_Delete(t *testing.T) {
+	store := NewMemoryStore()
 	sessionID := "session123"
 	token := "token456"
 
 	// Set token
-	store.Set(sessionID, token)
+	store.Set(ctx, sessionID, token)
 
 	// Verify it exists
-	if !store.Exists(sessionID) {
+	if !store.Exists(ctx, sessionID) {
 		t.Error("Token should exist after Set")
 	}
 
 	// Delete token
-	err := store.Delete(sessionID)
+	err := store.Delete(ctx, sessionID)
 	if err != nil {
 		t.Fatalf("Failed to delete token: %v", err)
 	}
 
 	// Verify it's deleted
-	if store.Exists(sessionID) {
+	if store.Exists(ctx, sessionID) {
 		t.Error("Token should not exist after Delete")
 	}
 
 	// Try to get deleted token
-	_, err = store.Get(sessionID)
+	_, err = store.Get(ctx, sessionID)
 	if err != ErrTokenNotFound {
 		t.Error("Expected ErrTokenNotFound after deletion")
 	}
 }
 
-func TestSessionStore_Exists(t *testing.T) {
-	store := NewSessionStore()
+func TestMemoryStore_Exists(t *testing.T) {
+	store := NewMemoryStore()
 	sessionID := "session123"
 
 	// Should not exist initially
-	if store.Exists(sessionID) {
+	if store.Exists(ctx, sessionID) {
 		t.Error("Token should not exist initially")
 	}
 
 	// Set token
-	store.Set(sessionID, "token456")
+	store.Set(ctx, sessionID, "token456")
 
 	// Should exist now
-	if !store.Exists(sessionID) {
+	if !store.Exists(ctx, sessionID) {
 		t.Error("Token should exist after Set")
 	}
 }
 
-func TestSessionStore_Expiration(t *testing.T) {
-	store := NewSessionStore()
+func TestMemoryStore_Expiration(t *testing.T) {
+	store := NewMemoryStore()
 	sessionID := "session123"
 	token := "token456"
 
 	// Set token
-	store.Set(sessionID, token)
+	store.Set(ctx, sessionID, token)
 
 	// Manually expire the token
 	store.mu.Lock()
@@ -113,19 +116,19 @@ func TestSessionStore_Expiration(t *testing.T) {
 	store.mu.Unlock()
 
 	// Try to get expired token
-	_, err := store.Get(sessionID)
+	_, err := store.Get(ctx, sessionID)
 	if err != ErrTokenNotFound {
 		t.Error("Expected ErrTokenNotFound for expired token")
 	}
 
 	// Exists should return false for expired token
-	if store.Exists(sessionID) {
+	if store.Exists(ctx, sessionID) {
 		t.Error("Expired token should not exist")
 	}
 }
 
-func TestSessionStore_ConcurrentAccess(t *testing.T) {
-	store := NewSessionStore()
+func TestMemoryStore_ConcurrentAccess(t *testing.T) {
+	store := NewMemoryStore()
 	var wg sync.WaitGroup
 	iterations := 100
 
@@ -136,7 +139,7 @@ func TestSessionStore_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			sessionID := fmt.Sprintf("session%d", n)
 			token := fmt.Sprintf("token%d", n)
-			store.Set(sessionID, token)
+			store.Set(ctx, sessionID, token)
 		}(i)
 	}
 
@@ -148,7 +151,7 @@ func TestSessionStore_ConcurrentAccess(t *testing.T) {
 		go func(n int) {
 			defer wg.Done()
 			sessionID := fmt.Sprintf("session%d", n)
-			token, err := store.Get(sessionID)
+			token, err := store.Get(ctx, sessionID)
 			if err != nil {
 				t.Errorf("Failed to get token for session %d: %v", n, err)
 				return
@@ -163,8 +166,8 @@ func TestSessionStore_ConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
-func TestSessionStore_ConcurrentSetAndDelete(t *testing.T) {
-	store := NewSessionStore()
+func TestMemoryStore_ConcurrentSetAndDelete(t *testing.T) {
+	store := NewMemoryStore()
 	var wg sync.WaitGroup
 	iterations := 50
 
@@ -177,14 +180,14 @@ func TestSessionStore_ConcurrentSetAndDelete(t *testing.T) {
 			defer wg.Done()
 			sessionID := fmt.Sprintf("session%d", n)
 			token := fmt.Sprintf("token%d", n)
-			store.Set(sessionID, token)
+			store.Set(ctx, sessionID, token)
 		}(i)
 
 		// Deleter
 		go func(n int) {
 			defer wg.Done()
 			sessionID := fmt.Sprintf("session%d", n)
-			store.Delete(sessionID)
+			store.Delete(ctx, sessionID)
 		}(i)
 	}
 
@@ -193,43 +196,43 @@ func TestSessionStore_ConcurrentSetAndDelete(t *testing.T) {
 	// No panics means thread safety is working
 }
 
-func TestSessionStore_UpdateToken(t *testing.T) {
-	store := NewSessionStore()
+func TestMemoryStore_UpdateToken(t *testing.T) {
+	store := NewMemoryStore()
 	sessionID := "session123"
 	token1 := "token1"
 	token2 := "token2"
 
 	// Set initial token
-	store.Set(sessionID, token1)
+	store.Set(ctx, sessionID, token1)
 
 	// Get initial token
-	retrieved, _ := store.Get(sessionID)
+	retrieved, _ := store.Get(ctx, sessionID)
 	if retrieved != token1 {
 		t.Errorf("Expected token %s, got %s", token1, retrieved)
 	}
 
 	// Update token
-	store.Set(sessionID, token2)
+	store.Set(ctx, sessionID, token2)
 
 	// Get updated token
-	retrieved, _ = store.Get(sessionID)
+	retrieved, _ = store.Get(ctx, sessionID)
 	if retrieved != token2 {
 		t.Errorf("Expected token %s, got %s", token2, retrieved)
 	}
 }
 
-// TestSessionStore_ConsumeIfMatch_Atomic exercises the cross-process
+// TestMemoryStore_ConsumeIfMatch_Atomic exercises the cross-process
 // single-use primitive added for M-01. ConsumeIfMatch MUST behave as one
 // compare-and-delete: only one of N concurrent callers with the right
 // expected value may observe consumed=true, the rest see consumed=false.
 // Without this property, two replicas behind a shared store could each
 // accept the same single-use token simultaneously.
-func TestSessionStore_ConsumeIfMatch_Atomic(t *testing.T) {
-	store := NewSessionStore()
+func TestMemoryStore_ConsumeIfMatch_Atomic(t *testing.T) {
+	store := NewMemoryStore()
 	const id = "shared-session"
 	const token = "single-use-token"
 
-	if err := store.Set(id, token); err != nil {
+	if err := store.Set(ctx, id, token); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -246,7 +249,7 @@ func TestSessionStore_ConsumeIfMatch_Atomic(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
-			ok, err := store.ConsumeIfMatch(id, token)
+			ok, err := store.ConsumeIfMatch(ctx, id, token)
 			if err != nil {
 				mu.Lock()
 				errsFound = append(errsFound, err)
@@ -277,35 +280,35 @@ func TestSessionStore_ConsumeIfMatch_Atomic(t *testing.T) {
 	}
 
 	// Entry must be gone now.
-	if store.Exists(id) {
+	if store.Exists(ctx, id) {
 		t.Error("entry must be deleted after successful ConsumeIfMatch")
 	}
 }
 
-// TestSessionStore_ConsumeIfMatch_Mismatch verifies wrong-value callers do
+// TestMemoryStore_ConsumeIfMatch_Mismatch verifies wrong-value callers do
 // NOT delete the entry; the legitimate holder of the right token must
 // still be able to consume it afterwards.
-func TestSessionStore_ConsumeIfMatch_Mismatch(t *testing.T) {
-	store := NewSessionStore()
+func TestMemoryStore_ConsumeIfMatch_Mismatch(t *testing.T) {
+	store := NewMemoryStore()
 	const id = "session"
 	const token = "real-token"
-	if err := store.Set(id, token); err != nil {
+	if err := store.Set(ctx, id, token); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	ok, err := store.ConsumeIfMatch(id, "wrong-token")
+	ok, err := store.ConsumeIfMatch(ctx, id, "wrong-token")
 	if err != nil {
 		t.Fatalf("ConsumeIfMatch err: %v", err)
 	}
 	if ok {
 		t.Fatal("ConsumeIfMatch returned true for non-matching token")
 	}
-	if !store.Exists(id) {
+	if !store.Exists(ctx, id) {
 		t.Fatal("entry must NOT be deleted on mismatch")
 	}
 
 	// Right token still consumes.
-	ok, err = store.ConsumeIfMatch(id, token)
+	ok, err = store.ConsumeIfMatch(ctx, id, token)
 	if err != nil {
 		t.Fatalf("ConsumeIfMatch (correct) err: %v", err)
 	}
@@ -314,11 +317,11 @@ func TestSessionStore_ConsumeIfMatch_Mismatch(t *testing.T) {
 	}
 }
 
-// TestSessionStore_ConsumeIfMatch_Missing verifies missing/expired entries
+// TestMemoryStore_ConsumeIfMatch_Missing verifies missing/expired entries
 // return consumed=false without error.
-func TestSessionStore_ConsumeIfMatch_Missing(t *testing.T) {
-	store := NewSessionStore()
-	ok, err := store.ConsumeIfMatch("ghost", "anything")
+func TestMemoryStore_ConsumeIfMatch_Missing(t *testing.T) {
+	store := NewMemoryStore()
+	ok, err := store.ConsumeIfMatch(ctx, "ghost", "anything")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -328,14 +331,14 @@ func TestSessionStore_ConsumeIfMatch_Missing(t *testing.T) {
 
 	// Expired entry behaves like missing.
 	const id = "expired"
-	if err := store.Set(id, "tok"); err != nil {
+	if err := store.Set(ctx, id, "tok"); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	store.mu.Lock()
 	store.tokens[id].expiresAt = time.Now().Add(-time.Hour)
 	store.mu.Unlock()
 
-	ok, err = store.ConsumeIfMatch(id, "tok")
+	ok, err = store.ConsumeIfMatch(ctx, id, "tok")
 	if err != nil {
 		t.Fatalf("unexpected err on expired: %v", err)
 	}
@@ -345,38 +348,38 @@ func TestSessionStore_ConsumeIfMatch_Missing(t *testing.T) {
 }
 
 func BenchmarkSessionStore_Set(b *testing.B) {
-	store := NewSessionStore()
+	store := NewMemoryStore()
 	sessionID := "session123"
 	token := "token456"
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		store.Set(sessionID, token)
+		store.Set(ctx, sessionID, token)
 	}
 }
 
 func BenchmarkSessionStore_Get(b *testing.B) {
-	store := NewSessionStore()
+	store := NewMemoryStore()
 	sessionID := "session123"
 	token := "token456"
-	store.Set(sessionID, token)
+	store.Set(ctx, sessionID, token)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		store.Get(sessionID)
+		store.Get(ctx, sessionID)
 	}
 }
 
 func BenchmarkSessionStore_ConcurrentOperations(b *testing.B) {
-	store := NewSessionStore()
+	store := NewMemoryStore()
 
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
 			sessionID := fmt.Sprintf("session%d", i%100)
 			token := fmt.Sprintf("token%d", i)
-			store.Set(sessionID, token)
-			store.Get(sessionID)
+			store.Set(ctx, sessionID, token)
+			store.Get(ctx, sessionID)
 			i++
 		}
 	})

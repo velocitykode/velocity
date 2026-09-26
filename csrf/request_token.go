@@ -166,7 +166,7 @@ func TokenForRequest(r *http.Request) (string, error) {
 		return "", nil
 	}
 
-	token, err := c.GetToken(sessionID)
+	token, err := c.GetToken(r.Context(), sessionID)
 	if err != nil {
 		state.err = err
 		return "", err

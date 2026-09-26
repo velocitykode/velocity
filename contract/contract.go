@@ -66,9 +66,12 @@ type CSRFProtector interface {
 // old session id is gone and the new id has a fresh token. They MUST
 // call RevokeToken before Session.Invalidate (Logout) so the token does
 // not survive the session. Without this, a captured cookie+token pair
-// would remain valid for the store TTL (default 24h) even after the
-// user logs out, and a token minted under a pre-login session id would
-// persist as an orphan after regenerate.
+// would remain valid after the user logs out, and a token minted under a
+// pre-login session id would persist as an orphan after regenerate.
+//
+// Every call carries a context holding the session being rotated or
+// logged out, so a CSRF store that keeps the token in the session
+// changes it there and the session scheme saves it with the session.
 //
 // Implementations MUST be safe for concurrent use. A best-effort
 // implementation is acceptable: a transient store failure should not
@@ -78,10 +81,10 @@ type CSRFTokenRotator interface {
 	// RotateToken deletes any token bound to oldID and mints a fresh one
 	// bound to newID. oldID may be empty (first login after a fresh
 	// session). newID MUST be non-empty.
-	RotateToken(oldID, newID string) error
+	RotateToken(ctx context.Context, oldID, newID string) error
 	// RevokeToken deletes the token bound to id. A missing entry is not
 	// an error.
-	RevokeToken(id string) error
+	RevokeToken(ctx context.Context, id string) error
 	// WriteXSRFCookie writes the non-HttpOnly XSRF-TOKEN cookie carrying
 	// the token currently bound to sessionID in the CSRF store, so SPA
 	// clients can read it via document.cookie and echo it back as
@@ -101,7 +104,7 @@ type CSRFTokenRotator interface {
 	//     (WriteXSRFCookie=false), or
 	//   - SingleUse is enabled (the cookie would carry a value about to
 	//     be consumed on the next unsafe request).
-	WriteXSRFCookie(w http.ResponseWriter, sessionID string)
+	WriteXSRFCookie(ctx context.Context, w http.ResponseWriter, sessionID string)
 
 	// ClearXSRFCookie writes a delete-Set-Cookie (Max-Age=-1) for the
 	// XSRF-TOKEN cookie so the browser drops any value bound to a

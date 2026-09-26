@@ -1,6 +1,7 @@
 package schemes
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,7 @@ type orderRotator struct {
 	sessionCookiesAtWrite []int
 }
 
-func (o *orderRotator) WriteXSRFCookie(w http.ResponseWriter, sessionID string) {
+func (o *orderRotator) WriteXSRFCookie(_ context.Context, w http.ResponseWriter, sessionID string) {
 	n := 0
 	for _, raw := range w.Header().Values("Set-Cookie") {
 		if strings.HasPrefix(raw, "vel_session=") {
@@ -26,7 +27,7 @@ func (o *orderRotator) WriteXSRFCookie(w http.ResponseWriter, sessionID string) 
 		}
 	}
 	o.sessionCookiesAtWrite = append(o.sessionCookiesAtWrite, n)
-	o.fakeCSRFRotator.WriteXSRFCookie(w, sessionID)
+	o.fakeCSRFRotator.WriteXSRFCookie(context.Background(), w, sessionID)
 }
 
 // Inside SessionMiddleware, Login only changes the session: the seam saves

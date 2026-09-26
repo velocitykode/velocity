@@ -1,18 +1,27 @@
 package csrf
 
-// Store defines the interface for CSRF token storage
+import "context"
+
+// Store keeps the CSRF token of each session. Every call carries the
+// context of the request it serves (the request context, or the context a
+// session scheme passes when it rotates or revokes a token), so a store can
+// keep the token in the request's session: stores.SessionBagStore, which
+// velocity.New installs, does. stores.MemoryStore keys a map by id instead
+// and is the session-less default of NewE.
 type Store interface {
-	// Get retrieves a token for the given session/identifier
-	Get(id string) (string, error)
+	// Get returns the token held for session id, or
+	// stores.ErrTokenNotFound when none is held.
+	Get(ctx context.Context, id string) (string, error)
 
-	// Set stores a token for the given session/identifier
-	Set(id string, token string) error
+	// Set stores token for session id.
+	Set(ctx context.Context, id string, token string) error
 
-	// Delete removes a token
-	Delete(id string) error
+	// Delete removes the token held for session id. A missing token is
+	// not an error.
+	Delete(ctx context.Context, id string) error
 
-	// Exists checks if a token exists
-	Exists(id string) bool
+	// Exists reports whether a token is held for session id.
+	Exists(ctx context.Context, id string) bool
 }
 
 // AtomicConsumer is an optional capability stores may implement to support
@@ -41,5 +50,5 @@ type Store interface {
 // timing oracle to an attacker who can pre-seed entries via the public
 // refresh handler.
 type AtomicConsumer interface {
-	ConsumeIfMatch(id string, expected string) (consumed bool, err error)
+	ConsumeIfMatch(ctx context.Context, id string, expected string) (consumed bool, err error)
 }

@@ -1,6 +1,7 @@
 package schemes
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -28,21 +29,21 @@ type rotateCall struct {
 	oldID, newID string
 }
 
-func (f *fakeCSRFRotator) RotateToken(oldID, newID string) error {
+func (f *fakeCSRFRotator) RotateToken(_ context.Context, oldID, newID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.rotated = append(f.rotated, rotateCall{oldID: oldID, newID: newID})
 	return f.rotateErr
 }
 
-func (f *fakeCSRFRotator) RevokeToken(id string) error {
+func (f *fakeCSRFRotator) RevokeToken(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.revoked = append(f.revoked, id)
 	return nil
 }
 
-func (f *fakeCSRFRotator) WriteXSRFCookie(_ http.ResponseWriter, sessionID string) {
+func (f *fakeCSRFRotator) WriteXSRFCookie(_ context.Context, _ http.ResponseWriter, sessionID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.xsrfWrote = append(f.xsrfWrote, sessionID)
@@ -60,7 +61,7 @@ var _ interface {
 } = (*SessionScheme)(nil)
 
 // TestSessionScheme_LoginRotatesCSRFToken pins the Login half of H-02.
-// SessionScheme.Login MUST call rotator.RotateToken(oldID, newID) after
+// SessionScheme.Login MUST call rotator.RotateToken(context.Background(), oldID, newID) after
 // Session.Regenerate so any CSRF token bound to the pre-login session
 // id is dropped and the post-login id gets a fresh token. Pre-fix Login
 // regenerated the session id without touching the CSRF store, leaving
@@ -92,7 +93,7 @@ func TestSessionScheme_LoginRotatesCSRFToken(t *testing.T) {
 }
 
 // TestSessionScheme_LoginWritesXSRFCookie pins M-04: SessionScheme.Login
-// MUST call rotator.WriteXSRFCookie(w, newID) after the successful
+// MUST call rotator.WriteXSRFCookie(context.Background(), w, newID) after the successful
 // RotateToken so the Login response carries the freshly-minted XSRF
 // token to the SPA. Pre-fix the per-session token was minted in the
 // CSRF store but no Set-Cookie was emitted; the SPA's very next POST
@@ -127,7 +128,7 @@ func TestSessionScheme_LoginWritesXSRFCookie(t *testing.T) {
 }
 
 // TestSessionScheme_LogoutRevokesCSRFToken pins the Logout half of H-02.
-// SessionScheme.Logout MUST call rotator.RevokeToken(id) BEFORE
+// SessionScheme.Logout MUST call rotator.RevokeToken(context.Background(), id) BEFORE
 // Session.Invalidate destroys the bag, so the per-session CSRF token
 // does not survive logout in the CSRF store. Pre-fix Logout invalidated
 // the session without touching the CSRF store, so a captured
@@ -194,7 +195,7 @@ func TestSessionScheme_LoginAbortsOnRotateFailure(t *testing.T) {
 
 // TestSessionScheme_RememberRevival_RotatesCSRFToken pins the revival
 // half of H-02. The recall path inside anchorRecalledUser MUST call
-// rotator.RotateToken(oldID, newID) between Session.Regenerate and the
+// rotator.RotateToken(context.Background(), oldID, newID) between Session.Regenerate and the
 // user_id Put so any CSRF token an attacker planted under the pre-
 // revival session id is dropped and the post-revival id has a fresh
 // token. Both User() and CheckWithError() reach this path via G2's H-08

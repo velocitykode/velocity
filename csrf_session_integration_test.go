@@ -1,6 +1,7 @@
 package velocity
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -78,7 +79,7 @@ func TestCSRF_SessionEncryptionRotation_EndToEnd(t *testing.T) {
 
 	// Wire CSRF with the resolver New installs.
 	csrfCfg := csrf.DefaultConfig()
-	csrfCfg.Store = stores.NewSessionStore()
+	csrfCfg.Store = stores.NewMemoryStore()
 	csrfCfg.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode) // test env
 	csrfCfg.SessionIDResolver = appWiredResolver(t, enc, sessCfg)
 	c := csrf.New(csrfCfg)
@@ -89,7 +90,7 @@ func TestCSRF_SessionEncryptionRotation_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateToken: %v", err)
 	}
-	if err := csrfCfg.Store.Set(plaintextID, token); err != nil {
+	if err := csrfCfg.Store.Set(context.Background(), plaintextID, token); err != nil {
 		t.Fatalf("seed token: %v", err)
 	}
 

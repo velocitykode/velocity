@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-func TestSessionStore_Shutdown_RespectsContextDeadline(t *testing.T) {
-	store := NewSessionStore()
+func TestMemoryStore_Shutdown_RespectsContextDeadline(t *testing.T) {
+	store := NewMemoryStore()
 	store.Start(context.Background())
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -21,8 +21,8 @@ func TestSessionStore_Shutdown_RespectsContextDeadline(t *testing.T) {
 	}
 }
 
-func TestSessionStore_Shutdown_Idempotent(t *testing.T) {
-	store := NewSessionStore()
+func TestMemoryStore_Shutdown_Idempotent(t *testing.T) {
+	store := NewMemoryStore()
 	store.Start(context.Background())
 
 	if err := store.Shutdown(context.Background()); err != nil {
@@ -33,20 +33,20 @@ func TestSessionStore_Shutdown_Idempotent(t *testing.T) {
 	}
 }
 
-func TestSessionStore_Shutdown_BeforeStart(t *testing.T) {
-	store := NewSessionStore()
+func TestMemoryStore_Shutdown_BeforeStart(t *testing.T) {
+	store := NewMemoryStore()
 	if err := store.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown before Start: %v", err)
 	}
 }
 
-// TestSessionStore_DoubleStart_NoLeak pins the regression where Start
+// TestMemoryStore_DoubleStart_NoLeak pins the regression where Start
 // overwrote s.cancel without cancelling the previous cleanup goroutine,
 // leaking one goroutine per extra Start call.
-func TestSessionStore_DoubleStart_NoLeak(t *testing.T) {
+func TestMemoryStore_DoubleStart_NoLeak(t *testing.T) {
 	before := runtime.NumGoroutine()
 
-	store := NewSessionStore()
+	store := NewMemoryStore()
 	store.Start(context.Background())
 	store.Start(context.Background())
 
@@ -66,8 +66,8 @@ func TestSessionStore_DoubleStart_NoLeak(t *testing.T) {
 	t.Fatalf("goroutine leak after double Start + Shutdown: before=%d after=%d", before, runtime.NumGoroutine())
 }
 
-func TestSessionStore_ConcurrentStartShutdown(t *testing.T) {
-	store := NewSessionStore()
+func TestMemoryStore_ConcurrentStartShutdown(t *testing.T) {
+	store := NewMemoryStore()
 
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {

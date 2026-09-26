@@ -20,6 +20,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/csrf"
+	"github.com/velocitykode/velocity/csrf/stores"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/internal/eventqueue"
@@ -396,6 +397,13 @@ func New(opts ...Option) (*App, error) {
 		// it at the end of New and bootstrap re-points it when a chain
 		// module changes the default scheme.
 		a.config.CSRF.SessionIDResolver = csrfSessionResolver(a.sessionScheme.Load)
+		// The token lives in the session, saved with it at the session
+		// middleware's one save point: it survives a restart, validates
+		// on every replica that can read the session, and ends with the
+		// session. A Store the app set is kept.
+		if a.config.CSRF.Store == nil {
+			a.config.CSRF.Store = stores.NewSessionBagStore(csrfSessionBag, csrfConsumedTokenLifetime(a.config.Session))
+		}
 	} else if a.config.CSRF.SessionIDResolver == nil {
 		a.config.CSRF.SessionIDResolver = func(r *http.Request) (string, error) {
 			return "", csrf.ErrNoSession
@@ -410,12 +418,6 @@ func New(opts ...Option) (*App, error) {
 	// SameSite, Domain, Path and Secure match the session cookie on the
 	// bootstrap write, the post-login rewrite and the logout clear.
 	a.config.CSRF.CookiePolicy = a.config.Session.CookiePolicy()
-	// The CSRF token lives on the session's lifetime policy, not a clock
-	// of its own: its idle lifetime is the session's idle timeout (the
-	// absolute cap when the session has none), restarted by every request
-	// that reads it, so an active session never gets a 419 for an aged
-	// token and the token ends with the session.
-	a.config.CSRF.TokenIdleLifetime = csrfTokenIdleLifetime(a.config.Session)
 	csrfInstance, err := csrf.NewE(&a.config.CSRF)
 	if err != nil {
 		return nil, fmt.Errorf("velocity: failed to initialize csrf: %w", err)
@@ -1036,11 +1038,22 @@ func sessionFlashBag(r *http.Request) contract.FlashBag {
 	return sess
 }
 
-// csrfTokenIdleLifetime is the CSRF token's idle lifetime under the
-// session's lifetime policy: the idle timeout, or the absolute cap when the
-// session has no idle timeout. Zero (a session with neither) leaves the
-// token store's own default.
-func csrfTokenIdleLifetime(session auth.SessionConfig) time.Duration {
+// csrfSessionBag returns the session the request whose context is ctx is
+// served under, as the CSRF token's bag, or nil. See stores.SessionBagStore.
+func csrfSessionBag(ctx context.Context) stores.SessionBag {
+	sess := schemes.SessionFromContext(ctx)
+	if sess == nil {
+		return nil
+	}
+	return sess
+}
+
+// csrfConsumedTokenLifetime is how long a consumed single-use CSRF token is
+// refused on this instance: as long as a captured copy of the session
+// cookie that carried it can stay valid, the idle timeout, or the absolute
+// cap when the session has no idle timeout. Zero (a session with neither)
+// leaves the store's own default.
+func csrfConsumedTokenLifetime(session auth.SessionConfig) time.Duration {
 	if idle := session.IdleTimeout(); idle > 0 {
 		return idle
 	}

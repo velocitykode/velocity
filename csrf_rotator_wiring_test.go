@@ -22,10 +22,10 @@ type fakeCSRFRotator struct {
 	tag string
 }
 
-func (f *fakeCSRFRotator) Middleware(next http.Handler) http.Handler { return next }
-func (f *fakeCSRFRotator) RotateToken(oldID, newID string) error     { return nil }
-func (f *fakeCSRFRotator) RevokeToken(id string) error               { return nil }
-func (f *fakeCSRFRotator) WriteXSRFCookie(_ http.ResponseWriter, _ string) {
+func (f *fakeCSRFRotator) Middleware(next http.Handler) http.Handler                { return next }
+func (f *fakeCSRFRotator) RotateToken(_ context.Context, oldID, newID string) error { return nil }
+func (f *fakeCSRFRotator) RevokeToken(_ context.Context, id string) error           { return nil }
+func (f *fakeCSRFRotator) WriteXSRFCookie(_ context.Context, _ http.ResponseWriter, _ string) {
 }
 func (f *fakeCSRFRotator) ClearXSRFCookie(_ http.ResponseWriter, _ *http.Request) {
 }

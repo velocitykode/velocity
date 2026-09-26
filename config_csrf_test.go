@@ -33,9 +33,6 @@ func TestConfigFromEnv_CSRFMatchesPackageDefault(t *testing.T) {
 	cfg := ConfigFromEnv()
 	def := csrf.DefaultConfig()
 
-	if cfg.CSRF.TokenIdleLifetime != def.TokenIdleLifetime {
-		t.Errorf("TokenIdleLifetime: env=%v default=%v", cfg.CSRF.TokenIdleLifetime, def.TokenIdleLifetime)
-	}
 	if cfg.CSRF.HeaderName != def.HeaderName {
 		t.Errorf("HeaderName: env=%q default=%q", cfg.CSRF.HeaderName, def.HeaderName)
 	}

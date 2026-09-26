@@ -108,11 +108,20 @@ that cannot import `app`).
 | `CSRF_WRITE_XSRF_COOKIE` | `config.go` | `true` | no | none | |
 | `CSRF_XSRF_COOKIE_NAME` | `config.go` | from default | no | none | |
 
-The CSRF token has no lifetime key of its own: it lives on the session's
-idle timeout (`SESSION_IDLE_LIFETIME`, or `SESSION_ABSOLUTE_LIFETIME` when the
-idle timeout is `0`), and every request through the CSRF middleware restarts
-it, so an active session never gets a 419 for an aged token. The
-`XSRF-TOKEN` cookie is a browser-session cookie (no Max-Age).
+The CSRF token lives in the session (bag key `csrf.token`) and is saved with
+it, so there is no store key: with either `SESSION_STORE` it survives a
+restart, validates on every instance that shares `APP_KEY` (and, for
+`SESSION_STORE=server`, the cache), and ends with the session
+(`SESSION_IDLE_LIFETIME`, `SESSION_ABSOLUTE_LIFETIME`, logout). Login rotates
+it; the CSRF middleware must run on the app router, inside the session
+middleware `velocity.New` installs, or it issues and accepts no token. With
+`CSRF_SINGLE_USE=true` a consumed token is also refused by the instance that
+accepted it for as long as a captured session cookie stays valid, so a
+replayed request is refused on that instance; across instances single use is
+best effort. The `XSRF-TOKEN` cookie is a browser-session cookie (no Max-Age).
+An app that binds CSRF to its own resolver (`CSRF_SESSION_COOKIE` not the
+session cookie, or `Config.CSRF.SessionIDResolver` set in code) gets the
+per-process `stores.MemoryStore` unless it sets `Config.CSRF.Store`.
 
 The `XSRF-TOKEN` cookie has no attribute keys of its own: its Path, Domain,
 Secure and SameSite follow `SESSION_PATH`, `SESSION_DOMAIN`, `SESSION_SECURE`
