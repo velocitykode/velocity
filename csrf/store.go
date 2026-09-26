@@ -41,7 +41,7 @@ type Store interface {
 // replica B from both accepting the same token within the same instant.
 // Stores that cannot implement an atomic compare-and-delete (e.g. a thin
 // SQL store without row-level locking) should NOT implement this interface;
-// the CSRF middleware will fall back to Get+Delete and emit a one-time
+// the CSRF middleware then uses Get+Delete instead and emits a one-time
 // warning so operators know their deployment is single-use-best-effort
 // rather than single-use-exact.
 //

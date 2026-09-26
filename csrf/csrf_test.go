@@ -1504,7 +1504,7 @@ func TestSessionIDResolver_PlaintextSessionIDAcrossEncryption(t *testing.T) {
 }
 
 // TestSessionIDResolver_ErrorPropagation verifies a resolver returning
-// ErrNoSession produces 419 and emits the SessionFallback event.
+// ErrNoSession produces 419 and emits the SessionMissing event.
 func TestSessionIDResolver_ErrorPropagation(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Store = stores.NewMemoryStore()

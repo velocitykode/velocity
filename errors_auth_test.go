@@ -421,7 +421,7 @@ func TestAuthErrorRules_InertiaIntendedURLSurvivesCookieSession(t *testing.T) {
 	}
 	m.RegisterScheme("web", sessionScheme)
 	m.SetLoginRedirect(func(*http.Request) string { return "/auth/sign-in" })
-	// Bootstrap installs the session middleware for the session scheme.
+	// Bootstrap points the session middleware New installed at this scheme.
 	if err := a.Bootstrap(); err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}

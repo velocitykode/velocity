@@ -62,7 +62,7 @@ func TestInertiaErrorPage_FlashDrainedByErrorPageStaysDrained(t *testing.T) {
 		t.Fatal("app has no *auth.Manager")
 	}
 	m.RegisterScheme("web", sessionScheme)
-	// Bootstrap installs the session middleware for the session scheme.
+	// Bootstrap points the session middleware New installed at this scheme.
 	if err := a.Bootstrap(); err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestInertiaErrorPage_FlashDrainStaysDrainedWhereverBondIsRegistered(t *test
 			if tt.bondBefore {
 				a.Router.Use(engine.Middleware())
 			}
-			// Bootstrap installs the session middleware for the session scheme.
+			// Bootstrap points the session middleware New installed at this scheme.
 			if err := a.Bootstrap(); err != nil {
 				t.Fatalf("Bootstrap: %v", err)
 			}

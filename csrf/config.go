@@ -16,8 +16,8 @@ type Mode int
 
 const (
 	// ModeSession binds CSRF tokens to the session cookie. If the request
-	// has no session cookie, validation fails — the middleware will NOT
-	// generate an ephemeral session ID. This is the secure default.
+	// has no session, validation fails: the middleware never issues or
+	// accepts a token without a real session. This is the secure default.
 	ModeSession Mode = iota
 
 	// ModeDoubleSubmit binds CSRF tokens to a server-issued signed cookie
@@ -122,18 +122,17 @@ type Config struct {
 
 	// SessionIDResolver returns the plaintext session ID that CSRF tokens
 	// are keyed by. It is REQUIRED: csrf.NewE returns
-	// ErrInsecureCSRFConfig when this field is nil. There is no fallback
-	// to reading SessionCookieName as a raw value from the request - that
-	// legacy path let an unauthenticated attacker mint a CSRF token
+	// ErrInsecureCSRFConfig when this field is nil. The id always comes
+	// from the resolver, never from the raw SessionCookieName value: a raw
+	// value would let an unauthenticated attacker mint a CSRF token
 	// against any self-chosen string by sending the cookie under the
-	// configured name (the cookie value never went through session
-	// middleware), and has been removed.
+	// configured name (the cookie value never goes through the session
+	// middleware).
 	//
-	// Frameworks that encrypt the session cookie (e.g. velocity/auth
-	// session manager) MUST inject a resolver that decrypts the cookie
-	// and returns the underlying plaintext session ID. Keying CSRF tokens
-	// by the raw ciphertext cookie value is also incorrect: the IV
-	// changes on every Save() and the stored token becomes unreachable.
+	// A custom resolver MUST return the session id behind the cookie, not
+	// the cookie value: when the session store encrypts the cookie (the
+	// velocity/auth cookie store does), the IV changes on every save, so
+	// a token keyed by the ciphertext becomes unreachable.
 	//
 	// velocity.New auto-installs a resolver that answers with the session
 	// the session store accepts (and, with it, a stores.SessionBagStore)

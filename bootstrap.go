@@ -488,10 +488,11 @@ func dispatchModuleCallback[T any](modules []app.Module, fn func(T)) {
 // CookieStore alone cannot enforce a cross-process Logout: the in-process
 // revocation list (H-04 fix) only closes the captured-cookie window on the
 // host that handled Logout. A multi-host deployment MUST install a real
-// ServerSessionStore (Redis/SQL) via Manager.SetServerSessionStore so
-// revocations propagate. See audit findings H-04 / 02-session.md for the
+// ServerSessionStore so revocations propagate: SESSION_STORE=server does
+// it from the default cache store, or a module calls
+// Manager.SetServerSessionStore. See audit findings H-04 / 02-session.md for the
 // full attack model.
-var ErrCookieStoreInProduction = fmt.Errorf("velocity/auth: production deployment must install a ServerSessionStore (or opt-in via SessionConfig.AllowCookieStoreInProduction)")
+var ErrCookieStoreInProduction = fmt.Errorf("velocity/auth: production deployment must install a ServerSessionStore (set SESSION_STORE=server, or opt-in via SessionConfig.AllowCookieStoreInProduction)")
 
 // validateSessionStoreForProduction implements the H-04 boot-time guard.
 // Skip in testing/development; skip when the active scheme is not the session

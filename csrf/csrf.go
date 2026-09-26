@@ -40,10 +40,9 @@ var (
 	ErrTokenExpired = errors.New("velocity/csrf: token expired")
 	ErrNoStore      = errors.New("velocity/csrf: no token store configured")
 	// ErrNoSession is returned when ModeSession is active but the request
-	// carries no session cookie. Previously the middleware generated a
-	// per-request ephemeral ID here, which let an attacker bind a CSRF
-	// token to any self-chosen session ID and replay it. The middleware
-	// now refuses to issue or validate tokens without a real session.
+	// carries no session the SessionIDResolver accepts. The middleware
+	// never issues or validates a token without a real session: a token
+	// bound to a self-chosen id could be replayed by an attacker.
 	ErrNoSession = errors.New("velocity/csrf: session cookie required for ModeSession")
 )
 
@@ -63,7 +62,7 @@ type CSRF struct {
 	singleUseDegradedLogged atomic.Bool
 
 	// eventDispatcher is optional; when set via SetEventDispatcher, the CSRF
-	// instance emits events such as csrf.session_fallback.
+	// instance emits events such as csrf.session_missing.
 	eventMu         sync.RWMutex
 	eventDispatcher func(ctx context.Context, event interface{}) error
 }
@@ -89,11 +88,11 @@ func New(config *Config) *CSRF {
 //
 // SessionIDResolver MUST be non-nil. The resolver is the binding-key
 // boundary between an attacker-controlled cookie value and the CSRF token
-// store. Allowing a nil resolver re-opened a legacy code path that keyed
-// tokens by the raw cookie value, which let an unauthenticated attacker
-// mint tokens against a self-chosen session ID. Bootstrap code in app.go
-// installs an encrypted-session resolver by default; consumers wiring CSRF
-// directly must supply one explicitly.
+// store. Keying tokens by the raw cookie value would let an
+// unauthenticated attacker mint tokens against a self-chosen session ID.
+// velocity.New installs a resolver that answers with the session the
+// session store accepts; consumers wiring CSRF directly must supply one
+// explicitly.
 func NewE(config *Config) (*CSRF, error) {
 	if config == nil {
 		config = DefaultConfig()
@@ -275,7 +274,7 @@ func (c *CSRF) maybeWriteXSRFCookie(w http.ResponseWriter, r *http.Request) {
 	sessionID, err := c.getSessionIDQuiet(r)
 	if err != nil || sessionID == "" {
 		// No session bound to this request - nothing to write. The
-		// quiet variant suppresses the SessionFallback event because
+		// quiet variant suppresses the SessionMissing event because
 		// this is the safe-method bootstrap path, not an enforcement
 		// boundary.
 		return
@@ -325,8 +324,8 @@ func (c *CSRF) WriteXSRFCookie(ctx context.Context, w http.ResponseWriter, sessi
 // (attached by the CSRF middleware), the token lookup goes through the
 // cache so the cookie value and any downstream TokenForRequest reader
 // (sharePropsFunc, template helper) agree byte-for-byte. When r is nil
-// (post-rotation WriteXSRFCookie call site), fall back to direct
-// Store.Get via GetToken under ctx.
+// (post-rotation WriteXSRFCookie call site), the token is read with
+// GetToken under ctx.
 func (c *CSRF) writeXSRFCookieForSession(ctx context.Context, w http.ResponseWriter, r *http.Request, sessionID string) {
 	if !c.config.WriteXSRFCookie {
 		return
@@ -380,7 +379,7 @@ func (c *CSRF) writeXSRFCookieForSession(ctx context.Context, w http.ResponseWri
 }
 
 // getSessionIDQuiet resolves the session id without dispatching a
-// SessionFallback event. Used by the XSRF-TOKEN cookie bootstrap path
+// SessionMissing event. Used by the XSRF-TOKEN cookie bootstrap path
 // where the absence of a session is normal (anonymous GET) rather than
 // a CSRF policy violation.
 func (c *CSRF) getSessionIDQuiet(r *http.Request) (string, error) {
@@ -417,9 +416,14 @@ func (c *CSRF) RouterMiddleware() router.MiddlewareFunc {
 // implements AtomicConsumer, validation and deletion happen as one atomic
 // cross-process operation. This is the only path that closes the multi-
 // replica race where two replicas could each accept the same token in the
-// same instant. When the store lacks AtomicConsumer, the middleware falls
-// back to per-process serialization (singleUseMu) and logs a one-time
+// same instant. When the store lacks AtomicConsumer, the middleware
+// serializes per process instead (singleUseMu) and logs a one-time
 // warning so operators know their deployment is single-use-best-effort.
+//
+// A request with no usable token is rejected with ErrTokenMissing before
+// the session is needed; reportMissingSession still dispatches
+// SessionMissing for it when it also carries no session, so the event
+// counts every session-less unsafe request, token or not.
 func (c *CSRF) validateToken(w http.ResponseWriter, r *http.Request) error {
 	// Get token from request
 	requestToken, err := c.getTokenFromRequest(w, r)
@@ -427,6 +431,7 @@ func (c *CSRF) validateToken(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if requestToken == "" {
+		c.reportMissingSession(r)
 		return ErrTokenMissing
 	}
 
@@ -444,6 +449,7 @@ func (c *CSRF) validateToken(w http.ResponseWriter, r *http.Request) error {
 	// time comparison below (ValidateToken / the store's ConsumeIfMatch).
 	requestToken, encoding := decodeRequestToken(requestToken)
 	if encoding == encodingMalformed {
+		c.reportMissingSession(r)
 		return ErrTokenMissing
 	}
 
@@ -617,17 +623,17 @@ func (c *CSRF) getTokenFromRequest(w http.ResponseWriter, r *http.Request) (stri
 }
 
 // getSessionID extracts the session ID from the request for ModeSession.
-// Returns ErrNoSession when no session cookie is present. NewE guarantees
-// SessionIDResolver is non-nil; the legacy fallback that read the raw
-// cookie value as the session ID was removed because it let an
-// unauthenticated attacker mint tokens bound to any self-chosen string.
-// A csrf.session_fallback event is dispatched on ErrNoSession so operators
-// can detect requests arriving without a session.
+// Returns ErrNoSession when the SessionIDResolver accepts no session for
+// the request. NewE guarantees SessionIDResolver is non-nil; the id always
+// comes from it, never from a raw cookie value, so an unauthenticated
+// attacker cannot mint tokens bound to a self-chosen string. A
+// csrf.session_missing event is dispatched on ErrNoSession so operators
+// can detect unsafe requests rejected for arriving without a session.
 func (c *CSRF) getSessionID(r *http.Request) (string, error) {
 	id, err := c.config.SessionIDResolver(r)
 	if err != nil {
 		if errors.Is(err, ErrNoSession) {
-			c.dispatchEvent(r.Context(), &SessionFallback{
+			c.dispatchEvent(r.Context(), &SessionMissing{
 				Context: r.Context(),
 				Path:    r.URL.Path,
 				Method:  r.Method,
@@ -637,7 +643,7 @@ func (c *CSRF) getSessionID(r *http.Request) (string, error) {
 		return "", err
 	}
 	if id == "" {
-		c.dispatchEvent(r.Context(), &SessionFallback{
+		c.dispatchEvent(r.Context(), &SessionMissing{
 			Context: r.Context(),
 			Path:    r.URL.Path,
 			Method:  r.Method,
@@ -646,6 +652,14 @@ func (c *CSRF) getSessionID(r *http.Request) (string, error) {
 		return "", ErrNoSession
 	}
 	return id, nil
+}
+
+// reportMissingSession resolves the request's session only to dispatch
+// SessionMissing when there is none. It is used on the paths that reject a
+// request for its token before the session is looked up, and changes
+// nothing about the rejection.
+func (c *CSRF) reportMissingSession(r *http.Request) {
+	_, _ = c.getSessionID(r)
 }
 
 // isExcluded checks if the request should be excluded from CSRF protection

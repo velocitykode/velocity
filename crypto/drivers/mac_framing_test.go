@@ -74,7 +74,7 @@ func TestComputeMACWithAAD_FramingPin(t *testing.T) {
 	hmacKey := []byte("0123456789abcdef0123456789abcdef")
 	iv := []byte("0123456789abcdef") // 16 bytes
 	ct := []byte("ciphertext-bytes")
-	aad := []byte("_velocity_errors")
+	aad := []byte("queued-job-aad-1")
 
 	got := computeMACWithAAD(iv, ct, aad, hmacKey)
 
@@ -97,7 +97,7 @@ func TestComputeMACWithAAD_FramingPin(t *testing.T) {
 	}
 
 	// Binding: a different aad changes the MAC.
-	if got == computeMACWithAAD(iv, ct, []byte("_velocity_old"), hmacKey) {
+	if got == computeMACWithAAD(iv, ct, []byte("queued-job-aad-2"), hmacKey) {
 		t.Fatal("MAC must change when aad changes")
 	}
 }

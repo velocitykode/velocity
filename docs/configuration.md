@@ -253,8 +253,8 @@ A boot in production (`APP_ENV` set to anything other than `dev`, `development`,
 3. `SESSION_SECURE=true` (default), `SESSION_HTTP_ONLY=true` (default).
 4. `SESSION_SAME_SITE` set to a non-default value (`lax`, `strict`, or
    `none`; `none` requires `SESSION_SECURE=true`).
-5. A `ServerSessionStore` wired by a module OR
-   `SessionConfig.AllowCookieStoreInProduction=true`.
+5. A `ServerSessionStore` (`SESSION_STORE=server`, or one a module wires)
+   OR `SessionConfig.AllowCookieStoreInProduction=true`.
 6. `AUTH_TRUSTED_PROXIES` set when the deployment is behind a load
    balancer / reverse proxy. Empty means "trust nothing"; the framework
    defaults to the secure choice and ignores X-Forwarded-* headers.

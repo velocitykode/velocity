@@ -3,9 +3,9 @@ package csrf
 import "net/http"
 
 // testCookieResolver returns a SessionIDResolver that reads the raw value
-// of the named cookie. Tests opt in to this legacy "cookie-value-is-the-
-// session-id" binding under their own control: production code (app.go)
-// installs an encrypted-session resolver instead. Returns ErrNoSession
+// of the named cookie. Tests opt in to this "cookie-value-is-the-
+// session-id" binding under their own control: velocity.New installs a
+// resolver keyed by the session the session store accepts. Returns ErrNoSession
 // when the cookie is missing or empty so the middleware refuses to mint
 // or validate tokens for cookie-less requests.
 func testCookieResolver(name string) func(*http.Request) (string, error) {
