@@ -104,7 +104,9 @@ func (c *TestClient) WithSession(scheme *schemes.SessionScheme, data map[string]
 }
 
 // AssertSessionHasErrors asserts that the response carried a decryptable
-// "_velocity_errors" flash cookie containing each named field. Decryption uses
+// "_velocity_errors" flash cookie containing each named field. A failure
+// flashed under a named error bag counts its fields as present, the same as
+// the page's errors prop. Decryption uses
 // enc (the same key the router sealed the cookie with); the bag is
 // AEAD-encrypted, so without the matching encryptor the cookie cannot be opened.
 //
@@ -196,9 +198,11 @@ func (c *TestClient) sessionFromClient(scheme *schemes.SessionScheme) auth.Sessi
 	return scheme.Session(c.authProbeRequest())
 }
 
-// openFlashErrors returns the decoded "_velocity_errors" bag from the response
-// cookies, or nil when the cookie is absent or fails to open. Decryption reuses
-// router.OpenFlash (the same helper bond/flash.go uses on the read path); crypto
+// openFlashErrors returns the "_velocity_errors" bag from the response cookies
+// as the page sees it, or nil when the cookie is absent or fails to open. It
+// opens through router.OpenFlashErrors, the helper bond/flash.go uses on the
+// read path, so a failure flashed under a named error bag exposes its fields
+// at the top level (and under the bag's name) exactly as on the page; crypto
 // is never reimplemented here.
 func (r *TestResponse) openFlashErrors(enc crypto.Encryptor) map[string]any {
 	var sealed string
@@ -212,7 +216,7 @@ func (r *TestResponse) openFlashErrors(enc crypto.Encryptor) map[string]any {
 		return nil
 	}
 
-	value, err := router.OpenFlash(enc, router.FlashErrorsCookie, sealed)
+	value, err := router.OpenFlashErrors(enc, sealed)
 	if err != nil {
 		return nil
 	}

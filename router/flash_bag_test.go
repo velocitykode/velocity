@@ -39,7 +39,9 @@ func TestFlashErrorsPayload(t *testing.T) {
 		value any
 		want  any
 	}{
-		{name: "PlainMap", value: fields, want: fields},
+		{name: "PlainMap", value: fields, want: first},
+		{name: "PlainStringMap", value: map[string]string{"email": "required"}, want: map[string]string{"email": "required"}},
+		{name: "AnyMapWithLists", value: map[string]any{"email": []string{"required", "email"}, "name": []any{"short"}, "age": []any{}, "code": "bad"}, want: map[string]any{"email": "required", "name": "short", "code": "bad"}},
 		{name: "NamedBag", value: named, want: map[string]any{FlashErrorBagKey: "login", FlashBaggedErrorsKey: first}},
 		{name: "WrappedNamedBag", value: fmt.Errorf("store: %w", named), want: map[string]any{FlashErrorBagKey: "login", FlashBaggedErrorsKey: first}},
 		{name: "EmptyBag", value: unnamed, want: first},
@@ -53,6 +55,54 @@ func TestFlashErrorsPayload(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := flashErrorsPayload(tt.value); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("flashErrorsPayload = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestUnwrapErrorBag asserts the page view of an opened errors value: an
+// error bag envelope exposes its fields at the top level and under the
+// bag's name; anything else is returned unchanged.
+func TestUnwrapErrorBag(t *testing.T) {
+	fields := map[string]any{"email": "required"}
+	tests := []struct {
+		name  string
+		value any
+		want  any
+	}{
+		{name: "PlainErrors", value: fields, want: fields},
+		{
+			name:  "BaggedErrors",
+			value: map[string]any{FlashErrorBagKey: "login", FlashBaggedErrorsKey: fields},
+			want:  map[string]any{"email": "required", "login": fields},
+		},
+		{
+			name:  "EmptyBag",
+			value: map[string]any{FlashErrorBagKey: "", FlashBaggedErrorsKey: fields},
+			want:  map[string]any{FlashErrorBagKey: "", FlashBaggedErrorsKey: fields},
+		},
+		{
+			name:  "NonStringBag",
+			value: map[string]any{FlashErrorBagKey: 3.0, FlashBaggedErrorsKey: fields},
+			want:  map[string]any{FlashErrorBagKey: 3.0, FlashBaggedErrorsKey: fields},
+		},
+		{
+			name:  "NonObjectErrors",
+			value: map[string]any{FlashErrorBagKey: "login", FlashBaggedErrorsKey: "oops"},
+			want:  map[string]any{FlashErrorBagKey: "login", FlashBaggedErrorsKey: "oops"},
+		},
+		{
+			name:  "ExtraMember",
+			value: map[string]any{FlashErrorBagKey: "login", FlashBaggedErrorsKey: fields, "x": 1.0},
+			want:  map[string]any{FlashErrorBagKey: "login", FlashBaggedErrorsKey: fields, "x": 1.0},
+		},
+		{name: "StringValue", value: "error", want: "error"},
+		{name: "NilValue", value: nil, want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := unwrapErrorBag(tt.value); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("unwrapErrorBag = %#v, want %#v", got, tt.want)
 			}
 		})
 	}

@@ -2065,15 +2065,19 @@ func flashAADFor(name string) string {
 // a missing encryptor as a configuration bug; the lack of a flash
 // cookie on the response is the visible symptom.
 //
-// A value carrying per-field messages (an Errors() map[string][]string
-// method, found through errors.As when the value is an error, as on
-// *validation.Failure) is sealed as field -> first message, the shape of
-// validation.Result.All. A value that also names an error bag (an
+// Every field reaches the page as one shape: field -> first message, a
+// string, the shape of validation.Result.All. A value carrying per-field
+// messages (an Errors() map[string][]string method, found through
+// errors.As when the value is an error, as on *validation.Failure) and a
+// plain map[string][]string are sealed as field -> first message, fields
+// without a message dropped; a map[string]any has each list value
+// ([]string or []any) replaced by its first element; a map[string]string
+// is already that shape. A value that also names an error bag (an
 // ErrorBag() string method returning a non-empty name) is sealed as the
 // envelope {FlashErrorBagKey: bag, FlashBaggedErrorsKey: messages}, where
 // messages is that field -> first message map, or the value itself when it
-// carries no per-field messages. The reader exposes the messages at the
-// top level and under the bag's name.
+// carries no per-field messages. OpenFlashErrors exposes the messages at
+// the top level and under the bag's name.
 func (c *Context) FlashErrors(errs any) {
 	writeFlashCookie(c.Response, c.flashEncryptor(), FlashErrorsCookie, flashErrorsPayload(errs), !c.insecureFlashCookies)
 }
@@ -2096,8 +2100,9 @@ type fieldMessager interface {
 }
 
 // flashErrorsPayload returns the value FlashErrors seals: field -> first
-// message for a value carrying per-field messages, wrapped in the error bag
-// envelope when the value names a non-empty bag; any other value unchanged.
+// message for a value carrying per-field messages or a field map, wrapped
+// in the error bag envelope when the value names a non-empty bag; any
+// other value unchanged.
 func flashErrorsPayload(errs any) any {
 	var namer errorBagNamer
 	var fields fieldMessager
@@ -2108,7 +2113,7 @@ func flashErrorsPayload(errs any) any {
 		namer, _ = errs.(errorBagNamer)
 		fields, _ = errs.(fieldMessager)
 	}
-	var messages any = errs
+	messages := fieldMapMessages(errs)
 	if fields != nil {
 		messages = firstMessages(fields.Errors())
 	}
@@ -2132,6 +2137,37 @@ func firstMessages(fields map[string][]string) map[string]string {
 		}
 	}
 	return out
+}
+
+// fieldMapMessages returns field -> first message for a plain field map a
+// handler flashed: a map[string][]string keeps each field's first message
+// (fields without one dropped), a map[string]any has each []string or []any
+// value replaced by its first element (fields with an empty list dropped).
+// Any other value, including a map[string]string, is already one message
+// per field or carries no fields, and is returned unchanged.
+func fieldMapMessages(errs any) any {
+	switch m := errs.(type) {
+	case map[string][]string:
+		return firstMessages(m)
+	case map[string]any:
+		out := make(map[string]any, len(m))
+		for field, value := range m {
+			switch list := value.(type) {
+			case []string:
+				if len(list) > 0 {
+					out[field] = list[0]
+				}
+			case []any:
+				if len(list) > 0 {
+					out[field] = list[0]
+				}
+			default:
+				out[field] = value
+			}
+		}
+		return out
+	}
+	return errs
 }
 
 // FlashInput stashes old form input as a flash cookie so it survives
@@ -2211,6 +2247,42 @@ func OpenFlash(enc contract.Encryptor, name, cookieValue string) (any, error) {
 		return nil, err
 	}
 	return result, nil
+}
+
+// OpenFlashErrors opens a FlashErrorsCookie value sealed by FlashErrors and
+// returns the errors a page sees: field -> first message. A value sealed as
+// an error bag envelope exposes its fields both at the top level and under
+// the bag's name, the key an Inertia visit made with that errorBag reads;
+// any other value is returned as sealed. Errors are those of OpenFlash, and
+// callers MUST treat any error as "no flash data".
+func OpenFlashErrors(enc contract.Encryptor, cookieValue string) (any, error) {
+	value, err := OpenFlash(enc, FlashErrorsCookie, cookieValue)
+	if err != nil {
+		return nil, err
+	}
+	return unwrapErrorBag(value), nil
+}
+
+// unwrapErrorBag returns the page view of an opened errors value: an error
+// bag envelope becomes its fields at the top level plus the same fields
+// under the bag's name; anything else, including a malformed envelope, is
+// returned unchanged.
+func unwrapErrorBag(value any) any {
+	envelope, ok := value.(map[string]any)
+	if !ok || len(envelope) != 2 {
+		return value
+	}
+	bag, _ := envelope[FlashErrorBagKey].(string)
+	errs, isMap := envelope[FlashBaggedErrorsKey].(map[string]any)
+	if bag == "" || !isMap {
+		return value
+	}
+	prop := make(map[string]any, len(errs)+1)
+	for field, messages := range errs {
+		prop[field] = messages
+	}
+	prop[bag] = errs
+	return prop
 }
 
 // FlashCookie builds the canonical framework cookie: Path=/, HttpOnly,

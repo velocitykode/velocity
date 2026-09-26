@@ -246,51 +246,6 @@ func TestBond_ReloadLocation(t *testing.T) {
 	}
 }
 
-func TestFlashErrorsProp(t *testing.T) {
-	fields := map[string]any{"email": "required"}
-	tests := []struct {
-		name  string
-		value any
-		want  any
-	}{
-		{name: "PlainErrors", value: fields, want: fields},
-		{
-			name:  "BaggedErrors",
-			value: map[string]any{router.FlashErrorBagKey: "login", router.FlashBaggedErrorsKey: fields},
-			want:  map[string]any{"email": "required", "login": fields},
-		},
-		{
-			name:  "EmptyBag",
-			value: map[string]any{router.FlashErrorBagKey: "", router.FlashBaggedErrorsKey: fields},
-			want:  map[string]any{router.FlashErrorBagKey: "", router.FlashBaggedErrorsKey: fields},
-		},
-		{
-			name:  "NonStringBag",
-			value: map[string]any{router.FlashErrorBagKey: 3.0, router.FlashBaggedErrorsKey: fields},
-			want:  map[string]any{router.FlashErrorBagKey: 3.0, router.FlashBaggedErrorsKey: fields},
-		},
-		{
-			name:  "NonObjectErrors",
-			value: map[string]any{router.FlashErrorBagKey: "login", router.FlashBaggedErrorsKey: "oops"},
-			want:  map[string]any{router.FlashErrorBagKey: "login", router.FlashBaggedErrorsKey: "oops"},
-		},
-		{
-			name:  "ExtraMember",
-			value: map[string]any{router.FlashErrorBagKey: "login", router.FlashBaggedErrorsKey: fields, "x": 1.0},
-			want:  map[string]any{router.FlashErrorBagKey: "login", router.FlashBaggedErrorsKey: fields, "x": 1.0},
-		},
-		{name: "StringValue", value: "error", want: "error"},
-		{name: "NilValue", value: nil, want: nil},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := flashErrorsProp(tt.value); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("flashErrorsProp = %#v, want %#v", got, tt.want)
-			}
-		})
-	}
-}
-
 // baggedFailure is a flashed validation error that names its error bag.
 type baggedFailure struct {
 	bag    string
@@ -302,9 +257,9 @@ func (f *baggedFailure) ErrorBag() string            { return f.bag }
 func (f *baggedFailure) Errors() map[string][]string { return f.fields }
 
 // TestApplyFlashData_ErrorBag drives the write path (router's FlashErrors)
-// into the read path: a value carrying per-field messages renders as field
-// -> first message, at the top level and, when it names a bag, under
-// errors.{bag}; any other value renders as sealed.
+// into the read path: a value carrying per-field messages and a plain
+// field map both render as field -> first message, at the top level and,
+// when the value names a bag, under errors.{bag}.
 func TestApplyFlashData_ErrorBag(t *testing.T) {
 	fields := map[string][]string{"email": {"The email field is required.", "The email must be valid."}}
 	const message = "The email field is required."
@@ -331,7 +286,7 @@ func TestApplyFlashData_ErrorBag(t *testing.T) {
 		{
 			name:    "PlainErrors",
 			flashed: fields,
-			want:    map[string]any{"email": []any{"The email field is required.", "The email must be valid."}},
+			want:    map[string]any{"email": message},
 		},
 	}
 	for _, tt := range tests {
