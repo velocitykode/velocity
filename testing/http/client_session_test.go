@@ -248,11 +248,11 @@ func TestResponse_AssertSessionHasErrors_WrongKey_Fails(t *testing.T) {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
 	otherScheme, err := schemes.NewSessionScheme(stubUserStore{}, auth.SessionConfig{
-		Name:     "vel_session",
-		Lifetime: 3600,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Name:         "vel_session",
+		IdleLifetime: 3600,
+		Path:         "/",
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
 	}, other)
 	if err != nil {
 		t.Fatalf("NewSessionScheme: %v", err)
