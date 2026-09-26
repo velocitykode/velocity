@@ -3,6 +3,7 @@ package velocity
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/velocitykode/velocity/app"
@@ -10,6 +11,7 @@ import (
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
 	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/internal/eventqueue"
 	"github.com/velocitykode/velocity/orm"
@@ -581,6 +583,48 @@ func defaultSessionScheme(a *App) *schemes.SessionScheme {
 	}
 	sg, _ := scheme.(*schemes.SessionScheme)
 	return sg
+}
+
+// csrfSessionResolver returns the CSRF SessionIDResolver New installs
+// when CSRF binds to the session cookie. It answers with the id of the
+// session the request is served under, and only with a session the
+// session store accepts:
+//
+//   - Inside the session middleware it returns the id of the session the
+//     middleware attached. That covers an anonymous visitor's first GET:
+//     the middleware mints the session before the CSRF safe-method
+//     bootstrap runs, so XSRF-TOKEN is written for the id the response
+//     is about to set.
+//   - Otherwise (the CSRF middleware mounted outside a.Router, or the
+//     resolver called directly) it loads the session through the current
+//     session scheme, the same store Get every handler uses, which
+//     rejects a cookie that fails to decrypt, was revoked at logout or is
+//     past its lifetime. The store answers a rejected or missing cookie
+//     with a freshly created session, which is born modified; that
+//     answer, a session that cannot report whether it is fresh, and no
+//     session scheme all return csrf.ErrNoSession, so no token is minted
+//     for or accepted from a session the client does not hold.
+func csrfSessionResolver(current func() *schemes.SessionScheme) func(*http.Request) (string, error) {
+	return func(r *http.Request) (string, error) {
+		if sess := schemes.SessionFromRequest(r); sess != nil {
+			if id := sess.ID(); id != "" {
+				return id, nil
+			}
+		}
+		scheme := current()
+		if scheme == nil {
+			return "", csrf.ErrNoSession
+		}
+		sess := scheme.Session(r)
+		if sess == nil || sess.ID() == "" {
+			return "", csrf.ErrNoSession
+		}
+		fresh, ok := sess.(interface{ IsModified() bool })
+		if !ok || fresh.IsModified() {
+			return "", csrf.ErrNoSession
+		}
+		return sess.ID(), nil
+	}
 }
 
 // installCSRFTokenRotator wires the final s.CSRF instance (post chain

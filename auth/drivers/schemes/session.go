@@ -684,10 +684,16 @@ func (g *SessionScheme) anchorRecalledUser(r *http.Request, session auth.Session
 		// rotation above deleted the token bound to the old session id,
 		// so without this write the client keeps echoing a stale cookie
 		// and its very next state-changing request 419s (until a later
-		// safe-method response happens to re-sync it). Mirrors Login.
+		// safe-method response happens to re-sync it). Mirrors Login:
+		// the write is queued on the seam and runs after the session
+		// save, so the cookie is never bound to an id that was not
+		// persisted.
 		if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil {
-			if w := holder.getResponseWriter(); w != nil {
-				rotator.WriteXSRFCookie(w, session.ID())
+			if holder.getResponseWriter() != nil {
+				newID := session.ID()
+				holder.queueAfterSave(func(w http.ResponseWriter) {
+					rotator.WriteXSRFCookie(w, newID)
+				})
 			}
 		}
 	}

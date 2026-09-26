@@ -242,7 +242,8 @@ func TestSessionScheme_RememberRevival_RotatesCSRFToken(t *testing.T) {
 // too: the rotation deletes the token bound to the pre-revival id, so
 // without a fresh XSRF-TOKEN cookie the client keeps echoing a stale
 // value and its next state-changing request 419s. Pre-fix the revival
-// path rotated without writing the cookie.
+// path rotated without writing the cookie. The write runs after the
+// seam's session save, so the cookie is never bound to an unsaved id.
 func TestSessionScheme_RememberRevival_WritesXSRFCookie(t *testing.T) {
 	rotator := &fakeCSRFRotator{}
 	scheme, _ := newRevokeScheme(t, nil)
@@ -256,14 +257,24 @@ func TestSessionScheme_RememberRevival_WritesXSRFCookie(t *testing.T) {
 	rotator.rotated = nil
 	rotator.xsrfWrote = nil
 
-	req := rememberRecallRequest(t, rememberCookie, httptest.NewRecorder())
+	w := httptest.NewRecorder()
+	req := rememberRecallRequest(t, rememberCookie, w)
 
 	if u := scheme.User(req); u == nil {
 		t.Fatal("User(req) returned nil; revival must succeed without a server store")
 	}
 
+	// The write is queued on the seam and runs only after the session
+	// save, like Login's.
+	if got := len(rotator.xsrfWrote); got != 0 {
+		t.Fatalf("revival wrote XSRF-TOKEN %d times before the session save, want 0", got)
+	}
+	holder, _ := req.Context().Value(sessionCtxKey{}).(*sessionHolder)
+	if err := commitSession(scheme, w, holder); err != nil {
+		t.Fatalf("commitSession: %v", err)
+	}
 	if got := len(rotator.xsrfWrote); got != 1 {
-		t.Fatalf("expected exactly 1 WriteXSRFCookie call from revival, got %d", got)
+		t.Fatalf("expected exactly 1 WriteXSRFCookie call from revival after the save, got %d", got)
 	}
 	if len(rotator.rotated) != 1 {
 		t.Fatalf("expected exactly 1 RotateToken call from revival, got %d", len(rotator.rotated))

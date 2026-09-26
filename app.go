@@ -3,7 +3,6 @@ package velocity
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -358,28 +357,21 @@ func New(opts ...Option) (*App, error) {
 
 	// 8. Initialize CSRF
 	//
-	// Inject a SessionIDResolver that decrypts the session cookie directly
-	// and returns the plaintext session ID. The CSRF token store is keyed
-	// by this ID; without the resolver it would be keyed by the per-response
-	// ciphertext cookie value, which rotates on every Save() and causes
-	// 419 on the next state-changing request.
-	//
-	// The resolver MUST refuse to mint or accept tokens for requests that
-	// carry no real session cookie. Calling auth.Manager.Session(r) here
-	// would silently create an ephemeral session (auth/session.go's
-	// GetSessionFromRequest / CookieStore.Get both fall back to
-	// store.Create("") on missing/invalid cookies), reintroducing the
-	// exact attack surface TestCSRF_RefusesEphemeralSession pins. So we
-	// require the cookie to exist AND decrypt successfully; anything else
-	// returns ErrNoSession.
+	// Inject a SessionIDResolver that keys the CSRF token store by the
+	// plaintext session id. Without it the store would be keyed by the
+	// per-response ciphertext cookie value, which rotates on every save
+	// and causes 419 on the next state-changing request. The resolver
+	// answers only with a session the session store accepts (see
+	// csrfSessionResolver), so an expired or revoked cookie gets no token
+	// and cannot pass with one minted while it was live.
 	//
 	// Install the auto-resolver ONLY when CSRF is binding to the
 	// built-in auth session cookie. Two cases must not auto-wire:
 	//
 	//   - CSRF_SESSION_COOKIE points at a different cookie (the operator
 	//     is intentionally binding CSRF to a non-session cookie, plain
-	//     or encrypted under a different scheme). Decrypting it with the
-	//     app encryptor would 419 every request.
+	//     or encrypted under a different scheme). Resolving it through
+	//     the session store would 419 every request.
 	//   - The app does not use the built-in session cookie at all
 	//     (a.config.Session.Name is empty). Same outcome.
 	//
@@ -389,44 +381,12 @@ func New(opts ...Option) (*App, error) {
 	// the strict-reject resolver fails closed (all unsafe requests 419)
 	// until the operator wires a real resolver via Config.SessionIDResolver.
 	if a.config.CSRF.SessionIDResolver == nil &&
-		a.Crypto != nil &&
 		a.config.Session.Name != "" &&
 		a.config.CSRF.SessionCookieName == a.config.Session.Name {
-		encryptor := a.Crypto
-		sessionCookieName := a.config.Session.Name
-		a.config.CSRF.SessionIDResolver = func(r *http.Request) (string, error) {
-			// Prefer the session attached to the request by the
-			// schemes.SessionMiddleware eager bootstrap. This covers
-			// the first anonymous GET on a host with no prior cookie:
-			// SessionMiddleware mints a fresh session via
-			// store.Create("") and caches it on the request holder
-			// BEFORE the CSRF safe-method bootstrap runs. Without
-			// this fallback the resolver would only see the (empty)
-			// inbound cookie, return ErrNoSession, and skip writing
-			// XSRF-TOKEN, so the first POST after that visit 419s.
-			if sess := schemes.SessionFromRequest(r); sess != nil {
-				if id := sess.ID(); id != "" {
-					return id, nil
-				}
-			}
-			c, err := r.Cookie(sessionCookieName)
-			if err != nil || c.Value == "" {
-				return "", csrf.ErrNoSession
-			}
-			plaintext, err := encryptor.Decrypt(c.Value)
-			if err != nil {
-				return "", csrf.ErrNoSession
-			}
-			// CookieStore wire format: {"id":"...","data":{...},"flash":{...}}.
-			// Only the id is needed to key CSRF tokens.
-			var payload struct {
-				ID string `json:"id"`
-			}
-			if err := json.Unmarshal([]byte(plaintext), &payload); err != nil || payload.ID == "" {
-				return "", csrf.ErrNoSession
-			}
-			return payload.ID, nil
-		}
+		// The scheme is read per request: installSessionMiddleware sets
+		// it at the end of New and bootstrap re-points it when a chain
+		// module changes the default scheme.
+		a.config.CSRF.SessionIDResolver = csrfSessionResolver(a.sessionScheme.Load)
 	} else if a.config.CSRF.SessionIDResolver == nil {
 		a.config.CSRF.SessionIDResolver = func(r *http.Request) (string, error) {
 			return "", csrf.ErrNoSession

@@ -2,7 +2,6 @@ package velocity
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -53,31 +52,8 @@ func TestCSRF_EagerBootstrap_AnonymousGETMintsTokenAndCookie(t *testing.T) {
 		t.Fatalf("NewSessionScheme: %v", err)
 	}
 
-	// Replicate the resolver shape installed by velocity.New (see
-	// app.go: default SessionIDResolver). Holder-first, cookie-decrypt
-	// fallback. This is the unit under test.
-	resolver := func(r *http.Request) (string, error) {
-		if sess := schemes.SessionFromRequest(r); sess != nil {
-			if id := sess.ID(); id != "" {
-				return id, nil
-			}
-		}
-		c, err := r.Cookie(sessionCookieName)
-		if err != nil || c.Value == "" {
-			return "", csrf.ErrNoSession
-		}
-		plaintext, err := enc.Decrypt(c.Value)
-		if err != nil {
-			return "", csrf.ErrNoSession
-		}
-		var payload struct {
-			ID string `json:"id"`
-		}
-		if err := json.Unmarshal([]byte(plaintext), &payload); err != nil || payload.ID == "" {
-			return "", csrf.ErrNoSession
-		}
-		return payload.ID, nil
-	}
+	// The resolver velocity.New installs; the unit under test.
+	resolver := csrfSessionResolver(func() *schemes.SessionScheme { return sessionScheme })
 
 	csrfCfg := csrf.DefaultConfig()
 	csrfCfg.SessionCookieName = sessionCookieName

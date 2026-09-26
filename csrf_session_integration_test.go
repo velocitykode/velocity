@@ -1,7 +1,6 @@
 package velocity
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/auth/drivers/schemes"
 	"github.com/velocitykode/velocity/auth/drivers/session"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
@@ -16,27 +16,16 @@ import (
 	"github.com/velocitykode/velocity/csrf/stores"
 )
 
-// buildAppWiredResolver mirrors the resolver wiring performed by
-// (*App).bootstrap so the integration test covers the exact code path
-// consumers hit at runtime. Keep this in sync with app.go.
-func buildAppWiredResolver(enc crypto.Encryptor, sessionCookieName string) func(*http.Request) (string, error) {
-	return func(r *http.Request) (string, error) {
-		c, err := r.Cookie(sessionCookieName)
-		if err != nil || c.Value == "" {
-			return "", csrf.ErrNoSession
-		}
-		plaintext, err := enc.Decrypt(c.Value)
-		if err != nil {
-			return "", csrf.ErrNoSession
-		}
-		var payload struct {
-			ID string `json:"id"`
-		}
-		if err := json.Unmarshal([]byte(plaintext), &payload); err != nil || payload.ID == "" {
-			return "", csrf.ErrNoSession
-		}
-		return payload.ID, nil
+// appWiredResolver returns the resolver New installs (csrfSessionResolver)
+// over a session scheme built from enc and cfg, so these tests run the
+// exact code path consumers hit at runtime.
+func appWiredResolver(t *testing.T, enc crypto.Encryptor, cfg auth.SessionConfig) func(*http.Request) (string, error) {
+	t.Helper()
+	scheme, err := schemes.NewSessionScheme(&eagerStubStore{}, cfg, enc)
+	if err != nil {
+		t.Fatalf("NewSessionScheme: %v", err)
 	}
+	return csrfSessionResolver(func() *schemes.SessionScheme { return scheme })
 }
 
 // TestCSRF_SessionEncryptionRotation_EndToEnd exercises the full bug
@@ -87,11 +76,11 @@ func TestCSRF_SessionEncryptionRotation_EndToEnd(t *testing.T) {
 	}
 	cookieA := cookies[0].Value
 
-	// Wire CSRF with the same resolver shape used in app.go.
+	// Wire CSRF with the resolver New installs.
 	csrfCfg := csrf.DefaultConfig()
 	csrfCfg.Store = stores.NewSessionStore()
 	csrfCfg.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode) // test env
-	csrfCfg.SessionIDResolver = buildAppWiredResolver(enc, sessCfg.Name)
+	csrfCfg.SessionIDResolver = appWiredResolver(t, enc, sessCfg)
 	c := csrf.New(csrfCfg)
 
 	// Seed a token under the plaintext id (simulates a prior GET that
@@ -150,8 +139,8 @@ func TestCSRF_SessionEncryptionRotation_EndToEnd(t *testing.T) {
 // random id to CSRF, reintroducing the ephemeral-session attack
 // surface that TestCSRF_RefusesEphemeralSession pins.
 //
-// The app-wired resolver must require a real cookie AND a successful
-// decrypt; anything else MUST return ErrNoSession.
+// The app-wired resolver must require a cookie the session store
+// accepts; anything else MUST return ErrNoSession.
 func TestCSRF_SessionResolver_NoEphemeralSession(t *testing.T) {
 	enc, err := crypto.NewEncryptor(crypto.Config{
 		Key:    strings.Repeat("k", 32),
@@ -160,7 +149,7 @@ func TestCSRF_SessionResolver_NoEphemeralSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
-	resolver := buildAppWiredResolver(enc, "velocity_session")
+	resolver := appWiredResolver(t, enc, auth.SessionConfig{Name: "velocity_session"})
 
 	cases := []struct {
 		name string
