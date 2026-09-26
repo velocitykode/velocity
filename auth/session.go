@@ -28,6 +28,11 @@ var ErrInsecureSessionConfig = errors.New("velocity/auth: insecure session confi
 // (no Expires / MaxAge=0) cookie per RFC 6265.
 var ErrInvalidLifetime = errors.New("velocity/auth: session lifetime must be >= 0")
 
+// ErrSessionSealed is returned by Regenerate on a session that was sealed:
+// the request it serves already saved it and delivered its cookie, so an
+// id changed from here on would name a session no response delivers.
+var ErrSessionSealed = errors.New("velocity/auth: session sealed: the request already saved it")
+
 // sessionRandReader is the entropy source for session IDs. Tests may swap
 // this for a failing reader to exercise rand.Read error paths.
 var sessionRandReader io.Reader = rand.Reader
@@ -102,6 +107,7 @@ type BaseSession struct {
 	flash     map[string]interface{}
 	modified  bool
 	destroyed bool
+	sealed    bool
 	mu        sync.RWMutex
 }
 
@@ -193,16 +199,40 @@ func (s *BaseSession) Clear() {
 
 // Regenerate regenerates session ID. Returns an error if the underlying
 // crypto/rand call fails; in that case the session ID is left unchanged.
+// A sealed session keeps its id and returns ErrSessionSealed (see Seal).
 func (s *BaseSession) Regenerate() error {
+	if s.Sealed() {
+		return ErrSessionSealed
+	}
 	id, err := generateSessionID()
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.sealed {
+		return ErrSessionSealed
+	}
 	s.id = id
 	s.modified = true
 	return nil
+}
+
+// Seal marks the session as saved by the request it serves. The session
+// middleware seals it when it commits the request's one save: the cookie
+// that save delivers names the session's id, so from then on Regenerate
+// refuses to change it. Invalidate still ends a sealed session.
+func (s *BaseSession) Seal() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sealed = true
+}
+
+// Sealed reports whether the session was sealed (see Seal).
+func (s *BaseSession) Sealed() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.sealed
 }
 
 // Invalidate invalidates session.

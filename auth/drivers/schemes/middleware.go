@@ -254,45 +254,70 @@ func (p *preCommitWriter) Unwrap() http.ResponseWriter {
 // takes the queue halfway through one. Only the writes of the latest
 // transition run; a superseded one's (a remember-me sign-in the request
 // then logged out of) are dropped (see sessionHolder.takeAfterSave).
-// Still under the lock, the commit seals the request (a later sign-in or
-// recall is refused, since nothing it changed would be saved) and settles
-// the queued credentials (a sign-in's remember token reaches the user
-// store), then releases the lock and writes the queued cookies. A queued
-// write may therefore read the signed-in user of the request, and a
-// logout it runs comes after every credential the save issued.
+// Still under the lock, the commit seals the request and its session (a
+// later sign-in or recall is refused, and the session's id can no longer
+// be regenerated, since nothing it changed would be saved), records the
+// id the save issues, and settles the queued credentials (a sign-in's
+// remember token reaches the user store), then releases the lock and
+// delivers the queued writes (see deliverAfterSave). A queued write may
+// therefore read the signed-in user of the request, and a logout it runs
+// comes after every credential the save issued and ends the session the
+// save issued.
 //
 // A response that already deletes the session cookie (Context.DeleteCookie)
 // ends the session: it is invalidated and saved destroyed, which removes a
 // server record and sends the one deletion. A session saved destroyed (so
 // ended, or by Logout) runs none of the queued writes, which are bound to
 // the ended session; its save does not persist anything they could name.
-// Renewal can never issue the cookie again after the handler deleted it.
+// Renewal can never issue the cookie again after the handler deleted it. A
+// deletion of the session cookie a queued write adds ends the session the
+// same way once the delivery is over (see endSessionDeletedAfterSave).
 func commitSession(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) error {
 	holder.lifecycle.Lock()
+	if s, ok := holder.getSession().(sealableSession); ok {
+		s.Seal()
+	}
 	writes, err := commitSessionHeld(g, r, w, holder)
 	holder.lifecycle.Unlock()
-	for _, fn := range writes {
-		fn(w)
+	if err != nil {
+		holder.closeQueue()
+		return err
 	}
-	return err
+	deliverAfterSave(g, w, holder, writes)
+	holder.lifecycle.Lock()
+	g.endSessionDeletedAfterSave(r, w, holder)
+	holder.lifecycle.Unlock()
+	return nil
 }
 
 // commitStandalone is commitSession for a Login or Logout outside the
 // session middleware, which holds the holder's lifecycle lock exclusively
 // and commits its own save scope. Its holder is the operation's own, so
 // nothing outside the operation queues on it or reads through it, and the
-// queued writes run while the lock is still held.
+// queued writes run while the lock is still held. The session is not
+// sealed: outside the middleware each operation is its own save, and a
+// later one on the same request saves again.
 func commitStandalone(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) error {
 	writes, err := commitSessionHeld(g, r, w, holder)
-	for _, fn := range writes {
-		fn(w)
+	if err != nil {
+		holder.closeQueue()
+		return err
 	}
-	return err
+	deliverAfterSave(g, w, holder, writes)
+	g.endSessionDeletedAfterSave(r, w, holder)
+	return nil
+}
+
+// sealableSession is the capability commitSession seals a session through:
+// once sealed, the session refuses to regenerate its id. *auth.BaseSession,
+// and so every framework session, satisfies it.
+type sealableSession interface {
+	Seal()
 }
 
 // commitSessionHeld saves the session and returns the queued writes for
-// the caller to run once it released the holder's lifecycle lock, which
-// it holds exclusively.
+// the caller to deliver once it released the holder's lifecycle lock,
+// which it holds exclusively.
 func commitSessionHeld(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) ([]func(http.ResponseWriter), error) {
 	holder.seal()
 	session := holder.getSession()
@@ -306,6 +331,9 @@ func commitSessionHeld(g *SessionScheme, r *http.Request, w http.ResponseWriter,
 	}
 	queued := holder.takeAfterSave(ended)
 	g.renewOnActivity(r, session)
+	if !ended {
+		holder.setCommittedID(session.ID())
+	}
 	// Skip the save when no mutation occurred. The modifiedSession
 	// capability covers *auth.BaseSession and the cookie store's
 	// wrapper; sessions that do not expose the capability fall through
@@ -326,6 +354,110 @@ func commitSessionHeld(g *SessionScheme, r *http.Request, w http.ResponseWriter,
 		fn()
 	}
 	return queued.writes, nil
+}
+
+// deliverAfterSave runs the writes queued behind a successful save, then
+// the writes they queue in turn, and closes the holder's queue once none
+// is left, so a write queued after that is refused at registration (see
+// QueueAfterSessionSave). Each write gets an afterSaveWriter over w's
+// headers, never w: the response is being committed, and a body write or
+// status from a queued write would commit it from inside the commit.
+func deliverAfterSave(g *SessionScheme, w http.ResponseWriter, holder *sessionHolder, writes []func(http.ResponseWriter)) {
+	sink := &afterSaveWriter{header: w.Header(), g: g}
+	for {
+		for _, fn := range writes {
+			fn(sink)
+		}
+		writes = holder.takeDeliveredLate()
+		if writes == nil {
+			return
+		}
+	}
+}
+
+// errAfterSaveWrite is what a write queued behind the session save gets
+// from a body write: it writes headers only.
+var errAfterSaveWrite = errors.New("velocity/auth: a write queued behind the session save writes response headers only; the body was not written")
+
+// afterSaveWriter is the writer a write queued behind the session save
+// gets: the response's header map, so cookies and headers it sets are sent
+// with the response, and no body or status. Write returns
+// errAfterSaveWrite and WriteHeader is ignored, both logged; the response
+// is committed by the write that fired the save, with the handler's status
+// and body.
+type afterSaveWriter struct {
+	header http.Header
+	g      *SessionScheme
+}
+
+// Header returns the response's header map.
+func (a *afterSaveWriter) Header() http.Header {
+	return a.header
+}
+
+// Write writes nothing and returns errAfterSaveWrite.
+func (a *afterSaveWriter) Write(b []byte) (int, error) {
+	a.g.logWarn("velocity/auth: a write queued behind the session save wrote a response body; ignored", "bytes", len(b))
+	return 0, errAfterSaveWrite
+}
+
+// WriteHeader ignores statusCode.
+func (a *afterSaveWriter) WriteHeader(statusCode int) {
+	a.g.logWarn("velocity/auth: a write queued behind the session save set a response status; ignored", "status", statusCode)
+}
+
+// endSessionDeletedAfterSave ends the session the commit issued when the
+// delivery of the queued writes added a deletion of the session cookie to
+// w (Context.DeleteCookie in a queued write): as with a deletion the
+// handler made (endSessionDeletedBy), the session is invalidated, the
+// issued id is revoked in the cookie store of this process and its record
+// removed from the scheme's server session store (a failed removal is
+// logged), so a captured copy of the cookie is refused on every instance
+// sharing that store. The response keeps one session cookie line: the
+// session cookie the save issued and the deletions are replaced by one
+// deletion built by the session's cookie policy. The caller holds the
+// holder's lifecycle lock exclusively.
+func (g *SessionScheme) endSessionDeletedAfterSave(r *http.Request, w http.ResponseWriter, holder *sessionHolder) {
+	id := holder.committed()
+	if id == "" {
+		return
+	}
+	header := w.Header()
+	lines := header.Values("Set-Cookie")
+	kept := lines[:0:0]
+	deleted := false
+	prefix := g.config.Name + "="
+	for _, line := range lines {
+		if !strings.HasPrefix(line, prefix) {
+			kept = append(kept, line)
+			continue
+		}
+		if c, err := http.ParseSetCookie(line); err == nil && c.MaxAge < 0 {
+			deleted = true
+		}
+	}
+	if !deleted {
+		return
+	}
+	holder.setCommittedID("")
+	header.Del("Set-Cookie")
+	for _, line := range kept {
+		header.Add("Set-Cookie", line)
+	}
+	http.SetCookie(w, g.config.CookiePolicy().Cookie(g.config.Name, "", -1, g.config.HttpOnly))
+	if session := holder.getSession(); session != nil {
+		if ms, ok := session.(modifiedSession); !ok || !ms.IsDestroyed() {
+			if err := session.Invalidate(); err != nil {
+				g.logWarn("velocity/auth: session invalidate (session cookie deleted) failed", "session_id", id, "error", err)
+			}
+		}
+	}
+	if rev, ok := g.store.(sessionRevoker); ok {
+		rev.Revoke(id)
+	}
+	if err := g.retireServerRecord(r, id); err != nil {
+		g.logWarn("velocity/auth: server session store delete (session cookie deleted) failed", "session_id", id, "error", err)
+	}
 }
 
 // endSessionDeletedBy invalidates session when w already carries a

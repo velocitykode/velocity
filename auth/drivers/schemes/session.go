@@ -81,6 +81,18 @@ type sessionHolder struct {
 	// one save ran, so a sign-in or recall from here on could change
 	// nothing that is saved and is refused (see seal).
 	sealed bool
+	// committedID is the id of the live session the commit saved (or
+	// found unchanged), the one the browser holds once the response is
+	// delivered; empty before the commit and when it ended the session.
+	// A session ended after the commit (a Logout, or a deletion of the
+	// session cookie, during delivery) is retired under this id, whatever
+	// the session object reports by then.
+	committedID string
+	// queueClosed is set once the commit delivered the queued writes (or
+	// dropped them): QueueAfterSessionSave refuses from then on, since
+	// nothing would run a write queued later. A write queued while the
+	// delivery runs is delivered with it.
+	queueClosed bool
 
 	// lifecycle serializes the request's authentication transitions:
 	// remember-me recall (session id regeneration, the CSRF token and
@@ -154,11 +166,59 @@ func (h *sessionHolder) isSealed() bool {
 }
 
 // queueAfterSave appends write, bound to no transition, to the writes the
-// seam runs after the session save.
-func (h *sessionHolder) queueAfterSave(write func(w http.ResponseWriter)) {
+// seam runs after the session save, and reports whether it did: false once
+// the queue is closed (see queueClosed).
+func (h *sessionHolder) queueAfterSave(write func(w http.ResponseWriter)) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.queueClosed {
+		return false
+	}
 	h.afterSave = append(h.afterSave, afterSaveWrite{write: write})
+	return true
+}
+
+// takeDeliveredLate returns the writes queued while the seam delivered the
+// queue, for the delivery to run too, or closes the queue and returns nil
+// when there are none: the check and the closure are one step, so a write
+// is either delivered or refused at registration.
+func (h *sessionHolder) takeDeliveredLate() []func(w http.ResponseWriter) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.afterSave) == 0 {
+		h.queueClosed = true
+		return nil
+	}
+	writes := make([]func(w http.ResponseWriter), 0, len(h.afterSave))
+	for _, e := range h.afterSave {
+		writes = append(writes, e.write)
+	}
+	h.afterSave = nil
+	return writes
+}
+
+// closeQueue closes the queue and drops what it holds: the save failed or
+// ended the session, so nothing queued behind it runs.
+func (h *sessionHolder) closeQueue() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.queueClosed = true
+	h.afterSave = nil
+}
+
+// setCommittedID records id as the session the commit issued (see
+// committedID).
+func (h *sessionHolder) setCommittedID(id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.committedID = id
+}
+
+// committed returns the id of the session the commit issued, or "".
+func (h *sessionHolder) committed() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.committedID
 }
 
 // queueCredentialWrite appends e, bound to the transition in progress: the
@@ -177,9 +237,14 @@ type queuedWrites struct {
 	writes []func(w http.ResponseWriter)
 	settle []func()
 	// undo holds every entry's undo step, superseded or not: a failed
-	// save persisted nothing of the request, so every change made outside
-	// the session for it is reversed. Each undo is conditional on the
-	// state its change left, so it never reverses a later change.
+	// save delivered no credential of the request (no session cookie, and
+	// none of the queued writes), so every change made outside the session
+	// for it is reversed. A failed save is not atomic in the store: a
+	// server record may have been written before the failure (a cache
+	// store whose sign-in index update failed after the record was
+	// swapped), but it names an id no client received. Each undo is
+	// conditional on the state its change left, so it never reverses a
+	// later change.
 	undo []func()
 }
 
@@ -187,11 +252,15 @@ type queuedWrites struct {
 // returns what the seam may still run (see queuedWrites). A superseded
 // transition's writes are dropped. When the session was ended (it is
 // saved destroyed) no write runs, since none may follow a session that no
-// longer exists; the undo steps are still returned.
+// longer exists, and the queue is closed; the undo steps are still
+// returned.
 func (h *sessionHolder) takeAfterSave(sessionEnded bool) queuedWrites {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var q queuedWrites
+	if sessionEnded {
+		h.queueClosed = true
+	}
 	for _, e := range h.afterSave {
 		if e.undo != nil {
 			q.undo = append(q.undo, e.undo)
@@ -209,17 +278,40 @@ func (h *sessionHolder) takeAfterSave(sessionEnded bool) queuedWrites {
 }
 
 // QueueAfterSessionSave queues write to run once the session r is served
-// under has been saved, and reports whether it did: false when r runs
-// outside the session middleware, where there is no save to follow and
-// the caller writes at once. A failed save drops write. The CSRF
-// middleware defers its XSRF-TOKEN cookie through it, so the cookie never
-// names a token kept in a session that was not saved.
+// under has been saved, and reports whether it did. The CSRF middleware
+// defers its XSRF-TOKEN cookie through it, so the cookie never names a
+// token kept in a session that was not saved.
+//
+// It reports false when write will never run:
+//
+//   - r runs outside the session middleware: there is no save to follow,
+//     and the caller writes at once;
+//   - the request's queue is closed: the session save and its delivery are
+//     over (the handler already wrote the response, or its commit ran),
+//     so the response is committed or about to be and the caller must not
+//     write the cookie at all.
+//
+// A write queued while the queued writes are delivered (from inside one of
+// them) runs as part of that delivery. A failed save, or a save that ended
+// the session, drops write.
+//
+// write gets the response's headers only, before they are sent: its
+// Header() is the response's header map, so http.SetCookie and header
+// changes land in the response, while Write returns an error and writes
+// nothing and WriteHeader is ignored; the response body and status are the
+// handler's. write must not write the response through any other handle
+// (a router.Context it captured) either: the response is being committed
+// when it runs.
 //
 // write runs after the request's lifecycle lock is released, so it may
 // read the signed-in user (User, Check, ID). The request's session is
-// already saved by then: a Login it calls is refused, a remember-me recall
-// does not run, and a Logout ends the session server-side but cannot
-// delete the session cookie on this response.
+// already saved and sealed by then: a Login it calls is refused, a
+// remember-me recall does not run, the session's id cannot be regenerated
+// (auth.ErrSessionSealed), and a CSRF token rotation is refused. A Logout
+// ends the session the save issued server-side but cannot delete the
+// session cookie on this response; a deletion of the session cookie it
+// adds (Context.DeleteCookie) ends the session as a handler's deletion
+// does, and replaces the session cookie the save issued.
 func QueueAfterSessionSave(r *http.Request, write func(w http.ResponseWriter)) bool {
 	if r == nil || write == nil {
 		return false
@@ -228,8 +320,7 @@ func QueueAfterSessionSave(r *http.Request, write func(w http.ResponseWriter)) b
 	if !ok || holder == nil || holder.getResponseWriter() == nil {
 		return false
 	}
-	holder.queueAfterSave(write)
-	return true
+	return holder.queueAfterSave(write)
 }
 
 // seamHolder returns r's session holder when r runs inside
@@ -1234,11 +1325,28 @@ func (g *SessionScheme) ID(r *http.Request) interface{} {
 // regenerates the id, rotates the CSRF token and records the sign-in, and
 // with remember-me issues the remember credential once the session is
 // saved. Inside the session middleware the seam saves the session;
-// outside it Login commits its own save. A failure before the session was
-// regenerated changes nothing, and the writes an earlier sign-in of the
-// request queued (a remember-me recall's rotated cookie) are delivered or
-// undone as before. After the request's session was saved (a write queued
-// behind the save calling Login) the sign-in is refused with an error.
+// outside it Login commits its own save. After the request's session was
+// saved (a write queued behind the save calling Login) the sign-in is
+// refused with an error.
+//
+// A failed Login may leave side effects, depending on where it fails:
+//
+//   - The previous session's server record cannot be retired: nothing
+//     changed, and the writes an earlier sign-in of the request queued (a
+//     remember-me recall's rotated cookie and XSRF-TOKEN) are delivered or
+//     undone as before.
+//   - Regenerate fails: with a server session store the previous
+//     session's record was already retired and stays deleted, so a
+//     signed-in previous session is ended; the
+//     earlier sign-in's writes are still delivered or undone as before.
+//   - The CSRF token rotation fails: the session was already regenerated,
+//     so this sign-in supersedes an earlier sign-in's queued writes. After
+//     a remember-me recall the rotated remember cookie is then not
+//     delivered (the stored token moved, so remember-me on that device
+//     needs a new sign-in), and the XSRF-TOKEN the request bootstrapped
+//     may name the token of the session before the recall: the next
+//     unsafe request can be refused (419) until a safe request writes the
+//     cookie again.
 func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.Authenticatable, remember ...bool) error {
 	// Guard the nil user before any session work. user is deref'd below
 	// (session.Put(auth.UserIDSessionKey, ...)), so a nil here would
@@ -1457,18 +1565,26 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	if session == nil {
 		return nil
 	}
+	// Capture the session ID before Invalidate so we can also tear down
+	// the server-side record. BaseSession.Invalidate currently leaves id
+	// intact, but capturing here is robust against future changes.
+	sessionID := session.ID()
+
+	// retired lists the ids the server-side teardown below ends: the
+	// session's, and after the request's save the id that save issued
+	// too, which is the one the browser holds whatever the session object
+	// reports by now.
+	retired := []string{sessionID}
 	if holder.isSealed() {
 		// The request's session was saved already (a write queued behind
 		// the save calling Logout): the server-side teardown below still
 		// ends the session and the remember credential, but no save
 		// follows to delete the session cookie on this response.
-		g.logWarn("velocity/auth: logout after the session was saved: the session is ended server-side, its cookie is not deleted by this response", "session_id", session.ID())
+		g.logWarn("velocity/auth: logout after the session was saved: the session is ended server-side, its cookie is not deleted by this response", "session_id", sessionID)
+		if committed := holder.committed(); committed != "" && committed != sessionID {
+			retired = append(retired, committed)
+		}
 	}
-
-	// Capture the session ID before Invalidate so we can also tear down
-	// the server-side record. BaseSession.Invalidate currently leaves id
-	// intact, but capturing here is robust against future changes.
-	sessionID := session.ID()
 
 	// Revoke the CSRF token for this session BEFORE Invalidate clears
 	// the session bag (H-02). Without this, a token kept apart from the
@@ -1554,13 +1670,17 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	// remains valid until its IssuedAt window elapses. Best-effort:
 	// the store may not implement the interface (other drivers,
 	// future stores), and Revoke has no failure mode.
-	if rev, ok := g.store.(sessionRevoker); ok && sessionID != "" {
-		rev.Revoke(sessionID)
-	}
-
-	if store := g.getServerStore(); store != nil && sessionID != "" {
-		if err := store.Delete(r.Context(), sessionID); err != nil {
-			g.logWarn("velocity/auth: server session store delete (logout) failed", "session_id", sessionID, "error", err)
+	for _, id := range retired {
+		if id == "" {
+			continue
+		}
+		if rev, ok := g.store.(sessionRevoker); ok {
+			rev.Revoke(id)
+		}
+		if store := g.getServerStore(); store != nil {
+			if err := store.Delete(r.Context(), id); err != nil {
+				g.logWarn("velocity/auth: server session store delete (logout) failed", "session_id", id, "error", err)
+			}
 		}
 	}
 
@@ -1593,6 +1713,10 @@ func (g *SessionScheme) SetUserStore(userStore auth.UserStore) {
 // Implements the auth.SessionAware capability so auth.Manager.Session(r)
 // can surface the session bag (including Flash / GetFlash / FlushFlash)
 // without consumers reaching into the scheme directly.
+//
+// Once the session middleware saved the request's session, the session is
+// sealed: its Regenerate returns auth.ErrSessionSealed, since the cookie
+// the save delivered names its id (see QueueAfterSessionSave).
 func (g *SessionScheme) Session(r *http.Request) auth.Session {
 	return g.getSession(r)
 }

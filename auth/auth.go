@@ -157,7 +157,12 @@ var (
 
 // RememberClearError reports a revocation whose remember-me credential
 // could not be established as ended (see ErrRememberClearPartial, which
-// it matches under errors.Is). Err joins the individual failures.
+// it matches under errors.Is). Manager.RevokeAllSessions also returns it
+// when only a scheme's refresh tokens could not be revoked, with every
+// remember-me credential cleared: the sessions are deleted, but a refresh
+// token may still mint access tokens. Err joins the individual failures,
+// each naming the scheme and what failed; calling RevokeAllSessions(UserID)
+// again retries both.
 type RememberClearError struct {
 	// UserID is the user whose remember credential may still be valid:
 	// the owner the revoked record named, or the user RevokeAllSessions

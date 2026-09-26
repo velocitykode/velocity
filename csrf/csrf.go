@@ -379,6 +379,13 @@ func (c *CSRF) writeXSRFCookieForSession(ctx context.Context, w http.ResponseWri
 		c.config.QueueAfterSessionSave(r, func(w http.ResponseWriter) { http.SetCookie(w, cookie) }) {
 		return
 	}
+	// Not queued: no session save follows (write now), or the session
+	// save and its delivery are over. The response is then committed or
+	// about to be, and the token may name nothing saved, so nothing is
+	// written into a committed response.
+	if cr, ok := w.(contract.CommitReporter); ok && cr.Committed() {
+		return
+	}
 	http.SetCookie(w, cookie)
 }
 
@@ -788,7 +795,11 @@ func (c *CSRF) RefreshHandler() http.HandlerFunc {
 // A delete error on oldID is logged but does NOT abort the rotation: the
 // new token must still be installed under newID so the post-login request
 // has a valid token to validate against. A set error on newID IS returned
-// so the caller can surface it (Login aborts on token-mint failure).
+// so the caller can surface it (Login aborts on token-mint failure). With
+// the session-held store, a rotation after the request's session was saved
+// (a write queued behind the save) is such an error
+// (stores.ErrSessionSealed): the token the client holds stays the valid
+// one, and the rotation says so instead of reporting success.
 func (c *CSRF) RotateToken(ctx context.Context, oldID, newID string) error {
 	if c == nil || c.config == nil || c.config.Store == nil {
 		return ErrNoStore

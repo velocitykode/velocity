@@ -22,6 +22,20 @@ const TokenSessionKey = "csrf.token"
 // or written to a session that will not be saved with the response.
 var ErrNoSessionBag = errors.New("velocity/csrf: no session held for this request")
 
+// ErrSessionSealed is returned when a token would be written into a
+// session its request already saved (a write queued behind the session
+// save rotating the token): nothing saves the session again, so the token
+// the client holds would stay the valid one while the write reported
+// success.
+var ErrSessionSealed = errors.New("velocity/csrf: the request's session was already saved; no token written")
+
+// sealedBag is the optional capability of a session that reports it was
+// saved by its request. auth.BaseSession, and so every framework session,
+// has it.
+type sealedBag interface {
+	Sealed() bool
+}
+
 // SessionBag is the key-value bag of the session a request is served
 // under. auth.Session satisfies it.
 type SessionBag interface {
@@ -145,11 +159,15 @@ func (s *SessionBagStore) wasConsumed(t string) bool {
 }
 
 // Set puts token in the session with id id. The session saves it with the
-// response.
+// response. A session its request already saved is left as it is and
+// ErrSessionSealed returned.
 func (s *SessionBagStore) Set(ctx context.Context, id string, token string) error {
 	b, err := s.bag(ctx, id)
 	if err != nil {
 		return err
+	}
+	if sb, ok := b.(sealedBag); ok && sb.Sealed() {
+		return ErrSessionSealed
 	}
 	b.Put(TokenSessionKey, token)
 	return nil
