@@ -150,6 +150,15 @@ type Config struct {
 	// The resolver returns ErrNoSession when no session is present.
 	SessionIDResolver func(*http.Request) (string, error)
 
+	// QueueAfterSessionSave defers the XSRF-TOKEN cookie a safe request
+	// bootstraps until the request's session is saved: it queues write to
+	// run after a successful save and reports true, or reports false when
+	// the request has no session save to follow, and the cookie is then
+	// written at once. A failed save drops the write, so the client never
+	// holds a token kept in a session that was not saved. velocity.New
+	// sets it together with the session-held Store; nil writes at once.
+	QueueAfterSessionSave func(r *http.Request, write func(w http.ResponseWriter)) bool
+
 	// Exception handling
 	ExcludePaths []string
 	ExcludeFunc  func(*http.Request) bool

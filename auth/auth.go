@@ -985,55 +985,111 @@ func (m *Manager) ServerSessionStore() ServerSessionStore {
 	return m.serverSessions
 }
 
-// RevokeSession deletes a single server-side session by id. Returns
-// ErrNoServerSessionStore when no store has been configured.
+// RevokeSession revokes a single server-side session: it ends the
+// remember-me credential of the session's owner on every registered scheme
+// that implements RememberTokenClearer, then deletes the session record.
+// Returns ErrNoServerSessionStore when no store has been configured.
 //
-// Caveat: this does NOT clear the user's remember-me token. The revoked
-// browser's session cookie is dead, but if it also holds a remember
-// cookie that cookie can resurrect a fresh session on the next request.
-// This is intentional: remember tokens are per-user, so wiping one would
-// also log the user out on every other device. To prevent resurrection
-// across devices, call RevokeAllSessions instead. (Per-device remember
-// tokens are out of scope for 0.x.)
+// The remember credential is ended because it is not tied to one session:
+// a remember cookie the revoked device holds would otherwise sign it back
+// in on a fresh session as soon as it stops sending the dead session
+// cookie. The user keeps one remember credential at a time (each
+// remember-me sign-in replaces it), so this ends remember-me on the device
+// that last ticked it; every other live session is untouched. The owner
+// is read from the record; a record already gone or expired has none, and
+// is only deleted.
+//
+// The credential is cleared before the record is deleted, so a recall
+// racing the revocation cannot mint a replacement credential for a
+// session that survives it. A clear failure is logged and returned
+// wrapped in ErrRememberClearPartial after the record is deleted.
 func (m *Manager) RevokeSession(ctx context.Context, sessionID string) error {
 	store := m.ServerSessionStore()
 	if store == nil {
 		return ErrNoServerSessionStore
 	}
-	return store.Delete(ctx, sessionID)
+	var partialErrs []error
+	if rec, err := store.Get(ctx, sessionID); err == nil && rec != nil && rec.UserID != "" {
+		for _, gc := range m.revocationCapabilities() {
+			if err := gc.clearRemember(ctx, m, rec.UserID); err != nil {
+				partialErrs = append(partialErrs, err)
+			}
+		}
+	}
+	if err := store.Delete(ctx, sessionID); err != nil {
+		return err
+	}
+	if len(partialErrs) > 0 {
+		return fmt.Errorf("%w: %w", ErrRememberClearPartial, errors.Join(partialErrs...))
+	}
+	return nil
 }
 
-// RevokeAllSessions deletes every server-side session belonging to
-// userID, clears the user's remember-me token on every registered scheme
-// that implements RememberTokenClearer, and revokes outstanding refresh
-// tokens on every registered scheme that implements RefreshTokenRevoker.
-// Returns ErrNoServerSessionStore when no store has been configured.
+// RevokeAllSessions signs userID out everywhere: it clears the user's
+// remember-me token on every registered scheme that implements
+// RememberTokenClearer, deletes every server-side session belonging to the
+// user, and revokes outstanding refresh tokens on every registered scheme
+// that implements RefreshTokenRevoker. Returns ErrNoServerSessionStore
+// when no store has been configured.
+//
+// The remember tokens are cleared before the sessions are deleted, so a
+// remember-me recall racing the revocation either fails (its token is
+// gone) or wrote a session record the deletion then removes; it never
+// leaves a live session behind.
 //
 // Remember-token clearing and refresh-token revocation are best-effort:
-// failures are logged but do not undo the store-side session deletion,
-// since the load-bearing security action (revoking active sessions) has
-// already succeeded. Aggregate failures across the two walks are joined
-// and returned wrapped with ErrRememberClearPartial so callers can
-// detect partial success without losing the individual error chain.
+// failures are logged but do not stop the store-side session deletion,
+// the load-bearing security action. Aggregate failures across the two
+// walks are joined and returned wrapped with ErrRememberClearPartial so
+// callers can detect partial success without losing the individual error
+// chain. A failed session deletion is returned as is.
 func (m *Manager) RevokeAllSessions(ctx context.Context, userID string) error {
 	store := m.ServerSessionStore()
 	if store == nil {
 		return ErrNoServerSessionStore
 	}
+	caps := m.revocationCapabilities()
+
+	var partialErrs []error
+	for _, gc := range caps {
+		if err := gc.clearRemember(ctx, m, userID); err != nil {
+			partialErrs = append(partialErrs, err)
+		}
+	}
 	if err := store.DeleteAllForUser(ctx, userID); err != nil {
 		return err
 	}
-
-	type schemeCapabilities struct {
-		name    string
-		clearer RememberTokenClearer
-		revoker RefreshTokenRevoker
+	for _, gc := range caps {
+		if gc.revoker != nil {
+			if err := gc.revoker.RevokeAllRefreshTokensForUser(ctx, userID); err != nil {
+				m.logWarn("velocity/auth: revoke refresh tokens failed", "scheme", gc.name, "user_id", userID, "error", err)
+				partialErrs = append(partialErrs, fmt.Errorf("scheme %q revoke refresh: %w", gc.name, err))
+			}
+		}
 	}
+	if len(partialErrs) > 0 {
+		return fmt.Errorf("%w: %w", ErrRememberClearPartial, errors.Join(partialErrs...))
+	}
+	return nil
+}
 
+// schemeRevocation is what one registered scheme contributes to a
+// revocation: ending remember-me credentials, revoking refresh tokens, or
+// both.
+type schemeRevocation struct {
+	name    string
+	clearer RememberTokenClearer
+	revoker RefreshTokenRevoker
+}
+
+// revocationCapabilities snapshots the registered schemes that take part
+// in a revocation.
+func (m *Manager) revocationCapabilities() []schemeRevocation {
 	m.mu.RLock()
-	caps := make([]schemeCapabilities, 0, len(m.schemes))
+	defer m.mu.RUnlock()
+	caps := make([]schemeRevocation, 0, len(m.schemes))
 	for name, g := range m.schemes {
-		gc := schemeCapabilities{name: name}
+		gc := schemeRevocation{name: name}
 		if c, ok := g.(RememberTokenClearer); ok {
 			gc.clearer = c
 		}
@@ -1044,25 +1100,18 @@ func (m *Manager) RevokeAllSessions(ctx context.Context, userID string) error {
 			caps = append(caps, gc)
 		}
 	}
-	m.mu.RUnlock()
+	return caps
+}
 
-	var partialErrs []error
-	for _, gc := range caps {
-		if gc.clearer != nil {
-			if err := gc.clearer.ClearRememberTokensForUser(ctx, userID); err != nil {
-				m.logWarn("velocity/auth: clear remember token failed", "scheme", gc.name, "user_id", userID, "error", err)
-				partialErrs = append(partialErrs, fmt.Errorf("scheme %q clear remember: %w", gc.name, err))
-			}
-		}
-		if gc.revoker != nil {
-			if err := gc.revoker.RevokeAllRefreshTokensForUser(ctx, userID); err != nil {
-				m.logWarn("velocity/auth: revoke refresh tokens failed", "scheme", gc.name, "user_id", userID, "error", err)
-				partialErrs = append(partialErrs, fmt.Errorf("scheme %q revoke refresh: %w", gc.name, err))
-			}
-		}
+// clearRemember ends userID's remember-me credential on the scheme, when
+// it has one to end. A failure is logged and returned.
+func (gc schemeRevocation) clearRemember(ctx context.Context, m *Manager, userID string) error {
+	if gc.clearer == nil {
+		return nil
 	}
-	if len(partialErrs) > 0 {
-		return fmt.Errorf("%w: %w", ErrRememberClearPartial, errors.Join(partialErrs...))
+	if err := gc.clearer.ClearRememberTokensForUser(ctx, userID); err != nil {
+		m.logWarn("velocity/auth: clear remember token failed", "scheme", gc.name, "user_id", userID, "error", err)
+		return fmt.Errorf("scheme %q clear remember: %w", gc.name, err)
 	}
 	return nil
 }

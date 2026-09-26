@@ -11,6 +11,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
 type errRandReader struct{ err error }
@@ -215,8 +216,8 @@ func TestCheckRememberCookie_ComparesHashedToken(t *testing.T) {
 	// Install a lookup that returns our user.
 	g.SetUserStore(&remLookupStore{user: user})
 
-	// Encrypt cookie value "userID|rawToken".
-	value := "u1|" + rawToken
+	// Encrypt cookie value "userID|issuedAt|rawToken".
+	value := rememberPayload("u1", sessionclock.Now(), rawToken)
 	encrypted, err := enc.Encrypt(value)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)

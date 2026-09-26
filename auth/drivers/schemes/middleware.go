@@ -166,9 +166,10 @@ func (g *SessionScheme) serveWithSession(c *router.Context, next router.HandlerF
 // saves a session: it renews the session on activity (renewOnActivity),
 // saves holder's session to w when it changed, then runs the cookie writes
 // queued behind the save. A failed save drops the queued writes, which
-// are bound to the session id the save did not persist, and is returned.
+// are bound to the session id the save did not persist, runs the queued
+// undo steps instead, and is returned.
 func commitSession(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) error {
-	queued := holder.takeAfterSave()
+	queued, undo := holder.takeAfterSave()
 	session := holder.getSession()
 	if session == nil {
 		return nil
@@ -183,6 +184,9 @@ func commitSession(g *SessionScheme, r *http.Request, w http.ResponseWriter, hol
 		if err := saveSessionFromMiddleware(g, w, session); err != nil {
 			if len(queued) > 0 {
 				g.logWarn("velocity/auth: save-at-end middleware: cookies bound to the unsaved session dropped", "session_id", session.ID(), "count", len(queued))
+			}
+			for _, fn := range undo {
+				fn()
 			}
 			return err
 		}

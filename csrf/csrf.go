@@ -372,6 +372,13 @@ func (c *CSRF) writeXSRFCookieForSession(ctx context.Context, w http.ResponseWri
 	// X-XSRF-TOKEN without double-encoding. Not HttpOnly: SPAs must read
 	// this cookie.
 	cookie := c.config.CookiePolicy.Cookie(cookieName, url.QueryEscape(token), maxAge, false)
+	// The safe-method bootstrap names a token the store may keep in the
+	// request's session: write it only once that session is saved, so a
+	// failed save never leaves the client a token nobody holds.
+	if r != nil && c.config.QueueAfterSessionSave != nil &&
+		c.config.QueueAfterSessionSave(r, func(w http.ResponseWriter) { http.SetCookie(w, cookie) }) {
+		return
+	}
 	http.SetCookie(w, cookie)
 }
 

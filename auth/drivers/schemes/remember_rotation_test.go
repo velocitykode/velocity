@@ -27,18 +27,18 @@ func rotationEncryptor(t *testing.T) crypto.Encryptor {
 }
 
 // rawRememberToken decrypts a remember cookie and returns the raw token
-// half of the "userID|token" payload.
+// of the "userID|issuedAt|token" payload.
 func rawRememberToken(t *testing.T, enc crypto.Encryptor, c *http.Cookie) string {
 	t.Helper()
 	decrypted, err := enc.Decrypt(c.Value)
 	if err != nil {
 		t.Fatalf("decrypt remember cookie: %v", err)
 	}
-	parts := strings.SplitN(decrypted, "|", 2)
-	if len(parts) != 2 {
-		t.Fatalf("remember cookie payload %q not in userID|token form", decrypted)
+	_, _, token, ok := parseRememberPayload(decrypted)
+	if !ok {
+		t.Fatalf("remember cookie payload %q not in userID|issuedAt|token form", decrypted)
 	}
-	return parts[1]
+	return token
 }
 
 // rememberRecallRequest builds a request carrying only the remember cookie,
@@ -55,6 +55,30 @@ func rememberRecallRequest(t *testing.T, c *http.Cookie, w http.ResponseWriter) 
 	}
 	holder.setResponseWriter(w)
 	return r
+}
+
+// recallThroughSeam reads the user on a request carrying only c, then
+// commits the request's session the way SessionMiddleware does after the
+// handler, which writes the rotated remember cookie queued behind the save.
+func recallThroughSeam(t *testing.T, scheme *SessionScheme, c *http.Cookie, w http.ResponseWriter) auth.Authenticatable {
+	t.Helper()
+	r := rememberRecallRequest(t, c, w)
+	u := scheme.User(r)
+	commitRecall(t, scheme, r, w)
+	return u
+}
+
+// commitRecall runs the session save seam for r, as SessionMiddleware does
+// once the handler is done.
+func commitRecall(t *testing.T, scheme *SessionScheme, r *http.Request, w http.ResponseWriter) {
+	t.Helper()
+	holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
+	if !ok || holder == nil {
+		t.Fatal("request carries no session holder")
+	}
+	if err := commitSession(scheme, r, w, holder); err != nil {
+		t.Fatalf("commit session: %v", err)
+	}
 }
 
 // findRememberCookie returns the remember cookie from a recorder's response,
@@ -87,6 +111,7 @@ func TestRememberRecall_RotatesToken(t *testing.T) {
 	if u := scheme.User(r); u == nil {
 		t.Fatal("User(req) returned nil; expected recall to succeed")
 	}
+	commitRecall(t, scheme, r, w)
 
 	newCookie := findRememberCookie(w)
 	if newCookie == nil {
@@ -115,7 +140,7 @@ func TestRememberRecall_OldTokenRejectedAfterRotation(t *testing.T) {
 	oldCookie := mintRememberCookie(t, scheme)
 
 	w := httptest.NewRecorder()
-	if u := scheme.User(rememberRecallRequest(t, oldCookie, w)); u == nil {
+	if u := recallThroughSeam(t, scheme, oldCookie, w); u == nil {
 		t.Fatal("first recall failed; cannot exercise replay")
 	}
 	newCookie := findRememberCookie(w)
@@ -125,7 +150,7 @@ func TestRememberRecall_OldTokenRejectedAfterRotation(t *testing.T) {
 
 	// Replay the old cookie on a fresh request: must be unauthenticated.
 	replayW := httptest.NewRecorder()
-	if u := scheme.User(rememberRecallRequest(t, oldCookie, replayW)); u != nil {
+	if u := recallThroughSeam(t, scheme, oldCookie, replayW); u != nil {
 		t.Fatalf("replayed old remember cookie authenticated as %v; expected nil", u.GetAuthIdentifier())
 	}
 	if scheme.Check(rememberRecallRequest(t, oldCookie, httptest.NewRecorder())) {
@@ -134,7 +159,7 @@ func TestRememberRecall_OldTokenRejectedAfterRotation(t *testing.T) {
 
 	// The replacement cookie keeps working (and rotates again).
 	nextW := httptest.NewRecorder()
-	if u := scheme.User(rememberRecallRequest(t, newCookie, nextW)); u == nil {
+	if u := recallThroughSeam(t, scheme, newCookie, nextW); u == nil {
 		t.Fatal("rotated remember cookie rejected; expected it to authenticate")
 	}
 	if findRememberCookie(nextW) == nil {
@@ -153,7 +178,7 @@ func TestRememberRecall_RotatedCookieKeepsFlags(t *testing.T) {
 	oldCookie := mintRememberCookie(t, scheme)
 
 	w := httptest.NewRecorder()
-	if u := scheme.User(rememberRecallRequest(t, oldCookie, w)); u == nil {
+	if u := recallThroughSeam(t, scheme, oldCookie, w); u == nil {
 		t.Fatal("recall failed")
 	}
 	newCookie := findRememberCookie(w)
@@ -214,7 +239,7 @@ func TestRememberRecall_NoWriterFailsClosed(t *testing.T) {
 
 	// The same cookie still authenticates on a writer-equipped request.
 	w := httptest.NewRecorder()
-	if u := scheme.User(rememberRecallRequest(t, oldCookie, w)); u == nil {
+	if u := recallThroughSeam(t, scheme, oldCookie, w); u == nil {
 		t.Fatal("cookie rejected after writer-less recall; token must not have been burned")
 	}
 }
@@ -263,7 +288,7 @@ func TestRememberRecall_PrefersCompareAndSwap(t *testing.T) {
 	loginUpdates := userStore.plainCalls
 
 	w := httptest.NewRecorder()
-	if u := scheme.User(rememberRecallRequest(t, oldCookie, w)); u == nil {
+	if u := recallThroughSeam(t, scheme, oldCookie, w); u == nil {
 		t.Fatal("recall with CAS-capable user store failed; expected success")
 	}
 	if userStore.casCalls != 1 {
@@ -442,6 +467,7 @@ func TestRememberRecall_SingleRotationPerRequest(t *testing.T) {
 	if !scheme.Check(r) {
 		t.Fatal("Check() failed after rotation on the same request")
 	}
+	commitRecall(t, scheme, r, w)
 
 	count := 0
 	for _, c := range w.Result().Cookies() {

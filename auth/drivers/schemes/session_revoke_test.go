@@ -30,10 +30,13 @@ func (u *revokeTestUser) GetRememberToken() string       { return u.rememberToke
 func (u *revokeTestUser) SetRememberToken(t string)      { u.rememberToken = t }
 
 type revokeTestStore struct {
+	mu    sync.Mutex
 	users map[string]*revokeTestUser
 }
 
 func (p *revokeTestStore) FindByID(id interface{}) (auth.Authenticatable, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	key, _ := id.(string)
 	if u, ok := p.users[key]; ok {
 		return u, nil
@@ -51,6 +54,8 @@ func (p *revokeTestStore) UpdateRememberToken(user auth.Authenticatable, token s
 	// FindByID reflects it. checkRememberCookie compares against the
 	// stored token, so without this propagation the remember-me flow
 	// cannot succeed in tests.
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	id, _ := user.GetAuthIdentifier().(string)
 	if u, ok := p.users[id]; ok {
 		u.rememberToken = token
@@ -61,12 +66,15 @@ func (p *revokeTestStore) UpdateRememberToken(user auth.Authenticatable, token s
 // CompareAndSwapRememberToken implements the capability the scheme now
 // requires for recall rotation; recalls fail closed without it.
 func (p *revokeTestStore) CompareAndSwapRememberToken(_ context.Context, user auth.Authenticatable, oldToken, newToken string) (bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	id, _ := user.GetAuthIdentifier().(string)
 	u, ok := p.users[id]
 	if !ok || u.rememberToken != oldToken {
 		return false, nil
 	}
-	return true, p.UpdateRememberToken(user, newToken)
+	u.rememberToken = newToken
+	return true, nil
 }
 
 // newRevokeScheme constructs a SessionScheme backed by a real cookie store
@@ -678,12 +686,12 @@ func TestManager_RevokeAllSessions_ClearsRememberToken(t *testing.T) {
 	}
 }
 
-// TestManager_RevokeSession_LeavesRememberIntact pins the intentional
-// design gap: single-session revoke must NOT touch the user's remember
-// token (which is per-user, not per-session). A future "fix" that wipes
-// remember on RevokeSession would silently log every device of the user
-// out, which is surprising. Bumping this test catches that drift.
-func TestManager_RevokeSession_LeavesRememberIntact(t *testing.T) {
+// TestManager_RevokeSession_ClearsRememberToken pins that single-session
+// revoke ends the owner's remember credential: the remember token is
+// per-user, so leaving it would let the revoked device's remember cookie
+// sign it back in on a fresh session once it stops sending the dead
+// session cookie.
+func TestManager_RevokeSession_ClearsRememberToken(t *testing.T) {
 	mgr := auth.NewManager()
 	store := session.NewMemoryStore()
 	defer store.Close(context.Background())
@@ -702,11 +710,11 @@ func TestManager_RevokeSession_LeavesRememberIntact(t *testing.T) {
 		t.Fatalf("RevokeSession: %v", err)
 	}
 
-	if got := userStore.users["u1"].rememberToken; got == "" {
-		t.Error("remember token must remain intact after RevokeSession")
+	if got := userStore.token("u1"); got != "" {
+		t.Errorf("remember token still stored after RevokeSession: %q", got)
 	}
-	if !scheme.Check(requestWithRememberOnly(rem)) {
-		t.Error("remember cookie must still authenticate after single-session revoke")
+	if scheme.Check(requestWithRememberOnly(rem)) {
+		t.Error("remember cookie authenticated after its session was revoked")
 	}
 }
 

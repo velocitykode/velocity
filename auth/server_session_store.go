@@ -161,10 +161,12 @@ type ServerSessionStoreReceiver interface {
 
 // RememberTokenClearer is the optional interface a Scheme implements to
 // invalidate persistent "remember me" credentials for a user.
-// Manager.RevokeAllSessions walks every registered scheme and invokes
-// ClearRememberTokensForUser so a "sign out everywhere" admin action also
-// kills the remember cookie path; without this hook, a revoked browser
-// could resurrect via its remember cookie on the next request.
+// Manager.RevokeSession and Manager.RevokeAllSessions walk every
+// registered scheme and invoke ClearRememberTokensForUser so revoking a
+// session also kills the remember cookie path; without this hook, a
+// revoked browser could resurrect via its remember cookie on the next
+// request. The ServerSessionStore deletes (Delete, DeleteAllForUser) only
+// remove records: revoke through the Manager to end remember-me too.
 //
 // Implementations must be best-effort: a failure here does not undo the
 // store-side session deletion, so callers should log + continue.

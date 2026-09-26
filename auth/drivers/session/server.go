@@ -102,7 +102,12 @@ func (s *ServerStore) Create(id string) (auth.Session, error) {
 //     record was signed in (or the store itself reported it expired);
 //   - no record at all: the replacement reports RecordDeleted, which the
 //     session scheme reports as auth.ErrSessionRevoked (a revocation
-//     deletes the record);
+//     deletes the record). The record is the only authority, so one the
+//     backend dropped (TTL past the policy end plus its grace, eviction,
+//     a restart of an in-memory cache) reads the same way: an honest
+//     browser drops the id cookie at the policy end, before the record's
+//     grace runs out, so this is mostly a replayed or long-open cookie;
+//     the scheme fails secure and never revives it by remember-me;
 //   - a store that cannot be read: the visitor is treated as signed out.
 func (s *ServerStore) Get(r *http.Request, id string) (auth.Session, error) {
 	records := s.loadRecords()
@@ -315,8 +320,8 @@ func (s *ServerSession) AuthenticationExpired() bool {
 }
 
 // RecordDeleted reports that the request's cookie named a session whose
-// record no longer exists (revoked, or reaped by the store) and this session
-// is its empty replacement.
+// record no longer exists (revoked, or dropped by the backend, which cannot
+// be told apart) and this session is its empty replacement.
 func (s *ServerSession) RecordDeleted() bool {
 	return s.recordDeleted
 }
