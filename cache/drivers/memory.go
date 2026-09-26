@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sync"
@@ -215,6 +216,38 @@ func (s *MemoryStore) ReplaceCtx(ctx context.Context, key string, value interfac
 	prefixedKey := s.prefixedKey(key)
 	existing, exists := s.items[prefixedKey]
 	if !exists || (existing.expiration != nil && !time.Now().Before(*existing.expiration)) {
+		return false, nil
+	}
+	s.setLocked(prefixedKey, value, expirationFor(ttl))
+	return true, nil
+}
+
+// CompareAndSwapCtx implements contract.CacheSwapper: under the store
+// mutex, value is written only when a live entry exists for key and its
+// value serializes (MarshalValue) to the same bytes as expected. An absent,
+// expired or different entry yields (false, nil) and nothing is written.
+func (s *MemoryStore) CompareAndSwapCtx(ctx context.Context, key string, expected, value interface{}, ttl time.Duration) (bool, error) {
+	_ = ctx
+	if err := s.checkValueSize(value); err != nil {
+		return false, err
+	}
+	want, err := MarshalValue(expected)
+	if err != nil {
+		return false, fmt.Errorf("velocity/cache: failed to marshal expected value: %w", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prefixedKey := s.prefixedKey(key)
+	existing, exists := s.items[prefixedKey]
+	if !exists || (existing.expiration != nil && !time.Now().Before(*existing.expiration)) {
+		return false, nil
+	}
+	have, err := MarshalValue(existing.value)
+	if err != nil {
+		return false, fmt.Errorf("velocity/cache: failed to marshal stored value: %w", err)
+	}
+	if !bytes.Equal(have, want) {
 		return false, nil
 	}
 	s.setLocked(prefixedKey, value, expirationFor(ttl))
@@ -744,5 +777,6 @@ func (s *MemoryStore) GetPrefix() string {
 // Compile-time checks for the optional capabilities.
 var (
 	_ contract.CacheReplacer = (*MemoryStore)(nil)
+	_ contract.CacheSwapper  = (*MemoryStore)(nil)
 	_ contract.CacheSetStore = (*MemoryStore)(nil)
 )

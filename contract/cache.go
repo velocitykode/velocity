@@ -151,6 +151,23 @@ type CacheReplacer interface {
 	ReplaceCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error)
 }
 
+// CacheSwapper is the optional capability a Cache implements to write a
+// key only while it still holds an expected value (compare-and-swap), as
+// one atomic step on the backend. CompareAndSwapCtx returns (true, nil)
+// when the live entry for key held expected and now holds value, and
+// (false, nil) when the entry is absent, expired or holds anything else;
+// it never inserts. Values compare by the form the store keeps them in
+// (their serialized bytes), so expected is the value as a read returned
+// it. The TTL contract matches PutCtx: ttl <= 0 keeps the entry forever.
+//
+// It is what lets a caller read a value, compute a new one from it and
+// write it back without holding a lock: a write that landed in between
+// makes the swap fail, and the caller reads again instead of overwriting
+// it.
+type CacheSwapper interface {
+	CompareAndSwapCtx(ctx context.Context, key string, expected, value interface{}, ttl time.Duration) (bool, error)
+}
+
 // CacheSetStore is the optional capability a Cache implements to keep an
 // unordered set of strings under one key with atomic membership updates
 // (Redis SADD / SREM / SMEMBERS). Implementations must never read-modify-

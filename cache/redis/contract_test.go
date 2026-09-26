@@ -53,6 +53,21 @@ func TestRedisStore_ReplacerContract(t *testing.T) {
 	})
 }
 
+// TestRedisStore_SwapperContract runs the CacheSwapper spec against the
+// compare-and-swap script.
+func TestRedisStore_SwapperContract(t *testing.T) {
+	var mrPtr *miniredis.Miniredis
+	cachetest.RunSwapperContractTests(t, func(t *testing.T) cachetest.SwapperStore {
+		s, mr := newMiniredisStore(t)
+		mrPtr = mr
+		return s
+	}, func(d time.Duration) {
+		if mrPtr != nil {
+			mrPtr.FastForward(d)
+		}
+	})
+}
+
 // TestRedisStore_SetStoreContract runs the CacheSetStore spec against the
 // SADD / SREM / SMEMBERS implementation.
 func TestRedisStore_SetStoreContract(t *testing.T) {

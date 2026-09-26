@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"time"
 
@@ -119,18 +120,81 @@ func cloneStored(in *auth.StoredSession) *auth.StoredSession {
 	return &out
 }
 
-// cloneData copies the top level of a record's Data. Nested values are
-// shared: writers hand the store a fresh tree on every write and never
-// mutate one they handed over.
+// cloneData copies a record's Data down through every nested map, slice
+// and array, so the store and its callers never share a mutable value:
+// what a caller does to a tree it handed over or got back never reaches
+// the stored record. Pointers, structs and other values are copied as
+// they are (a record's Data is a JSON-shaped tree of maps, slices and
+// scalars).
 func cloneData(in map[string]any) map[string]any {
 	if in == nil {
 		return nil
 	}
 	out := make(map[string]any, len(in))
 	for k, v := range in {
-		out[k] = v
+		out[k] = cloneValue(v)
 	}
 	return out
+}
+
+// cloneValue returns a copy of v that shares no map, slice or array with
+// it.
+func cloneValue(v any) any {
+	switch t := v.(type) {
+	case nil, string, bool, float64, int, int64:
+		return v
+	case map[string]any:
+		return cloneData(t)
+	case []any:
+		if t == nil {
+			return t
+		}
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = cloneValue(e)
+		}
+		return out
+	}
+	return cloneReflect(reflect.ValueOf(v)).Interface()
+}
+
+// cloneReflect is cloneValue for maps, slices and arrays of any type.
+func cloneReflect(v reflect.Value) reflect.Value {
+	switch v.Kind() {
+	case reflect.Interface:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.New(v.Type()).Elem()
+		out.Set(cloneReflect(v.Elem()))
+		return out
+	case reflect.Map:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.MakeMapWithSize(v.Type(), v.Len())
+		iter := v.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(iter.Key(), cloneReflect(iter.Value()))
+		}
+		return out
+	case reflect.Slice:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+		for i := range v.Len() {
+			out.Index(i).Set(cloneReflect(v.Index(i)))
+		}
+		return out
+	case reflect.Array:
+		out := reflect.New(v.Type()).Elem()
+		for i := range v.Len() {
+			out.Index(i).Set(cloneReflect(v.Index(i)))
+		}
+		return out
+	}
+	return v
 }
 
 // Get returns the StoredSession for id. Expired sessions are removed
@@ -217,7 +281,12 @@ func (s *MemoryStore) Touch(ctx context.Context, id string, lastSeen, expiresAt 
 
 // UpdateData rewrites an existing record's Data through update and slides
 // it like Touch, all under the store mutex, so update sees the Data every
-// earlier write left. It never inserts: a missing id returns
+// earlier write left and no other write can land between its read and its
+// write. update gets its own copy of the whole Data tree and the store
+// keeps its own copy of what update returns, so an update that changes
+// its argument and then fails leaves the record as it was, and a caller
+// holding on to the returned tree cannot change the record later. It
+// never inserts: a missing id returns
 // auth.ErrSessionNotFound and an expired record is removed and reported as
 // auth.ErrSessionExpired.
 func (s *MemoryStore) UpdateData(ctx context.Context, id string, update func(data map[string]any) (map[string]any, error), lastSeen, expiresAt time.Time) error {

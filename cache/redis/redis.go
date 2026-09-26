@@ -27,8 +27,9 @@ import (
 
 // Conformance assertions: the Redis driver satisfies the contract interfaces.
 var (
-	_ contract.CacheStore = (*RedisStore)(nil)
-	_ contract.CacheLock  = (*RedisLock)(nil)
+	_ contract.CacheStore   = (*RedisStore)(nil)
+	_ contract.CacheSwapper = (*RedisStore)(nil)
+	_ contract.CacheLock    = (*RedisLock)(nil)
 )
 
 // RedisStore implements a Redis-based cache store
@@ -282,6 +283,51 @@ func (s *RedisStore) ReplaceCtx(ctx context.Context, key string, value interface
 		return false, fmt.Errorf("velocity/cache: redis setxx failed: %w", err)
 	}
 	return ok, nil
+}
+
+// compareAndSwapScript writes ARGV[2] only while the key holds exactly
+// ARGV[1], in one server-side step, so no write can land between the
+// comparison and the SET. ARGV[3] is the TTL in milliseconds; <= 0 stores
+// the value without expiry.
+//
+// KEYS[1] = key, ARGV[1] = expected bytes, ARGV[2] = new bytes, ARGV[3] = ttl.
+var compareAndSwapScript = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+if current == false or current ~= ARGV[1] then
+  return 0
+end
+local ttl = tonumber(ARGV[3])
+if ttl > 0 then
+  redis.call('SET', KEYS[1], ARGV[2], 'PX', ttl)
+else
+  redis.call('SET', KEYS[1], ARGV[2])
+end
+return 1
+`)
+
+// CompareAndSwapCtx implements contract.CacheSwapper through
+// compareAndSwapScript: both values are serialized exactly as PutCtx does,
+// so expected matches the stored bytes of the value a read returned.
+func (s *RedisStore) CompareAndSwapCtx(ctx context.Context, key string, expected, value interface{}, ttl time.Duration) (bool, error) {
+	want, err := drivers.MarshalValue(expected)
+	if err != nil {
+		return false, fmt.Errorf("velocity/cache: failed to marshal expected value: %w", err)
+	}
+	data, err := drivers.MarshalValue(value)
+	if err != nil {
+		return false, fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
+	}
+	ttlMS := clampTTL(ttl).Milliseconds()
+	if ttl > 0 && ttlMS == 0 {
+		// A positive TTL under a millisecond still expires; never let it
+		// round down to "forever".
+		ttlMS = 1
+	}
+	swapped, err := compareAndSwapScript.Run(ctx, s.client, []string{s.prefixedKey(key)}, want, data, ttlMS).Int()
+	if err != nil {
+		return false, fmt.Errorf("velocity/cache: redis compare-and-swap failed: %w", err)
+	}
+	return swapped == 1, nil
 }
 
 // setAddScript adds members and applies the extend-only expiry contract in

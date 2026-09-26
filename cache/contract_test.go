@@ -40,6 +40,16 @@ func TestMemoryStore_ReplacerContract(t *testing.T) {
 	}, nil)
 }
 
+// TestMemoryStore_SwapperContract runs the CacheSwapper spec against the
+// memory store.
+func TestMemoryStore_SwapperContract(t *testing.T) {
+	cachetest.RunSwapperContractTests(t, func(t *testing.T) cachetest.SwapperStore {
+		s := drivers.NewMemoryStore("contract-swap")
+		t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
+		return s
+	}, nil)
+}
+
 // TestMemoryStore_SetStoreContract runs the CacheSetStore spec against the
 // memory store.
 func TestMemoryStore_SetStoreContract(t *testing.T) {

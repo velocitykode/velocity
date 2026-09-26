@@ -87,7 +87,7 @@ func TestNewCacheStore_NilBackend(t *testing.T) {
 }
 
 // TestNewCacheStore_UnsupportedBackend proves a backend without the
-// replace/set capabilities is refused at construction: the file cache
+// compare-and-swap/set capabilities is refused at construction: the file cache
 // driver implements neither.
 func TestNewCacheStore_UnsupportedBackend(t *testing.T) {
 	fs, err := drivers.NewFileStore("sessions", t.TempDir())

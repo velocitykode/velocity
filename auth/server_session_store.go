@@ -118,14 +118,26 @@ type ServerSessionStore interface {
 
 	// UpdateData rewrites the record's Data and slides it like Touch
 	// (LastSeenAt to lastSeen, ExpiresAt to expiresAt), leaving every
-	// other field as it is. update receives a copy of the Data the record
-	// holds when the write lands (nil when it has none) and returns the
-	// Data to store; the read, update and write are one atomic step
-	// against every other UpdateData and Touch on the record, on every
-	// instance sharing the store, so a save computed from an earlier read
-	// can never overwrite a later one. update may run more than once
-	// (a store that retries) and must depend on nothing but its argument.
-	// An error from update aborts the write and is returned.
+	// other field as it is. update receives the Data the record holds when
+	// the write lands (nil when it has none) and returns the Data to
+	// store; the read, update and write are one atomic step against every
+	// other write to the record, on every instance sharing the store,
+	// however long any of them takes, so a save computed from an earlier
+	// read can never overwrite a later one. A store gets there either by
+	// serializing every write to the record (MemoryStore) or by writing
+	// only while the record is unchanged since its read and otherwise
+	// reading it again and running update on the new Data (CacheStore); a
+	// lock with a lease that can expire under a slow writer does not meet
+	// this. update may therefore run more than once and must depend on
+	// nothing but its argument.
+	//
+	// The argument is update's own copy of the whole Data tree, nested
+	// maps and slices included: update may change it freely, and nothing
+	// it does reaches the record unless it returns without error. An error
+	// from update aborts the write, leaves the record as it was and is
+	// returned. The store keeps its own copy of the Data update returns,
+	// so a caller that holds on to that tree cannot change the record
+	// through it.
 	// session.ServerStore saves the session through it, applying the
 	// request's own changes to the current payload.
 	//
@@ -136,17 +148,17 @@ type ServerSessionStore interface {
 
 	// Touch is the activity refresh: it sets LastSeenAt to lastSeen and
 	// ExpiresAt to expiresAt on an existing record, keeping the Data the
-	// record holds when the write lands (atomic with UpdateData, as
-	// above), so an active session's
-	// record slides with its idle window (the scheme computes expiresAt
-	// from the lifetime policy, capped at the absolute lifetime). A backend
-	// with its own record TTL must extend it to expiresAt. Touch is
-	// update-if-present: it returns ErrSessionNotFound when no record
-	// exists for id and must never insert one, so a refresh racing a
-	// revocation cannot recreate the deleted row. It returns
-	// ErrSessionExpired (and removes the record) when the record has
-	// already passed its current ExpiresAt; an expired session is never
-	// revived by a Touch.
+	// record holds when the write lands (atomic with every other write to
+	// the record, as UpdateData above: a save that lands during a Touch is
+	// never written over), so an active session's record slides with its
+	// idle window (the scheme computes expiresAt from the lifetime policy,
+	// capped at the absolute lifetime). A backend with its own record TTL
+	// must extend it to expiresAt. Touch is update-if-present: it returns
+	// ErrSessionNotFound when no record exists for id and must never
+	// insert one, so a refresh racing a revocation cannot recreate the
+	// deleted row. It returns ErrSessionExpired (and removes the record)
+	// when the record has already passed its current ExpiresAt; an expired
+	// session is never revived by a Touch.
 	Touch(ctx context.Context, id string, lastSeen, expiresAt time.Time) error
 
 	// Delete removes a single session by id. Returns nil when the

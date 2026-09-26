@@ -39,35 +39,33 @@ var (
 	ErrCacheStoreNilBackend = errors.New("velocity/auth/session: cache backend is nil")
 
 	// ErrCacheStoreUnsupported is returned by NewCacheStore when the cache
-	// backend lacks the contract.CacheReplacer or contract.CacheSetStore
-	// capability or locks. Without them the store cannot make record
-	// writes and the user index atomic, which is the point of this driver;
-	// the memory and redis cache drivers implement all three.
-	ErrCacheStoreUnsupported = errors.New("velocity/auth/session: cache backend lacks replace, set or lock operations")
+	// backend lacks the contract.CacheSwapper or contract.CacheSetStore
+	// capability. Without them the store cannot make record writes and the
+	// user index atomic, which is the point of this driver; the memory and
+	// redis cache drivers implement both.
+	ErrCacheStoreUnsupported = errors.New("velocity/auth/session: cache backend lacks compare-and-swap or set operations")
+
+	// errRecordContended is returned when a record kept changing under a
+	// write for recordWriteAttempts reads in a row.
+	errRecordContended = errors.New("velocity/auth/session: session record kept changing during the write")
 )
 
 // cacheBackend is what CacheStore needs from the cache: the base
 // operations plus the optional capabilities that make the writes atomic.
-// Lock is the cache drivers' lock (the memory and redis drivers have it):
-// a record's read-update-write holds the record's lock, so two instances
-// sharing the backend never write a record from the same earlier read.
+// A record's read-update-write ends in a compare-and-swap against the
+// bytes it read, so two instances sharing the backend never write a record
+// from the same earlier read, however long either one pauses.
 type cacheBackend interface {
 	contract.Cache
-	contract.CacheReplacer
+	contract.CacheSwapper
 	contract.CacheSetStore
-	Lock(key string, ttl ...time.Duration) contract.CacheLock
 }
 
-// cacheWritePrefix names a record's write lock.
-const cacheWritePrefix = "session:write:"
-
-// Bounds of a record's write lock: held no longer than recordLockHold (a
-// crashed holder frees it then) and waited for no longer than
-// recordLockWait before the write fails.
-const (
-	recordLockHold = 10 * time.Second
-	recordLockWait = 5 * time.Second
-)
+// recordWriteAttempts bounds how often Touch and UpdateData re-read a
+// record whose compare-and-swap lost to another write. Every lost swap is
+// another writer's successful one, so the bound is only reached by a
+// record rewritten this many times during one write.
+const recordWriteAttempts = 32
 
 // CacheStore is an auth.ServerSessionStore backed by a velocity cache
 // store. It is the production driver: every app instance sharing the same
@@ -78,11 +76,16 @@ const (
 //
 //   - the per-user index is a backend set (contract.CacheSetStore), never
 //     read-modify-written in this process;
-//   - Touch and UpdateData read, change and write a record under the
-//     record's lock, so no write lands on top of one made after its read
-//     (a Touch keeps the payload a concurrent save wrote), and the write
-//     goes through contract.CacheReplacer (SET XX), so one that loses the
-//     race against a revocation cannot recreate the record;
+//   - Touch and UpdateData read a record, change it and write it back
+//     through contract.CacheSwapper, which lands only while the record
+//     still holds exactly the bytes that were read (one Lua script on
+//     redis, the store mutex on the memory driver). A write made after
+//     the read, by any instance, makes the swap fail and the change is
+//     applied again to the record as it now is, so no write is ever
+//     replaced by one computed from an earlier read (a Touch keeps the
+//     payload a concurrent save wrote, a drained flash stays drained).
+//     A swap never inserts, so a write that loses the race against a
+//     revocation cannot recreate the record;
 //   - DeleteAllForUser rotates the user's generation token before touching
 //     the index, and Get rejects any record carrying an older token, so
 //     "sign out everywhere" is authoritative even when the index is
@@ -97,7 +100,7 @@ type CacheStore struct {
 }
 
 // NewCacheStore builds a CacheStore over backend. The backend must
-// implement contract.CacheReplacer and contract.CacheSetStore (the memory
+// implement contract.CacheSwapper and contract.CacheSetStore (the memory
 // and redis cache drivers do); ErrCacheStoreUnsupported is returned
 // otherwise so a misconfigured deployment fails at boot, not at the first
 // revocation. Pass the manager's default store:
@@ -226,29 +229,36 @@ func (s *CacheStore) newGeneration() (string, error) {
 // issued under a superseded generation is evicted and ErrSessionNotFound
 // (it was revoked in bulk).
 func (s *CacheStore) live(ctx context.Context, id string) (*cacheRecord, error) {
+	_, rec, err := s.liveRaw(ctx, id)
+	return rec, err
+}
+
+// liveRaw is live that also returns the record's stored form, the value a
+// compare-and-swap of the record expects.
+func (s *CacheStore) liveRaw(ctx context.Context, id string) (string, *cacheRecord, error) {
 	raw, ok := s.backend.GetStringCtx(ctx, cacheMetaKey(id))
 	if !ok {
-		return nil, auth.ErrSessionNotFound
+		return "", nil, auth.ErrSessionNotFound
 	}
 	rec, err := decodeRecord(raw)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	if !rec.ExpiresAt.IsZero() && s.clock().After(rec.ExpiresAt) {
 		s.evict(ctx, rec)
-		return nil, auth.ErrSessionExpired
+		return "", nil, auth.ErrSessionExpired
 	}
 	// A signed-out visitor's record has no user to revoke in bulk.
 	if rec.UserID == "" {
-		return rec, nil
+		return raw, rec, nil
 	}
 	// Fail closed: a record without a token, or one whose token does not
 	// match the current (possibly unreadable) generation, is revoked.
 	if rec.Generation == "" || rec.Generation != s.generation(ctx, rec.UserID) {
 		s.evict(ctx, rec)
-		return nil, auth.ErrSessionNotFound
+		return "", nil, auth.ErrSessionNotFound
 	}
-	return rec, nil
+	return raw, rec, nil
 }
 
 // evict drops a record and its index membership, best effort: the meta key
@@ -350,21 +360,25 @@ func (s *CacheStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 
 // Touch implements auth.ServerSessionStore. It slides the record: LastSeenAt
 // and ExpiresAt are set and the meta key's TTL follows the new ExpiresAt.
-// The record is read and rewritten under its write lock, so Data stays
-// whatever the latest save left, and the write goes through
-// contract.CacheReplacer, so it lands only if the key still exists: a
-// Delete or DeleteAllForUser between the read and this write wins, and the
-// caller sees ErrSessionNotFound. After the write the user index's TTL is
-// extended (never shortened) so the index keeps outliving the records it
-// lists.
+// The write is a compare-and-swap against the record as read, repeated on
+// the record as it now is when another write landed in between, so Data
+// stays whatever the latest save left. A swap lands only while the key
+// exists: a Delete or DeleteAllForUser between the read and this write
+// wins, and the caller sees ErrSessionNotFound. After the write the user
+// index's TTL is extended (never shortened) so the index keeps outliving
+// the records it lists.
 func (s *CacheStore) Touch(ctx context.Context, id string, lastSeen, expiresAt time.Time) error {
 	return s.slide(ctx, id, lastSeen, expiresAt, nil)
 }
 
-// UpdateData implements auth.ServerSessionStore. Under the record's write
-// lock it reads the record, rewrites its Data through update and slides it
-// exactly like Touch, through the same replace-if-present write, so a save
+// UpdateData implements auth.ServerSessionStore. It reads the record,
+// rewrites its Data through update and slides it exactly like Touch,
+// through the same compare-and-swap: when another write landed after the
+// read, update runs again on the Data the record now holds, so a save
+// computed from an earlier read never replaces a later one, and a save
 // that loses the race against a revocation cannot recreate the record.
+// update gets Data freshly decoded from the stored record on every run, so
+// nothing it does reaches the record unless it returns without error.
 func (s *CacheStore) UpdateData(ctx context.Context, id string, update func(data map[string]any) (map[string]any, error), lastSeen, expiresAt time.Time) error {
 	if update == nil {
 		return errors.New("velocity/auth/session: nil data update")
@@ -372,35 +386,40 @@ func (s *CacheStore) UpdateData(ctx context.Context, id string, update func(data
 	return s.slide(ctx, id, lastSeen, expiresAt, update)
 }
 
-// slide is the locked, replace-if-present write behind Touch and
-// UpdateData; a nil update keeps the record's Data.
+// slide is the compare-and-swap write behind Touch and UpdateData; a nil
+// update keeps the record's Data. A lost swap (the record was rewritten or
+// removed after the read) re-reads: a removed record then reports
+// ErrSessionNotFound, a rewritten one gets the change applied again.
 func (s *CacheStore) slide(ctx context.Context, id string, lastSeen, expiresAt time.Time, update func(map[string]any) (map[string]any, error)) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	if id == "" {
 		return auth.ErrSessionNotFound
 	}
-	var err error
-	lockErr := s.backend.Lock(cacheWritePrefix+id, recordLockHold).Block(ctx, recordLockWait, func() {
-		err = s.slideLocked(ctx, id, lastSeen, expiresAt, update)
-	})
-	if lockErr != nil {
-		return fmt.Errorf("velocity/auth/session: lock session record: %w", lockErr)
+	for range recordWriteAttempts {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		rec, ttl, swapped, err := s.slideOnce(ctx, id, lastSeen, expiresAt, update)
+		if err != nil {
+			return err
+		}
+		if swapped {
+			return s.extendIndex(ctx, rec, ttl)
+		}
 	}
-	return err
+	return fmt.Errorf("velocity/auth/session: write session %s: %w", id, errRecordContended)
 }
 
-// slideLocked is slide's body, run under the record's write lock.
-func (s *CacheStore) slideLocked(ctx context.Context, id string, lastSeen, expiresAt time.Time, update func(map[string]any) (map[string]any, error)) error {
-	rec, err := s.live(ctx, id)
+// slideOnce reads the record, applies the change and swaps it in against
+// what it read. swapped is false when another write got there first.
+func (s *CacheStore) slideOnce(ctx context.Context, id string, lastSeen, expiresAt time.Time, update func(map[string]any) (map[string]any, error)) (rec *cacheRecord, ttl time.Duration, swapped bool, err error) {
+	raw, rec, err := s.liveRaw(ctx, id)
 	if err != nil {
-		return err
+		return nil, 0, false, err
 	}
 	if update != nil {
 		data, err := update(rec.Data)
 		if err != nil {
-			return err
+			return nil, 0, false, err
 		}
 		rec.Data = data
 	}
@@ -408,16 +427,19 @@ func (s *CacheStore) slideLocked(ctx context.Context, id string, lastSeen, expir
 	rec.ExpiresAt = expiresAt
 	encoded, err := encodeRecord(rec)
 	if err != nil {
-		return err
+		return nil, 0, false, err
 	}
-	ttl := recordTTL(rec.ExpiresAt, s.clock())
-	replaced, err := s.backend.ReplaceCtx(ctx, cacheMetaKey(id), encoded, ttl)
+	ttl = recordTTL(rec.ExpiresAt, s.clock())
+	swapped, err = s.backend.CompareAndSwapCtx(ctx, cacheMetaKey(id), raw, encoded, ttl)
 	if err != nil {
-		return fmt.Errorf("velocity/auth/session: touch session: %w", err)
+		return nil, 0, false, fmt.Errorf("velocity/auth/session: write session: %w", err)
 	}
-	if !replaced {
-		return auth.ErrSessionNotFound
-	}
+	return rec, ttl, swapped, nil
+}
+
+// extendIndex extends the user index's TTL (never shortening it) after a
+// record's write, so the index keeps outliving the records it lists.
+func (s *CacheStore) extendIndex(ctx context.Context, rec *cacheRecord, ttl time.Duration) error {
 	if rec.UserID == "" {
 		return nil
 	}

@@ -115,6 +115,121 @@ func RunReplacerContractTests(t *testing.T, factory ReplacerFactory, advance fun
 	})
 }
 
+// SwapperStore is the intersection a factory must return for
+// RunSwapperContractTests: a full Store that also implements the optional
+// contract.CacheSwapper capability.
+type SwapperStore interface {
+	contract.Cache
+	contract.CacheSwapper
+}
+
+// SwapperFactory returns a fresh empty swapper-capable store per sub-test.
+type SwapperFactory func(t *testing.T) SwapperStore
+
+// RunSwapperContractTests is the executable specification of
+// [contract.CacheSwapper]. Advance pushes the fixture's clock; pass nil for
+// wall-clock stores.
+func RunSwapperContractTests(t *testing.T, factory SwapperFactory, advance func(d time.Duration)) {
+	t.Helper()
+	if advance == nil {
+		advance = func(d time.Duration) { time.Sleep(d) }
+	}
+
+	t.Run("CompareAndSwapCtx_Match_WritesValue", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		_ = s.PutCtx(ctx, "cas-1", "first", time.Minute)
+		ok, err := s.CompareAndSwapCtx(ctx, "cas-1", "first", "second", time.Minute)
+		if err != nil || !ok {
+			t.Fatalf("CompareAndSwapCtx on a matching value: ok=%v err=%v", ok, err)
+		}
+		if v, _ := s.GetCtx(ctx, "cas-1"); v != "second" {
+			t.Fatalf("value after swap = %v, want \"second\"", v)
+		}
+	})
+
+	t.Run("CompareAndSwapCtx_Mismatch_WritesNothing", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		_ = s.PutCtx(ctx, "cas-2", "first", time.Minute)
+		// A write lands between the caller's read and its swap.
+		_ = s.PutCtx(ctx, "cas-2", "intervening", time.Minute)
+		ok, err := s.CompareAndSwapCtx(ctx, "cas-2", "first", "stale", time.Minute)
+		if err != nil {
+			t.Fatalf("CompareAndSwapCtx: %v", err)
+		}
+		if ok {
+			t.Fatal("CompareAndSwapCtx swapped over a value it did not expect")
+		}
+		if v, _ := s.GetCtx(ctx, "cas-2"); v != "intervening" {
+			t.Fatalf("value after a failed swap = %v, want the intervening write", v)
+		}
+	})
+
+	t.Run("CompareAndSwapCtx_StructuredValue_ComparesStoredForm", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		_ = s.PutCtx(ctx, "cas-map", map[string]any{"b": 2, "a": "x"}, time.Minute)
+		ok, err := s.CompareAndSwapCtx(ctx, "cas-map", map[string]any{"a": "x", "b": 2}, "next", time.Minute)
+		if err != nil || !ok {
+			t.Fatalf("CompareAndSwapCtx on an equal map: ok=%v err=%v", ok, err)
+		}
+	})
+
+	t.Run("CompareAndSwapCtx_AbsentOrForgotten_NeverInserts", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		_ = s.PutCtx(ctx, "cas-del", "v", time.Minute)
+		_ = s.ForgetCtx(ctx, "cas-del")
+		for _, key := range []string{"cas-absent", "cas-del"} {
+			ok, err := s.CompareAndSwapCtx(ctx, key, "v", "again", time.Minute)
+			if err != nil {
+				t.Fatalf("CompareAndSwapCtx(%s): %v", key, err)
+			}
+			if ok {
+				t.Fatalf("CompareAndSwapCtx reported a write on %s", key)
+			}
+			if _, found := s.GetCtx(ctx, key); found {
+				t.Fatalf("CompareAndSwapCtx inserted %s", key)
+			}
+		}
+	})
+
+	t.Run("CompareAndSwapCtx_ExpiredKey_ReturnsFalse", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		_ = s.PutCtx(ctx, "cas-exp", "v", 30*time.Millisecond)
+		advance(80 * time.Millisecond)
+		ok, err := s.CompareAndSwapCtx(ctx, "cas-exp", "v", "again", time.Minute)
+		if err != nil {
+			t.Fatalf("CompareAndSwapCtx: %v", err)
+		}
+		if ok {
+			t.Fatal("CompareAndSwapCtx revived an expired key")
+		}
+	})
+
+	t.Run("CompareAndSwapCtx_TTL", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		_ = s.PutCtx(ctx, "cas-short", "v", time.Minute)
+		if ok, err := s.CompareAndSwapCtx(ctx, "cas-short", "v", "short", 30*time.Millisecond); err != nil || !ok {
+			t.Fatalf("CompareAndSwapCtx: ok=%v err=%v", ok, err)
+		}
+		_ = s.PutCtx(ctx, "cas-forever", "v", 30*time.Millisecond)
+		if ok, err := s.CompareAndSwapCtx(ctx, "cas-forever", "v", "kept", 0); err != nil || !ok {
+			t.Fatalf("CompareAndSwapCtx: ok=%v err=%v", ok, err)
+		}
+		advance(80 * time.Millisecond)
+		if _, found := s.GetCtx(ctx, "cas-short"); found {
+			t.Fatal("a swapped value outlived its TTL")
+		}
+		if v, _ := s.GetCtx(ctx, "cas-forever"); v != "kept" {
+			t.Fatalf("a swap with ttl 0 did not keep the value forever: %v", v)
+		}
+	})
+}
+
 // SetStore is the intersection a factory must return for
 // RunSetStoreContractTests.
 type SetStore interface {

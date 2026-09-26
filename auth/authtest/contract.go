@@ -418,6 +418,132 @@ func RunServerSessionStoreContractTests(t *testing.T, factory ServerSessionStore
 		}
 	})
 
+	t.Run("UpdateData_FailedUpdateLeavesNestedDataUntouched", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		sess := makeSession("data-nested-fail", "user-1")
+		sess.Data = map[string]any{
+			"data":  map[string]any{"cart": []any{"a", "b"}},
+			"flash": map[string]any{"status": "saved"},
+		}
+		if err := s.Put(ctx, sess); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		boom := errors.New("update refused")
+		mutateThenFail := func(current map[string]any) (map[string]any, error) {
+			if flash, ok := current["flash"].(map[string]any); ok {
+				delete(flash, "status")
+			}
+			if data, ok := current["data"].(map[string]any); ok {
+				if cart, ok := data["cart"].([]any); ok && len(cart) > 0 {
+					cart[0] = "changed"
+				}
+				data["added"] = true
+			}
+			return nil, boom
+		}
+		if err := s.UpdateData(ctx, "data-nested-fail", mutateThenFail, time.Now(), time.Now().Add(time.Hour)); !errors.Is(err, boom) {
+			t.Fatalf("UpdateData with a failing update = %v, want its error", err)
+		}
+		got, err := s.Get(ctx, "data-nested-fail")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		flash, _ := got.Data["flash"].(map[string]any)
+		data, _ := got.Data["data"].(map[string]any)
+		cart, _ := data["cart"].([]any)
+		if flash["status"] != "saved" || len(cart) == 0 || cart[0] != "a" || data["added"] != nil {
+			t.Fatalf("a failed update changed the record through its nested values: %v", got.Data)
+		}
+	})
+
+	t.Run("UpdateData_StoredDataSharesNothingWithCallers", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		if err := s.Put(ctx, makeSession("data-unshared", "user-1")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		handed := map[string]any{"flash": map[string]any{"status": "saved"}}
+		if err := s.UpdateData(ctx, "data-unshared", setData(handed), time.Now(), time.Now().Add(time.Hour)); err != nil {
+			t.Fatalf("UpdateData: %v", err)
+		}
+		delete(handed["flash"].(map[string]any), "status")
+		got, err := s.Get(ctx, "data-unshared")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		flash, _ := got.Data["flash"].(map[string]any)
+		if flash["status"] != "saved" {
+			t.Fatalf("changing the tree handed to the store changed the record: %v", got.Data)
+		}
+		delete(flash, "status")
+		again, err := s.Get(ctx, "data-unshared")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if f, _ := again.Data["flash"].(map[string]any); f["status"] != "saved" {
+			t.Fatalf("changing a read's nested value changed the record: %v", again.Data)
+		}
+	})
+
+	t.Run("UpdateData_WriteDuringUpdateIsKept", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		sess := makeSession("data-interleaved", "user-1")
+		sess.Data = map[string]any{"flash": map[string]any{"status": "saved"}}
+		if err := s.Put(ctx, sess); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		// drain empties the flash and keeps every other key.
+		drain := func(current map[string]any) (map[string]any, error) {
+			out := map[string]any{}
+			for k, v := range current {
+				out[k] = v
+			}
+			out["flash"] = map[string]any{}
+			return out, nil
+		}
+		// The first run of the slow update starts another write to the
+		// record and gives it the chance to land before this update's own
+		// write: a store that serializes writes holds it back until this
+		// one is done, a store that swaps against its read must see it and
+		// run the update again on the Data it left.
+		other := make(chan error, 1)
+		var once sync.Once
+		slow := func(current map[string]any) (map[string]any, error) {
+			once.Do(func() {
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					other <- s.UpdateData(ctx, "data-interleaved", drain, time.Now(), time.Now().Add(time.Hour))
+				}()
+				select {
+				case <-done:
+				case <-time.After(100 * time.Millisecond):
+				}
+			})
+			out := map[string]any{"seen": "slow"}
+			for k, v := range current {
+				out[k] = v
+			}
+			return out, nil
+		}
+		if err := s.UpdateData(ctx, "data-interleaved", slow, time.Now(), time.Now().Add(time.Hour)); err != nil {
+			t.Fatalf("UpdateData: %v", err)
+		}
+		if err := <-other; err != nil {
+			t.Fatalf("interleaved UpdateData: %v", err)
+		}
+		got, err := s.Get(ctx, "data-interleaved")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		flash, _ := got.Data["flash"].(map[string]any)
+		if len(flash) != 0 || got.Data["seen"] != "slow" {
+			t.Fatalf("a write that landed during an update was lost: %v", got.Data)
+		}
+	})
+
 	t.Run("UpdateData_ConcurrentUpdatesAllLand", func(t *testing.T) {
 		const writers = 8
 		s := factory(t)

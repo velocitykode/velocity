@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,6 @@ import (
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/cache/drivers"
 	cacheredis "github.com/velocitykode/velocity/cache/redis"
-	"github.com/velocitykode/velocity/contract"
 )
 
 // recordBackends are the shipped server session record stores: the
@@ -164,35 +164,18 @@ func TestServerStore_ConcurrentSavesKeepEveryKey(t *testing.T) {
 	}
 }
 
-// interleavingBackend runs during before its first ReplaceCtx, in another
-// goroutine, and gives it a moment to land: the write another instance
-// makes between a Touch's read and its write.
+// interleavingBackend runs during before its first record write, to
+// completion: the write another instance makes between a Touch's read and
+// its write.
 type interleavingBackend struct {
 	cacheBackend
 	once   sync.Once
 	during func()
-	done   chan struct{}
 }
 
-func (b *interleavingBackend) ReplaceCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error) {
-	b.once.Do(func() {
-		go func() {
-			defer close(b.done)
-			b.during()
-		}()
-		select {
-		case <-b.done:
-		case <-time.After(50 * time.Millisecond):
-		}
-	})
-	return b.cacheBackend.ReplaceCtx(ctx, key, value, ttl)
-}
-
-// Lock passes the backend's lock through, when it has one.
-func (b *interleavingBackend) Lock(key string, ttl ...time.Duration) contract.CacheLock {
-	return b.cacheBackend.(interface {
-		Lock(key string, ttl ...time.Duration) contract.CacheLock
-	}).Lock(key, ttl...)
+func (b *interleavingBackend) CompareAndSwapCtx(ctx context.Context, key string, expected, value interface{}, ttl time.Duration) (bool, error) {
+	b.once.Do(b.during)
+	return b.cacheBackend.CompareAndSwapCtx(ctx, key, expected, value, ttl)
 }
 
 // A Touch (activity renewal) keeps the record's payload as it is when the
@@ -203,7 +186,7 @@ func TestCacheStore_TouchKeepsDataSavedDuringIt(t *testing.T) {
 		t.Run(bf.name, func(t *testing.T) {
 			shared := bf.new(t)
 			other := newCacheStore(t, shared)
-			ib := &interleavingBackend{cacheBackend: shared.(cacheBackend), done: make(chan struct{})}
+			ib := &interleavingBackend{cacheBackend: shared.(cacheBackend)}
 			touching := newCacheStore(t, ib)
 
 			ctx := context.Background()
@@ -223,7 +206,6 @@ func TestCacheStore_TouchKeepsDataSavedDuringIt(t *testing.T) {
 			if err := touching.Touch(ctx, "touch-race", time.Now(), time.Now().Add(time.Hour)); err != nil {
 				t.Fatalf("Touch: %v", err)
 			}
-			<-ib.done
 
 			got, err := other.Get(ctx, "touch-race")
 			if err != nil {
@@ -234,5 +216,100 @@ func TestCacheStore_TouchKeepsDataSavedDuringIt(t *testing.T) {
 				t.Fatalf("Touch wrote its stale snapshot back over a concurrent save: %v", got.Data)
 			}
 		})
+	}
+}
+
+// An UpdateData that pauses between its read and its write (for longer
+// than any lock lease) while another instance saves the record never
+// writes its earlier read back: its swap fails and the update runs again
+// on the record as the other save left it, so the drained flash stays
+// drained and both changes land.
+func TestCacheStore_UpdateDataNeverWritesOverALaterSave(t *testing.T) {
+	for _, bf := range sharedBackends() {
+		t.Run(bf.name, func(t *testing.T) {
+			shared := bf.new(t)
+			paused := newCacheStore(t, shared)
+			other := newCacheStore(t, shared)
+			ctx := context.Background()
+			rec := cacheSession("paused-write", "u1")
+			rec.Data = map[string]any{"flash": map[string]any{"status": "saved"}}
+			if err := paused.Put(ctx, rec); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			runs := 0
+			update := func(current map[string]any) (map[string]any, error) {
+				runs++
+				if runs == 1 {
+					// The pause: another instance saves a drained flash
+					// after this update read the record.
+					drain := func(map[string]any) (map[string]any, error) {
+						return map[string]any{"flash": map[string]any{}}, nil
+					}
+					if err := other.UpdateData(ctx, "paused-write", drain, time.Now(), time.Now().Add(time.Hour)); err != nil {
+						t.Errorf("other instance's UpdateData: %v", err)
+					}
+				}
+				out := map[string]any{"seen": "paused"}
+				for k, v := range current {
+					out[k] = v
+				}
+				return out, nil
+			}
+			if err := paused.UpdateData(ctx, "paused-write", update, time.Now(), time.Now().Add(time.Hour)); err != nil {
+				t.Fatalf("UpdateData: %v", err)
+			}
+			got, err := other.Get(ctx, "paused-write")
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			flash, _ := got.Data["flash"].(map[string]any)
+			if len(flash) != 0 || got.Data["seen"] != "paused" {
+				t.Fatalf("the paused update wrote its earlier read over a later save: %v (update ran %d times)", got.Data, runs)
+			}
+			if runs != 2 {
+				t.Fatalf("update ran %d times, want 2 (once on the stale read, once on the saved record)", runs)
+			}
+		})
+	}
+}
+
+// losingBackend makes every compare-and-swap lose, as if another writer
+// rewrote the record between every read and write.
+type losingBackend struct {
+	cacheBackend
+}
+
+func (losingBackend) CompareAndSwapCtx(context.Context, string, interface{}, interface{}, time.Duration) (bool, error) {
+	return false, nil
+}
+
+// A record that keeps changing under a write fails the write after a
+// bounded number of attempts instead of retrying forever, and nothing is
+// written.
+func TestCacheStore_WriteGivesUpOnARecordThatKeepsChanging(t *testing.T) {
+	shared := sharedBackends()[0].new(t)
+	writer := newCacheStore(t, losingBackend{cacheBackend: shared.(cacheBackend)})
+	ctx := context.Background()
+	if err := writer.Put(ctx, cacheSession("contended", "u1")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	runs := 0
+	update := func(current map[string]any) (map[string]any, error) {
+		runs++
+		return map[string]any{"k": "changed"}, nil
+	}
+	err := writer.UpdateData(ctx, "contended", update, time.Now(), time.Now().Add(time.Hour))
+	if !errors.Is(err, errRecordContended) {
+		t.Fatalf("UpdateData on a record that keeps changing = %v, want errRecordContended", err)
+	}
+	if runs != recordWriteAttempts {
+		t.Fatalf("update ran %d times, want %d", runs, recordWriteAttempts)
+	}
+	got, err := writer.Get(ctx, "contended")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Data["k"] != "v" {
+		t.Fatalf("an abandoned write changed the record: %v", got.Data)
 	}
 }
