@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -539,6 +540,70 @@ func BenchmarkRouter_MissFallback(b *testing.B) {
 	r.Freeze()
 
 	req := httptest.NewRequest("GET", "/does-not-exist", nil)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+	}
+}
+
+// benchStaticRouter returns a router serving a temporary public directory
+// (app.css at the top, index.html in docs/) through Static, with a /users
+// route behind it.
+func benchStaticRouter(b *testing.B) *VelocityRouterV2 {
+	b.Helper()
+	dir := b.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "app.css"), []byte("body{}"), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "docs"), 0o700); err != nil {
+		b.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "docs", "index.html"), []byte("<p>docs</p>"), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	r := New()
+	r.Static(dir)
+	r.Get("/users", func(c *Context) error {
+		c.Response.WriteHeader(http.StatusOK)
+		return nil
+	})
+	r.Freeze()
+	return r
+}
+
+// BenchmarkRouter_StaticFileHit serves a file through Static: the probe's
+// open and the file server's open, stat and copy.
+func BenchmarkRouter_StaticFileHit(b *testing.B) {
+	r := benchStaticRouter(b)
+	req := httptest.NewRequest("GET", "/app.css", nil)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+	}
+}
+
+// BenchmarkRouter_StaticDirIndex serves a directory's index.html through
+// Static.
+func BenchmarkRouter_StaticDirIndex(b *testing.B) {
+	r := benchStaticRouter(b)
+	req := httptest.NewRequest("GET", "/docs/", nil)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+	}
+}
+
+// BenchmarkRouter_StaticMissToRoute measures a route behind Static: the
+// probe's failed open, then the route match.
+func BenchmarkRouter_StaticMissToRoute(b *testing.B) {
+	r := benchStaticRouter(b)
+	req := httptest.NewRequest("GET", "/users", nil)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

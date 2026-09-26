@@ -35,7 +35,7 @@ type VelocityRouterV2 struct {
 	middlewares        []MiddlewareFunc
 	namedRoutes        map[string]*MatchResult
 	mu                 sync.Mutex
-	staticDir          string
+	staticRoot         http.FileSystem
 	staticFS           http.Handler
 	staticEnabled      bool
 	staticFallbackOnly bool
@@ -631,6 +631,15 @@ func (r *VelocityRouterV2) Resource(path string, controller interface{}) Resourc
 // file used as a directory, an invalid byte) is a miss, like an absent
 // file.
 //
+// Directories are never listed. A path naming a directory that holds an
+// index.html serves that index (a path without the trailing slash is
+// first redirected to the slashed form, as http.FileServer does), and an
+// index.html the server may not open answers 403 like any such file; a
+// path naming a directory without one is a miss, like an absent file, so
+// it falls through to route matching and is answered by a matching route
+// or a 404, with no redirect to the slashed form. A registered "/" route
+// therefore answers "/" unless the directory's top holds an index.html.
+//
 // For a typical deployment (routes matched first, Static as last
 // resort) this is fine. If you want to guarantee routes always win,
 // call StaticFallback explicitly instead.
@@ -639,20 +648,28 @@ func (r *VelocityRouterV2) Resource(path string, controller interface{}) Resourc
 // directory does not contain symlinks pointing outside the intended
 // root, or use a custom http.FileSystem that rejects symlinks.
 func (r *VelocityRouterV2) Static(directory string) {
-	r.staticDir = directory
-	r.staticFS = http.FileServer(http.Dir(directory))
+	r.useStaticRoot(http.Dir(directory))
 	r.staticEnabled = true
 }
 
 // StaticFallback is an opt-in variant of Static that only serves a
 // file when no route matches the request path. Use this when routes
-// must always take precedence — e.g. an SPA where "/users" is both a
-// client route and a possible static directory listing.
+// must always take precedence, e.g. an SPA where "/users" is both a
+// client route and a possible static directory. Directories are
+// served as for Static: a directory's index.html when it has one,
+// never a listing; a directory without one answers 404.
 func (r *VelocityRouterV2) StaticFallback(directory string) {
-	r.staticDir = directory
-	r.staticFS = http.FileServer(http.Dir(directory))
+	r.useStaticRoot(http.Dir(directory))
 	r.staticEnabled = true
 	r.staticFallbackOnly = true
+}
+
+// useStaticRoot points the static file server and staticProbe at the same
+// listing-free view of root (see noListingFS), so the probe's verdict and
+// the file server's answer always agree on what a directory is.
+func (r *VelocityRouterV2) useStaticRoot(root http.FileSystem) {
+	r.staticRoot = noListingFS{root: root}
+	r.staticFS = http.FileServer(r.staticRoot)
 }
 
 // requestMeta holds the per-request metadata that ServeHTTP threads
@@ -763,14 +780,19 @@ func (r *VelocityRouterV2) beginRequest(req *http.Request) (requestMeta, *http.R
 
 // staticProbe reports whether the static FileServer would produce a
 // response (anything other than a not-found) for this request path,
-// mirroring http.FileServer's path normalization. A missing file, and an
-// open error the client's path alone causes (see clientShapedOpenError),
-// returns false (fall through to route matching), so a crafted URL never
-// becomes a reported server error; permission and other open errors
-// return true so the FileServer's 403/500 is produced inside the
-// middleware chain and reaches the error boundary as an HTTP error. The
-// probe costs one extra Open per static hit (probe + serve), the price of
-// deciding fallthrough before any middleware runs.
+// mirroring http.FileServer's path normalization. A missing file, a
+// directory without an index.html (noListingFS reports it as not
+// existing), and an open error the client's path alone causes (see
+// clientShapedOpenError), returns false (fall through to route matching),
+// so a crafted URL never becomes a reported server error; permission and
+// other open errors return true so the FileServer's 403/500 is produced
+// inside the middleware chain and reaches the error boundary as an HTTP
+// error. The probe costs one extra Open per static hit (probe + serve),
+// the price of deciding fallthrough before any middleware runs, and a
+// Stat of its open handle to tell a directory from a file; the file
+// server's own Stat reuses the one its open read. Opening a directory
+// also opens and stats its index.html. A miss costs the one failed Open,
+// as before.
 func (r *VelocityRouterV2) staticProbe(req *http.Request) bool {
 	upath := req.URL.Path
 	if !strings.HasPrefix(upath, "/") {
@@ -779,7 +801,7 @@ func (r *VelocityRouterV2) staticProbe(req *http.Request) bool {
 	// http.FileServer path.Cleans before opening (".." segments are
 	// resolved, not rejected; the 400 rejection lives in http.ServeFile,
 	// which is not used here), so the probe must Clean identically.
-	f, err := http.Dir(r.staticDir).Open(path.Clean(upath))
+	f, err := r.staticRoot.Open(path.Clean(upath))
 	if err != nil {
 		return !errors.Is(err, fs.ErrNotExist) && !clientShapedOpenError(err)
 	}
