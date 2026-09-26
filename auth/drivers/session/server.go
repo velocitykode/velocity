@@ -171,8 +171,9 @@ func (s *ServerStore) Get(r *http.Request, id string) (auth.Session, error) {
 
 // Save writes the session to its record and sends the id cookie.
 //
-//   - A destroyed session removes the record it was loaded from (or last
-//     saved to) and deletes the cookie.
+//   - A destroyed session deletes the cookie and removes the record it was
+//     loaded from (or last saved to). The cookie deletion is written even
+//     when removing the record fails; that failure is still returned.
 //   - An unmodified session writes nothing.
 //   - Otherwise the record takes the payload and slides to the lifetime
 //     policy's end (UpdateData, update-if-present). A session saved to the
@@ -187,7 +188,8 @@ func (s *ServerStore) Get(r *http.Request, id string) (auth.Session, error) {
 //     record of an id the session rotated away from is removed first; a
 //     failure to remove it fails the save.
 //
-// Any store failure is returned and no cookie is written.
+// Any store failure is returned; except for a destroyed session's deletion,
+// no cookie is written then.
 func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
 	ss, ok := session.(*ServerSession)
 	if !ok {
@@ -200,13 +202,16 @@ func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
 	ctx := ss.context()
 
 	if ss.IsDestroyed() {
+		// The browser's copy goes whatever happens to the record: a failed
+		// removal is the server's teardown failing, and keeping the cookie
+		// would leave the session usable wherever the record survived.
+		http.SetCookie(w, s.config.CookiePolicy().Cookie(s.config.Name, "", -1, s.config.HttpOnly))
 		if ss.savedID != "" {
 			if err := records.Delete(ctx, ss.savedID); err != nil {
 				return fmt.Errorf("velocity/auth/session: delete session record: %w", err)
 			}
 			ss.savedID = ""
 		}
-		http.SetCookie(w, s.config.CookiePolicy().Cookie(s.config.Name, "", -1, s.config.HttpOnly))
 		return nil
 	}
 	if !ss.IsModified() {

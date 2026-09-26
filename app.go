@@ -786,11 +786,13 @@ func New(opts ...Option) (*App, error) {
 	// target.
 	// Reading is one-shot so a later navigation cannot replay a stale
 	// destination: the key is removed and the session middleware saves
-	// the change with the redirect. Uses schemes.SessionFromRequest so
-	// router need not import auth (same bridge the CSRF resolver above
-	// uses).
+	// the change with the redirect. Uses schemes.SessionFromContext so
+	// router need not import auth, and so a session nothing saves (a
+	// holder WithSessionContext attached without the session middleware)
+	// is never read: its removal would not be saved and the URL would
+	// come back.
 	a.Router.SetIntendedResolver(func(c *router.Context) string {
-		sess := schemes.SessionFromRequest(c.Request)
+		sess := schemes.SessionFromContext(c.Request.Context())
 		if sess == nil {
 			return ""
 		}
@@ -1037,10 +1039,13 @@ func sessionStoreFromConfig(cfg auth.SessionConfig, caches contract.CacheManager
 	return []schemes.SessionSchemeOption{schemes.WithSessionStore(store)}, records, nil
 }
 
-// sessionFlashBag returns the flash bag of the session the save seam bound
-// to r, or nil when r carries none. See app.Services.FlashBag.
+// sessionFlashBag returns the flash bag of the session r is served under
+// when that session is saved at the end of the request, or nil. A session
+// cached by a holder WithSessionContext attached on its own is not saved,
+// so flash written there would be lost and a drained entry would come
+// back: it gets no bag. See app.Services.FlashBag.
 func sessionFlashBag(r *http.Request) contract.FlashBag {
-	sess := schemes.SessionFromRequest(r)
+	sess := schemes.SessionFromContext(r.Context())
 	if sess == nil {
 		return nil
 	}

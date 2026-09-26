@@ -1506,12 +1506,18 @@ func (g *SessionScheme) Session(r *http.Request) auth.Session {
 // scheme accepts it, for state bound to a session rather than to a signed-in
 // user (the framework's CSRF token resolver). The session is:
 //
-//   - the session the session middleware bound to r, which covers an
-//     anonymous visitor's first request, before its cookie is written; or
-//   - the session the session store loads from r's cookie. The store answers
-//     a missing, undecryptable, revoked or expired cookie with a freshly
-//     created session, which is born modified; that answer, and a session
-//     that cannot report whether it is fresh, return auth.ErrSessionNotFound.
+//   - the session of a save scope (the session middleware, or a Login or
+//     Logout outside it), which covers an anonymous visitor's first
+//     request, before its cookie is written: the scope saves that session,
+//     so a freshly created one is the session the response persists; or
+//   - otherwise, the session the session store loads from r's cookie. The
+//     store answers a missing, undecryptable, revoked or expired cookie
+//     with a freshly created session, which is born modified; that answer,
+//     and a session that cannot report whether it is fresh, return
+//     auth.ErrSessionNotFound. A holder WithSessionContext attached on its
+//     own caches the session without saving it, so a session it holds is
+//     judged the same way on every call: a fresh (or since modified) one
+//     stays refused.
 //
 // A session that carries a signed-in user must also be accepted by the
 // server session store when one is installed, the same check
@@ -1523,9 +1529,11 @@ func (g *SessionScheme) ResolveSession(r *http.Request) (auth.Session, error) {
 	sess := sessionFromHolder(r)
 	if sess == nil || sess.ID() == "" {
 		sess = g.getSession(r)
-		if sess == nil || sess.ID() == "" {
-			return nil, auth.ErrSessionNotFound
-		}
+	}
+	if sess == nil || sess.ID() == "" {
+		return nil, auth.ErrSessionNotFound
+	}
+	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); !ok || holder == nil || !holder.inSaveScope() {
 		fresh, ok := sess.(interface{ IsModified() bool })
 		if !ok || fresh.IsModified() {
 			return nil, auth.ErrSessionNotFound

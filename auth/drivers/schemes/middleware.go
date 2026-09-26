@@ -276,7 +276,7 @@ func commitSessionHeld(g *SessionScheme, r *http.Request, w http.ResponseWriter,
 		holder.takeAfterSave(true)
 		return nil
 	}
-	ended := g.endSessionDeletedBy(w, session)
+	ended := g.endSessionDeletedBy(r, w, session)
 	if ms, ok := session.(modifiedSession); ok && ms.IsDestroyed() {
 		ended = true
 	}
@@ -307,9 +307,13 @@ func commitSessionHeld(g *SessionScheme, r *http.Request, w http.ResponseWriter,
 // endSessionDeletedBy invalidates session when w already carries a
 // deletion of the session cookie, and reports whether it did. The
 // response's own deletion lines for the cookie are removed: the destroyed
-// session's save writes the deletion with the store's attributes. The
-// cookie store's copy of the id is revoked in this process, as at logout.
-func (g *SessionScheme) endSessionDeletedBy(w http.ResponseWriter, session auth.Session) bool {
+// session's save writes the deletion with the store's attributes, whether
+// or not its server-side teardown succeeds. As at logout, the ended id is
+// revoked in the cookie store of this process and its record is removed
+// from the scheme's server session store, so a captured copy of the cookie
+// is refused on every instance sharing that store; a failed removal is
+// logged.
+func (g *SessionScheme) endSessionDeletedBy(r *http.Request, w http.ResponseWriter, session auth.Session) bool {
 	if ms, ok := session.(modifiedSession); ok && ms.IsDestroyed() {
 		return false
 	}
@@ -342,6 +346,12 @@ func (g *SessionScheme) endSessionDeletedBy(w http.ResponseWriter, session auth.
 	}
 	if rev, ok := g.store.(sessionRevoker); ok && id != "" {
 		rev.Revoke(id)
+	}
+	if r == nil {
+		return true
+	}
+	if err := g.retireServerRecord(r, id); err != nil {
+		g.logWarn("velocity/auth: server session store delete (session cookie deleted) failed", "session_id", id, "error", err)
 	}
 	return true
 }
