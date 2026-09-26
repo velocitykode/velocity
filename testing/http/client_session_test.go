@@ -61,11 +61,11 @@ func newSessionTestScheme(t *testing.T) (*schemes.SessionScheme, crypto.Encrypto
 		t.Fatalf("NewEncryptor: %v", err)
 	}
 	scheme, err := schemes.NewSessionScheme(stubUserStore{}, auth.SessionConfig{
-		Name:     "vel_session",
-		Lifetime: 3600,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Name:         "vel_session",
+		IdleLifetime: 3600,
+		Path:         "/",
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
 		t.Fatalf("NewSessionScheme: %v", err)

@@ -186,11 +186,11 @@ func TestSessionScheme_LoginThenCheckThenLogout(t *testing.T) {
 	}
 
 	scheme, err := schemes.NewSessionScheme(userStore, auth.SessionConfig{
-		Name:     "velocity_session",
-		Lifetime: 60,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Name:         "velocity_session",
+		IdleLifetime: 60,
+		Path:         "/",
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
 		t.Fatalf("NewSessionScheme: %v", err)
@@ -264,7 +264,7 @@ func TestSessionScheme_BadCredentialsRejected(t *testing.T) {
 		Key: strings.Repeat("k", 32), Cipher: "AES-256-GCM",
 	})
 	scheme, err := schemes.NewSessionScheme(userStore, auth.SessionConfig{
-		Name: "velocity_session", Lifetime: 60, Path: "/",
+		Name: "velocity_session", IdleLifetime: 60, Path: "/",
 	}, enc)
 	if err != nil {
 		t.Fatalf("NewSessionScheme: %v", err)
@@ -370,7 +370,7 @@ func TestSessionScheme_TamperedCookieRejected(t *testing.T) {
 		Key: strings.Repeat("k", 32), Cipher: "AES-256-GCM",
 	})
 	scheme, err := schemes.NewSessionScheme(userStore, auth.SessionConfig{
-		Name: "velocity_session", Lifetime: 60, Path: "/",
+		Name: "velocity_session", IdleLifetime: 60, Path: "/",
 	}, enc)
 	if err != nil {
 		t.Fatalf("NewSessionScheme: %v", err)

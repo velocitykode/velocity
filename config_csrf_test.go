@@ -18,7 +18,6 @@ func TestConfigFromEnv_CSRFMatchesPackageDefault(t *testing.T) {
 	// Clear CSRF_* env so the env-override branch is dormant. The test
 	// runs in this process, so use t.Setenv to scope cleanup.
 	for _, k := range []string{
-		"CSRF_TOKEN_LIFETIME",
 		"CSRF_HEADER",
 		"CSRF_FORM_FIELD",
 		"CSRF_SESSION_COOKIE",
@@ -34,8 +33,8 @@ func TestConfigFromEnv_CSRFMatchesPackageDefault(t *testing.T) {
 	cfg := ConfigFromEnv()
 	def := csrf.DefaultConfig()
 
-	if cfg.CSRF.TokenLifetime != def.TokenLifetime {
-		t.Errorf("TokenLifetime: env=%v default=%v", cfg.CSRF.TokenLifetime, def.TokenLifetime)
+	if cfg.CSRF.TokenIdleLifetime != def.TokenIdleLifetime {
+		t.Errorf("TokenIdleLifetime: env=%v default=%v", cfg.CSRF.TokenIdleLifetime, def.TokenIdleLifetime)
 	}
 	if cfg.CSRF.HeaderName != def.HeaderName {
 		t.Errorf("HeaderName: env=%q default=%q", cfg.CSRF.HeaderName, def.HeaderName)

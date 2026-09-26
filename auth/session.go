@@ -21,10 +21,10 @@ import (
 var ErrInsecureSessionConfig = errors.New("velocity/auth: insecure session config")
 
 // ErrInvalidLifetime is returned from SessionConfig.Validate when the
-// configured Lifetime is negative. Negative lifetimes would translate to
+// configured IdleLifetime is negative. Negative lifetimes would translate to
 // a cookie with Expires in the past which most browsers treat as already
 // deleted; the framework refuses to boot rather than ship a no-op session
-// cookie. Lifetime == 0 is permitted and produces a session-lifetime
+// cookie. IdleLifetime == 0 is permitted and produces a session-lifetime
 // (no Expires / MaxAge=0) cookie per RFC 6265.
 var ErrInvalidLifetime = errors.New("velocity/auth: session lifetime must be >= 0")
 
@@ -286,6 +286,15 @@ func (s *BaseSession) IsModified() bool {
 	return s.modified
 }
 
+// MarkModified flags the session as changed so the save seam writes it
+// even though no value in it changed. The session scheme uses it to
+// re-issue the cookie on activity, which slides the cookie's idle window.
+func (s *BaseSession) MarkModified() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.modified = true
+}
+
 // MarkClean clears the modified flag. Session stores call this after a
 // successful Save() so that a subsequent Save() on the same in-memory
 // session, without intervening writes, is a no-op. Every Encrypt
@@ -355,10 +364,24 @@ func generateSessionID() (string, error) {
 	return base64.URLEncoding.EncodeToString(b), nil
 }
 
-// SessionConfig holds session configuration
+// SessionConfig holds session configuration.
+//
+// IdleLifetime and AbsoluteLifetime are the session's one lifetime policy,
+// shared by the session cookie, the server session record and the CSRF
+// token bound to the session: a session ends when it has gone IdleLifetime
+// without a request, or when it reaches AbsoluteLifetime from sign-in,
+// whichever comes first (see ExpiresAt).
 type SessionConfig struct {
-	Name     string
-	Lifetime int // Minutes
+	Name string
+
+	// IdleLifetime is the idle timeout in minutes: a session that receives
+	// no request for this long ends, and every request slides it forward
+	// (the cookie is re-issued and the server record's expiry refreshed,
+	// both at most once a minute). Zero means no idle timeout: the cookie
+	// is a browser-session cookie (no Max-Age) and only AbsoluteLifetime
+	// bounds the session.
+	IdleLifetime int // Minutes
+
 	Path     string
 	Domain   string
 	Secure   bool
@@ -366,16 +389,17 @@ type SessionConfig struct {
 	SameSite http.SameSite
 
 	// AbsoluteLifetime caps a session's total age in minutes, measured from
-	// its first creation, regardless of activity. The rolling Lifetime
-	// window refreshes on every Save, so an active session would otherwise
-	// live forever; this cap ends it unconditionally.
+	// its creation (a sign-in regenerates the session and restarts it),
+	// regardless of activity. The idle window slides on every request, so
+	// an active session would otherwise live forever; this cap ends it
+	// unconditionally, on the cookie and the server record alike.
 	//
 	// Zero means "use the framework default" (30 days), NOT disabled:
 	// leaving the field unset still bounds session age (fail-secure). A
 	// NEGATIVE value is the explicit opt-out that disables the absolute
 	// cap entirely; only set this deliberately, it restores the
-	// unbounded-session behaviour. When positive it must be >= Lifetime
-	// (Validate rejects an absolute cap shorter than the rolling window).
+	// unbounded-session behaviour. When positive it must be >= IdleLifetime
+	// (Validate rejects an absolute cap shorter than the idle window).
 	AbsoluteLifetime int // Minutes; 0 = default (30 days), negative = no cap (explicit opt-out)
 
 	// AllowJSAccess opts in to HttpOnly=false. Without this flag the
@@ -394,6 +418,52 @@ type SessionConfig struct {
 	// single-host risk profile (small / dev-like prod) MUST opt in here;
 	// the name is loud so reviewers notice. See audit H-04.
 	AllowCookieStoreInProduction bool
+}
+
+// defaultAbsoluteLifetime is the absolute session-age cap applied when
+// SessionConfig.AbsoluteLifetime is zero (unset). Fail-secure: an
+// unconfigured field still bounds total session age instead of leaving
+// kept-warm sessions immortal.
+const defaultAbsoluteLifetime = 30 * 24 * time.Hour
+
+// IdleTimeout returns how long a session may go without a request before
+// it ends. Zero means the session has no idle timeout.
+func (c SessionConfig) IdleTimeout() time.Duration {
+	if c.IdleLifetime <= 0 {
+		return 0
+	}
+	return time.Duration(c.IdleLifetime) * time.Minute
+}
+
+// AbsoluteTimeout returns the cap on a session's total age: AbsoluteLifetime
+// minutes when positive, 30 days when zero, and zero (no cap) when
+// negative.
+func (c SessionConfig) AbsoluteTimeout() time.Duration {
+	switch {
+	case c.AbsoluteLifetime > 0:
+		return time.Duration(c.AbsoluteLifetime) * time.Minute
+	case c.AbsoluteLifetime < 0:
+		return 0
+	default:
+		return defaultAbsoluteLifetime
+	}
+}
+
+// ExpiresAt returns when a session created at createdAt and last active at
+// lastActive ends under this policy: the earlier of lastActive plus the
+// idle timeout and createdAt plus the absolute cap. A policy with neither
+// returns the zero time (the session never expires on its own).
+func (c SessionConfig) ExpiresAt(createdAt, lastActive time.Time) time.Time {
+	var end time.Time
+	if idle := c.IdleTimeout(); idle > 0 {
+		end = lastActive.Add(idle)
+	}
+	if abs := c.AbsoluteTimeout(); abs > 0 {
+		if capAt := createdAt.Add(abs); end.IsZero() || capAt.Before(end) {
+			end = capAt
+		}
+	}
+	return end
 }
 
 // CookiePolicy derives the framework cookie policy from the session
@@ -415,15 +485,15 @@ func (c SessionConfig) CookiePolicy() contract.CookiePolicy {
 //   - Secure must be true outside testing/development
 //   - SameSite must be set (non-zero value)
 //   - SameSite=None requires Secure=true
-//   - Lifetime must be >= 0 (negative produces an already-expired cookie)
-//   - AbsoluteLifetime, when positive, must be >= Lifetime (an absolute cap
+//   - IdleLifetime must be >= 0 (negative produces an already-expired cookie)
+//   - AbsoluteLifetime, when positive, must be >= IdleLifetime (an absolute cap
 //     shorter than the rolling window is a misconfiguration)
 func (c SessionConfig) Validate(env string) error {
-	if c.Lifetime < 0 {
-		return fmt.Errorf("%w: got %d minutes", ErrInvalidLifetime, c.Lifetime)
+	if c.IdleLifetime < 0 {
+		return fmt.Errorf("%w: got %d minutes", ErrInvalidLifetime, c.IdleLifetime)
 	}
-	if c.AbsoluteLifetime > 0 && c.AbsoluteLifetime < c.Lifetime {
-		return fmt.Errorf("%w: AbsoluteLifetime %d minutes is shorter than Lifetime %d minutes", ErrInvalidLifetime, c.AbsoluteLifetime, c.Lifetime)
+	if c.AbsoluteLifetime > 0 && c.AbsoluteLifetime < c.IdleLifetime {
+		return fmt.Errorf("%w: AbsoluteLifetime %d minutes is shorter than IdleLifetime %d minutes", ErrInvalidLifetime, c.AbsoluteLifetime, c.IdleLifetime)
 	}
 	if !c.HttpOnly && !c.AllowJSAccess {
 		return fmt.Errorf("%w: HttpOnly=false requires AllowJSAccess=true opt-in", ErrInsecureSessionConfig)

@@ -72,7 +72,8 @@ that cannot import `app`).
 | Name | Package | Default | Required in prod? | Security impact | Notes |
 |------|---------|---------|-------------------|-----------------|-------|
 | `SESSION_NAME` | `config.go` | `velocity_session` | no | none | |
-| `SESSION_LIFETIME` | `config.go` | `120` | no | longer-lived stolen cookies | minutes |
+| `SESSION_IDLE_LIFETIME` | `config.go` | `120` | no | longer-lived stolen cookies | minutes; idle timeout: a session with no request for this long ends (cookie and server record alike); each request slides it. `0` = browser-session cookie with no idle timeout |
+| `SESSION_ABSOLUTE_LIFETIME` | `config.go` | `0` (30 days) | no | longer-lived stolen cookies | minutes; absolute cap from sign-in: activity never extends a session past it (cookie and server record alike). `0` = 30 days, negative = no cap. Must be >= `SESSION_IDLE_LIFETIME` when positive |
 | `SESSION_PATH` | `config.go` | `/` | no | scope of cookie | Path of every framework cookie (session, remember, `XSRF-TOKEN`, maintenance bypass); flash rides in the session cookie |
 | `SESSION_DOMAIN` | `config.go` | empty | no | scope of cookie | Domain of every framework cookie |
 | `SESSION_SECURE` | `config.go` | `true` | YES | cookie sent over HTTP | reject unless `APP_ENV` names a dev/test profile (`development`, `dev`, `test`, `testing`, `local` per `contract.NonProdEnvNames()`); Secure attribute of every framework cookie |
@@ -97,7 +98,6 @@ that cannot import `app`).
 
 | Name | Package | Default | Required in prod? | Security impact | Notes |
 |------|---------|---------|-------------------|-----------------|-------|
-| `CSRF_TOKEN_LIFETIME` | `config.go` | from `csrf.DefaultConfig()` | no | longer-lived stolen tokens | duration |
 | `CSRF_HEADER` | `config.go` | from default | no | none | |
 | `CSRF_FORM_FIELD` | `config.go` | from default | no | none | |
 | `CSRF_SESSION_COOKIE` | `config.go` | matches `SESSION_NAME` | recommended | CSRF token keyed off wrong cookie -> always 419 or always-pass | |
@@ -105,6 +105,12 @@ that cannot import `app`).
 | `CSRF_ERROR_MESSAGE` | `config.go` | default | no | none | |
 | `CSRF_WRITE_XSRF_COOKIE` | `config.go` | `true` | no | none | |
 | `CSRF_XSRF_COOKIE_NAME` | `config.go` | from default | no | none | |
+
+The CSRF token has no lifetime key of its own: it lives on the session's
+idle timeout (`SESSION_IDLE_LIFETIME`, or `SESSION_ABSOLUTE_LIFETIME` when the
+idle timeout is `0`), and every request through the CSRF middleware restarts
+it, so an active session never gets a 419 for an aged token. The
+`XSRF-TOKEN` cookie is a browser-session cookie (no Max-Age).
 
 The `XSRF-TOKEN` cookie has no attribute keys of its own: its Path, Domain,
 Secure and SameSite follow `SESSION_PATH`, `SESSION_DOMAIN`, `SESSION_SECURE`

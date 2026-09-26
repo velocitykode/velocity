@@ -112,7 +112,7 @@ func NewE(config *Config) (*CSRF, error) {
 
 	// Set default store if none provided
 	if config.Store == nil {
-		store := stores.NewSessionStore(config.TokenLifetime)
+		store := stores.NewSessionStore(config.TokenIdleLifetime)
 		store.Start(context.Background())
 		config.Store = store
 	}
@@ -364,19 +364,13 @@ func (c *CSRF) writeXSRFCookieForSession(w http.ResponseWriter, r *http.Request,
 	if cookieName == "" {
 		cookieName = "XSRF-TOKEN"
 	}
-	// MaxAge in seconds; clamp to int range. TokenLifetime <= 0 means
-	// session cookie (no MaxAge set).
+	// No Max-Age: the cookie is a browser-session cookie with no clock of
+	// its own. The token's validity is the server-side idle clock (see
+	// Config.TokenIdleLifetime), which every request through this
+	// middleware restarts; a cookie Max-Age could only slide on safe
+	// requests, so a run of unsafe ones would let the browser drop the
+	// cookie of a still-active session.
 	maxAge := 0
-	if ttl := c.config.TokenLifetime; ttl > 0 {
-		secs := int64(ttl / time.Second)
-		if secs > 0 {
-			if secs > int64(int(^uint(0)>>1)) {
-				maxAge = int(^uint(0) >> 1)
-			} else {
-				maxAge = int(secs)
-			}
-		}
-	}
 	// URL-encode so axios-style clients can echo the value verbatim in
 	// X-XSRF-TOKEN without double-encoding. Not HttpOnly: SPAs must read
 	// this cookie.
@@ -822,7 +816,7 @@ func (c *CSRF) ClearXSRFCookie(w http.ResponseWriter, r *http.Request) {
 // bound to id. Session schemes call this from Logout (before
 // Session.Invalidate) so the token does not survive the session in the
 // CSRF store; without this a captured cookie+token pair would remain
-// valid for the store TTL (24h default) past logout.
+// valid for its idle lifetime past logout.
 //
 // A delete on a missing entry is not an error (idempotent), matching the
 // underlying Store.Delete contract.

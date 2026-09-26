@@ -171,7 +171,7 @@ func TestSessionScheme_CacheThrottler_WindowExpiryAfterReservation_KeepsSlot(t *
 	release := make(chan struct{})
 	close(release)
 	users := &probeUsers{entered: make(chan struct{}, parallel), release: release}
-	scheme, err := schemes.NewSessionScheme(users, auth.SessionConfig{Name: "expiry_session", Lifetime: 60, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode}, enc)
+	scheme, err := schemes.NewSessionScheme(users, auth.SessionConfig{Name: "expiry_session", IdleLifetime: 60, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode}, enc)
 	if err != nil {
 		t.Fatalf("NewSessionScheme: %v", err)
 	}

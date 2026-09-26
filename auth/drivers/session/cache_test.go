@@ -135,7 +135,7 @@ func TestCacheStore_TwoInstances_OverlappingOperations(t *testing.T) {
 					if inst == a {
 						other = b
 					}
-					if err := other.Touch(ctx, id, time.Now()); err != nil {
+					if err := other.Touch(ctx, id, time.Now(), time.Now().Add(time.Hour)); err != nil {
 						t.Errorf("Touch %s from other instance: %v", id, err)
 					}
 					if i%4 == 0 {
@@ -184,7 +184,7 @@ func TestCacheStore_TwoInstances_OverlappingOperations(t *testing.T) {
 					// Outcome is either a successful touch (before the
 					// revoke) or not-found (after); never an error and
 					// never a resurrection.
-					if err := b.Touch(ctx, id, time.Now()); err != nil && !errors.Is(err, auth.ErrSessionNotFound) {
+					if err := b.Touch(ctx, id, time.Now(), time.Now().Add(time.Hour)); err != nil && !errors.Is(err, auth.ErrSessionNotFound) {
 						t.Errorf("Touch %s during revoke: %v", id, err)
 					}
 				}
@@ -205,7 +205,7 @@ func TestCacheStore_TwoInstances_OverlappingOperations(t *testing.T) {
 					if _, err := inst.Get(ctx, id); !errors.Is(err, auth.ErrSessionNotFound) {
 						t.Errorf("pre-revocation %s still accepted: %v", id, err)
 					}
-					if err := inst.Touch(ctx, id, time.Now()); !errors.Is(err, auth.ErrSessionNotFound) {
+					if err := inst.Touch(ctx, id, time.Now(), time.Now().Add(time.Hour)); !errors.Is(err, auth.ErrSessionNotFound) {
 						t.Errorf("pre-revocation %s touchable: %v", id, err)
 					}
 				}
@@ -253,7 +253,7 @@ func TestCacheStore_RevokeAllAuthoritativeWithIncompleteIndex(t *testing.T) {
 			if _, err := s.Get(ctx, "orphan"); !errors.Is(err, auth.ErrSessionNotFound) {
 				t.Fatalf("orphan survived revoke-all: %v", err)
 			}
-			if err := s.Touch(ctx, "orphan", time.Now()); !errors.Is(err, auth.ErrSessionNotFound) {
+			if err := s.Touch(ctx, "orphan", time.Now(), time.Now().Add(time.Hour)); !errors.Is(err, auth.ErrSessionNotFound) {
 				t.Fatalf("orphan touchable after revoke-all: %v", err)
 			}
 			// The stale meta key was evicted by the rejecting Get.
@@ -306,7 +306,7 @@ func TestCacheStore_GenerationUnreadable_FailsClosed(t *testing.T) {
 			if _, err := second.Get(ctx, "s1"); !errors.Is(err, auth.ErrSessionNotFound) {
 				t.Fatalf("unreadable generation accepted a session: %v", err)
 			}
-			if err := second.Touch(ctx, "s1", time.Now()); !errors.Is(err, auth.ErrSessionNotFound) {
+			if err := second.Touch(ctx, "s1", time.Now(), time.Now().Add(time.Hour)); !errors.Is(err, auth.ErrSessionNotFound) {
 				t.Fatalf("unreadable generation allowed Touch: %v", err)
 			}
 			// A login cannot be recorded under a token nobody can verify.
@@ -467,7 +467,7 @@ func TestCacheStore_TouchLosesRaceAgainstDelete(t *testing.T) {
 				_ = other.Delete(ctx, "racy")
 			}}
 			s.backend = hooked
-			if err := s.Touch(ctx, "racy", time.Now()); !errors.Is(err, auth.ErrSessionNotFound) {
+			if err := s.Touch(ctx, "racy", time.Now(), time.Now().Add(time.Hour)); !errors.Is(err, auth.ErrSessionNotFound) {
 				t.Fatalf("Touch after losing the race: %v, want ErrSessionNotFound", err)
 			}
 			if _, err := other.Get(ctx, "racy"); !errors.Is(err, auth.ErrSessionNotFound) {
@@ -508,7 +508,7 @@ func TestCacheStore_PutValidation(t *testing.T) {
 	if _, err := s.Get(ctx, ""); !errors.Is(err, auth.ErrSessionNotFound) {
 		t.Fatalf("Get empty id: %v", err)
 	}
-	if err := s.Touch(ctx, "", time.Now()); !errors.Is(err, auth.ErrSessionNotFound) {
+	if err := s.Touch(ctx, "", time.Now(), time.Now().Add(time.Hour)); !errors.Is(err, auth.ErrSessionNotFound) {
 		t.Fatalf("Touch empty id: %v", err)
 	}
 	if err := s.Delete(ctx, ""); err != nil {
@@ -566,7 +566,7 @@ func TestCacheStore_ContextCancelled(t *testing.T) {
 	if err := s.Put(ctx, cacheSession("x", "u")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := s.Touch(ctx, "x", time.Now()); !errors.Is(err, context.Canceled) {
+	if err := s.Touch(ctx, "x", time.Now(), time.Now().Add(time.Hour)); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Touch: %v", err)
 	}
 	if err := s.Delete(ctx, "x"); !errors.Is(err, context.Canceled) {

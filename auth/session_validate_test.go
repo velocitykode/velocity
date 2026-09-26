@@ -15,12 +15,12 @@ func TestSessionConfig_Validate_RejectsInsecureDefaults(t *testing.T) {
 	// A config that is valid under production rules. Each test row mutates
 	// one field at a time so failures point at the single broken rule.
 	ok := SessionConfig{
-		Name:     "velocity_session",
-		Lifetime: 120,
-		Path:     "/",
-		Secure:   true,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Name:         "velocity_session",
+		IdleLifetime: 120,
+		Path:         "/",
+		Secure:       true,
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
 	}
 
 	tests := []struct {
@@ -126,16 +126,16 @@ func TestSessionConfig_Validate_RejectsInsecureDefaults(t *testing.T) {
 }
 
 // TestSessionConfig_Validate_AbsoluteLifetime pins the V2-09 config rule: a
-// positive absolute cap shorter than the rolling Lifetime window is a
+// positive absolute cap shorter than the rolling IdleLifetime window is a
 // misconfiguration; zero (default) and negative (explicit opt-out) pass.
 func TestSessionConfig_Validate_AbsoluteLifetime(t *testing.T) {
 	base := SessionConfig{
-		Name:     "velocity_session",
-		Lifetime: 120,
-		Path:     "/",
-		Secure:   true,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Name:         "velocity_session",
+		IdleLifetime: 120,
+		Path:         "/",
+		Secure:       true,
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
 	}
 
 	tests := []struct {
@@ -145,9 +145,9 @@ func TestSessionConfig_Validate_AbsoluteLifetime(t *testing.T) {
 	}{
 		{name: "zero (framework default) accepted", absolute: 0, wantErr: false},
 		{name: "negative (explicit opt-out) accepted", absolute: -1, wantErr: false},
-		{name: "equal to Lifetime accepted", absolute: 120, wantErr: false},
-		{name: "greater than Lifetime accepted", absolute: 43200, wantErr: false},
-		{name: "shorter than Lifetime rejected", absolute: 60, wantErr: true},
+		{name: "equal to IdleLifetime accepted", absolute: 120, wantErr: false},
+		{name: "greater than IdleLifetime accepted", absolute: 43200, wantErr: false},
+		{name: "shorter than IdleLifetime rejected", absolute: 60, wantErr: true},
 	}
 
 	for _, tt := range tests {

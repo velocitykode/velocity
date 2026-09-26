@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
 // V2-09 regression tests: the rolling IssuedAt window slides forward on
@@ -16,14 +17,12 @@ import (
 // requests never expires. These tests pin the CreatedAt-based absolute
 // lifetime enforcement.
 
-// fakeClock installs a controllable cookieNowFn and returns an advance
-// function plus a restore function for defer.
+// fakeClock installs a controllable session clock and returns an advance
+// function; the real clock is restored when the test ends.
 func fakeClock(t *testing.T, start time.Time) func(d time.Duration) {
 	t.Helper()
 	current := start
-	orig := cookieNowFn
-	cookieNowFn = func() time.Time { return current }
-	t.Cleanup(func() { cookieNowFn = orig })
+	t.Cleanup(sessionclock.Set(func() time.Time { return current }))
 	return func(d time.Duration) { current = current.Add(d) }
 }
 
@@ -64,7 +63,7 @@ func saveAndExtract(t *testing.T, store *CookieStore, cfg auth.SessionConfig, se
 // a session well inside both windows loads normally.
 func TestCookieStore_AbsoluteLifetime_FreshSessionPasses(t *testing.T) {
 	cfg := testConfig()
-	cfg.Lifetime = 60
+	cfg.IdleLifetime = 60
 	cfg.AbsoluteLifetime = 120
 
 	start := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
@@ -92,11 +91,11 @@ func TestCookieStore_AbsoluteLifetime_FreshSessionPasses(t *testing.T) {
 }
 
 // TestCookieStore_AbsoluteLifetime_WarmSessionDies is the core V2-09
-// regression: a session kept alive by Saves more frequent than Lifetime
+// regression: a session kept alive by Saves more frequent than IdleLifetime
 // still dies once CreatedAt + AbsoluteLifetime passes.
 func TestCookieStore_AbsoluteLifetime_WarmSessionDies(t *testing.T) {
 	cfg := testConfig()
-	cfg.Lifetime = 60          // rolling window: 1h
+	cfg.IdleLifetime = 60      // rolling window: 1h
 	cfg.AbsoluteLifetime = 120 // absolute cap: 2h
 
 	start := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
@@ -121,7 +120,7 @@ func TestCookieStore_AbsoluteLifetime_WarmSessionDies(t *testing.T) {
 			t.Fatalf("Get returned error: %v", err)
 		}
 		if got.ID() != "warm-session" {
-			t.Fatalf("warm session died early at %v: got id %q", cookieNowFn().Sub(start), got.ID())
+			t.Fatalf("warm session died early at %v: got id %q", sessionclock.Now().Sub(start), got.ID())
 		}
 		got.Put("touch", round)
 		value = saveAndExtract(t, store, cfg, got)
@@ -136,7 +135,7 @@ func TestCookieStore_AbsoluteLifetime_WarmSessionDies(t *testing.T) {
 	}
 	if got.ID() == "warm-session" {
 		t.Fatalf("warm session survived past absolute lifetime: age %v, cap %v",
-			cookieNowFn().Sub(start), time.Duration(cfg.AbsoluteLifetime)*time.Minute)
+			sessionclock.Now().Sub(start), time.Duration(cfg.AbsoluteLifetime)*time.Minute)
 	}
 	if got.Get("user_id") != nil {
 		t.Fatalf("expired session data leaked: user_id=%v", got.Get("user_id"))
@@ -148,7 +147,7 @@ func TestCookieStore_AbsoluteLifetime_WarmSessionDies(t *testing.T) {
 // on IssuedAt, so an old-but-rolling-valid legacy cookie is still capped.
 func TestCookieStore_AbsoluteLifetime_LegacyPayloadFallsBackToIssuedAt(t *testing.T) {
 	cfg := testConfig()
-	cfg.Lifetime = 0           // rolling enforcement off: isolates the absolute path
+	cfg.IdleLifetime = 0       // rolling enforcement off: isolates the absolute path
 	cfg.AbsoluteLifetime = 600 // 10h absolute cap
 
 	start := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
@@ -176,7 +175,7 @@ func TestCookieStore_AbsoluteLifetime_LegacyPayloadFallsBackToIssuedAt(t *testin
 // the original iat, not the current time.
 func TestCookieStore_AbsoluteLifetime_LegacyPayloadStampedOnSave(t *testing.T) {
 	cfg := testConfig()
-	cfg.Lifetime = 120
+	cfg.IdleLifetime = 120
 	cfg.AbsoluteLifetime = 1440
 
 	start := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
@@ -226,7 +225,7 @@ func TestCookieStore_AbsoluteLifetime_LegacyPayloadStampedOnSave(t *testing.T) {
 // copied forward verbatim through repeated Save cycles while iat bumps.
 func TestCookieStore_AbsoluteLifetime_CreatedAtSurvivesRoundTrips(t *testing.T) {
 	cfg := testConfig()
-	cfg.Lifetime = 120
+	cfg.IdleLifetime = 120
 	cfg.AbsoluteLifetime = 14400 // 10 days, far away
 
 	start := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
@@ -276,7 +275,7 @@ func TestCookieStore_AbsoluteLifetime_CreatedAtSurvivesRoundTrips(t *testing.T) 
 // disabled).
 func TestCookieStore_AbsoluteLifetime_ZeroConfigUsesDefault(t *testing.T) {
 	cfg := testConfig()
-	cfg.Lifetime = 0 // no rolling enforcement, isolates the absolute check
+	cfg.IdleLifetime = 0 // no rolling enforcement, isolates the absolute check
 	cfg.AbsoluteLifetime = 0
 
 	start := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
@@ -317,7 +316,7 @@ func TestCookieStore_AbsoluteLifetime_ZeroConfigUsesDefault(t *testing.T) {
 // sentinel removes the absolute cap entirely.
 func TestCookieStore_AbsoluteLifetime_NegativeDisables(t *testing.T) {
 	cfg := testConfig()
-	cfg.Lifetime = 0
+	cfg.IdleLifetime = 0
 	cfg.AbsoluteLifetime = -1
 
 	start := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)

@@ -15,7 +15,7 @@ import (
 // would otherwise pass.
 func TestCookieStore_RevokedSessionRejectedOnGet(t *testing.T) {
 	cfg := testConfig()
-	cfg.Lifetime = 60
+	cfg.IdleLifetime = 60
 
 	enc := base64Encryptor()
 	store := newTestCookieStore(cfg, enc)
@@ -65,7 +65,7 @@ func TestCookieStore_RevokedSessionRejectedOnGet(t *testing.T) {
 // the in-memory revocation map does not grow without bound.
 func TestCookieStore_Revoke_AgesOutExpiredEntries(t *testing.T) {
 	cfg := testConfig()
-	cfg.Lifetime = 1 // 1 minute lifetime
+	cfg.IdleLifetime = 1 // 1 minute lifetime
 
 	enc := base64Encryptor()
 	store := newTestCookieStore(cfg, enc)

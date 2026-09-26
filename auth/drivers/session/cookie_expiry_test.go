@@ -35,13 +35,13 @@ func base64Encryptor() *mockEncryptor {
 // IssuedAt check the cookie remains replayable indefinitely.
 func TestCookieStore_RejectsExpiredCookie_ServerSide(t *testing.T) {
 	cfg := testConfig()
-	cfg.Lifetime = 60 // minutes
+	cfg.IdleLifetime = 60 // minutes
 
 	enc := base64Encryptor()
 	store := newTestCookieStore(cfg, enc)
 
 	// Mint a cookie payload IssuedAt two lifetimes ago.
-	issued := time.Now().Add(-2 * time.Duration(cfg.Lifetime) * time.Minute)
+	issued := time.Now().Add(-2 * time.Duration(cfg.IdleLifetime) * time.Minute)
 	payload, err := json.Marshal(map[string]any{
 		"id":    "expired-session-id",
 		"data":  map[string]any{"user_id": "u-1"},
@@ -75,7 +75,7 @@ func TestCookieStore_RejectsExpiredCookie_ServerSide(t *testing.T) {
 // rejection does not over-fire on still-valid cookies.
 func TestCookieStore_AcceptsFreshCookie(t *testing.T) {
 	cfg := testConfig()
-	cfg.Lifetime = 60
+	cfg.IdleLifetime = 60
 
 	enc := base64Encryptor()
 	store := newTestCookieStore(cfg, enc)
@@ -113,7 +113,7 @@ func TestCookieStore_AcceptsFreshCookie(t *testing.T) {
 // timestamp and from then on the cutoff enforces.
 func TestCookieStore_AcceptsLegacyCookieWithoutIssuedAt(t *testing.T) {
 	cfg := testConfig()
-	cfg.Lifetime = 60
+	cfg.IdleLifetime = 60
 
 	enc := base64Encryptor()
 	store := newTestCookieStore(cfg, enc)
@@ -145,7 +145,7 @@ func TestCookieStore_AcceptsLegacyCookieWithoutIssuedAt(t *testing.T) {
 // so a subsequent Get can enforce the lifetime cutoff.
 func TestCookieStore_Save_BumpsIssuedAt(t *testing.T) {
 	cfg := testConfig()
-	cfg.Lifetime = 60
+	cfg.IdleLifetime = 60
 
 	captured := ""
 	enc := &mockEncryptor{

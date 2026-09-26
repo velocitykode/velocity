@@ -87,7 +87,7 @@ func TestSetRememberCookie_StoresHashedToken(t *testing.T) {
 	userStore := &mockRememberStore{}
 	g := func() *SessionScheme {
 		g := &SessionScheme{
-			config:    auth.SessionConfig{Name: "sess", Lifetime: 60},
+			config:    auth.SessionConfig{Name: "sess", IdleLifetime: 60},
 			encryptor: enc,
 		}
 		g.userStore.Store(&userStoreHolder{p: userStore})
@@ -140,7 +140,7 @@ func TestSetRememberCookie_NonStringIdentifier(t *testing.T) {
 	enc := newRememberEncryptor(t)
 	userStore := &mockRememberStore{}
 	g := &SessionScheme{
-		config:    auth.SessionConfig{Name: "sess", Lifetime: 60},
+		config:    auth.SessionConfig{Name: "sess", IdleLifetime: 60},
 		encryptor: enc,
 	}
 	g.userStore.Store(&userStoreHolder{p: userStore})
@@ -171,7 +171,7 @@ func TestSetRememberCookie_RefusesZeroLifetime(t *testing.T) {
 	enc := newRememberEncryptor(t)
 	g := func() *SessionScheme {
 		g := &SessionScheme{
-			config:    auth.SessionConfig{Name: "sess", Lifetime: 0},
+			config:    auth.SessionConfig{Name: "sess", IdleLifetime: 0},
 			encryptor: enc,
 		}
 		g.userStore.Store(&userStoreHolder{p: &mockRememberStore{}})
@@ -198,7 +198,7 @@ func TestCheckRememberCookie_ComparesHashedToken(t *testing.T) {
 
 	g := func() *SessionScheme {
 		g := &SessionScheme{
-			config:    auth.SessionConfig{Name: "sess", Lifetime: 60},
+			config:    auth.SessionConfig{Name: "sess", IdleLifetime: 60},
 			encryptor: enc,
 		}
 		g.userStore.Store(&userStoreHolder{p: &mockRememberStore{}})

@@ -86,11 +86,11 @@ func newRevokeScheme(t *testing.T, store auth.ServerSessionStore) (*SessionSchem
 		"u2": {id: "u2"},
 	}}
 	scheme, err := NewSessionScheme(userStore, auth.SessionConfig{
-		Name:     "vel_session",
-		Lifetime: 60,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Name:         "vel_session",
+		IdleLifetime: 60,
+		Path:         "/",
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
 		t.Fatalf("NewSessionScheme: %v", err)
@@ -259,7 +259,7 @@ func TestSessionScheme_LastSeenAtRefresh(t *testing.T) {
 	// Touch, not Put: Put stamps LastSeenAt with the current time, so a
 	// Put-based backdate would silently leave the record inside the window.
 	backdated := time.Now().Add(-2 * lastSeenDebounce)
-	if err := store.Touch(context.Background(), id, backdated); err != nil {
+	if err := store.Touch(context.Background(), id, backdated, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Touch backdated: %v", err)
 	}
 	rec, err := store.Get(context.Background(), id)
@@ -332,7 +332,7 @@ func TestSessionScheme_RevokeBetweenReadAndRefresh_DeniesRequest(t *testing.T) {
 			id := list[0].ID
 
 			// Backdate LastSeenAt past the debounce so the next Check refreshes.
-			if err := inner.Touch(context.Background(), id, time.Now().Add(-2*lastSeenDebounce)); err != nil {
+			if err := inner.Touch(context.Background(), id, time.Now().Add(-2*lastSeenDebounce), time.Now().Add(time.Hour)); err != nil {
 				t.Fatalf("Touch backdated: %v", err)
 			}
 
@@ -383,7 +383,7 @@ func TestSessionScheme_LastSeenAtRefresh_UsesTouchNotPut(t *testing.T) {
 		t.Fatalf("expected 1 session, got %d", len(list))
 	}
 	backdated := time.Now().Add(-2 * lastSeenDebounce)
-	if err := inner.Touch(context.Background(), list[0].ID, backdated); err != nil {
+	if err := inner.Touch(context.Background(), list[0].ID, backdated, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Touch backdated: %v", err)
 	}
 	rec, _ := inner.Get(context.Background(), list[0].ID)
@@ -419,11 +419,11 @@ func (s *putTrapStore) Put(ctx context.Context, rec *auth.StoredSession) error {
 	return s.MemoryStore.Put(ctx, rec)
 }
 
-func (s *putTrapStore) Touch(ctx context.Context, id string, lastSeen time.Time) error {
+func (s *putTrapStore) Touch(ctx context.Context, id string, lastSeen, expiresAt time.Time) error {
 	if s.armed.Load() {
 		s.touches.Add(1)
 	}
-	return s.MemoryStore.Touch(ctx, id, lastSeen)
+	return s.MemoryStore.Touch(ctx, id, lastSeen, expiresAt)
 }
 
 // TestSessionScheme_ConcurrentCheckRevoke exercises the race between a
@@ -513,8 +513,8 @@ func (f *flakyStore) Get(ctx context.Context, id string) (*auth.StoredSession, e
 func (f *flakyStore) Put(ctx context.Context, s *auth.StoredSession) error {
 	return f.inner.Put(ctx, s)
 }
-func (f *flakyStore) Touch(ctx context.Context, id string, lastSeen time.Time) error {
-	return f.inner.Touch(ctx, id, lastSeen)
+func (f *flakyStore) Touch(ctx context.Context, id string, lastSeen, expiresAt time.Time) error {
+	return f.inner.Touch(ctx, id, lastSeen, expiresAt)
 }
 func (f *flakyStore) Delete(ctx context.Context, id string) error { return f.inner.Delete(ctx, id) }
 func (f *flakyStore) DeleteAllForUser(ctx context.Context, userID string) error {

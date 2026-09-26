@@ -334,11 +334,13 @@ func ConfigFromEnv() Config {
 
 	// Session
 	config.Session = auth.SessionConfig{
-		Name:     envOrDefault("SESSION_NAME", "velocity_session"),
-		Lifetime: envIntOrDefault("SESSION_LIFETIME", 120),
-		// Absolute session-age cap in minutes, independent of activity.
-		// 0 (the default) applies the framework default of 30 days;
-		// negative explicitly disables the cap (unbounded sessions).
+		Name:         envOrDefault("SESSION_NAME", "velocity_session"),
+		IdleLifetime: envIntOrDefault("SESSION_IDLE_LIFETIME", 120),
+		// Idle timeout in minutes: each request slides it, a session idle
+		// for longer ends. Absolute cap in minutes from sign-in, which
+		// activity never extends: 0 (the default) applies the framework
+		// default of 30 days; negative explicitly disables the cap
+		// (unbounded sessions).
 		AbsoluteLifetime: envIntOrDefault("SESSION_ABSOLUTE_LIFETIME", 0),
 		Path:             envOrDefault("SESSION_PATH", "/"),
 		Domain:           os.Getenv("SESSION_DOMAIN"),
@@ -403,7 +405,6 @@ func ConfigFromEnv() Config {
 	// matching edit here. Env overrides only the fields with explicit
 	// knobs; everything else inherits the package default.
 	csrfCfg := csrf.DefaultConfig()
-	csrfCfg.TokenLifetime = envDurationOrDefault("CSRF_TOKEN_LIFETIME", csrfCfg.TokenLifetime)
 	csrfCfg.HeaderName = envOrDefault("CSRF_HEADER", csrfCfg.HeaderName)
 	csrfCfg.FormField = envOrDefault("CSRF_FORM_FIELD", csrfCfg.FormField)
 	csrfCfg.SessionCookieName = envOrDefault("CSRF_SESSION_COOKIE", config.Session.Name)

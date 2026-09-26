@@ -48,10 +48,10 @@ type holderRaceStore struct {
 func (s *holderRaceStore) Get(_ context.Context, id string) (*auth.StoredSession, error) {
 	return &auth.StoredSession{ID: id, UserID: s.user}, nil
 }
-func (s *holderRaceStore) Put(context.Context, *auth.StoredSession) error { return nil }
-func (s *holderRaceStore) Touch(context.Context, string, time.Time) error { return nil }
-func (s *holderRaceStore) Delete(context.Context, string) error           { return nil }
-func (s *holderRaceStore) DeleteAllForUser(context.Context, string) error { return nil }
+func (s *holderRaceStore) Put(context.Context, *auth.StoredSession) error            { return nil }
+func (s *holderRaceStore) Touch(context.Context, string, time.Time, time.Time) error { return nil }
+func (s *holderRaceStore) Delete(context.Context, string) error                      { return nil }
+func (s *holderRaceStore) DeleteAllForUser(context.Context, string) error            { return nil }
 func (s *holderRaceStore) ListForUser(context.Context, string) ([]*auth.SessionMeta, error) {
 	return nil, nil
 }

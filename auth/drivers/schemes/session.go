@@ -21,6 +21,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
 // rememberRandReader is the entropy source for remember-me tokens. Tests may
@@ -200,12 +201,25 @@ type modifiedSession interface {
 	IsDestroyed() bool
 }
 
-// lastSeenDebounce is the minimum interval between LastSeenAt write-backs
-// for a given session. Reads happen on every authenticated request to honor
-// revocation; writes are debounced so a chatty client does not generate one
-// extra Redis Put per request. 60s gives the "active sessions" UI accurate
-// timestamps without amplifying write volume.
+// lastSeenDebounce is the minimum interval between activity refreshes for a
+// given session: the server record's Touch (LastSeenAt and the slid
+// ExpiresAt) and the cookie's re-issue. Reads happen on every
+// authenticated request to honor revocation; writes are debounced so a
+// chatty client does not generate one extra store write and one cookie
+// rewrite per request. 60s keeps the idle window accurate to a minute and
+// gives the "active sessions" UI accurate timestamps without amplifying
+// write volume.
 const lastSeenDebounce = 60 * time.Second
+
+// serverRecordGrace is how long the server record outlives the idle window
+// of the cookie it backs. The seam writes a cookie only after the record
+// was touched within lastSeenDebounce, so a record expiring one debounce
+// interval after the policy's end is never earlier than the cookie: an
+// idle session is ended by the cookie check (reported as
+// auth.ErrSessionExpired) and never mistaken for a revocation because a
+// store had already reaped its record. The cookie check is server-side, so
+// the grace extends nothing a client can use.
+const serverRecordGrace = lastSeenDebounce
 
 // userStoreHolder boxes an auth.UserStore so atomic.Pointer can hold the
 // two-word interface as a single addressable value (H-10 fix). Without the
@@ -453,7 +467,7 @@ func (g *SessionScheme) getServerStore() auth.ServerSessionStore {
 // the token across the recall regenerate. Without this hook, tokens
 // minted under a pre-login session id would persist as orphans in the
 // CSRF store after Session.Regenerate, and tokens for the now-destroyed
-// session would survive Logout for the full token-store TTL (24h default).
+// session would survive Logout for the token's idle lifetime.
 //
 // Manager.SetCSRFTokenRotator propagates to every registered scheme via
 // the auth.CSRFTokenRotatorReceiver interface; consumers normally do not
@@ -525,8 +539,12 @@ func (g *SessionScheme) Check(r *http.Request) bool {
 //
 //   - nil: request is unauthenticated for ordinary reasons (no cookie, bad
 //     cookie, missing user_id, user no longer exists)
-//   - auth.ErrSessionRevoked: cookie is valid but the matching server-side
-//     session record was deleted or expired (e.g. via Manager.RevokeSession)
+//   - auth.ErrSessionExpired: the signed-in session ended under the
+//     lifetime policy: idle for longer than SessionConfig.IdleLifetime or
+//     older than SessionConfig.AbsoluteLifetime, on the cookie or on the
+//     server record
+//   - auth.ErrSessionRevoked: cookie is live but the matching server-side
+//     session record was deleted (e.g. via Manager.RevokeSession)
 //   - any other error: server-side store lookup failed; fail-closed
 //     (returns false). The underlying error is logged when a logger is
 //     configured.
@@ -575,6 +593,12 @@ func (g *SessionScheme) resolveAuthenticatedUser(r *http.Request) (auth.Authenti
 		// is configured, writes a record keyed on the rotated id.
 		user := g.checkRememberCookie(r)
 		if user == nil {
+			// A signed-in cookie the lifetime policy ended arrives as an
+			// empty replacement session; say so, so the caller can tell
+			// an expired session from one that was never signed in.
+			if ex, ok := session.(interface{ AuthenticationExpired() bool }); ok && ex.AuthenticationExpired() {
+				return nil, false, auth.ErrSessionExpired
+			}
 			return nil, false, nil
 		}
 		if !g.anchorRecalledUser(r, session, user) {
@@ -645,8 +669,8 @@ func (g *SessionScheme) anchorRecalledUser(r *http.Request, session auth.Session
 
 	// Rotate the CSRF token alongside the session id (H-02). Without
 	// this, a token an attacker minted under the pre-revival id remains
-	// a valid orphan in the CSRF store for the token-store TTL (24h
-	// default), and the post-revival session has no token bound to its
+	// a valid orphan in the CSRF store for the token's idle lifetime,
+	// and the post-revival session has no token bound to its
 	// new id. A rotate failure fails the revival closed: continuing
 	// with a stale CSRF store would leave the now-authenticated session
 	// with no valid token and the orphan still reachable.
@@ -838,7 +862,7 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 	// Rotate the CSRF token alongside the session ID (H-02). The CSRF
 	// token store is keyed by session id; without this hook, a token
 	// bound to the pre-regenerate id would remain a valid orphan in the
-	// store until the (default 24h) TTL expired, and the post-login
+	// store until its idle lifetime ran out, and the post-login
 	// session would have no token until something explicitly minted one.
 	// A rotation failure aborts the login: continuing with a stale
 	// token store would leave the post-login session without a valid
@@ -885,7 +909,7 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 
 	if standalone {
 		holder.setSession(session)
-		if err := commitSession(g, w, holder); err != nil {
+		if err := commitSession(g, r, w, holder); err != nil {
 			return err
 		}
 	}
@@ -977,7 +1001,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 
 	// Revoke the CSRF token for this session BEFORE Invalidate clears
 	// the session bag (H-02). Without this, the token would survive in
-	// the CSRF store for the full token-store TTL (24h default) and a
+	// the CSRF store for the token's idle lifetime and a
 	// captured cookie+token pair would remain valid against the now-
 	// logged-out session id. A revoke failure is logged and swallowed:
 	// logout must not refuse to clear the cookie because a downstream
@@ -1041,7 +1065,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	var saveErr error
 	if standalone {
 		holder.setSession(session)
-		saveErr = commitSession(g, w, holder)
+		saveErr = commitSession(g, r, w, holder)
 	}
 
 	// Revoke in the underlying SessionStore when it supports the
@@ -1116,12 +1140,15 @@ func (g *SessionScheme) getSession(r *http.Request) auth.Session {
 	return session
 }
 
-// consultServerStore enforces server-side session revocation. When a store
-// has been installed, every authenticated request looks up the session by
-// id; a missing or expired record returns ErrSessionRevoked. The Get result
-// is cached on the request-scoped sessionHolder so multiple scheme methods
-// in the same request only pay one round-trip. LastSeenAt is refreshed on
-// the underlying store at most once per lastSeenDebounce interval.
+// consultServerStore enforces server-side session revocation and the
+// lifetime policy on the server record. When a store has been installed,
+// every authenticated request looks up the session by id: a missing record
+// returns ErrSessionRevoked, and a record past its ExpiresAt or its
+// absolute cap (CreatedAt plus SessionConfig.AbsoluteLifetime) returns
+// ErrSessionExpired. The Get result is cached on the request-scoped
+// sessionHolder so multiple scheme methods in the same request only pay one
+// round-trip. The record slides (LastSeenAt and ExpiresAt) at most once per
+// lastSeenDebounce interval.
 //
 // Returns nil when no store is configured (cookie-only mode preserved).
 func (g *SessionScheme) consultServerStore(r *http.Request, session auth.Session) error {
@@ -1148,9 +1175,18 @@ func (g *SessionScheme) consultServerStore(r *http.Request, session auth.Session
 	}
 
 	rec, err := store.Get(r.Context(), sessionID)
+	if err == nil && g.pastAbsoluteCap(rec) {
+		// Records written before the cap existed, or by another writer,
+		// may carry an ExpiresAt past the cap: the cap is enforced on
+		// CreatedAt directly. The record is reaped best-effort.
+		_ = store.Delete(r.Context(), sessionID)
+		rec, err = nil, auth.ErrSessionExpired
+	}
 	if err != nil {
 		var resolved error
-		if errors.Is(err, auth.ErrSessionNotFound) || errors.Is(err, auth.ErrSessionExpired) {
+		if errors.Is(err, auth.ErrSessionExpired) {
+			resolved = auth.ErrSessionExpired
+		} else if errors.Is(err, auth.ErrSessionNotFound) {
 			resolved = auth.ErrSessionRevoked
 		} else {
 			g.logWarn("velocity/auth: server session store get failed", "session_id", sessionID, "error", err)
@@ -1177,33 +1213,59 @@ func (g *SessionScheme) consultServerStore(r *http.Request, session auth.Session
 	return nil
 }
 
-// maybeRefreshLastSeen writes a debounced LastSeenAt update back to the
-// store. The debounce keeps the read on every request (mandatory for
-// revocation) without doubling the round-trips.
+// maybeRefreshLastSeen is the server record's debounced activity refresh:
+// it slides the record's LastSeenAt to now and its ExpiresAt to the
+// lifetime policy's end (recordExpiry), so an active session's record
+// keeps up with its idle window until the absolute cap. The debounce keeps
+// the read on every request (mandatory for revocation) without doubling
+// the round-trips.
 //
 // The write goes through ServerSessionStore.Touch, never Put: Put is
 // create-or-replace and would recreate a record deleted between the Get
-// above and this write. A not-found (or expired) result from Touch means
-// the session was revoked mid-request and is returned as
-// auth.ErrSessionRevoked so the caller denies the request. Any other
-// store error is logged and swallowed: the refresh is best-effort and the
-// Get already proved the session live.
+// above and this write. A not-found result from Touch means the session
+// was revoked mid-request and is returned as auth.ErrSessionRevoked; an
+// expired result is returned as auth.ErrSessionExpired. Either way the
+// caller denies the request. Any other store error is logged and
+// swallowed: the refresh is best-effort and the Get already proved the
+// session live.
 func (g *SessionScheme) maybeRefreshLastSeen(ctx context.Context, store auth.ServerSessionStore, rec *auth.StoredSession) error {
 	if rec == nil {
 		return nil
 	}
-	if time.Since(rec.LastSeenAt) < lastSeenDebounce {
+	now := sessionclock.Now()
+	if now.Sub(rec.LastSeenAt) < lastSeenDebounce {
 		return nil
 	}
-	err := store.Touch(ctx, rec.ID, time.Now())
+	err := store.Touch(ctx, rec.ID, now, g.recordExpiry(rec.CreatedAt, now))
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, auth.ErrSessionNotFound) || errors.Is(err, auth.ErrSessionExpired) {
+	if errors.Is(err, auth.ErrSessionExpired) {
+		return auth.ErrSessionExpired
+	}
+	if errors.Is(err, auth.ErrSessionNotFound) {
 		return auth.ErrSessionRevoked
 	}
 	g.logWarn("velocity/auth: server session store touch (lastseen) failed", "session_id", rec.ID, "error", err)
 	return nil
+}
+
+// recordExpiry is the server record's ExpiresAt for a session created at
+// createdAt and last active at lastActive: the lifetime policy's end plus
+// serverRecordGrace, or the zero time (no expiry) when the policy has
+// neither an idle timeout nor an absolute cap.
+func (g *SessionScheme) recordExpiry(createdAt, lastActive time.Time) time.Time {
+	end := g.config.ExpiresAt(createdAt, lastActive)
+	if end.IsZero() {
+		return end
+	}
+	return end.Add(serverRecordGrace)
+}
+
+// pastAbsoluteCap reports whether rec is older than the absolute lifetime.
+func (g *SessionScheme) pastAbsoluteCap(rec *auth.StoredSession) bool {
+	abs := g.config.AbsoluteTimeout()
+	return rec != nil && abs > 0 && !rec.CreatedAt.IsZero() && sessionclock.Now().After(rec.CreatedAt.Add(abs))
 }
 
 // recordServerSession writes the freshly-issued session to the server-side
@@ -1231,17 +1293,13 @@ func (g *SessionScheme) recordServerSession(r *http.Request, session auth.Sessio
 	if !ok {
 		userID = fmt.Sprintf("%v", user.GetAuthIdentifier())
 	}
-	now := time.Now()
-	ttl := time.Duration(g.config.Lifetime) * time.Minute
-	if ttl <= 0 {
-		ttl = 24 * time.Hour
-	}
+	now := sessionclock.Now()
 	rec := &auth.StoredSession{
 		ID:         sessionID,
 		UserID:     userID,
 		CreatedAt:  now,
 		LastSeenAt: now,
-		ExpiresAt:  now.Add(ttl),
+		ExpiresAt:  g.recordExpiry(now, now),
 		IPAddress:  g.clientIP(r),
 		UserAgent:  r.Header.Get("User-Agent"),
 	}
@@ -1345,10 +1403,10 @@ func (g *SessionScheme) checkRememberCookie(r *http.Request) auth.Authenticatabl
 // session lifetime is zero so callers refuse to create the cookie.
 func (g *SessionScheme) rememberCookieLifetime() (time.Duration, error) {
 	const defaultRememberDuration = 30 * 24 * time.Hour
-	if g.config.Lifetime <= 0 {
+	if g.config.IdleLifetime <= 0 {
 		return 0, errors.New("velocity/auth: session lifetime must be positive to enable remember-me")
 	}
-	sessionLifetime := time.Duration(g.config.Lifetime) * time.Minute
+	sessionLifetime := time.Duration(g.config.IdleLifetime) * time.Minute
 	if sessionLifetime < defaultRememberDuration {
 		return sessionLifetime, nil
 	}

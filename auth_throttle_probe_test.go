@@ -86,7 +86,7 @@ func TestSessionScheme_CacheThrottler_ConcurrentProbe(t *testing.T) {
 			}
 			users := &probeUsers{entered: make(chan struct{}, 128), release: make(chan struct{})}
 			scheme, err := schemes.NewSessionScheme(users, auth.SessionConfig{
-				Name: "probe_session", Lifetime: 120, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode,
+				Name: "probe_session", IdleLifetime: 120, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode,
 			}, enc)
 			if err != nil {
 				t.Fatalf("NewSessionScheme: %v", err)

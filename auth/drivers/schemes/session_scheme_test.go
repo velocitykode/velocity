@@ -184,12 +184,12 @@ func (s *mockSessionSchemeStore) GarbageCollect(maxLifetime time.Duration) error
 
 func newTestSessionConfig() auth.SessionConfig {
 	return auth.SessionConfig{
-		Name:     "test_session",
-		Lifetime: 120,
-		Path:     "/",
-		Secure:   false,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Name:         "test_session",
+		IdleLifetime: 120,
+		Path:         "/",
+		Secure:       false,
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
 	}
 }
 

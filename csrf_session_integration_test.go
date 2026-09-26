@@ -59,11 +59,11 @@ func TestCSRF_SessionEncryptionRotation_EndToEnd(t *testing.T) {
 	}
 
 	sessCfg := auth.SessionConfig{
-		Name:     "velocity_session",
-		Lifetime: 60,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Name:         "velocity_session",
+		IdleLifetime: 60,
+		Path:         "/",
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
 	}
 	store, err := session.NewCookieStore(sessCfg, enc)
 	if err != nil {

@@ -441,6 +441,12 @@ func New(opts ...Option) (*App, error) {
 	// SameSite, Domain, Path and Secure match the session cookie on the
 	// bootstrap write, the post-login rewrite and the logout clear.
 	a.config.CSRF.CookiePolicy = a.config.Session.CookiePolicy()
+	// The CSRF token lives on the session's lifetime policy, not a clock
+	// of its own: its idle lifetime is the session's idle timeout (the
+	// absolute cap when the session has none), restarted by every request
+	// that reads it, so an active session never gets a 419 for an aged
+	// token and the token ends with the session.
+	a.config.CSRF.TokenIdleLifetime = csrfTokenIdleLifetime(a.config.Session)
 	csrfInstance, err := csrf.NewE(&a.config.CSRF)
 	if err != nil {
 		return nil, fmt.Errorf("velocity: failed to initialize csrf: %w", err)
@@ -1026,4 +1032,15 @@ func sessionFlashBag(r *http.Request) contract.FlashBag {
 		return nil
 	}
 	return sess
+}
+
+// csrfTokenIdleLifetime is the CSRF token's idle lifetime under the
+// session's lifetime policy: the idle timeout, or the absolute cap when the
+// session has no idle timeout. Zero (a session with neither) leaves the
+// token store's own default.
+func csrfTokenIdleLifetime(session auth.SessionConfig) time.Duration {
+	if idle := session.IdleTimeout(); idle > 0 {
+		return idle
+	}
+	return session.AbsoluteTimeout()
 }

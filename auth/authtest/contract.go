@@ -210,7 +210,7 @@ func RunServerSessionStoreContractTests(t *testing.T, factory ServerSessionStore
 		}
 	})
 
-	t.Run("Touch_PresentSession_UpdatesLastSeen", func(t *testing.T) {
+	t.Run("Touch_PresentSession_UpdatesLastSeenAndSlidesExpiry", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()
 		sess := makeSession("touch-1", "user-1")
@@ -219,7 +219,8 @@ func RunServerSessionStoreContractTests(t *testing.T, factory ServerSessionStore
 			t.Fatalf("Put: %v", err)
 		}
 		stamp := time.Now().Add(10 * time.Minute).Truncate(time.Second)
-		if err := s.Touch(ctx, "touch-1", stamp); err != nil {
+		slid := sess.ExpiresAt.Add(2 * time.Hour).Truncate(time.Second)
+		if err := s.Touch(ctx, "touch-1", stamp, slid); err != nil {
 			t.Fatalf("Touch: %v", err)
 		}
 		got, err := s.Get(ctx, "touch-1")
@@ -229,15 +230,35 @@ func RunServerSessionStoreContractTests(t *testing.T, factory ServerSessionStore
 		if !got.LastSeenAt.Equal(stamp) {
 			t.Fatalf("LastSeenAt = %v, want %v", got.LastSeenAt, stamp)
 		}
-		if got.UserID != "user-1" || got.Data["k"] != "v" {
-			t.Fatalf("Touch altered fields other than LastSeenAt: %+v", got)
+		// The activity refresh slides the record's expiry: an active
+		// session must outlive the ExpiresAt it was created with.
+		if !got.ExpiresAt.Equal(slid) {
+			t.Fatalf("ExpiresAt = %v, want the slid %v", got.ExpiresAt, slid)
+		}
+		if got.UserID != "user-1" || got.Data["k"] != "v" || got.CreatedAt.Sub(sess.CreatedAt).Abs() > time.Second {
+			t.Fatalf("Touch altered fields other than LastSeenAt and ExpiresAt: %+v", got)
+		}
+	})
+
+	t.Run("Touch_ExpiredSession_ReturnsErrSessionExpiredAndNeverRevives", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		sess := makeSession("touch-expired", "user-1")
+		sess.ExpiresAt = time.Now().Add(-time.Minute)
+		_ = s.Put(ctx, sess)
+		err := s.Touch(ctx, "touch-expired", time.Now(), time.Now().Add(time.Hour))
+		if !errors.Is(err, auth.ErrSessionExpired) {
+			t.Fatalf("Touch on an expired record: expected ErrSessionExpired, got %v", err)
+		}
+		if _, err := s.Get(ctx, "touch-expired"); err == nil {
+			t.Fatal("Touch revived an expired session")
 		}
 	})
 
 	t.Run("Touch_UnknownID_ReturnsErrSessionNotFoundAndNeverInserts", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()
-		err := s.Touch(ctx, "never-existed", time.Now())
+		err := s.Touch(ctx, "never-existed", time.Now(), time.Now().Add(time.Hour))
 		if !errors.Is(err, auth.ErrSessionNotFound) {
 			t.Fatalf("expected ErrSessionNotFound, got %v", err)
 		}
@@ -253,7 +274,7 @@ func RunServerSessionStoreContractTests(t *testing.T, factory ServerSessionStore
 		if err := s.Delete(ctx, "touch-del"); err != nil {
 			t.Fatalf("Delete: %v", err)
 		}
-		if err := s.Touch(ctx, "touch-del", time.Now()); !errors.Is(err, auth.ErrSessionNotFound) {
+		if err := s.Touch(ctx, "touch-del", time.Now(), time.Now().Add(time.Hour)); !errors.Is(err, auth.ErrSessionNotFound) {
 			t.Fatalf("expected ErrSessionNotFound after Delete, got %v", err)
 		}
 		if _, err := s.Get(ctx, "touch-del"); !errors.Is(err, auth.ErrSessionNotFound) {
@@ -270,7 +291,7 @@ func RunServerSessionStoreContractTests(t *testing.T, factory ServerSessionStore
 			t.Fatalf("DeleteAllForUser: %v", err)
 		}
 		for _, id := range []string{"touch-bulk-A", "touch-bulk-B"} {
-			if err := s.Touch(ctx, id, time.Now()); !errors.Is(err, auth.ErrSessionNotFound) {
+			if err := s.Touch(ctx, id, time.Now(), time.Now().Add(time.Hour)); !errors.Is(err, auth.ErrSessionNotFound) {
 				t.Fatalf("%s: expected ErrSessionNotFound after bulk revoke, got %v", id, err)
 			}
 		}

@@ -100,7 +100,7 @@ func TestSessionStore_Touch(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 	stamp := time.Now().Add(5 * time.Minute)
-	if err := s.Touch(ctx, "s1", stamp); err != nil {
+	if err := s.Touch(ctx, "s1", stamp, stamp.Add(time.Hour)); err != nil {
 		t.Fatalf("Touch: %v", err)
 	}
 	got, err := s.Get(ctx, "s1")
@@ -120,7 +120,7 @@ func TestSessionStore_Touch(t *testing.T) {
 func TestSessionStore_Touch_MissingNeverInserts(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	if err := s.Touch(ctx, "ghost", time.Now()); !errors.Is(err, auth.ErrSessionNotFound) {
+	if err := s.Touch(ctx, "ghost", time.Now(), time.Now().Add(time.Hour)); !errors.Is(err, auth.ErrSessionNotFound) {
 		t.Fatalf("expected ErrSessionNotFound, got %v", err)
 	}
 	s.mu.RLock()
@@ -137,7 +137,7 @@ func TestSessionStore_Touch_ExpiredEvicts(t *testing.T) {
 	ctx := context.Background()
 	_ = s.Put(ctx, makeSession("old", "u1", time.Hour))
 	s.clock = func() time.Time { return time.Now().Add(2 * time.Hour) }
-	if err := s.Touch(ctx, "old", time.Now()); !errors.Is(err, auth.ErrSessionExpired) {
+	if err := s.Touch(ctx, "old", time.Now(), time.Now().Add(time.Hour)); !errors.Is(err, auth.ErrSessionExpired) {
 		t.Fatalf("expected ErrSessionExpired, got %v", err)
 	}
 	if _, err := s.Get(ctx, "old"); !errors.Is(err, auth.ErrSessionNotFound) {
@@ -160,7 +160,7 @@ func TestSessionStore_Touch_ConcurrentWithGet(t *testing.T) {
 	for i := 0; i < N; i++ {
 		go func() {
 			defer wg.Done()
-			if err := s.Touch(ctx, "s1", time.Now()); err != nil {
+			if err := s.Touch(ctx, "s1", time.Now(), time.Now().Add(time.Hour)); err != nil {
 				t.Errorf("Touch: %v", err)
 			}
 		}()
@@ -184,7 +184,7 @@ func TestSessionStore_Touch_RespectsContext(t *testing.T) {
 	s := newTestStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := s.Touch(ctx, "s1", time.Now()); !errors.Is(err, context.Canceled) {
+	if err := s.Touch(ctx, "s1", time.Now(), time.Now().Add(time.Hour)); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }

@@ -14,11 +14,18 @@ var (
 	ErrTokenNotFound = errors.New("velocity/csrf: token not found")
 )
 
-// SessionStore implements in-memory session-based CSRF token storage
+// SessionStore implements in-memory session-based CSRF token storage.
+//
+// A token lives on an idle clock: it expires after going idleLifetime
+// without being read, and every Get restarts that clock. The framework sets
+// the idle lifetime from the session's lifetime policy, so the token of an
+// active session never ages out on its own; it ends with the session (a
+// session that idles out or reaches its absolute cap gets a new id, and a
+// token is only reachable through its session's id).
 type SessionStore struct {
-	tokens   map[string]*tokenEntry
-	mu       sync.RWMutex
-	lifetime time.Duration
+	tokens       map[string]*tokenEntry
+	mu           sync.RWMutex
+	idleLifetime time.Duration
 
 	// lifecycleMu guards cancel so Start/Shutdown can race safely.
 	lifecycleMu sync.Mutex
@@ -33,12 +40,13 @@ type tokenEntry struct {
 // NewSessionStore creates a new session-based token store.
 // Call Start() to begin the background cleanup goroutine.
 //
-// An optional lifetime duration can be provided; defaults to 24h if zero or omitted.
+// An optional idle lifetime can be provided: how long a token stays valid
+// without being read. Defaults to 24h if zero or omitted.
 //
 // Accepted call signatures:
 //
-//	NewSessionStore()            // 24h lifetime
-//	NewSessionStore(lifetime)    // custom lifetime
+//	NewSessionStore()                // 24h idle lifetime
+//	NewSessionStore(idleLifetime)    // custom idle lifetime
 func NewSessionStore(args ...any) *SessionStore {
 	ttl := 24 * time.Hour
 
@@ -49,8 +57,8 @@ func NewSessionStore(args ...any) *SessionStore {
 	}
 
 	return &SessionStore{
-		tokens:   make(map[string]*tokenEntry),
-		lifetime: ttl,
+		tokens:       make(map[string]*tokenEntry),
+		idleLifetime: ttl,
 	}
 }
 
@@ -89,20 +97,24 @@ func (s *SessionStore) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// Get retrieves a token for the given session ID
+// Get retrieves a token for the given session ID and restarts its idle
+// clock: every read (the XSRF cookie write on a safe request, the
+// validation of an unsafe one) is session activity.
 func (s *SessionStore) Get(id string) (string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	entry, exists := s.tokens[id]
 	if !exists {
 		return "", ErrTokenNotFound
 	}
 
-	// Check if expired
-	if time.Now().After(entry.expiresAt) {
+	now := time.Now()
+	if now.After(entry.expiresAt) {
+		delete(s.tokens, id)
 		return "", ErrTokenNotFound
 	}
+	entry.expiresAt = now.Add(s.idleLifetime)
 
 	return entry.token, nil
 }
@@ -114,7 +126,7 @@ func (s *SessionStore) Set(id string, token string) error {
 
 	s.tokens[id] = &tokenEntry{
 		token:     token,
-		expiresAt: time.Now().Add(s.lifetime),
+		expiresAt: time.Now().Add(s.idleLifetime),
 	}
 	return nil
 }

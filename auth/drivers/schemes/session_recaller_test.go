@@ -87,7 +87,7 @@ func (failingServerStore) Get(_ context.Context, _ string) (*auth.StoredSession,
 	return nil, errStoreOffline
 }
 func (failingServerStore) Put(_ context.Context, _ *auth.StoredSession) error { return errStoreOffline }
-func (failingServerStore) Touch(_ context.Context, _ string, _ time.Time) error {
+func (failingServerStore) Touch(_ context.Context, _ string, _, _ time.Time) error {
 	return errStoreOffline
 }
 func (failingServerStore) Delete(_ context.Context, _ string) error           { return nil }

@@ -26,11 +26,11 @@ func TestSessionScheme_SetUserStore_RaceWithAttempt(t *testing.T) {
 	}
 
 	scheme, err := NewSessionScheme(&mockSessionSchemeUserStore{}, auth.SessionConfig{
-		Name:     "vel_session",
-		Lifetime: 60,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Name:         "vel_session",
+		IdleLifetime: 60,
+		Path:         "/",
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
 		t.Fatalf("NewSessionScheme: %v", err)
@@ -82,11 +82,11 @@ func TestSessionScheme_SetThrottler_RaceWithAttempt(t *testing.T) {
 	}
 
 	scheme, err := NewSessionScheme(&mockSessionSchemeUserStore{}, auth.SessionConfig{
-		Name:     "vel_session",
-		Lifetime: 60,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Name:         "vel_session",
+		IdleLifetime: 60,
+		Path:         "/",
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
 		t.Fatalf("NewSessionScheme: %v", err)

@@ -3,8 +3,10 @@ package schemes
 import (
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/internal/sessionclock"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -132,7 +134,7 @@ func (g *SessionScheme) serveWithSession(c *router.Context, next router.HandlerF
 	doSave := func() {
 		saved.Do(func() {
 			if holder, ok := c.Request.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil {
-				_ = commitSession(g, c.Response, holder)
+				_ = commitSession(g, c.Request, c.Response, holder)
 			}
 		})
 	}
@@ -158,16 +160,17 @@ func (g *SessionScheme) serveWithSession(c *router.Context, next router.HandlerF
 }
 
 // commitSession is the save seam's body and the only framework code that
-// saves a session: it saves holder's session to w when it changed, then
-// runs the cookie writes queued behind the save. A failed save drops the
-// queued writes, which are bound to the session id the save did not
-// persist, and is returned.
-func commitSession(g *SessionScheme, w http.ResponseWriter, holder *sessionHolder) error {
+// saves a session: it renews the session on activity (renewOnActivity),
+// saves holder's session to w when it changed, then runs the cookie writes
+// queued behind the save. A failed save drops the queued writes, which
+// are bound to the session id the save did not persist, and is returned.
+func commitSession(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) error {
 	queued := holder.takeAfterSave()
 	session := holder.getSession()
 	if session == nil {
 		return nil
 	}
+	g.renewOnActivity(r, session)
 	// Skip the save when no mutation occurred. The modifiedSession
 	// capability covers *auth.BaseSession and the cookie store's
 	// wrapper; sessions that do not expose the capability fall through
@@ -185,6 +188,51 @@ func commitSession(g *SessionScheme, w http.ResponseWriter, holder *sessionHolde
 		fn(w)
 	}
 	return nil
+}
+
+// renewableSession is the capability renewOnActivity needs from a session:
+// when its cookie was issued, and a way to have the seam re-issue it.
+// session.CookieSession satisfies it.
+type renewableSession interface {
+	IssuedAt() time.Time
+	MarkModified()
+}
+
+// renewOnActivity slides the session's idle window: a request is
+// activity, so once the cookie is lastSeenDebounce old the session is
+// marked for the seam to re-issue, which restarts its IssuedAt and
+// MaxAge (the absolute cap still bounds both). The debounce keeps a busy
+// client to one cookie rewrite a minute.
+//
+// For a signed-in session with a server store, the server record slides
+// first: every cookie the seam writes (a renewal or any other change) is
+// preceded by a debounced Touch through consultServerStore, so the record
+// always outlives the cookie and an idle timeout is seen on the cookie,
+// as expiry. When that consult fails (the record was revoked or expired,
+// or the store is down) the cookie is not renewed; a save the handler
+// asked for still happens.
+func (g *SessionScheme) renewOnActivity(r *http.Request, session auth.Session) {
+	ms, ok := session.(modifiedSession)
+	if !ok || ms.IsDestroyed() {
+		return
+	}
+	rs, ok := session.(renewableSession)
+	if !ok {
+		return
+	}
+	issuedAt := rs.IssuedAt()
+	due := !issuedAt.IsZero() && sessionclock.Now().Sub(issuedAt) >= lastSeenDebounce
+	if !due && !ms.IsModified() {
+		return
+	}
+	if r != nil && session.Get(auth.UserIDSessionKey) != nil && g.getServerStore() != nil {
+		if err := g.consultServerStore(r, session); err != nil {
+			return
+		}
+	}
+	if due {
+		rs.MarkModified()
+	}
 }
 
 // ensureSession is the eager-bootstrap helper used by SessionMiddleware.

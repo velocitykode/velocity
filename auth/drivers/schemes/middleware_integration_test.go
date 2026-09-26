@@ -30,11 +30,11 @@ func newRealCookieScheme(t *testing.T) *SessionScheme {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
 	scheme, err := NewSessionScheme(&mockSessionSchemeUserStore{}, auth.SessionConfig{
-		Name:     "vel_session",
-		Lifetime: 60,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Name:         "vel_session",
+		IdleLifetime: 60,
+		Path:         "/",
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
 		t.Fatalf("NewSessionScheme: %v", err)

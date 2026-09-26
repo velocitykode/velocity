@@ -225,15 +225,6 @@ func csrfPost(t *testing.T, client *http.Client, u string, header http.Header, f
 // the keys config.go reads, so a new key without a row (or a removed key
 // with a stale row) fails the test.
 func TestCSRFEnvKeys_ChangeObservableBehaviour(t *testing.T) {
-	xsrfMaxAge := func(name string) csrfEnvProbe {
-		return func(t *testing.T, srv *httptest.Server) string {
-			_, c := csrfSessionAndToken(t, srv, name)
-			if c == nil {
-				return "no cookie"
-			}
-			return "max-age=" + strconv.Itoa(c.MaxAge)
-		}
-	}
 	xsrfPresent := func(name string) csrfEnvProbe {
 		return func(t *testing.T, srv *httptest.Server) string {
 			_, c := csrfSessionAndToken(t, srv, name)
@@ -284,7 +275,6 @@ func TestCSRFEnvKeys_ChangeObservableBehaviour(t *testing.T) {
 		value string
 		probe csrfEnvProbe
 	}{
-		{"CSRF_TOKEN_LIFETIME", "1h", xsrfMaxAge("XSRF-TOKEN")},
 		{"CSRF_HEADER", "X-App-Token", postWithHeader("X-App-Token")},
 		{"CSRF_FORM_FIELD", "app_token", postWithField("app_token")},
 		{"CSRF_SESSION_COOKIE", "other_session", xsrfPresent("XSRF-TOKEN")},

@@ -83,11 +83,11 @@ func TestCSRFRotation_RememberCookieRevival_RotatesAndPersists(t *testing.T) {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
 	sessCfg := auth.SessionConfig{
-		Name:     "vel_session",
-		Lifetime: 60,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Name:         "vel_session",
+		IdleLifetime: 60,
+		Path:         "/",
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
 	}
 	store, err := session.NewCookieStore(sessCfg, enc)
 	if err != nil {

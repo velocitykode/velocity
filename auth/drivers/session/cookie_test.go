@@ -58,13 +58,13 @@ func (m *mockEncryptor) GenerateKey() (string, error) {
 // testConfig returns a standard test configuration
 func testConfig() auth.SessionConfig {
 	return auth.SessionConfig{
-		Name:     "test_session",
-		Lifetime: 120,
-		Path:     "/",
-		Domain:   "",
-		Secure:   false,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Name:         "test_session",
+		IdleLifetime: 120,
+		Path:         "/",
+		Domain:       "",
+		Secure:       false,
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
 	}
 }
 
@@ -513,10 +513,10 @@ func TestCookieStore_Save_CookieAttributes(t *testing.T) {
 		{
 			name: "sets HttpOnly attribute",
 			config: auth.SessionConfig{
-				Name:     "test_session",
-				Lifetime: 120,
-				Path:     "/",
-				HttpOnly: true,
+				Name:         "test_session",
+				IdleLifetime: 120,
+				Path:         "/",
+				HttpOnly:     true,
 			},
 			check: func(t *testing.T, cookie *http.Cookie) {
 				if !cookie.HttpOnly {
@@ -527,10 +527,10 @@ func TestCookieStore_Save_CookieAttributes(t *testing.T) {
 		{
 			name: "sets Secure attribute",
 			config: auth.SessionConfig{
-				Name:     "test_session",
-				Lifetime: 120,
-				Path:     "/",
-				Secure:   true,
+				Name:         "test_session",
+				IdleLifetime: 120,
+				Path:         "/",
+				Secure:       true,
 			},
 			check: func(t *testing.T, cookie *http.Cookie) {
 				if !cookie.Secure {
@@ -541,10 +541,10 @@ func TestCookieStore_Save_CookieAttributes(t *testing.T) {
 		{
 			name: "sets SameSite strict mode",
 			config: auth.SessionConfig{
-				Name:     "test_session",
-				Lifetime: 120,
-				Path:     "/",
-				SameSite: http.SameSiteStrictMode,
+				Name:         "test_session",
+				IdleLifetime: 120,
+				Path:         "/",
+				SameSite:     http.SameSiteStrictMode,
 			},
 			check: func(t *testing.T, cookie *http.Cookie) {
 				if cookie.SameSite != http.SameSiteStrictMode {
@@ -555,9 +555,9 @@ func TestCookieStore_Save_CookieAttributes(t *testing.T) {
 		{
 			name: "sets Path attribute",
 			config: auth.SessionConfig{
-				Name:     "test_session",
-				Lifetime: 120,
-				Path:     "/custom/path",
+				Name:         "test_session",
+				IdleLifetime: 120,
+				Path:         "/custom/path",
 			},
 			check: func(t *testing.T, cookie *http.Cookie) {
 				if cookie.Path != "/custom/path" {
@@ -568,10 +568,10 @@ func TestCookieStore_Save_CookieAttributes(t *testing.T) {
 		{
 			name: "sets Domain attribute",
 			config: auth.SessionConfig{
-				Name:     "test_session",
-				Lifetime: 120,
-				Path:     "/",
-				Domain:   "example.com",
+				Name:         "test_session",
+				IdleLifetime: 120,
+				Path:         "/",
+				Domain:       "example.com",
 			},
 			check: func(t *testing.T, cookie *http.Cookie) {
 				if cookie.Domain != "example.com" {
@@ -580,11 +580,11 @@ func TestCookieStore_Save_CookieAttributes(t *testing.T) {
 			},
 		},
 		{
-			name: "sets MaxAge based on Lifetime in minutes",
+			name: "sets MaxAge based on IdleLifetime in minutes",
 			config: auth.SessionConfig{
-				Name:     "test_session",
-				Lifetime: 60, // 60 minutes
-				Path:     "/",
+				Name:         "test_session",
+				IdleLifetime: 60, // 60 minutes
+				Path:         "/",
 			},
 			check: func(t *testing.T, cookie *http.Cookie) {
 				expectedMaxAge := 60 * 60 // 60 minutes * 60 seconds
@@ -1151,20 +1151,20 @@ func TestCookieStore_SessionConfigValues(t *testing.T) {
 		{
 			name: "stores config correctly",
 			config: auth.SessionConfig{
-				Name:     "custom_name",
-				Lifetime: 240,
-				Path:     "/app",
-				Domain:   "test.com",
-				Secure:   true,
-				HttpOnly: true,
-				SameSite: http.SameSiteStrictMode,
+				Name:         "custom_name",
+				IdleLifetime: 240,
+				Path:         "/app",
+				Domain:       "test.com",
+				Secure:       true,
+				HttpOnly:     true,
+				SameSite:     http.SameSiteStrictMode,
 			},
 			check: func(t *testing.T, store *CookieStore) {
 				if store.config.Name != "custom_name" {
 					t.Errorf("expected Name 'custom_name', got '%s'", store.config.Name)
 				}
-				if store.config.Lifetime != 240 {
-					t.Errorf("expected Lifetime 240, got %d", store.config.Lifetime)
+				if store.config.IdleLifetime != 240 {
+					t.Errorf("expected IdleLifetime 240, got %d", store.config.IdleLifetime)
 				}
 				if store.config.Path != "/app" {
 					t.Errorf("expected Path '/app', got '%s'", store.config.Path)
@@ -1215,9 +1215,9 @@ func TestCookieStore_EmptySessionID_Generates_Valid_ID(t *testing.T) {
 
 func TestCookieStore_Get_WithDifferentCookieName(t *testing.T) {
 	config := auth.SessionConfig{
-		Name:     "custom_session_name",
-		Lifetime: 120,
-		Path:     "/",
+		Name:         "custom_session_name",
+		IdleLifetime: 120,
+		Path:         "/",
 	}
 
 	encryptor := &mockEncryptor{}
@@ -1272,9 +1272,9 @@ func TestCookieStore_Save_ExpiresHeader(t *testing.T) {
 		t.Fatal("expected cookie to be set")
 	}
 
-	// Expires should be approximately Lifetime minutes from now
-	expectedExpires := before.Add(time.Duration(testConfig().Lifetime) * time.Minute)
-	maxExpires := after.Add(time.Duration(testConfig().Lifetime) * time.Minute)
+	// Expires should be approximately IdleLifetime minutes from now
+	expectedExpires := before.Add(time.Duration(testConfig().IdleLifetime) * time.Minute)
+	maxExpires := after.Add(time.Duration(testConfig().IdleLifetime) * time.Minute)
 
 	if cookies[0].Expires.Before(expectedExpires.Add(-time.Second)) {
 		t.Error("Expires time is too early")

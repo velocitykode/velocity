@@ -35,12 +35,12 @@ func baseSignedURLBootConfig() Config {
 		Queue: QueueConfig{Driver: "memory"},
 		Mail:  mail.MailConfig{Driver: "log"},
 		Session: auth.SessionConfig{
-			Name:     "velocity_session",
-			Lifetime: 120,
-			Path:     "/",
-			Secure:   true,
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
+			Name:         "velocity_session",
+			IdleLifetime: 120,
+			Path:         "/",
+			Secure:       true,
+			HttpOnly:     true,
+			SameSite:     http.SameSiteLaxMode,
 		},
 		CSRF: *csrfCfg,
 	}

@@ -33,11 +33,11 @@ func TestInertiaErrorPage_FlashDrainedByErrorPageStaysDrained(t *testing.T) {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
 	sessionScheme, err := schemes.NewSessionScheme(&countingUserStore{}, auth.SessionConfig{
-		Name:     "vel_session",
-		Lifetime: 60,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Name:         "vel_session",
+		IdleLifetime: 60,
+		Path:         "/",
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
 		t.Fatalf("NewSessionScheme: %v", err)
@@ -173,11 +173,11 @@ func TestInertiaErrorPage_FlashDrainStaysDrainedWhereverBondIsRegistered(t *test
 				t.Fatalf("NewEncryptor: %v", err)
 			}
 			sessionScheme, err := schemes.NewSessionScheme(&countingUserStore{}, auth.SessionConfig{
-				Name:     "vel_session",
-				Lifetime: 60,
-				Path:     "/",
-				HttpOnly: true,
-				SameSite: http.SameSiteLaxMode,
+				Name:         "vel_session",
+				IdleLifetime: 60,
+				Path:         "/",
+				HttpOnly:     true,
+				SameSite:     http.SameSiteLaxMode,
 			}, enc)
 			if err != nil {
 				t.Fatalf("NewSessionScheme: %v", err)

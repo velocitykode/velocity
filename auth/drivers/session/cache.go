@@ -12,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
 // Key namespaces inside the shared cache. The meta key holds the JSON
@@ -95,7 +96,7 @@ func NewCacheStore(backend contract.Cache) (*CacheStore, error) {
 	if !ok {
 		return nil, ErrCacheStoreUnsupported
 	}
-	return &CacheStore{backend: full, clock: time.Now, rand: rand.Reader}, nil
+	return &CacheStore{backend: full, clock: sessionclock.Now, rand: rand.Reader}, nil
 }
 
 func cacheMetaKey(id string) string     { return cacheMetaPrefix + id }
@@ -320,11 +321,14 @@ func (s *CacheStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 	return nil
 }
 
-// Touch implements auth.ServerSessionStore. The refreshed record is written
-// with contract.CacheReplacer, so it lands only if the key still exists:
-// a Delete or DeleteAllForUser between the read and this write wins, and
-// the caller sees ErrSessionNotFound.
-func (s *CacheStore) Touch(ctx context.Context, id string, lastSeen time.Time) error {
+// Touch implements auth.ServerSessionStore. It slides the record: LastSeenAt
+// and ExpiresAt are set and the meta key's TTL follows the new ExpiresAt.
+// The refreshed record is written with contract.CacheReplacer, so it lands
+// only if the key still exists: a Delete or DeleteAllForUser between the
+// read and this write wins, and the caller sees ErrSessionNotFound. After
+// the write the user index's TTL is extended (never shortened) so the
+// index keeps outliving the records it lists.
+func (s *CacheStore) Touch(ctx context.Context, id string, lastSeen, expiresAt time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -336,16 +340,27 @@ func (s *CacheStore) Touch(ctx context.Context, id string, lastSeen time.Time) e
 		return err
 	}
 	rec.LastSeenAt = lastSeen
+	rec.ExpiresAt = expiresAt
 	encoded, err := encodeRecord(rec)
 	if err != nil {
 		return err
 	}
-	replaced, err := s.backend.ReplaceCtx(ctx, cacheMetaKey(id), encoded, recordTTL(rec.ExpiresAt, s.clock()))
+	ttl := recordTTL(rec.ExpiresAt, s.clock())
+	replaced, err := s.backend.ReplaceCtx(ctx, cacheMetaKey(id), encoded, ttl)
 	if err != nil {
 		return fmt.Errorf("velocity/auth/session: touch session: %w", err)
 	}
 	if !replaced {
 		return auth.ErrSessionNotFound
+	}
+	indexTTL := ttl
+	if indexTTL > 0 {
+		indexTTL += userIndexSlack
+	}
+	if err := s.backend.SetAddCtx(ctx, cacheUserKey(rec.UserID), indexTTL, rec.ID); err != nil {
+		// The record itself is refreshed; a shorter-lived index only drops
+		// the listing early, which ListForUser tolerates.
+		return fmt.Errorf("velocity/auth/session: extend index: %w", err)
 	}
 	return nil
 }

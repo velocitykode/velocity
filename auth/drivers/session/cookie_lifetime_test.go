@@ -8,17 +8,17 @@ import (
 )
 
 // TestCookieStore_Save_LifetimeZero_OmitsExpires covers audit M-07: when
-// Lifetime <= 0 the operator wants a session-lifetime cookie. The previous
+// IdleLifetime <= 0 the operator wants a session-lifetime cookie. The previous
 // code wrote Expires=time.Now() which browsers interpret as already
 // expired and silently dropped the cookie. The cookie must now carry no
 // Expires header and MaxAge=0 (RFC 6265 "session" cookie).
 func TestCookieStore_Save_LifetimeZero_OmitsExpires(t *testing.T) {
 	cfg := auth.SessionConfig{
-		Name:     "vel_session",
-		Lifetime: 0,
-		Path:     "/",
-		Secure:   true,
-		HttpOnly: true,
+		Name:         "vel_session",
+		IdleLifetime: 0,
+		Path:         "/",
+		Secure:       true,
+		HttpOnly:     true,
 	}
 	store, err := NewCookieStore(cfg, &mockEncryptor{})
 	if err != nil {
@@ -39,10 +39,10 @@ func TestCookieStore_Save_LifetimeZero_OmitsExpires(t *testing.T) {
 	}
 	c := cookies[0]
 	if !c.Expires.IsZero() {
-		t.Errorf("Expires must be zero when Lifetime <= 0, got %v", c.Expires)
+		t.Errorf("Expires must be zero when IdleLifetime <= 0, got %v", c.Expires)
 	}
 	if c.MaxAge != 0 {
-		t.Errorf("MaxAge must be 0 when Lifetime <= 0 (RFC 6265 session cookie), got %d", c.MaxAge)
+		t.Errorf("MaxAge must be 0 when IdleLifetime <= 0 (RFC 6265 session cookie), got %d", c.MaxAge)
 	}
 }
 
@@ -50,11 +50,11 @@ func TestCookieStore_Save_LifetimeZero_OmitsExpires(t *testing.T) {
 // regular path is unaffected by the M-07 fix.
 func TestCookieStore_Save_LifetimePositive_SetsExpiresAndMaxAge(t *testing.T) {
 	cfg := auth.SessionConfig{
-		Name:     "vel_session",
-		Lifetime: 30,
-		Path:     "/",
-		Secure:   true,
-		HttpOnly: true,
+		Name:         "vel_session",
+		IdleLifetime: 30,
+		Path:         "/",
+		Secure:       true,
+		HttpOnly:     true,
 	}
 	store, err := NewCookieStore(cfg, &mockEncryptor{})
 	if err != nil {
@@ -75,7 +75,7 @@ func TestCookieStore_Save_LifetimePositive_SetsExpiresAndMaxAge(t *testing.T) {
 	}
 	c := cookies[0]
 	if c.Expires.IsZero() {
-		t.Error("Expires must be set when Lifetime > 0")
+		t.Error("Expires must be set when IdleLifetime > 0")
 	}
 	if c.MaxAge != 30*60 {
 		t.Errorf("MaxAge = %d, want %d", c.MaxAge, 30*60)

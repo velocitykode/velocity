@@ -13,16 +13,20 @@ var (
 	// when no session record exists for the supplied id.
 	ErrSessionNotFound = errors.New("velocity/auth: session not found")
 
-	// ErrSessionExpired is returned by ServerSessionStore.Get when a
-	// stored session record has passed its ExpiresAt deadline.
+	// ErrSessionExpired is returned by ServerSessionStore.Get and Touch
+	// when a stored session record has passed its ExpiresAt deadline, and
+	// by SessionScheme.CheckWithError when the request's signed-in session
+	// ended under the lifetime policy: idle for longer than
+	// SessionConfig.IdleLifetime, or older than
+	// SessionConfig.AbsoluteLifetime, on the cookie or the server record.
 	ErrSessionExpired = errors.New("velocity/auth: session expired")
 
 	// ErrSessionRevoked is returned by SessionScheme.CheckWithError when
-	// the request carries a valid cookie but the corresponding server-side
+	// the request carries a live cookie but the corresponding server-side
 	// session record has been deleted (e.g. via Manager.RevokeSession or
 	// RevokeAllSessions). Distinct from ErrSessionExpired: expired means
-	// the cookie TTL passed; revoked means an administrative action removed
-	// the session while the cookie was still in flight.
+	// the lifetime policy ended the session; revoked means an
+	// administrative action removed it while the cookie was still live.
 	ErrSessionRevoked = errors.New("velocity/auth: session revoked")
 
 	// ErrNoServerSessionStore is returned by Manager.RevokeSession,
@@ -49,8 +53,10 @@ type StoredSession struct {
 	// LastSeenAt records the most recent access (drivers should refresh
 	// this on Put).
 	LastSeenAt time.Time
-	// ExpiresAt is the absolute expiry; sessions past this are treated
-	// as ErrSessionExpired by Get and reaped by background sweeps.
+	// ExpiresAt is when the record ends: the session scheme sets it from
+	// the lifetime policy (SessionConfig.ExpiresAt) on Put and slides it on
+	// every Touch. Records past it are treated as ErrSessionExpired by Get
+	// and Touch and reaped by background sweeps. Zero means no expiry.
 	ExpiresAt time.Time
 	// IPAddress is the remote address recorded at session creation, used
 	// for the "your devices" listing UX. Optional.
@@ -104,12 +110,18 @@ type ServerSessionStore interface {
 	// Delete would resurrect a revoked session. Use Touch for that.
 	Put(ctx context.Context, session *StoredSession) error
 
-	// Touch sets LastSeenAt on an existing record. It is update-if-present:
-	// it returns ErrSessionNotFound when no record exists for id and must
-	// never insert one, so a refresh racing a revocation cannot recreate
-	// the deleted row. Implementations may return ErrSessionExpired (and
-	// remove the record) when the record has passed ExpiresAt.
-	Touch(ctx context.Context, id string, lastSeen time.Time) error
+	// Touch is the activity refresh: it sets LastSeenAt to lastSeen and
+	// ExpiresAt to expiresAt on an existing record, so an active session's
+	// record slides with its idle window (the scheme computes expiresAt
+	// from the lifetime policy, capped at the absolute lifetime). A backend
+	// with its own record TTL must extend it to expiresAt. Touch is
+	// update-if-present: it returns ErrSessionNotFound when no record
+	// exists for id and must never insert one, so a refresh racing a
+	// revocation cannot recreate the deleted row. It returns
+	// ErrSessionExpired (and removes the record) when the record has
+	// already passed its current ExpiresAt; an expired session is never
+	// revived by a Touch.
+	Touch(ctx context.Context, id string, lastSeen, expiresAt time.Time) error
 
 	// Delete removes a single session by id. Returns nil when the
 	// record does not exist (idempotent).

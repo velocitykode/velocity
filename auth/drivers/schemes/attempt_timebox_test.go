@@ -85,11 +85,11 @@ func newTimingScheme(t *testing.T, password string) (*SessionScheme, *hasherCall
 	user := &timingTestUser{id: "real@example.com", password: bcryptHash}
 	userStore := &timingTestStore{user: user}
 	scheme, err := NewSessionScheme(userStore, auth.SessionConfig{
-		Name:     "vel_session",
-		Lifetime: 60,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Name:         "vel_session",
+		IdleLifetime: 60,
+		Path:         "/",
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
 		t.Fatalf("NewSessionScheme: %v", err)

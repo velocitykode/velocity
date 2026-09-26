@@ -47,7 +47,7 @@ func (f *fakeServerSessionStore) Put(_ context.Context, s *StoredSession) error 
 	return nil
 }
 
-func (f *fakeServerSessionStore) Touch(_ context.Context, id string, lastSeen time.Time) error {
+func (f *fakeServerSessionStore) Touch(_ context.Context, id string, lastSeen, expiresAt time.Time) error {
 	f.record("touch:" + id)
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -56,6 +56,7 @@ func (f *fakeServerSessionStore) Touch(_ context.Context, id string, lastSeen ti
 		return ErrSessionNotFound
 	}
 	s.LastSeenAt = lastSeen
+	s.ExpiresAt = expiresAt
 	return nil
 }
 

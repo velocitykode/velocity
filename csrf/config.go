@@ -48,8 +48,16 @@ var ErrInsecureCSRFConfig = errors.New("velocity/csrf: insecure config")
 
 // Config holds CSRF protection configuration
 type Config struct {
-	// Token settings
-	TokenLifetime     time.Duration
+	// TokenIdleLifetime is how long a token stays valid without use: every
+	// request that reads it (the XSRF cookie write on a safe request, the
+	// validation of an unsafe one) restarts it, so an active session's
+	// token never ages out on its own clock. velocity.New sets it from the
+	// session lifetime policy (the idle timeout, or the absolute cap when
+	// the session has no idle timeout), so the token lives exactly as long
+	// as the session it is bound to. Applies to the default store; a
+	// custom Store keeps its own expiry.
+	TokenIdleLifetime time.Duration
+
 	HeaderName        string
 	FormField         string
 	SessionCookieName string // Name of the session cookie to read session ID from
@@ -161,7 +169,7 @@ type Config struct {
 // DefaultConfig returns the default CSRF configuration
 func DefaultConfig() *Config {
 	return &Config{
-		TokenLifetime:     24 * time.Hour,
+		TokenIdleLifetime: 24 * time.Hour,
 		HeaderName:        "X-CSRF-Token",
 		FormField:         "_token",
 		SessionCookieName: "session_id", // Default session cookie name

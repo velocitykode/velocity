@@ -8,6 +8,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
 // defaultSweepInterval is how often the background goroutine reaps
@@ -55,7 +56,7 @@ func NewMemoryStore(opts ...MemoryOption) *MemoryStore {
 		byUser:        make(map[string]map[string]struct{}),
 		sweepInterval: defaultSweepInterval,
 		stop:          make(chan struct{}),
-		clock:         time.Now,
+		clock:         sessionclock.Now,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -194,12 +195,12 @@ func (s *MemoryStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 	return nil
 }
 
-// Touch sets LastSeenAt on an existing record under the store mutex. It
-// never inserts: a missing id returns auth.ErrSessionNotFound, and a record
+// Touch slides an existing record under the store mutex: LastSeenAt and
+// ExpiresAt take the given values. It never inserts: a missing id returns auth.ErrSessionNotFound, and a record
 // past ExpiresAt is removed and reported as auth.ErrSessionExpired, so an
 // activity refresh that loses the race against Delete or DeleteAllForUser
 // cannot resurrect the revoked session.
-func (s *MemoryStore) Touch(ctx context.Context, id string, lastSeen time.Time) error {
+func (s *MemoryStore) Touch(ctx context.Context, id string, lastSeen, expiresAt time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -214,6 +215,7 @@ func (s *MemoryStore) Touch(ctx context.Context, id string, lastSeen time.Time) 
 		return auth.ErrSessionExpired
 	}
 	sess.LastSeenAt = lastSeen
+	sess.ExpiresAt = expiresAt
 	return nil
 }
 

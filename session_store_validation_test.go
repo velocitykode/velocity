@@ -18,12 +18,12 @@ import (
 // production-store gate is the only check the test can trip.
 func newTestSessionStoreConfig() auth.SessionConfig {
 	return auth.SessionConfig{
-		Name:     "vel_session",
-		Lifetime: 60,
-		Path:     "/",
-		Secure:   true,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Name:         "vel_session",
+		IdleLifetime: 60,
+		Path:         "/",
+		Secure:       true,
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
 	}
 }
 
@@ -142,10 +142,10 @@ type stubServerStore struct{}
 func (stubServerStore) Get(_ context.Context, _ string) (*auth.StoredSession, error) {
 	return nil, auth.ErrSessionNotFound
 }
-func (stubServerStore) Put(_ context.Context, _ *auth.StoredSession) error   { return nil }
-func (stubServerStore) Touch(_ context.Context, _ string, _ time.Time) error { return nil }
-func (stubServerStore) Delete(_ context.Context, _ string) error             { return nil }
-func (stubServerStore) DeleteAllForUser(_ context.Context, _ string) error   { return nil }
+func (stubServerStore) Put(_ context.Context, _ *auth.StoredSession) error      { return nil }
+func (stubServerStore) Touch(_ context.Context, _ string, _, _ time.Time) error { return nil }
+func (stubServerStore) Delete(_ context.Context, _ string) error                { return nil }
+func (stubServerStore) DeleteAllForUser(_ context.Context, _ string) error      { return nil }
 func (stubServerStore) ListForUser(_ context.Context, _ string) ([]*auth.SessionMeta, error) {
 	return nil, nil
 }

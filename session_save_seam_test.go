@@ -57,15 +57,15 @@ func (s *saveSeamUserStore) UpdateRememberTokenCtx(context.Context, auth.Authent
 func saveSeamServer(t *testing.T, bootstrap bool) (*httptest.Server, *http.Client) {
 	t.Helper()
 	for k, v := range map[string]string{
-		"APP_ENV":          "local",
-		"APP_KEY":          strings.Repeat("k", 32),
-		"AUTH_SCHEME":      "web",
-		"LOG_DRIVER":       "null",
-		"CACHE_DRIVER":     "memory",
-		"QUEUE_DRIVER":     "memory",
-		"MAIL_DRIVER":      "log",
-		"SESSION_SECURE":   "false",
-		"SESSION_LIFETIME": "120",
+		"APP_ENV":               "local",
+		"APP_KEY":               strings.Repeat("k", 32),
+		"AUTH_SCHEME":           "web",
+		"LOG_DRIVER":            "null",
+		"CACHE_DRIVER":          "memory",
+		"QUEUE_DRIVER":          "memory",
+		"MAIL_DRIVER":           "log",
+		"SESSION_SECURE":        "false",
+		"SESSION_IDLE_LIFETIME": "120",
 	} {
 		t.Setenv(k, v)
 	}

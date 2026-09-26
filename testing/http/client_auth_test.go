@@ -73,11 +73,11 @@ func newActingAsScheme(t *testing.T, user *memUser) *schemes.SessionScheme {
 	}
 	userStore := &memStore{users: map[interface{}]*memUser{user.id: user}}
 	scheme, err := schemes.NewSessionScheme(userStore, auth.SessionConfig{
-		Name:     "vel_session",
-		Lifetime: 60,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Name:         "vel_session",
+		IdleLifetime: 60,
+		Path:         "/",
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
 	}, enc)
 	if err != nil {
 		t.Fatalf("NewSessionScheme: %v", err)
