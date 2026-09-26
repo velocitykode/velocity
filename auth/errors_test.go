@@ -469,7 +469,7 @@ func TestManager_RequestUserID(t *testing.T) {
 	sessionWith := func(id interface{}) Session {
 		s := NewSession("sid")
 		if id != nil {
-			s.Put(sessionUserIDKey, id)
+			s.Put(UserIDSessionKey, id)
 		}
 		return s
 	}

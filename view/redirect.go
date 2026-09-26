@@ -51,12 +51,11 @@ func Back(ctx *router.Context) {
 // Render, which returns ErrNoEngine so the handler's error reaches the
 // error pipeline instead of an empty response.
 type ReqEngine struct {
-	ctx     *router.Context
-	e       *Engine
-	w       http.ResponseWriter
-	r       *http.Request
-	sess    auth.Session
-	flashed bool
+	ctx  *router.Context
+	e    *Engine
+	w    http.ResponseWriter
+	r    *http.Request
+	sess auth.Session
 }
 
 // For returns a request-bound view handle for chainable handler calls,
@@ -69,9 +68,10 @@ func For(ctx *router.Context) *ReqEngine {
 	return &ReqEngine{ctx: ctx, e: e, w: ctx.Response, r: ctx.Request}
 }
 
-// Flash sets a one-shot flash entry on the request's session bag. The bag
-// is persisted into the encrypted session cookie when a terminal method
-// (Redirect / Location / Back / Render) is invoked on the same chain.
+// Flash sets a one-shot flash entry on the request's session bag. The
+// session middleware persists the bag into the encrypted session cookie
+// before the response a terminal method (Redirect / Location / Back /
+// Render) writes, so the next request, or this Render, drains it.
 //
 // Returns the receiver for chaining. Silently no-ops when no auth manager
 // is on the context or the default scheme does not back sessions (e.g.
@@ -92,7 +92,6 @@ func (re *ReqEngine) Flash(key string, value any) *ReqEngine {
 		re.sess = sess
 	}
 	re.sess.Flash(key, value)
-	re.flashed = true
 	return re
 }
 
@@ -108,68 +107,51 @@ func (re *ReqEngine) FlashMany(values map[string]any) *ReqEngine {
 	return re
 }
 
-// Redirect performs an SPA-compatible redirect, persisting any pending
-// flash bag onto the session cookie first so the redirect target's render
+// Redirect performs an SPA-compatible redirect. The session middleware
+// saves any pending flash bag with it, so the redirect target's render
 // can drain it onto Page.Flash.
 func (re *ReqEngine) Redirect(url string) {
 	if re == nil {
 		return
 	}
-	re.commitSession()
 	re.e.Redirect(re.w, re.r, url)
 }
 
 // Location performs a same-origin full-page reload (allowlist-validated,
-// safe for user-controlled input), persisting any pending flash bag first.
+// safe for user-controlled input). Any pending flash bag is saved with it.
 func (re *ReqEngine) Location(url string) {
 	if re == nil {
 		return
 	}
-	re.commitSession()
 	re.e.Location(re.w, re.r, url)
 }
 
 // LocationExternal performs a full-page reload to an arbitrary external host
-// (the explicit opt-out of Location's allowlist), persisting any pending
-// flash bag first. SECURITY: only pass trusted or statically-known URLs.
+// (the explicit opt-out of Location's allowlist). Any pending flash bag is
+// saved with it. SECURITY: only pass trusted or statically-known URLs.
 func (re *ReqEngine) LocationExternal(url string) {
 	if re == nil {
 		return
 	}
-	re.commitSession()
 	re.e.LocationExternal(re.w, re.r, url)
 }
 
-// Back redirects to the Referer (or "/"), persisting any pending flash
-// bag first.
+// Back redirects to the Referer (or "/"). Any pending flash bag is saved
+// with it.
 func (re *ReqEngine) Back() {
 	if re == nil {
 		return
 	}
-	re.commitSession()
 	re.e.Back(re.w, re.r)
 }
 
-// Render renders an Inertia component, persisting any pending flash bag
-// first so bond.Render's flash reader drains the same bag onto
-// Page.Flash on this response. On a nil receiver (no view engine wired)
-// it returns ErrNoEngine and writes nothing.
+// Render renders an Inertia component. bond.Render's flash reader drains
+// any pending flash bag onto Page.Flash on this response, and the session
+// middleware saves the drained session with it. On a nil receiver (no
+// view engine wired) it returns ErrNoEngine and writes nothing.
 func (re *ReqEngine) Render(component string, props ...Props) error {
 	if re == nil {
 		return ErrNoEngine
 	}
-	re.commitSession()
 	return re.e.Render(re.w, re.r, component, props...)
-}
-
-// commitSession writes the session cookie when Flash was called on this
-// chain. Save errors are swallowed: a failed cookie write is a transport
-// problem the handler cannot reasonably recover from, and bond's
-// downstream render path will surface a clear error if the response is
-// already in a bad state.
-func (re *ReqEngine) commitSession() {
-	if re == nil || !re.flashed || re.sess == nil {
-		return
-	}
-	_ = re.sess.Save(re.w)
 }

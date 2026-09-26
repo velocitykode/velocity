@@ -267,7 +267,7 @@ func TestFor_NoEngine_ReturnsNilAndChainIsNoop(t *testing.T) {
 	}
 }
 
-func TestFor_FlashThenRedirect_FlashesAndSaves(t *testing.T) {
+func TestFor_FlashThenRedirect_FlashesWithoutSaving(t *testing.T) {
 	engine := newTestEngine(t)
 	sess := &fakeSession{}
 	ctx, rec := newRedirectCtx(t, "POST", "/submit", engine, newAuthManagerWithSession(sess))
@@ -284,12 +284,12 @@ func TestFor_FlashThenRedirect_FlashesAndSaves(t *testing.T) {
 	if len(calls) != 1 || calls[0].key != "error" || calls[0].value != "x" {
 		t.Errorf("Flash calls = %#v, want one call (error, x)", calls)
 	}
-	if got := sess.saves(); got != 1 {
-		t.Errorf("Save call count = %d, want 1", got)
+	if got := sess.saves(); got != 0 {
+		t.Errorf("Save call count = %d, want 0 (the session middleware saves)", got)
 	}
 }
 
-func TestFor_TwoFlashThenRedirect_AppliesBothAndSavesOnce(t *testing.T) {
+func TestFor_TwoFlashThenRedirect_AppliesBothWithoutSaving(t *testing.T) {
 	engine := newTestEngine(t)
 	sess := &fakeSession{}
 	ctx, _ := newRedirectCtx(t, "POST", "/submit", engine, newAuthManagerWithSession(sess))
@@ -306,8 +306,8 @@ func TestFor_TwoFlashThenRedirect_AppliesBothAndSavesOnce(t *testing.T) {
 	if calls[1].key != "info" || calls[1].value != "y" {
 		t.Errorf("second flash = %#v, want (info,y)", calls[1])
 	}
-	if got := sess.saves(); got != 1 {
-		t.Errorf("Save call count = %d, want 1", got)
+	if got := sess.saves(); got != 0 {
+		t.Errorf("Save call count = %d, want 0 (the session middleware saves)", got)
 	}
 }
 
@@ -322,14 +322,14 @@ func TestFor_RedirectWithoutFlash_DoesNotLoadOrSaveSession(t *testing.T) {
 		t.Errorf("status = %d, want 303", rec.Code)
 	}
 	if got := sess.saves(); got != 0 {
-		t.Errorf("Save call count = %d, want 0 (flashed=false short-circuit)", got)
+		t.Errorf("Save call count = %d, want 0", got)
 	}
 	if got := sess.calls(); len(got) != 0 {
 		t.Errorf("Flash calls = %#v, want none", got)
 	}
 }
 
-func TestFor_FlashMany_AppliesAllAndSavesOnce(t *testing.T) {
+func TestFor_FlashMany_AppliesAllWithoutSaving(t *testing.T) {
 	engine := newTestEngine(t)
 	sess := &fakeSession{}
 	ctx, _ := newRedirectCtx(t, "POST", "/submit", engine, newAuthManagerWithSession(sess))
@@ -351,12 +351,12 @@ func TestFor_FlashMany_AppliesAllAndSavesOnce(t *testing.T) {
 	if got["success"] != "a" || got["info"] != "b" {
 		t.Errorf("Flash calls = %#v, want success=a + info=b", got)
 	}
-	if n := sess.saves(); n != 1 {
-		t.Errorf("Save call count = %d, want 1", n)
+	if n := sess.saves(); n != 0 {
+		t.Errorf("Save call count = %d, want 0 (the session middleware saves)", n)
 	}
 }
 
-func TestFor_RenderWithPriorFlash_SavesAndRenders(t *testing.T) {
+func TestFor_RenderWithPriorFlash_RendersWithoutSaving(t *testing.T) {
 	engine := newTestEngine(t)
 	sess := &fakeSession{}
 	ctx, rec := newRedirectCtx(t, "GET", "/page", engine, newAuthManagerWithSession(sess))
@@ -367,8 +367,8 @@ func TestFor_RenderWithPriorFlash_SavesAndRenders(t *testing.T) {
 		t.Fatalf("Render returned error: %v", err)
 	}
 
-	if n := sess.saves(); n != 1 {
-		t.Errorf("Save call count = %d, want 1", n)
+	if n := sess.saves(); n != 0 {
+		t.Errorf("Save call count = %d, want 0 (the session middleware saves)", n)
 	}
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200 from Inertia JSON render", rec.Code)

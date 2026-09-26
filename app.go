@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/prism"
@@ -105,6 +106,13 @@ type App struct {
 	// routes registered before the failure would double-register), so
 	// every subsequent bootstrap() call returns this same error.
 	bootstrapErr error
+
+	// sessionScheme is the session scheme the save seam installed on the
+	// router by New serves: the default auth scheme when it is a
+	// *schemes.SessionScheme, nil otherwise. New sets it and bootstrap
+	// refreshes it after chain modules started, so a module that changes
+	// the default scheme is honoured.
+	sessionScheme atomic.Pointer[schemes.SessionScheme]
 
 	// outboxRelay is an optional ORM transactional-outbox relay registered
 	// via UseOutboxRelay. Shutdown stops it before tearing down the queue
@@ -791,8 +799,10 @@ func New(opts ...Option) (*App, error) {
 	// before the unauthenticated request was redirected to the login
 	// target.
 	// Reading is one-shot so a later navigation cannot replay a stale
-	// destination. Uses schemes.SessionFromRequest so router need not import
-	// auth (same bridge the CSRF resolver above uses).
+	// destination: the key is removed and the session middleware saves
+	// the change with the redirect. Uses schemes.SessionFromRequest so
+	// router need not import auth (same bridge the CSRF resolver above
+	// uses).
 	a.Router.SetIntendedResolver(func(c *router.Context) string {
 		sess := schemes.SessionFromRequest(c.Request)
 		if sess == nil {
@@ -803,7 +813,6 @@ func New(opts ...Option) (*App, error) {
 			return ""
 		}
 		sess.Remove(router.IntendedSessionKey)
-		_ = sess.Save(c.Response)
 		return raw
 	})
 
@@ -869,6 +878,11 @@ func New(opts ...Option) (*App, error) {
 		})
 		return nil, fmt.Errorf("velocity: boot hook failed: %w", err)
 	}
+
+	// Install the session save seam last, once modules and boot hooks
+	// settled the service set, so an app that never calls Bootstrap or
+	// Serve (embed mode) saves sessions exactly like a bootstrapped one.
+	installSessionMiddleware(a)
 
 	// Success path: disarm the cleanup stack. From here on, resources are
 	// owned by the *App and released via Shutdown().

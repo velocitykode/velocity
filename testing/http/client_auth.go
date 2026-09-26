@@ -6,7 +6,19 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
+	"github.com/velocitykode/velocity/router"
 )
+
+// runInSession runs fn as a request handler inside scheme's
+// SessionMiddleware, the one place a session is saved, and returns the
+// recorder holding the Set-Cookie headers that save and the cookies
+// queued behind it wrote.
+func runInSession(scheme *schemes.SessionScheme, fn router.HandlerFunc) (*httptest.ResponseRecorder, error) {
+	w := httptest.NewRecorder()
+	c := router.NewContext(w, httptest.NewRequest(http.MethodGet, "/", nil))
+	err := scheme.SessionMiddleware()(fn)(c)
+	return w, err
+}
 
 // ActingAs authenticates subsequent requests from the client as user under the
 // given session scheme. It performs a real login against the scheme's session
@@ -18,12 +30,11 @@ import (
 // disabled - ActingAs does not exempt requests from CSRF protection.
 func (c *TestClient) ActingAs(scheme *schemes.SessionScheme, user auth.Authenticatable) *TestClient {
 	c.t.Helper()
-	// A session cache must be attached to the request or the scheme's
-	// per-request session caching no-ops and Login cannot persist.
-	w := httptest.NewRecorder()
-	req := schemes.WithSessionContext(httptest.NewRequest(http.MethodGet, "/", nil))
-
-	if err := scheme.Login(w, req, user); err != nil {
+	// Login only changes the session; the session middleware saves it.
+	w, err := runInSession(scheme, func(rc *router.Context) error {
+		return scheme.Login(rc.Response, rc.Request, user)
+	})
+	if err != nil {
 		c.t.Errorf("ActingAs: scheme.Login failed: %v", err)
 		return c
 	}
@@ -40,10 +51,10 @@ func (c *TestClient) ActingAs(scheme *schemes.SessionScheme, user auth.Authentic
 // verbs still need a valid token or CSRF disabled.
 func (c *TestClient) ActingAsID(scheme *schemes.SessionScheme, id interface{}) *TestClient {
 	c.t.Helper()
-	w := httptest.NewRecorder()
-	req := schemes.WithSessionContext(httptest.NewRequest(http.MethodGet, "/", nil))
-
-	if err := scheme.LoginByID(w, req, id); err != nil {
+	w, err := runInSession(scheme, func(rc *router.Context) error {
+		return scheme.LoginByID(rc.Response, rc.Request, id)
+	})
+	if err != nil {
 		c.t.Errorf("ActingAsID: scheme.LoginByID failed: %v", err)
 		return c
 	}
@@ -67,8 +78,8 @@ func (c *TestClient) setCookie(cookie *http.Cookie) {
 }
 
 // captureSessionCookies copies every Set-Cookie the login wrote on w into the
-// client's cookie jar. Login regenerates the session id and writes the real,
-// encrypted session cookie via session.Save - a fabricated cookie would not
+// client's cookie jar. Login regenerates the session id and the session
+// middleware writes the real, encrypted session cookie - a fabricated cookie would not
 // decrypt in the store, so the genuine Set-Cookie must be captured here. The
 // cookie name comes from the scheme config, never hardcoded.
 //

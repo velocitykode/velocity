@@ -14,9 +14,11 @@ import (
 // defaultLoginPath is the login target used when no login redirect is set.
 const defaultLoginPath = "/login"
 
-// sessionUserIDKey is the session key the session scheme anchors the
-// authenticated user's id under.
-const sessionUserIDKey = "user_id"
+// UserIDSessionKey is the session-bag key under which the session scheme
+// stores the authenticated user's id: Login and the remember-cookie
+// recall put it, Logout reads it to cycle the remember token, and every
+// authenticated request reads it back to resolve the user.
+const UserIDSessionKey = "user_id"
 
 // UnauthenticatedError is returned when a request needs an authenticated
 // user and has none. It answers 401 and is not reported. The framework's
@@ -184,7 +186,7 @@ func (m *Manager) RequestUserID(r *http.Request) (id string) {
 		if sess == nil {
 			return ""
 		}
-		raw = sess.Get(sessionUserIDKey)
+		raw = sess.Get(UserIDSessionKey)
 	} else {
 		raw = scheme.ID(r)
 	}
@@ -230,8 +232,8 @@ func (m *Manager) RequestUserID(r *http.Request) (id string) {
 // a refused redirect.
 //
 // Before redirecting, a GET request's URL (path and query) is stashed in
-// the session under router.IntendedSessionKey and the session is saved,
-// so its cookie precedes the redirect status line and
+// the session under router.IntendedSessionKey; the session middleware
+// saves it before the redirect status line is written, so
 // ctx.RedirectToIntended can send the user back after login. The browser
 // is bounced to a clean login target: the URL bar never exposes the
 // destination and nobody can inject one through a query parameter. Only a
@@ -327,9 +329,10 @@ func (m *Manager) resolveScheme(name string) Scheme {
 }
 
 // stashIntended stores the URL of a GET request in the request's session
-// under router.IntendedSessionKey and saves the session through rc's
-// writer. It does nothing for a nil manager, another method, or a request
-// with no session.
+// under router.IntendedSessionKey. It only mutates the session: the
+// session middleware's pre-commit save persists it with the redirect the
+// render rule writes. It does nothing for a nil manager, another method,
+// or a request with no session.
 func (m *Manager) stashIntended(rc contract.RenderContext) {
 	r := rc.Request()
 	if m == nil || r == nil || r.Method != http.MethodGet || r.URL == nil {
@@ -344,7 +347,6 @@ func (m *Manager) stashIntended(rc contract.RenderContext) {
 		intended += "?" + r.URL.RawQuery
 	}
 	sess.Put(router.IntendedSessionKey, intended)
-	_ = sess.Save(rc.Writer())
 }
 
 // RenderAlreadyAuthenticated is the framework's default render rule for an

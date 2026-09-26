@@ -6,8 +6,8 @@ package http
 // (client_auth.go): seed and read sessions through the SAME scheme store and
 // crypto the production code path uses, never by fabricating cookies. A
 // hand-rolled cookie would not decrypt in the store, so every seed below goes
-// through scheme.Session(...).Save and every read goes through scheme.Session on
-// a request carrying the real, encrypted cookie.
+// through the scheme's SessionMiddleware save and every read goes through
+// scheme.Session on a request carrying the real, encrypted cookie.
 //
 // Scope and the seams that bound it:
 //
@@ -51,8 +51,7 @@ package http
 //     omitted rather than half-implemented.
 
 import (
-	"net/http"
-	"net/http/httptest"
+	"errors"
 	"reflect"
 
 	"github.com/velocitykode/velocity/auth"
@@ -60,6 +59,10 @@ import (
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/router"
 )
+
+// errNoSeedSession reports that the scheme resolved no session for
+// WithSession's seed request.
+var errNoSeedSession = errors.New("scheme returned no session for the seed request")
 
 // WithSession seeds arbitrary session keys for subsequent requests under the
 // given scheme. It builds a session through the scheme's own store (the same path
@@ -69,8 +72,7 @@ import (
 // router sees a genuine, decryptable session.
 //
 // The scheme is taken as a parameter (TestClient holds none), consistent with
-// ActingAs. An empty data map writes nothing: the store skips an unmodified
-// session, so no cookie is captured.
+// ActingAs. An empty data map writes nothing, so no cookie is captured.
 func (c *TestClient) WithSession(scheme *schemes.SessionScheme, data map[string]any) *TestClient {
 	c.t.Helper()
 
@@ -78,24 +80,24 @@ func (c *TestClient) WithSession(scheme *schemes.SessionScheme, data map[string]
 		c.t.Errorf("WithSession: a non-nil *schemes.SessionScheme is required")
 		return c
 	}
-
-	// A session cache must be attached or the scheme's per-request caching
-	// no-ops; mirrors ActingAs's seed request.
-	w := httptest.NewRecorder()
-	req := schemes.WithSessionContext(httptest.NewRequest(http.MethodGet, "/", nil))
-
-	session := scheme.Session(req)
-	if session == nil {
-		c.t.Errorf("WithSession: scheme returned no session for the seed request")
+	if len(data) == 0 {
 		return c
 	}
 
-	for key, value := range data {
-		session.Put(key, value)
-	}
-
-	if err := session.Save(w); err != nil {
-		c.t.Errorf("WithSession: session.Save failed: %v", err)
+	// The seed request runs inside the session middleware, which saves
+	// the session; mirrors ActingAs's seed request.
+	w, err := runInSession(scheme, func(rc *router.Context) error {
+		session := scheme.Session(rc.Request)
+		if session == nil {
+			return errNoSeedSession
+		}
+		for key, value := range data {
+			session.Put(key, value)
+		}
+		return nil
+	})
+	if err != nil {
+		c.t.Errorf("WithSession: %v", err)
 		return c
 	}
 

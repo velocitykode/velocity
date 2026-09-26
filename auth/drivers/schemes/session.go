@@ -51,8 +51,48 @@ type sessionHolder struct {
 	// (anchorRecalledUser → rotateRememberToken) needs it to deliver the
 	// replacement cookie when rotating the remember token, because the
 	// Scheme read methods (User, Check) only receive the *http.Request.
-	// Nil when the scheme is driven outside the middleware.
+	// Nil when the scheme is driven outside the middleware, so a non-nil
+	// writer is also the mark that the request runs inside the save seam.
 	respWriter http.ResponseWriter
+	// afterSave holds cookie writes that must follow the session save:
+	// Login's XSRF-TOKEN and remember cookies are bound to the session id
+	// the save persists, so the seam runs them only once that save
+	// succeeded, in the order they were queued, and drops them when it
+	// failed.
+	afterSave []func(w http.ResponseWriter)
+}
+
+// queueAfterSave appends fn to the writes the seam runs after the session
+// save.
+func (h *sessionHolder) queueAfterSave(fn func(w http.ResponseWriter)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.afterSave = append(h.afterSave, fn)
+}
+
+// takeAfterSave returns the queued after-save writes and empties the
+// queue, so each runs at most once.
+func (h *sessionHolder) takeAfterSave() []func(w http.ResponseWriter) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	fns := h.afterSave
+	h.afterSave = nil
+	return fns
+}
+
+// seamHolder returns r's session holder when r runs inside
+// SessionMiddleware, the one place a session is saved. Otherwise (the
+// scheme driven from a plain net/http handler, a script or a test, with
+// no middleware around it) it returns a fresh holder for the one scheme
+// operation and standalone true: the operation is its own save scope and
+// commits through the same seam body when it ends, so its write is
+// neither lost nor saved twice.
+func seamHolder(r *http.Request) (holder *sessionHolder, standalone bool) {
+	holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
+	if ok && holder != nil && holder.getResponseWriter() != nil {
+		return holder, false
+	}
+	return &sessionHolder{}, true
 }
 
 // getSession returns the cached session under a read lock.
@@ -526,7 +566,7 @@ func (g *SessionScheme) resolveAuthenticatedUser(r *http.Request) (auth.Authenti
 		return nil, false, nil
 	}
 
-	userID := session.Get("user_id")
+	userID := session.Get(auth.UserIDSessionKey)
 	if userID == nil {
 		// Try remember cookie. On success, anchor the recovered user
 		// as a fresh authenticated session: the cookie itself is
@@ -628,7 +668,7 @@ func (g *SessionScheme) anchorRecalledUser(r *http.Request, session auth.Session
 		}
 	}
 
-	session.Put("user_id", user.GetAuthIdentifier())
+	session.Put(auth.UserIDSessionKey, user.GetAuthIdentifier())
 
 	// Write the new session to the server-side store on revival so
 	// administrative revocation surfaces actually have a record to
@@ -665,7 +705,7 @@ func (g *SessionScheme) anchorRecalledUser(r *http.Request, session auth.Session
 	// that would bypass rotation on the next request.
 	if err := g.rotateRememberToken(r, user); err != nil {
 		g.logWarn("velocity/auth: remember-cookie revival: remember-token rotation failed; rejecting recall", "error", err)
-		session.Remove("user_id")
+		session.Remove(auth.UserIDSessionKey)
 		return false
 	}
 
@@ -755,7 +795,7 @@ func (g *SessionScheme) ID(r *http.Request) interface{} {
 // Login logs in a user
 func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.Authenticatable, remember ...bool) error {
 	// Guard the nil user before any session work. user is deref'd below
-	// (session.Put("user_id", user.GetAuthIdentifier())), so a nil here would
+	// (session.Put(auth.UserIDSessionKey, ...)), so a nil here would
 	// panic. UserStore.FindByID is contractually allowed to return
 	// (nil, nil) for a not-found id, so LoginByID and any external caller can
 	// reach this with a nil user. Return a normal error instead of panicking
@@ -763,6 +803,11 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 	if user == nil {
 		return auth.ErrUserNotFound
 	}
+
+	// The session middleware saves the session and then writes the
+	// cookies bound to it. Outside it, this login is its own save scope
+	// and commits the same way before returning.
+	holder, standalone := seamHolder(r)
 
 	session := g.getSession(r)
 	if session == nil {
@@ -772,8 +817,8 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 			return err
 		}
 		// Cache in request context if available
-		if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok {
-			holder.setSession(session)
+		if cached, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && cached != nil {
+			cached.setSession(session)
 		}
 	}
 
@@ -799,40 +844,49 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 	// token store would leave the post-login session without a valid
 	// CSRF token and the orphan still reachable.
 	//
-	// After rotation, write the XSRF-TOKEN cookie so the SPA's first
-	// POST after login has a token to echo (M-04). Without this hook
-	// the per-session token lives in the server store but the SPA has
-	// no way to read it; the very next state-changing request 419's.
+	// After rotation, the XSRF-TOKEN cookie is written so the SPA's
+	// first POST after login has a token to echo (M-04). Without it the
+	// per-session token lives in the server store but the SPA has no way
+	// to read it; the very next state-changing request 419's.
+	//
+	// The cookie is queued behind the session save: the session
+	// middleware saves the regenerated session first and writes the
+	// queued cookies only when that save succeeded. A client must never
+	// hold an XSRF-TOKEN or remember cookie bound to a session id that
+	// was never persisted, or its very next request would 419.
+	sessionID := session.ID()
 	if rotator := g.getCSRFTokenRotator(); rotator != nil {
-		if err := rotator.RotateToken(oldSessionID, session.ID()); err != nil {
+		if err := rotator.RotateToken(oldSessionID, sessionID); err != nil {
 			return fmt.Errorf("velocity/auth: login aborted: csrf token rotate failed: %w", err)
 		}
-		rotator.WriteXSRFCookie(w, session.ID())
+		holder.queueAfterSave(func(w http.ResponseWriter) {
+			rotator.WriteXSRFCookie(w, sessionID)
+		})
 	}
 
 	// Store user ID in session
-	session.Put("user_id", user.GetAuthIdentifier())
+	session.Put(auth.UserIDSessionKey, user.GetAuthIdentifier())
 
-	// Save the session BEFORE handling remember-me. The session id has
-	// already been regenerated and the CSRF token rotated (with the new
-	// XSRF-TOKEN cookie written) above. If a remember-cookie write failed
-	// before Save, the client would be left holding an XSRF-TOKEN cookie
-	// bound to a session id that was never persisted and a CSRF store
-	// rotated off the live session, so the very next request would 419.
-	// Persisting first keeps login atomic with respect to the rotation.
-	if err := session.Save(w); err != nil {
-		return err
+	// Handle remember me as best-effort, after the session save. A
+	// failure here (e.g. the users table lacks a remember_token column,
+	// the user store cannot persist, or the identifier cannot be
+	// encoded) must NOT fail an otherwise-successful login, and must not
+	// undo the committed session and CSRF rotation. Log and continue:
+	// the user is authenticated for this session, just not recalled
+	// across a new one.
+	if len(remember) > 0 && remember[0] {
+		ctx := r.Context()
+		holder.queueAfterSave(func(w http.ResponseWriter) {
+			if err := g.setRememberCookie(ctx, w, user); err != nil {
+				g.logWarn("velocity/auth: remember-me cookie not set; login still succeeded", "error", err)
+			}
+		})
 	}
 
-	// Handle remember me as best-effort. A failure here (e.g. the users
-	// table lacks a remember_token column, the user store cannot persist,
-	// or the identifier cannot be encoded) must NOT fail an otherwise-
-	// successful login, and must not undo the already-committed session
-	// and CSRF rotation. Log and continue: the user is authenticated for
-	// this session, just not recalled across a new one.
-	if len(remember) > 0 && remember[0] {
-		if err := g.setRememberCookie(r.Context(), w, user); err != nil {
-			g.logWarn("velocity/auth: remember-me cookie not set; login still succeeded", "error", err)
+	if standalone {
+		holder.setSession(session)
+		if err := commitSession(g, w, holder); err != nil {
+			return err
 		}
 	}
 
@@ -907,6 +961,10 @@ type sessionRevoker interface {
 
 // Logout logs out the user
 func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
+	// The session middleware writes the delete cookie for the
+	// invalidated session. Outside it, this logout is its own save scope
+	// and commits the same way below.
+	holder, standalone := seamHolder(r)
 	session := g.getSession(r)
 	if session == nil {
 		return nil
@@ -952,7 +1010,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	// because a transient DB blip should not strand the user in a
 	// half-logged-out state. Failures are logged so operators can
 	// reconcile.
-	if userID := session.Get("user_id"); userID != nil {
+	if userID := session.Get(auth.UserIDSessionKey); userID != nil {
 		userStore := g.loadUserStore()
 		if user, err := userStore.FindByIDCtx(r.Context(), userID); err == nil && user != nil {
 			if err := userStore.UpdateRememberTokenCtx(r.Context(), user, ""); err != nil {
@@ -974,12 +1032,17 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	// natural expiry.
 	invalidateErr := session.Invalidate()
 
-	// Save invalidated session (writes the delete-cookie because the
-	// session is now marked destroyed). A Save failure also continues
-	// to the revocation + server-store delete path; without revoke,
-	// the still-decrypting captured cookie would re-authenticate
-	// against a live server-side record.
-	saveErr := session.Save(w)
+	// The session middleware saves the invalidated session, which
+	// writes the delete cookie because the session is now marked
+	// destroyed. A standalone logout commits it here; a failure also
+	// continues to the revocation + server-store delete path, since
+	// without revoke the still-decrypting captured cookie would
+	// re-authenticate against a live server-side record.
+	var saveErr error
+	if standalone {
+		holder.setSession(session)
+		saveErr = commitSession(g, w, holder)
+	}
 
 	// Revoke in the underlying SessionStore when it supports the
 	// revocation capability (CookieStore). The cookie value still
@@ -1004,10 +1067,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 		g.logWarn("velocity/auth: session invalidate (logout) failed; teardown completed best-effort", "session_id", sessionID, "error", invalidateErr)
 		return invalidateErr
 	}
-	if saveErr != nil {
-		return saveErr
-	}
-	return nil
+	return saveErr
 }
 
 // SetUserStore sets the user store. Stored via atomic.Pointer so

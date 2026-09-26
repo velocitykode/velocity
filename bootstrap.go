@@ -89,17 +89,10 @@ func (a *App) runBootstrap() error {
 	// 2. Build middleware stack
 	mwStack := chain.NewMiddlewareStack(a.Services)
 
-	// 2a. Auto-install the save-at-end session middleware BEFORE any
-	// consumer middleware so it wraps every request: session writes
-	// inside the handler (Put/Flash/login-helpers) must be persisted by
-	// the framework, not by every consumer remembering to call Save(w).
-	// See schemes.SessionScheme.SessionMiddleware for the contract.
-	//
-	// Installed only when the default auth scheme is the session scheme;
-	// JWT-only or other configurations are skipped (no session bag to
-	// persist). Idempotent under repeated bootstrap() calls because
-	// bootstrapped=true short-circuits before any middleware wiring.
-	installSessionMiddleware(a)
+	// 2a. Point the save-at-end session middleware New installed at the
+	// default scheme as chain modules left it. See
+	// schemes.SessionScheme.SessionMiddleware for the contract.
+	refreshSessionScheme(a)
 
 	dispatchModuleCallback(a.chainModules, func(mp chain.MiddlewareModule) {
 		mp.Middleware(mwStack)
@@ -537,48 +530,57 @@ func validateSessionStoreForProduction(a *App) error {
 	return ErrCookieStoreInProduction
 }
 
-// installSessionMiddleware mounts schemes.SessionScheme.SessionMiddleware
-// onto the router as the outermost global middleware when the active
-// default auth scheme is a *SessionScheme. The fix for security audit H-05
-// (CONFIRMED HIGH: "No save-at-end session middleware installed").
+// installSessionMiddleware mounts the save-at-end session middleware
+// (schemes.SessionMiddlewareFor) onto the router as the outermost global
+// middleware. New calls it, so every app serving through its router saves
+// sessions at one point whether or not it calls Bootstrap or Serve. The
+// fix for security audit H-05 (CONFIRMED HIGH: "No save-at-end session
+// middleware installed").
 //
 // It goes to the front of the global list (Router.UseFirst), ahead of
-// middleware the app added with Router.Use before Bootstrap. A buffering
-// middleware outside it (bond's, the router's Timeout) would hide the
-// response writer's pre-commit hook, so the session would save as soon as
-// the handler returned and miss what the error page writes afterwards,
-// such as a drained flash.
+// middleware the app adds with Router.Use. A buffering middleware outside
+// it (bond's, the router's Timeout) would hide the response writer's
+// pre-commit hook, so the session would save as soon as the handler
+// returned and miss what the error page writes afterwards, such as a
+// drained flash.
 //
-// Without this hook, every ctx.Auth().Session(r).Put / Flash call inside
-// a handler is silently dropped because the cookie session store is only
-// flushed by an explicit Session.Save(w). The middleware supplies that
-// flush: run the inner handler, then save the session on the way out.
-//
+// The middleware serves the scheme a.sessionScheme holds at request time:
+// the default auth scheme when it is a *schemes.SessionScheme. JWT-only
+// or custom auth managers leave it nil and the middleware passes straight
+// through (no session bag to persist).
+func installSessionMiddleware(a *App) {
+	if a.Router == nil {
+		return
+	}
+	refreshSessionScheme(a)
+	a.Router.UseFirst(schemes.SessionMiddlewareFor(a.sessionScheme.Load))
+}
+
+// refreshSessionScheme points the save seam at the current default auth
+// scheme when it is a *schemes.SessionScheme, and at nothing otherwise.
 // We type-assert through contract.AuthManager because a.Services.Auth is
 // the public interface (the auth/csrf/view packages cannot import each
-// other directly without a cycle). When the assertion fails (no auth
-// configured, custom manager, JWT-only setup) we skip silently: there is
-// no session bag to persist in those modes.
-//
-// Idempotent: bootstrap() guards against double-install via the
-// a.bootstrapped flag.
-func installSessionMiddleware(a *App) {
-	if a.Auth == nil || a.Router == nil {
-		return
+// other directly without a cycle).
+func refreshSessionScheme(a *App) {
+	a.sessionScheme.Store(defaultSessionScheme(a))
+}
+
+// defaultSessionScheme returns a's default auth scheme when it is a
+// *schemes.SessionScheme, or nil.
+func defaultSessionScheme(a *App) *schemes.SessionScheme {
+	if a.Services == nil || a.Auth == nil {
+		return nil
 	}
 	mgr, ok := a.Auth.(*auth.Manager)
 	if !ok {
-		return
+		return nil
 	}
 	scheme, err := mgr.DefaultScheme()
 	if err != nil {
-		return
+		return nil
 	}
-	sg, ok := scheme.(*schemes.SessionScheme)
-	if !ok {
-		return
-	}
-	a.Router.UseFirst(sg.SessionMiddleware())
+	sg, _ := scheme.(*schemes.SessionScheme)
+	return sg
 }
 
 // installCSRFTokenRotator wires the final s.CSRF instance (post chain
