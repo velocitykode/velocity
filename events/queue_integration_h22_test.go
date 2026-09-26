@@ -144,9 +144,10 @@ func TestEventListenerJob_FailedReportsThroughReporter(t *testing.T) {
 
 	var reported atomic.Int32
 	var lastErr atomic.Pointer[error]
-	reporter := func(job *EventListenerJob, err error) {
+	reporter := func(job *EventListenerJob, err error) bool {
 		reported.Add(1)
 		lastErr.Store(&err)
+		return true
 	}
 
 	RegisterListenerFactory("events.h22FailingListener", func() Listener { return h22FailingListener{} })

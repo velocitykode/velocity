@@ -233,9 +233,10 @@ func TestHandleCtx_RefusesWithoutEventFactoryReportsFailure(t *testing.T) {
 
 	var reported atomic.Int32
 	var reportedJob atomic.Pointer[EventListenerJob]
-	setFailureReporter(func(job *EventListenerJob, _ error) {
+	setFailureReporter(func(job *EventListenerJob, _ error) bool {
 		reported.Add(1)
 		reportedJob.Store(job)
+		return true
 	})
 
 	rawJob, err := EventJobFactory(jobBytes)

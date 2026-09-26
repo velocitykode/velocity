@@ -94,10 +94,23 @@ func (queueWorkCmd) run(a *App, args []string) error {
 	if err := a.Bootstrap(); err != nil {
 		return err
 	}
+	return console.QueueWork(a.Queue, queueWorkOptions(a, opts))
+}
+
+// queueWorkOptions attaches the app's services to the parsed `queue work`
+// options: its logger, so worker errors flow through the configured log
+// driver, and its event dispatcher, so the worker's job lifecycle events
+// reach listeners and a permanently failed job reaches the error reporters
+// through the dispatcher's failure-report bridge. With events disabled
+// (WithoutEvents) the worker gets no dispatcher.
+func queueWorkOptions(a *App, opts console.QueueWorkOptions) console.QueueWorkOptions {
 	if a.Log != nil {
 		opts.Logger = a.Log
 	}
-	return console.QueueWork(a.Queue, opts)
+	if dispatch := buildEventDispatch(a); dispatch != nil {
+		opts.Dispatcher = dispatch
+	}
+	return opts
 }
 
 type scheduleWorkCmd struct{}

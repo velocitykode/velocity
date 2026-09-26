@@ -349,8 +349,17 @@ func TestFakeHandler(t *testing.T) {
 	if code := eh.HandleConsole(nil, nil); code != 0 {
 		t.Errorf("console code = %d, want 0", code)
 	}
-	if len(f.Reported) != 2 || len(f.Rendered) != 2 {
-		t.Errorf("reported %d rendered %d, want 2 and 2", len(f.Reported), len(f.Rendered))
+	if !eh.TryReport(errSentinel, nil) {
+		t.Error("TryReport(err) = false, want true")
+	}
+	if eh.TryReport(nil, nil) {
+		t.Error("TryReport(nil) = true, want false")
+	}
+	if len(f.Reported) != 3 || len(f.Rendered) != 2 {
+		t.Errorf("reported %d rendered %d, want 3 and 2", len(f.Reported), len(f.Rendered))
+	}
+	if f.Reported[2] != errSentinel {
+		t.Errorf("TryReport recorded %v, want %v", f.Reported[2], errSentinel)
 	}
 	if !eh.ShouldReport(errSentinel) || eh.ShouldReport(nil) {
 		t.Error("ShouldReport")

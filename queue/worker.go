@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -798,6 +799,17 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 		switch failErr := rd.FailReservedCtx(cleanupCtx, reservation, job, err, w.queueName); {
 		case failErr == nil:
 			// Ownership confirmed; safe to fire side effects below.
+		case errors.Is(failErr, ErrFailedHookPanicked):
+			// Ownership confirmed and the failure recorded; only the
+			// job's Failed hook panicked. Log it and run the side
+			// effects below as for a clean record, so the batch and the
+			// job.failed event still see this failure.
+			w.logger.Error("Job Failed hook panicked after the failure was recorded",
+				"type", jobType,
+				"queue", w.queueName,
+				"job_id", jobIDOf(job),
+				"error", failErr,
+			)
 		case errors.Is(failErr, ErrLeaseLost):
 			// Another worker reclaimed the row; the new owner is now
 			// responsible for it. Log and stop -- do NOT bump batch
@@ -830,7 +842,16 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 		// against. Run side effects regardless of Failed()'s outcome
 		// so alerting pipelines still see the failure when the
 		// failed_jobs sink itself is degraded.
-		if failErr := w.queue.Failed(job, err, w.queueName); failErr != nil {
+		switch failErr := w.queue.Failed(job, err, w.queueName); {
+		case failErr == nil:
+		case errors.Is(failErr, ErrFailedHookPanicked):
+			w.logger.Error("Job Failed hook panicked after the failure was recorded",
+				"type", jobType,
+				"queue", w.queueName,
+				"job_id", jobIDOf(job),
+				"error", failErr,
+			)
+		default:
 			w.logger.Error("Failed to mark job as failed", "error", failErr)
 		}
 	}
@@ -841,7 +862,20 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 			batch.recordFailure(ctx, err)
 		}
 	}
-	dispatchJobFailed(w.dispatchEvent, ctx, jobType, w.queueName, err, duration)
+	dispatchJobFailed(w.dispatchEvent, ctx, jobType, w.queueName, failureForEvent(job, err), duration)
+}
+
+// failureForEvent returns the error the job.failed event carries for a job
+// the driver has just failed: err marked reported (contract.MarkReported)
+// when the driver's call ran the job's Failed hook and the hook reported
+// err itself (see FailureSelfReporter), so the dispatcher's failure-report
+// bridge skips it and the failure is reported once; err unchanged
+// otherwise, so the bridge reports it.
+func failureForEvent(job Job, err error) error {
+	if sr, ok := job.(FailureSelfReporter); ok && sr.FailureReported() {
+		return contract.MarkReported(err)
+	}
+	return err
 }
 
 // calculateBackoff determines the delay before the next retry.

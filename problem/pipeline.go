@@ -89,18 +89,33 @@ func (h *Handler) HandleRequest(rc RenderContext, err error, ctx *ErrorContext) 
 // err before the map rules (see markRecovered) and always reported. A nil
 // ctx is replaced by a new one.
 func (h *Handler) Report(err error, ctx *ErrorContext) {
+	h.TryReport(err, ctx)
+}
+
+// TryReport reports err exactly as Report does and returns whether the
+// report was handled: true when a SelfReporting error or a ReportFor rule
+// took it over, or when it reached the configured reporters (each is
+// called; one that panics is logged and the rest still run); false when
+// err was nil, already marked reported, or dropped by the gate (ignore
+// rules, IgnoreIf predicates, throttling), and when a panic ended the
+// report before it was handled (in the gate, SelfReporting, a ReportFor
+// rule, a Contextual error's Context, a ContextUsing provider or a level
+// rule; the panic is logged). Unlike asking ShouldReport first, the answer
+// covers what only Report sees: the user map rules applied before the
+// gate, the context the IgnoreIf predicates read, and throttling.
+func (h *Handler) TryReport(err error, ctx *ErrorContext) bool {
 	if err == nil {
-		return
+		return false
 	}
 	s := h.snap()
 	if ctx == nil {
 		ctx = NewErrorContext()
 	}
 	if outsidePanic(err, ctx, contract.IsReported) {
-		return
+		return false
 	}
 	markRecovered(err, ctx)
-	h.report(s, h.applyMap(s, err), ctx, nil)
+	return h.report(s, h.applyMap(s, err), ctx, nil)
 }
 
 // Render writes the response for err through rc, applying user map rules
@@ -260,14 +275,21 @@ func anyIgnoreMatch(rules []contract.IgnoreRule, err error) bool {
 // report runs the gate and, when it passes, SelfReporting, the ReportFor
 // rules, the context merge, level selection and the reporters. A panic in
 // any of them is logged and ends the report; it never reaches the caller.
-func (h *Handler) report(s *snapshot, err error, ctx *ErrorContext, r *http.Request) {
+// It returns whether the report was handled: true when a SelfReporting
+// error or a ReportFor rule took it over, or once it reaches the reporter
+// loop (callReporter contains a reporter's panic, so every reporter is
+// called). It is false when the gate dropped err and when a panic ended
+// the report before one of those points, so a caller deduplicating on the
+// answer (a queued listener's failure hook) never suppresses another
+// report of a failure nobody reported.
+func (h *Handler) report(s *snapshot, err error, ctx *ErrorContext, r *http.Request) (handled bool) {
 	defer func() {
 		if p := recover(); p != nil {
 			safeLog(s.logger, "problem: report failed", "panic", fmt.Sprint(p), "error", err.Error())
 		}
 	}()
 	if !h.passes(s, err, ctx, r, true) {
-		return
+		return false
 	}
 	if isRecovered(err, ctx) {
 		ctx.Recovered = true
@@ -275,11 +297,11 @@ func (h *Handler) report(s *snapshot, err error, ctx *ErrorContext, r *http.Requ
 
 	var self contract.SelfReporting
 	if errors.As(err, &self) && self.ReportError(ctx) {
-		return
+		return true
 	}
 	for _, rule := range s.reportRules {
 		if rule.Match(err) && rule.Report(err, ctx) {
-			return
+			return true
 		}
 	}
 
@@ -297,9 +319,11 @@ func (h *Handler) report(s *snapshot, err error, ctx *ErrorContext, r *http.Requ
 
 	ctx.Level = selectLevel(s, err, ctx.Level)
 
+	handled = true
 	for _, reporter := range s.reporters {
 		callReporter(s.logger, reporter, err, ctx)
 	}
+	return handled
 }
 
 // selectLevel returns the level of the first matching user level rule, then

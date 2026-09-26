@@ -201,6 +201,20 @@ type RetryDecider interface {
 	ShouldRetry(err error) bool
 }
 
+// FailureSelfReporter is an optional interface for a job whose Failed hook
+// reports its own terminal failure to the error reporters, as a queued
+// event listener's does. The worker asks FailureReported right after the
+// driver's terminal-failure call, which runs the hook on drivers that call
+// it: true means the hook's report reached the error reporters, so the
+// worker marks the error its job.failed event carries as reported
+// (contract.MarkReported) and the dispatcher's failure-report bridge does
+// not report the failure a second time. FailureReported must describe the
+// most recent Failed call only; a job whose hook did not run (a driver that
+// does not call it) must answer false, so the bridge reports the failure.
+type FailureSelfReporter interface {
+	FailureReported() bool
+}
+
 // Identifiable is an optional interface that jobs can implement to provide
 // a stable key for attempt tracking across serialization boundaries
 // (e.g. Redis, database drivers).

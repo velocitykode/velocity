@@ -1,6 +1,7 @@
 package velocity
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -173,7 +174,9 @@ func TestParseQueueWorkArgs(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	want := console.QueueWorkOptions{Queue: "emails", Tries: 5, Timeout: 30}
-	if got != want {
+	// DeepEqual, not ==: the Dispatcher func field makes the struct
+	// incomparable; DeepEqual treats two nil funcs as equal.
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 	if _, err := parseQueueWorkArgs([]string{"-q", "default"}); err != nil {

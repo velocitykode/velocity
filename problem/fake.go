@@ -12,10 +12,11 @@ import (
 var _ contract.ErrorHandler = (*FakeHandler)(nil)
 
 // FakeHandler is a contract.ErrorHandler for consumer tests. It records
-// every error passed to Report, Render, HandleRequest and HandleConsole,
-// applies no rules, and renders only the resolved status line. It is safe
-// for concurrent use; read Reported and Rendered after the code under test
-// has finished, or through the snapshot methods while it runs.
+// every error passed to Report, TryReport, Render, HandleRequest and
+// HandleConsole, applies no rules, and renders only the resolved status
+// line. It is safe for concurrent use; read Reported and Rendered after the
+// code under test has finished, or through the snapshot methods while it
+// runs.
 type FakeHandler struct {
 	mu sync.Mutex
 
@@ -81,6 +82,13 @@ func (f *FakeHandler) Report(err error, _ *ErrorContext) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Reported = append(f.Reported, err)
+}
+
+// TryReport records err like Report and returns whether it recorded it:
+// true for any non-nil err, the answer ShouldReport gives.
+func (f *FakeHandler) TryReport(err error, ctx *ErrorContext) bool {
+	f.Report(err, ctx)
+	return err != nil
 }
 
 // Render records err and writes its resolved status when nothing was

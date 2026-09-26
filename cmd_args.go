@@ -164,8 +164,9 @@ func atoiStep(flag, raw string) (int, error) {
 	return n, nil
 }
 
-// parseQueueWorkArgs parses `queue work` arguments. The Logger field is
-// attached by the caller after bootstrapping, not here.
+// parseQueueWorkArgs parses `queue work` arguments. The Logger and
+// Dispatcher fields are attached by the caller after bootstrapping (see
+// queueWorkOptions), not here.
 func parseQueueWorkArgs(args []string) (console.QueueWorkOptions, error) {
 	var opts console.QueueWorkOptions
 	for i := 0; i < len(args); i++ {

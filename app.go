@@ -530,20 +530,10 @@ func New(opts ...Option) (*App, error) {
 	// *QueueIntegratedDispatcher; consumers that opt into the
 	// queue-integrated dispatcher are expected to call
 	// InitializeQueueIntegration themselves with their dispatcher to bind
-	// the queue driver.
-	var reporter events.FailureReporter
-	if a.Services.Errors != nil {
-		exHandler := a.Services.Errors
-		reporter = func(job *events.EventListenerJob, jobErr error) {
-			exCtx := problem.NewErrorContext().
-				WithExtra("subsystem", "events").
-				WithExtra("job", "EventListenerJob").
-				WithExtra("listener_type", job.ListenerType).
-				WithExtra("event_type", job.EventType)
-			exHandler.Report(jobErr, exCtx)
-		}
-	}
-	eventqueue.InitializeQueueIntegration(nil, a.Queue, reporter)
+	// the queue driver. The reporter is bound to the handler built above;
+	// wireFailureReporters re-binds it to the handler the app holds after
+	// the module lifecycles and bootstrap's error-handler step.
+	eventqueue.InitializeQueueIntegration(nil, a.Queue, buildQueuedListenerReporter(a.Services.Errors))
 
 	// 12. Initialize storage with disk drivers
 	a.Storage = initStorage(a.config.Storage, a.Log)

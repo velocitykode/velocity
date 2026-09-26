@@ -104,8 +104,9 @@ func TestShutdown_ClearsEventQueueFailureReporter(t *testing.T) {
 	// Install the probe AFTER New(): New wires its own reporter and would
 	// overwrite an earlier install.
 	var fires atomic.Int32
-	eventqueue.InitializeQueueIntegration(nil, nil, func(_ *events.EventListenerJob, _ error) {
+	eventqueue.InitializeQueueIntegration(nil, nil, func(_ *events.EventListenerJob, _ error) bool {
 		fires.Add(1)
+		return true
 	})
 
 	// Sanity: the seam is live before Shutdown. EventListenerJob.Failed is

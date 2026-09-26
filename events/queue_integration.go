@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/queue"
@@ -62,6 +63,11 @@ type EventListenerJob struct {
 	// pops always have event == nil and HandleCtx reconstructs the value
 	// from Event + EventType via the event factory registry.
 	event interface{} `json:"-"`
+	// failureReported is 1 when the installed FailureReporter reported the
+	// most recent Failed call's error, else 0 (see FailureReported). A uint32 read and written with sync/atomic rather
+	// than an atomic.Bool, so an EventListenerJob value stays copyable
+	// (json.Marshal(job)) without a vet copylocks finding.
+	failureReported uint32
 }
 
 // Handle processes the event listener job. Implements queue.Job.
@@ -186,9 +192,28 @@ func (j *EventListenerJob) MaxAttempts() int {
 // SetFailureReporter) records the drop. When no reporter is installed --
 // e.g. in tests that exercise the queue path standalone -- the call becomes
 // a documented no-op rather than a silent one (it is still observable via
-// the test's assertion on the original Handle error).
+// the test's assertion on the original Handle error). Whether the reporter
+// reported it is recorded for FailureReported, so the worker's job.failed
+// event reports the failure only when this did not.
 func (j *EventListenerJob) Failed(err error) {
-	reportFailure(j, err)
+	var reported uint32
+	if reportFailure(j, err) {
+		reported = 1
+	}
+	atomic.StoreUint32(&j.failureReported, reported)
+}
+
+// FailureReported reports whether the installed FailureReporter reported
+// the most recent Failed call's error. It implements
+// queue.FailureSelfReporter: the queue worker, after the driver has run
+// Failed, marks the error its job.failed event carries as reported when
+// this is true, so the dispatcher's failure-report bridge does not report
+// the failure a second time. It is false when no reporter is installed,
+// when the reporter declined the failure (the error handler's report gate
+// dropped it) or panicked, and when Failed never ran; the bridge then
+// reports the failure.
+func (j *EventListenerJob) FailureReported() bool {
+	return atomic.LoadUint32(&j.failureReported) == 1
 }
 
 // QueueIntegratedDispatcher extends DefaultDispatcher with deep queue integration.
@@ -573,8 +598,11 @@ func EventJobFactory(data []byte) (queue.Job, error) {
 // queue.Driver.Failed once the job has exhausted its retry budget. The
 // framework wires the App's error handler via InitializeQueueIntegration
 // so a silently dropped security / audit listener becomes visible to the
-// configured reporters (sentry, log, etc).
-type FailureReporter func(job *EventListenerJob, err error)
+// configured reporters (sentry, log, etc). It returns whether it reported
+// the failure: false when it had nowhere to report it or the error
+// handler's report gate dropped it, so the queue worker's job.failed event
+// reports the failure instead (see EventListenerJob.FailureReported).
+type FailureReporter func(job *EventListenerJob, err error) bool
 
 // InitializeQueueIntegration wires the queue-integration plumbing that turns
 // queued listeners from a silent-drop hole (H-22) into a production-ready
@@ -588,7 +616,8 @@ type FailureReporter func(job *EventListenerJob, err error)
 //     consumers only want to register the job factory and reporter.
 //   - reporter: optional callback that fires from EventListenerJob.Failed.
 //     Nil disables the reporter (calls become no-ops); pass a closure over
-//     problem.Handler.Report to route to the framework's error sink.
+//     problem.Handler.TryReport to route to the framework's error sink and
+//     return whether it reported the failure.
 //
 // The function also registers the EventListenerJob with the queue's typed
 // job registry (queue.RegisterJob) so cross-process workers can rehydrate
@@ -719,6 +748,16 @@ func lookupEventFactory(typeName string) (func() interface{}, bool) {
 	return factory, ok
 }
 
+// SetFailureReporter replaces only the package-level FailureReporter
+// EventListenerJob.Failed calls, leaving the EventListenerJob factory and
+// any dispatcher binding InitializeQueueIntegration made as they are. Nil
+// clears the reporter. Safe to call concurrently with Failed. Like
+// InitializeQueueIntegration it is bootstrap-only wiring; framework code
+// reaches it through internal/eventqueue.
+func SetFailureReporter(fn FailureReporter) {
+	setFailureReporter(fn)
+}
+
 // setFailureReporter installs the package-level FailureReporter invoked by
 // EventListenerJob.Failed. Nil clears the reporter (subsequent Failed calls
 // become explicit no-ops). Safe to call concurrently with Failed.
@@ -730,18 +769,23 @@ func setFailureReporter(fn FailureReporter) {
 
 // reportFailure routes a queued-listener failure through the installed
 // reporter, recovering from any panic in the reporter so a misbehaving
-// sink cannot take down the queue worker.
-func reportFailure(job *EventListenerJob, err error) {
+// sink cannot take down the queue worker. It returns whether the reporter
+// reported the failure: false when none is installed, err is nil, the
+// reporter declined it, or the reporter panicked, so the worker's
+// job.failed bridge still reports it.
+func reportFailure(job *EventListenerJob, err error) (reported bool) {
 	failureReporterMu.RLock()
 	fn := failureReporter
 	failureReporterMu.RUnlock()
 	if fn == nil || err == nil {
-		return
+		return false
 	}
 	defer func() {
-		_ = recover()
+		if recover() != nil {
+			reported = false
+		}
 	}()
-	fn(job, err)
+	return fn(job, err)
 }
 
 // PriorityListener extends Listener with priority support
@@ -934,3 +978,7 @@ func (d *StoppablePropagationDispatcher) processListener(ctx context.Context, ev
 	// Regular listener handling
 	return listener.Handle(ctx, event)
 }
+
+// Conformance: a queued listener's Failed hook reports its own terminal
+// failure, so the worker's job.failed event must not report it again.
+var _ queue.FailureSelfReporter = (*EventListenerJob)(nil)

@@ -67,6 +67,13 @@ type JobFailed struct {
 	TraceID    string
 	SpanID     string
 	ParentID   string
+
+	// Err is the failure itself, where Error is its text: the error the job
+	// returned (or the worker's timeout error), set by the worker and
+	// marked reported (contract.MarkReported) when the job's own Failed hook
+	// already reported it (see FailureSelfReporter).
+	// It is not serialized: the JSON form keeps Error alone.
+	Err error `json:"-"`
 }
 
 // Name returns the event name
@@ -76,8 +83,18 @@ func (e *JobFailed) Name() string {
 
 // FailureError implements contract.FailureEvent: a permanently failed job
 // (retries exhausted) has no caller observing the error, so the dispatcher
-// bridges it to the error Reporter chain.
+// bridges it to the error Reporter chain. When Err carries the report-once
+// marker (the job's Failed hook already reported the failure) it returns
+// Err, so the bridge's report gate skips it and the failure is reported
+// once. Otherwise it returns a new error with the Error text, or nil when
+// there is none, as it always has: the bridge reports the failure whatever
+// the type of the job's error, so rules the error handler keys on error
+// types for requests (statuses below 500 are the client's, a deadline is a
+// 503) do not drop or reshape a failed job's report.
 func (e *JobFailed) FailureError() error {
+	if contract.IsReported(e.Err) {
+		return e.Err
+	}
 	if e.Error == "" {
 		return nil
 	}
@@ -169,6 +186,7 @@ func dispatchJobFailed(dispatch func(context.Context, interface{}), ctx context.
 		JobType:    jobType,
 		Queue:      queue,
 		Error:      errMsg,
+		Err:        err,
 		DurationMs: duration.Milliseconds(),
 		TraceID:    traceID,
 		SpanID:     spanID,

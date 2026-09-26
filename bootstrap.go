@@ -10,7 +10,10 @@ import (
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
 	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/events"
+	"github.com/velocitykode/velocity/internal/eventqueue"
 	"github.com/velocitykode/velocity/orm"
+	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -175,6 +178,10 @@ func (a *App) runBootstrap() error {
 	if a.errorsFn != nil {
 		a.errorsFn(a.Services.Errors)
 	}
+	// The background failure reporters are bound to a handler value (see
+	// wireFailureReporters); bind them to the one the app holds now that
+	// every module and the Errors callback have run.
+	wireFailureReporters(a)
 
 	// 9. Refuse to run with CookieStore-only sessions in production
 	// unless the operator explicitly opted in. The CookieStore in-process
@@ -191,8 +198,14 @@ func (a *App) runBootstrap() error {
 // wireInstanceEvents wires the event dispatcher into every subsystem that
 // implements contract.EventDispatcherAware. Each service that fires events
 // gets the dispatcher set on its instance; subsystems that don't implement
-// the contract are skipped silently (e.g. when a feature is disabled).
+// the contract are skipped silently (e.g. when a feature is disabled). It
+// also (re)installs the background failure reporters on the current error
+// handler (see wireFailureReporters).
 func wireInstanceEvents(a *App) {
+	// The failure reporters follow the error handler, not the dispatcher,
+	// so they are (re)installed whether or not events are enabled.
+	wireFailureReporters(a)
+
 	dispatch := buildEventDispatch(a)
 	if dispatch == nil {
 		return
@@ -226,33 +239,60 @@ func wireInstanceEvents(a *App) {
 		mgr.SetTxEventBus(a.Services.Events)
 	}
 
-	// Bridge contract.FailureEvent dispatches to the error Reporter
-	// chain. Wired on the dispatcher itself (not the dispatch closure) so
-	// EVERY dispatch path is covered: service-fired events, registry
-	// components, and app code calling Services.Events.Dispatch directly.
-	// Optional-interface detection, same convention as the Aware sweeps;
-	// a custom contract.Dispatcher without SetFailureReporter simply has
-	// no bridge.
-	if fr, ok := a.Services.Events.(interface {
-		SetFailureReporter(fn func(ctx context.Context, event interface{}, err error))
-	}); ok {
-		fr.SetFailureReporter(buildFailureReporter(a))
-	}
-
 	wireComponentEvents(a)
 }
 
+// wireFailureReporters installs the two reporters background failures reach
+// the error handler through, both bound to the handler a.Services.Errors
+// holds now, read once:
+//
+//   - the dispatcher's failure-report bridge, which reports every
+//     contract.FailureEvent dispatch (job.failed, scheduled.failed, ...).
+//     Wired on the dispatcher itself (not the dispatch closure) so every
+//     dispatch path is covered: service-fired events, registry components,
+//     and app code calling Services.Events.Dispatch directly. Optional
+//     interface detection, same convention as the Aware sweeps: a custom
+//     contract.Dispatcher without SetFailureReporter has no bridge, and with
+//     events disabled there is none either.
+//   - the queued-listener failure reporter a queued listener's Failed hook
+//     calls once it has exhausted its retries. Installed with or without
+//     events: a worker can run listener jobs another process queued.
+//
+// Both close over the handler value rather than reading a.Services.Errors
+// when a failure happens: a worker a module Start launched runs on its own
+// goroutine, and a later module Start replacing s.Errors would otherwise be
+// an unsynchronized write against the worker's read. The setters behind
+// both installs are synchronized, so re-running this while workers fail
+// jobs only changes which handler later failures reach. It runs from
+// wireInstanceEvents (in New before and after the WithModules lifecycle,
+// and in bootstrap after the chain modules' Start) and once more at the end
+// of bootstrap's error-handler step, so a handler a module swapped in or
+// an Errors callback installed is the one reported to from then on. A
+// worker already failing jobs before a re-install reports to the handler
+// installed before it, which still reports; nothing is dropped by the
+// switch.
+func wireFailureReporters(a *App) {
+	h := a.Services.Errors
+	if fr, ok := a.Services.Events.(interface {
+		SetFailureReporter(fn func(ctx context.Context, event interface{}, err error))
+	}); ok {
+		fr.SetFailureReporter(buildFailureReporter(h))
+	}
+	// Reporter only: the EventListenerJob factory New registered (app.go)
+	// stays, so a factory a module's Start registered for the job is not
+	// overwritten by a re-install.
+	eventqueue.SetFailureReporter(buildQueuedListenerReporter(h))
+}
+
 // buildFailureReporter returns the bridge target for FailureEvent
-// dispatches: it forwards the failure to ErrorHandler.Report with an
-// ErrorContext carrying the trace ID and event name. It reads
-// a.Services.Errors at call time, so a handler swapped in during a
-// module Start phase wins.
-func buildFailureReporter(a *App) func(ctx context.Context, event interface{}, err error) {
+// dispatches: it forwards the failure to h.Report with an ErrorContext
+// carrying the trace ID and event name. It returns nil (no bridge) when h
+// is nil.
+func buildFailureReporter(h contract.ErrorHandler) func(ctx context.Context, event interface{}, err error) {
+	if h == nil {
+		return nil
+	}
 	return func(ctx context.Context, event interface{}, err error) {
-		h := a.Services.Errors
-		if h == nil {
-			return
-		}
 		exCtx := &contract.ErrorContext{
 			Timestamp: time.Now(),
 			TraceID:   trace.GetTraceID(ctx),
@@ -262,6 +302,28 @@ func buildFailureReporter(a *App) func(ctx context.Context, event interface{}, e
 			exCtx.Extra["event"] = n.Name()
 		}
 		h.Report(err, exCtx)
+	}
+}
+
+// buildQueuedListenerReporter returns the reporter a queued listener's
+// Failed hook calls once the listener has exhausted its retries (H-22): it
+// reports the failure through h.TryReport with an ErrorContext naming the
+// listener and event types, and returns TryReport's answer, whether the
+// report was actually handled. The queue worker reads that answer
+// (events.EventListenerJob.FailureReported): a failure this did not report
+// is reported by the job.failed event's bridge instead. It returns nil (no
+// reporter, so the hook reports nothing) when h is nil.
+func buildQueuedListenerReporter(h contract.ErrorHandler) events.FailureReporter {
+	if h == nil {
+		return nil
+	}
+	return func(job *events.EventListenerJob, jobErr error) bool {
+		exCtx := problem.NewErrorContext().
+			WithExtra("subsystem", "events").
+			WithExtra("job", "EventListenerJob").
+			WithExtra("listener_type", job.ListenerType).
+			WithExtra("event_type", job.EventType)
+		return h.TryReport(jobErr, exCtx)
 	}
 }
 

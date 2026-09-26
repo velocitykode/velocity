@@ -27,7 +27,8 @@ import (
 //     consumers only want to register the job factory and reporter.
 //   - reporter: optional callback that fires from EventListenerJob.Failed.
 //     Nil disables the reporter (calls become no-ops); pass a closure over
-//     problem.Handler.Report to route to the framework's error sink.
+//     problem.Handler.TryReport to route to the framework's error sink and
+//     return whether it reported the failure.
 //
 // This is the canonical entry point. The events package retains a
 // deprecated shim with the same signature for backwards compatibility
@@ -35,4 +36,14 @@ import (
 // instead.
 func InitializeQueueIntegration(dispatcher *events.QueueIntegratedDispatcher, driver queue.Driver, reporter events.FailureReporter) {
 	events.InitializeQueueIntegration(dispatcher, driver, reporter)
+}
+
+// SetFailureReporter replaces only the queued-listener failure reporter,
+// leaving the EventListenerJob factory and any dispatcher binding as they
+// are. Bootstrap re-runs it whenever the error handler may have changed
+// (after each module lifecycle and the Errors callback), so a factory a
+// module registered for the job in its Start survives the re-install. Nil
+// clears the reporter.
+func SetFailureReporter(reporter events.FailureReporter) {
+	events.SetFailureReporter(reporter)
 }

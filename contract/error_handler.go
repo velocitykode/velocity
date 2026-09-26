@@ -19,6 +19,15 @@ type ErrorHandler interface {
 	HandleConsole(stderr io.Writer, err error) int
 	// Report sends err to the reporters when the report gate allows it.
 	Report(err error, ctx *ErrorContext)
+	// TryReport reports err exactly as Report does and returns whether the
+	// report was actually handled: true only when something took the report
+	// (a SelfReporting error, a report rule, or the configured reporters,
+	// each of which is then called), false when err was nil or already
+	// reported, when the report gate dropped it, and when the report ended
+	// early without being handled (a panic inside the pipeline). Callers
+	// that would otherwise report the same failure a second time through
+	// another path skip that path only on true.
+	TryReport(err error, ctx *ErrorContext) bool
 	// Render writes the response for err through rc.
 	Render(rc RenderContext, err error, ctx *ErrorContext)
 	// ShouldReport reports whether err passes the report gate.

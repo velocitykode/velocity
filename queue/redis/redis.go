@@ -599,10 +599,9 @@ func (r *RedisDriver) Failed(job queue.Job, err error, queueName string) error {
 		return pusherr
 	}
 
-	// Call the job's Failed method
-	job.Failed(err)
-
-	return nil
+	// Run the job's Failed hook now that the failure is stored; a panic in
+	// it is contained and returned as queue.ErrFailedHookPanicked.
+	return queue.RunFailedHook(job, err)
 }
 
 // moveDelayedJobs moves ready delayed jobs to the main queue. The supplied

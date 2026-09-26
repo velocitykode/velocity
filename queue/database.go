@@ -658,15 +658,17 @@ func (d *DatabaseDriver) ReleaseCtx(ctx context.Context, token ReservationToken,
 // attempts, reserved_by): if the delete affects zero rows, the lease
 // was reclaimed by another worker. The transaction is rolled back so no
 // failed_jobs row is written for a lease we do not own; the function
-// returns [ErrLeaseLost]. Implements [ReservationDriver].
+// returns [ErrLeaseLost]. Once the transaction commits it runs the job's
+// Failed hook, once; on any error, a cancelled ctx included, it does not.
+// Implements [ReservationDriver].
 func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationToken, job Job, jobErr error, queueName string) error {
-	if token.IsZero() {
-		// No reservation to clean up; fall back to the bare Failed path
-		// so a failed_jobs row is still recorded.
-		return d.Failed(job, jobErr, queueName)
-	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if token.IsZero() {
+		// No reservation to clean up; record the failure the way Failed
+		// does, bound to ctx, so a failed_jobs row is still recorded.
+		return d.failedCtx(ctx, job, jobErr, queueName)
 	}
 
 	wrapper, wrapErr := createJobWrapper(job, queueName)
@@ -684,6 +686,22 @@ func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationT
 		return fmt.Errorf("velocity/queue: failed to serialize job: %w", serErr)
 	}
 
+	if err := d.commitFailedReservation(ctx, token, jobErr, queueName, payload); err != nil {
+		return err
+	}
+	// The job's Failed hook runs once the failure is committed and outside
+	// the worker-path lock, so a hook that re-enters the driver (Push,
+	// Size) does not self-deadlock, and a lease-lost or failed transaction
+	// (returned above) never runs it. A panic in the hook is contained and
+	// returned as ErrFailedHookPanicked with the failure already recorded.
+	// Mirrors MemoryDriver.FailReservedCtx.
+	return RunFailedHook(job, jobErr)
+}
+
+// commitFailedReservation deletes the reserved row and inserts its
+// failed_jobs row in one transaction under the worker-path lock (see
+// FailReservedCtx for the fencing).
+func (d *DatabaseDriver) commitFailedReservation(ctx context.Context, token ReservationToken, jobErr error, queueName string, payload []byte) error {
 	unlock := d.lockWorkerPath()
 	defer unlock()
 
@@ -821,8 +839,17 @@ func dedupeTableMissing(err error) bool {
 		strings.Contains(msg, "doesn't exist")
 }
 
-// Failed marks a job as failed
+// Failed marks a job as failed: it records the job in failed_jobs and then
+// runs the job's Failed hook, once. A failure to record returns the error
+// without running the hook.
 func (d *DatabaseDriver) Failed(job Job, err error, queueName string) error {
+	return d.failedCtx(context.Background(), job, err, queueName)
+}
+
+// failedCtx is Failed with the failed_jobs insert bound to ctx: a ctx
+// cancelled before or during the insert returns its error without running
+// the hook.
+func (d *DatabaseDriver) failedCtx(ctx context.Context, job Job, err error, queueName string) error {
 	// Create job wrapper for serialization
 	wrapper, wrapErr := createJobWrapper(job, queueName)
 	if wrapErr != nil {
@@ -853,7 +880,8 @@ func (d *DatabaseDriver) Failed(job Job, err error, queueName string) error {
 	insertQuery := d.rewriteQuery(
 		"INSERT INTO failed_jobs (queue, payload, exception, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
 	)
-	_, dbErr := d.db.Exec(
+	_, dbErr := d.db.ExecContext(
+		ctx,
 		insertQuery,
 		failedJob.Queue, failedJob.Payload, failedJob.Exception, time.Now().UTC(), time.Now().UTC(),
 	)
@@ -861,7 +889,10 @@ func (d *DatabaseDriver) Failed(job Job, err error, queueName string) error {
 		return fmt.Errorf("velocity/queue: failed to record failed job: %w", dbErr)
 	}
 
-	return nil
+	// The job's Failed hook runs once the failed_jobs row is recorded; a
+	// failed insert (returned above) never runs it, and a panic in it is
+	// contained (ErrFailedHookPanicked). Mirrors MemoryDriver.Failed.
+	return RunFailedHook(job, err)
 }
 
 // GetDelayedJobs returns the number of delayed jobs
