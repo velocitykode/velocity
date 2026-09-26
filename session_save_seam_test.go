@@ -236,24 +236,7 @@ func TestSessionSave_OnlyTheSeamSavesSessions(t *testing.T) {
 			return err
 		}
 		seam := filepath.ToSlash(path) == seamFile
-		ast.Inspect(f, func(n ast.Node) bool {
-			if seam {
-				if decl, ok := n.(*ast.FuncDecl); ok && decl.Name.Name == seamFunc {
-					return false
-				}
-				if vs, ok := n.(*ast.ValueSpec); ok && len(vs.Names) == 1 && vs.Names[0].Name == seamFunc {
-					return false
-				}
-			}
-			call, ok := n.(*ast.CallExpr)
-			if !ok || len(call.Args) != 1 {
-				return true
-			}
-			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Save" {
-				offenders = append(offenders, fset.Position(call.Pos()).String())
-			}
-			return true
-		})
+		offenders = append(offenders, sessionSaveSites(fset, f, seam, seamFunc)...)
 		return nil
 	})
 	if err != nil {
@@ -262,4 +245,83 @@ func TestSessionSave_OnlyTheSeamSavesSessions(t *testing.T) {
 	if len(offenders) > 0 {
 		t.Errorf("session saved outside the session middleware's seam:\n  %s", strings.Join(offenders, "\n  "))
 	}
+}
+
+// sessionSaveSites returns the positions in f that save a session or take
+// a Save method as a value (x.Save or (*T).Save not called in place, which
+// a later call through a variable would run unseen), skipping the seam
+// function seamFunc when seam is set. A session save is a Save call with
+// one argument (the response writer); a store's Save(w, session) is the
+// store behind that call, not a second save point.
+func sessionSaveSites(fset *token.FileSet, f *ast.File, seam bool, seamFunc string) []string {
+	var sites []string
+	called := map[*ast.SelectorExpr]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		if seam {
+			if decl, ok := n.(*ast.FuncDecl); ok && decl.Name.Name == seamFunc {
+				return false
+			}
+			if vs, ok := n.(*ast.ValueSpec); ok && len(vs.Names) == 1 && vs.Names[0].Name == seamFunc {
+				return false
+			}
+		}
+		switch x := n.(type) {
+		case *ast.CallExpr:
+			sel, ok := ast.Unparen(x.Fun).(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Save" {
+				return true
+			}
+			called[sel] = true
+			if len(x.Args) == 1 || (len(x.Args) == 2 && isMethodExpression(sel)) {
+				sites = append(sites, fset.Position(x.Pos()).String())
+			}
+		case *ast.SelectorExpr:
+			if x.Sel.Name == "Save" && !called[x] {
+				sites = append(sites, fset.Position(x.Pos()).String())
+			}
+		}
+		return true
+	})
+	return sites
+}
+
+// The save guard sees a session save whatever the syntax: a direct call,
+// a method value bound to a variable, a method expression, or a call
+// through parentheses. A store's two-argument Save stays allowed.
+func TestSessionSave_GuardCatchesEverySaveForm(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"direct call", `package p; func f(s S, w W) { s.Save(w) }`, 1},
+		{"method value", `package p; func f(s S, w W) { save := s.Save; save(w) }`, 1},
+		{"method expression", `package p; func f(s *S, w W) { (*S).Save(s, w) }`, 1},
+		{"parenthesised", `package p; func f(s S, w W) { (s.Save)(w) }`, 1},
+		{"store save", `package p; func f(st Store, w W, s S) { _ = st.Save(w, s) }`, 0},
+		{"seam", `package p; var seam = func(s S, w W) error { return s.Save(w) }`, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			f, err := parser.ParseFile(fset, "fixture.go", tt.src, 0)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if got := sessionSaveSites(fset, f, true, "seam"); len(got) != tt.want {
+				t.Fatalf("guard flagged %d sites %v, want %d", len(got), got, tt.want)
+			}
+		})
+	}
+}
+
+// isMethodExpression reports whether sel is a method expression on a
+// pointer type, (*T).Save, whose receiver is the call's first argument.
+func isMethodExpression(sel *ast.SelectorExpr) bool {
+	paren, ok := sel.X.(*ast.ParenExpr)
+	if !ok {
+		return false
+	}
+	_, ok = paren.X.(*ast.StarExpr)
+	return ok
 }

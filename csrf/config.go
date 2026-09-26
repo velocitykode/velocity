@@ -104,10 +104,10 @@ type Config struct {
 	//     to echo into the header on unsafe requests.
 	//   - Secure, SameSite, Path and Domain come from CookiePolicy, the
 	//     same attributes as the session cookie.
-	//   - The cookie carries the SAME per-session token reachable via
-	//     GetToken(sessionID). Single-use tokens MUST NOT be exposed via
-	//     this cookie - they are consumed on validation and the client
-	//     would echo a stale value. When SingleUse is true the cookie
+	//   - The cookie carries the SAME per-session token
+	//     GetToken(ctx, sessionID) returns. Single-use tokens MUST NOT be
+	//     exposed via this cookie - they are consumed on validation and
+	//     the client would echo a stale value. When SingleUse is true the cookie
 	//     write is skipped automatically.
 	WriteXSRFCookie bool
 

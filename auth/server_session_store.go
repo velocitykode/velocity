@@ -116,16 +116,28 @@ type ServerSessionStore interface {
 	// UpdateData for that.
 	Put(ctx context.Context, session *StoredSession) error
 
-	// UpdateData replaces the record's Data and slides it like Touch
+	// UpdateData rewrites the record's Data and slides it like Touch
 	// (LastSeenAt to lastSeen, ExpiresAt to expiresAt), leaving every
-	// other field as it is. session.ServerStore saves the session through
-	// it. Like Touch it is update-if-present: ErrSessionNotFound when no
+	// other field as it is. update receives a copy of the Data the record
+	// holds when the write lands (nil when it has none) and returns the
+	// Data to store; the read, update and write are one atomic step
+	// against every other UpdateData and Touch on the record, on every
+	// instance sharing the store, so a save computed from an earlier read
+	// can never overwrite a later one. update may run more than once
+	// (a store that retries) and must depend on nothing but its argument.
+	// An error from update aborts the write and is returned.
+	// session.ServerStore saves the session through it, applying the
+	// request's own changes to the current payload.
+	//
+	// Like Touch it is update-if-present: ErrSessionNotFound when no
 	// record exists for id (never an insert), ErrSessionExpired (and the
 	// record removed) when the record has passed its current ExpiresAt.
-	UpdateData(ctx context.Context, id string, data map[string]any, lastSeen, expiresAt time.Time) error
+	UpdateData(ctx context.Context, id string, update func(data map[string]any) (map[string]any, error), lastSeen, expiresAt time.Time) error
 
 	// Touch is the activity refresh: it sets LastSeenAt to lastSeen and
-	// ExpiresAt to expiresAt on an existing record, so an active session's
+	// ExpiresAt to expiresAt on an existing record, keeping the Data the
+	// record holds when the write lands (atomic with UpdateData, as
+	// above), so an active session's
 	// record slides with its idle window (the scheme computes expiresAt
 	// from the lifetime policy, capped at the absolute lifetime). A backend
 	// with its own record TTL must extend it to expiresAt. Touch is

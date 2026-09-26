@@ -1,13 +1,16 @@
 package schemes
 
 import (
+	"bufio"
 	"errors"
+	"net"
 	"net/http"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/session"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 	"github.com/velocitykode/velocity/router"
 )
@@ -15,10 +18,10 @@ import (
 // preCommitHooker is the optional capability the save-at-end middleware
 // uses to register a pre-commit hook on the response writer. The
 // router's response writer implements it, and the router fires a hook
-// nothing fired once its error boundary is done with the request; other
-// implementations (test recorders, custom wrappers) fall through to the
-// post-handler save so the middleware still functions, it just cannot
-// intercept header commit.
+// nothing fired once its error boundary is done with the request; any
+// other writer (test recorders, custom wrappers) is wrapped in a
+// preCommitWriter for the handler's run, which fires the save the same
+// way.
 type preCommitHooker interface {
 	BeforeFirstWrite(fn func())
 }
@@ -45,9 +48,10 @@ type preCommitHooker interface {
 //     the error path writes anything, the router fires the hook once the
 //     boundary is done, before net/http sends its implicit 200.
 //
-//   - Post-handler save, for a response writer without the hook
-//     (httptest.ResponseRecorder, custom wrappers), right after the
-//     handler returns.
+//   - Any other response writer (httptest.ResponseRecorder, custom
+//     wrappers) is wrapped for the handler's run so its first committing
+//     write fires the same save; when the handler writes nothing, the
+//     save runs as the handler returns.
 //
 // The save is the one place the framework persists a session: Login,
 // Logout, the intended-URL stash and resolver, and view flashes only
@@ -57,7 +61,12 @@ type preCommitHooker interface {
 // never holds either for a session that was not persisted. Login and
 // Logout called outside this middleware (a plain net/http handler, a
 // script, a test) are their own save scope and commit through the same
-// seam body before returning.
+// seam body before returning: one save per operation, since outside the
+// middleware the scheme sees no response boundary to wait for. Composing
+// several scheme operations on one response needs the middleware.
+//
+// Mounted more than once on a request (nested), the outermost instance
+// owns the save; the inner ones pass straight through.
 //
 // velocity.New installs it on the app router whenever the default scheme
 // is a *SessionScheme (see SessionMiddlewareFor); consumers do not
@@ -88,30 +97,40 @@ func SessionMiddlewareFor(current func() *SessionScheme) router.MiddlewareFunc {
 }
 
 // serveWithSession runs next inside the save seam; see SessionMiddleware.
+//
+// The request, not the middleware, owns the commit: the first session
+// middleware to see the request binds its holder and commits it once, and
+// a session middleware nested inside it (the app's and one a group mounts
+// again) runs its handler straight through, so a request is saved once
+// whichever middleware or writer is involved.
 func (g *SessionScheme) serveWithSession(c *router.Context, next router.HandlerFunc) error {
-	// Replace the request with one carrying a sessionHolder so
-	// any scheme call inside the handler caches its session
-	// lookup AND so we can recover the session after the
-	// handler returns.
-	//
-	// If the holder is already present (e.g. a nested mount
-	// installed the middleware twice), preserve the outer one
-	// so the post-handler save still sees writes performed
-	// before the inner middleware re-wrapped.
+	// A holder with a response writer is one an enclosing session
+	// middleware already bound and commits.
+	if holder, ok := c.Request.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil && holder.getResponseWriter() != nil {
+		return next(c)
+	}
+
+	// Replace the request with one carrying a sessionHolder so any
+	// scheme call inside the handler caches its session lookup AND so
+	// the seam can recover the session when it commits. A holder
+	// WithSessionContext attached on its own (no middleware) is kept,
+	// so writes made through it before this point are saved.
 	r := c.Request
-	if _, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); !ok {
+	holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
+	if !ok || holder == nil {
 		r = WithSessionContext(r)
 		c.Request = r
+		holder = r.Context().Value(sessionCtxKey{}).(*sessionHolder)
 	}
 
 	// Hand the response writer to the holder so scheme read paths
 	// (User/Check) can emit Set-Cookie during remember-cookie
 	// revival: rotate-on-use needs to deliver the replacement
-	// remember cookie, and those methods only see the request.
-	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil {
-		holder.setResponseWriter(c.Response)
-		holder.markSaveScope()
-	}
+	// remember cookie, and those methods only see the request. It also
+	// marks the holder as bound by this middleware.
+	w := c.Response
+	holder.setResponseWriter(w)
+	holder.markSaveScope()
 
 	// Eagerly bind a session to the request so anonymous-but-
 	// stateful concerns (CSRF token mint, flash bag, anything
@@ -126,40 +145,100 @@ func (g *SessionScheme) serveWithSession(c *router.Context, next router.HandlerF
 	//
 	// Order: load existing session first; only Create on miss so
 	// we never overwrite a returning visitor's id. The created
-	// session is marked modified so the doSave path below writes
-	// the cookie even when the handler never touched the bag.
+	// session is marked modified so the commit writes the cookie
+	// even when the handler never touched the bag.
 	ensureSession(g, c.Request)
 
-	// saved makes the save run at most once per request, so
-	// the session never writes two Set-Cookie headers (one
-	// fresh, one stale) whichever site invokes doSave.
-	var saved sync.Once
+	// The holder's commit runs at most once per request, so the
+	// session never writes two Set-Cookie headers whichever site
+	// fires it.
 	doSave := func() {
-		saved.Do(func() {
-			if holder, ok := c.Request.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil {
-				_ = commitSession(g, c.Request, c.Response, holder)
-			}
+		holder.commitOnce.Do(func() {
+			_ = commitSession(g, c.Request, w, holder)
 		})
 	}
 
 	// Pre-commit hook: fires once just before the first
-	// WriteHeader/Write/Hijack commits the response, whether the
-	// handler or the router's error boundary writes it, and
-	// otherwise once the boundary is done with the request.
-	h, hooked := c.Response.(preCommitHooker)
-	if hooked {
+	// WriteHeader/Write/Flush/Hijack commits the response, whether the
+	// handler or the router's error boundary writes it, and otherwise
+	// once the boundary is done with the request. A writer without the
+	// hook is wrapped for the handler's run so its first write fires the
+	// commit the same way.
+	if h, hooked := w.(preCommitHooker); hooked {
 		h.BeforeFirstWrite(doSave)
+		return next(c)
 	}
-
+	c.Response = &preCommitWriter{ResponseWriter: w, beforeCommit: doSave}
 	err := next(c)
-
-	// A writer without the hook (test recorders, custom
-	// wrappers) saves here. sync.Once ensures we never
-	// double-save.
-	if !hooked {
-		doSave()
-	}
+	c.Response = w
+	// Nothing was written: commit now, before anything outside this
+	// middleware writes the response.
+	doSave()
 	return err
+}
+
+// preCommitWriter gives a response writer without the router's pre-commit
+// hook one: beforeCommit runs once, just before the first write that
+// commits the response headers (a final WriteHeader, Write, Flush or
+// Hijack), so the session cookie lands in the response the handler
+// writes.
+type preCommitWriter struct {
+	http.ResponseWriter
+	beforeCommit func()
+	committed    bool
+}
+
+func (p *preCommitWriter) commit() {
+	if !p.committed {
+		p.committed = true
+		p.beforeCommit()
+	}
+}
+
+// WriteHeader commits the response, except for an informational status
+// (1xx other than 101), which goes out ahead of the final one.
+func (p *preCommitWriter) WriteHeader(statusCode int) {
+	if statusCode < 100 || statusCode > 199 || statusCode == http.StatusSwitchingProtocols {
+		p.commit()
+	}
+	p.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (p *preCommitWriter) Write(b []byte) (int, error) {
+	p.commit()
+	return p.ResponseWriter.Write(b)
+}
+
+// Flush commits the response and flushes it when the writer can.
+func (p *preCommitWriter) Flush() {
+	p.commit()
+	if f, ok := p.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack commits the session before handing the connection over, when the
+// writer can hijack.
+func (p *preCommitWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := p.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	p.commit()
+	return h.Hijack()
+}
+
+// Committed reports whether the response is committed.
+func (p *preCommitWriter) Committed() bool {
+	if cr, ok := p.ResponseWriter.(contract.CommitReporter); ok {
+		return cr.Committed()
+	}
+	return p.committed
+}
+
+// Unwrap returns the wrapped writer (for http.ResponseController).
+func (p *preCommitWriter) Unwrap() http.ResponseWriter {
+	return p.ResponseWriter
 }
 
 // commitSession is the save seam's body and the only framework code that
@@ -168,11 +247,20 @@ func (g *SessionScheme) serveWithSession(c *router.Context, next router.HandlerF
 // queued behind the save. A failed save drops the queued writes, which
 // are bound to the session id the save did not persist, runs the queued
 // undo steps instead, and is returned.
+//
+// A response that already deletes the session cookie (Context.DeleteCookie)
+// ends the session: it is invalidated and saved destroyed, which removes a
+// server record and sends the one deletion, and the queued writes, bound
+// to the ended session, are dropped. Renewal can never issue the cookie
+// again after the handler deleted it.
 func commitSession(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) error {
 	queued, undo := holder.takeAfterSave()
 	session := holder.getSession()
 	if session == nil {
 		return nil
+	}
+	if g.endSessionDeletedBy(w, session) {
+		queued = nil
 	}
 	g.renewOnActivity(r, session)
 	// Skip the save when no mutation occurred. The modifiedSession
@@ -195,6 +283,48 @@ func commitSession(g *SessionScheme, r *http.Request, w http.ResponseWriter, hol
 		fn(w)
 	}
 	return nil
+}
+
+// endSessionDeletedBy invalidates session when w already carries a
+// deletion of the session cookie, and reports whether it did. The
+// response's own deletion lines for the cookie are removed: the destroyed
+// session's save writes the deletion with the store's attributes. The
+// cookie store's copy of the id is revoked in this process, as at logout.
+func (g *SessionScheme) endSessionDeletedBy(w http.ResponseWriter, session auth.Session) bool {
+	if ms, ok := session.(modifiedSession); ok && ms.IsDestroyed() {
+		return false
+	}
+	header := w.Header()
+	lines := header.Values("Set-Cookie")
+	kept := lines[:0:0]
+	deleted := false
+	prefix := g.config.Name + "="
+	for _, line := range lines {
+		if !strings.HasPrefix(line, prefix) {
+			kept = append(kept, line)
+			continue
+		}
+		if c, err := http.ParseSetCookie(line); err == nil && c.MaxAge < 0 {
+			deleted = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !deleted {
+		return false
+	}
+	header.Del("Set-Cookie")
+	for _, line := range kept {
+		header.Add("Set-Cookie", line)
+	}
+	id := session.ID()
+	if err := session.Invalidate(); err != nil {
+		g.logWarn("velocity/auth: session invalidate (session cookie deleted) failed", "session_id", id, "error", err)
+	}
+	if rev, ok := g.store.(sessionRevoker); ok && id != "" {
+		rev.Revoke(id)
+	}
+	return true
 }
 
 // renewableSession is the capability renewOnActivity needs from a session:

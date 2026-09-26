@@ -652,8 +652,8 @@ func New(opts ...Option) (*App, error) {
 	// immediately, and any pooled Context carries the same Services
 	// pointer.
 	a.Services.RedirectAllowlist = a.Router
-	// Every framework cookie (flash, XSRF token, remember, maintenance
-	// bypass, Context.DeleteCookie) follows the session cookie's Path,
+	// Every framework cookie (XSRF token, remember, maintenance bypass,
+	// Context.DeleteCookie) follows the session cookie's Path,
 	// Domain, Secure and SameSite. The session config was validated at
 	// step 5: Secure=false survives only in dev/test profiles, and
 	// SameSite=None only with Secure. Set BEFORE SetServices for the same

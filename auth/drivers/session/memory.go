@@ -206,24 +206,30 @@ func (s *MemoryStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 }
 
 // Touch slides an existing record under the store mutex: LastSeenAt and
-// ExpiresAt take the given values. It never inserts: a missing id returns auth.ErrSessionNotFound, and a record
+// ExpiresAt take the given values and Data stays what the record holds. It
+// never inserts: a missing id returns auth.ErrSessionNotFound, and a record
 // past ExpiresAt is removed and reported as auth.ErrSessionExpired, so an
 // activity refresh that loses the race against Delete or DeleteAllForUser
 // cannot resurrect the revoked session.
 func (s *MemoryStore) Touch(ctx context.Context, id string, lastSeen, expiresAt time.Time) error {
-	return s.slide(ctx, id, lastSeen, expiresAt, false, nil)
+	return s.slide(ctx, id, lastSeen, expiresAt, nil)
 }
 
-// UpdateData replaces an existing record's Data and slides it like Touch,
-// under the store mutex. It never inserts: a missing id returns
+// UpdateData rewrites an existing record's Data through update and slides
+// it like Touch, all under the store mutex, so update sees the Data every
+// earlier write left. It never inserts: a missing id returns
 // auth.ErrSessionNotFound and an expired record is removed and reported as
 // auth.ErrSessionExpired.
-func (s *MemoryStore) UpdateData(ctx context.Context, id string, data map[string]any, lastSeen, expiresAt time.Time) error {
-	return s.slide(ctx, id, lastSeen, expiresAt, true, data)
+func (s *MemoryStore) UpdateData(ctx context.Context, id string, update func(data map[string]any) (map[string]any, error), lastSeen, expiresAt time.Time) error {
+	if update == nil {
+		return errors.New("velocity/auth/session: nil data update")
+	}
+	return s.slide(ctx, id, lastSeen, expiresAt, update)
 }
 
-// slide is the update-if-present write behind Touch and UpdateData.
-func (s *MemoryStore) slide(ctx context.Context, id string, lastSeen, expiresAt time.Time, replaceData bool, data map[string]any) error {
+// slide is the update-if-present write behind Touch and UpdateData; a nil
+// update keeps the record's Data.
+func (s *MemoryStore) slide(ctx context.Context, id string, lastSeen, expiresAt time.Time, update func(map[string]any) (map[string]any, error)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -237,11 +243,15 @@ func (s *MemoryStore) slide(ctx context.Context, id string, lastSeen, expiresAt 
 		s.removeLocked(id)
 		return auth.ErrSessionExpired
 	}
-	sess.LastSeenAt = lastSeen
-	sess.ExpiresAt = expiresAt
-	if replaceData {
+	if update != nil {
+		data, err := update(cloneData(sess.Data))
+		if err != nil {
+			return err
+		}
 		sess.Data = cloneData(data)
 	}
+	sess.LastSeenAt = lastSeen
+	sess.ExpiresAt = expiresAt
 	return nil
 }
 

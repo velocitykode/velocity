@@ -68,7 +68,7 @@ func (stubSessionStore) Get(context.Context, string) (*auth.StoredSession, error
 }
 func (stubSessionStore) Put(context.Context, *auth.StoredSession) error            { return nil }
 func (stubSessionStore) Touch(context.Context, string, time.Time, time.Time) error { return nil }
-func (stubSessionStore) UpdateData(context.Context, string, map[string]any, time.Time, time.Time) error {
+func (stubSessionStore) UpdateData(context.Context, string, func(map[string]any) (map[string]any, error), time.Time, time.Time) error {
 	return nil
 }
 func (stubSessionStore) Delete(context.Context, string) error           { return nil }

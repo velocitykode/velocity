@@ -52,8 +52,9 @@ type Services struct {
 	RedirectAllowlist contract.RedirectAllowlist
 
 	// CookiePolicy is the Path, Domain, Secure and SameSite every cookie
-	// the framework writes or clears carries (session, remember, flash,
-	// XSRF token, maintenance bypass and their deletions). Set by
+	// the framework writes or clears carries (session, remember, XSRF
+	// token, maintenance bypass and their deletions; flash rides in the
+	// session). Set by
 	// velocity.New from the validated session config; the zero value is
 	// the secure default (Path "/", Secure, SameSite=Lax), so a hand-built
 	// Services still writes Secure cookies.

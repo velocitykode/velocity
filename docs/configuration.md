@@ -102,7 +102,7 @@ that cannot import `app`).
 |------|---------|---------|-------------------|-----------------|-------|
 | `CSRF_HEADER` | `config.go` | from default | no | none | |
 | `CSRF_FORM_FIELD` | `config.go` | from default | no | none | |
-| `CSRF_SESSION_COOKIE` | `config.go` | matches `SESSION_NAME` | recommended | CSRF token keyed off wrong cookie -> always 419 or always-pass | |
+| `CSRF_SESSION_COOKIE` | `config.go` | matches `SESSION_NAME` | recommended | a name other than `SESSION_NAME` fails closed: every unsafe request gets 419 until the app sets its own `csrf.Config.SessionIDResolver` | |
 | `CSRF_SINGLE_USE` | `config.go` | `false` | no | none | |
 | `CSRF_ERROR_MESSAGE` | `config.go` | default | no | none | |
 | `CSRF_WRITE_XSRF_COOKIE` | `config.go` | `true` | no | none | |

@@ -193,9 +193,12 @@ MAIL_DRIVER=postmark    # or mailgun, local, log
 
 ### Secure by Default
 
-Safe defaults you opt out of, not into. Cookies ship `Secure`, `HttpOnly`,
-and `SameSite=Lax`. CORS rejects every cross-origin request until you name
-the origins you trust. CSRF is on for every state-changing method. The app
+Safe defaults you opt out of, not into. Cookies ship `Secure` and
+`SameSite=Lax`, and the session and remember cookies `HttpOnly`; only
+`XSRF-TOKEN` is readable by JavaScript, by design, so a client can echo it
+back. CORS rejects every cross-origin request until you name the origins
+you trust. Mount the CSRF middleware and every state-changing method needs
+a token bound to a live session. The app
 won't start without an `APP_KEY`, and `APP_DEBUG=true` is ignored in
 production so stack traces never leak. The destructive CLI commands
 (`db wipe`, `migrate fresh`, `migrate rollback`) refuse to touch a

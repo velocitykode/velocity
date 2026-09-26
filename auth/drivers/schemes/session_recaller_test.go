@@ -90,7 +90,7 @@ func (failingServerStore) Put(_ context.Context, _ *auth.StoredSession) error { 
 func (failingServerStore) Touch(_ context.Context, _ string, _, _ time.Time) error {
 	return errStoreOffline
 }
-func (failingServerStore) UpdateData(_ context.Context, _ string, _ map[string]any, _, _ time.Time) error {
+func (failingServerStore) UpdateData(_ context.Context, _ string, _ func(map[string]any) (map[string]any, error), _, _ time.Time) error {
 	return errStoreOffline
 }
 func (failingServerStore) Delete(_ context.Context, _ string) error           { return nil }

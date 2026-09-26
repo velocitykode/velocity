@@ -44,8 +44,8 @@ func (l *warnLog) contains(s string) bool {
 
 // storeScheme builds a session scheme through NewSessionScheme. With
 // serverSide it keeps sessions in a session.ServerStore over a cache-backed
-// record store, installed the way velocity.New does for
-// SESSION_STORE=server; otherwise it keeps the default cookie store.
+// record store, passed with WithSessionStore alone (the scheme takes the
+// record store from it); otherwise it keeps the default cookie store.
 func storeScheme(t *testing.T, serverSide bool) (*SessionScheme, *session.CacheStore) {
 	t.Helper()
 	enc, err := crypto.NewEncryptor(crypto.Config{Key: strings.Repeat("k", 32), Cipher: "AES-256-GCM"})
@@ -81,7 +81,6 @@ func storeScheme(t *testing.T, serverSide bool) (*SessionScheme, *session.CacheS
 	if err != nil {
 		t.Fatalf("NewSessionScheme: %v", err)
 	}
-	scheme.SetServerSessionStore(records)
 	return scheme, records
 }
 

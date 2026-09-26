@@ -50,7 +50,7 @@ func (s *holderRaceStore) Get(_ context.Context, id string) (*auth.StoredSession
 }
 func (s *holderRaceStore) Put(context.Context, *auth.StoredSession) error            { return nil }
 func (s *holderRaceStore) Touch(context.Context, string, time.Time, time.Time) error { return nil }
-func (s *holderRaceStore) UpdateData(context.Context, string, map[string]any, time.Time, time.Time) error {
+func (s *holderRaceStore) UpdateData(context.Context, string, func(map[string]any) (map[string]any, error), time.Time, time.Time) error {
 	return nil
 }
 func (s *holderRaceStore) Delete(context.Context, string) error           { return nil }

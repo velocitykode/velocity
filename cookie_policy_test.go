@@ -351,23 +351,7 @@ func TestFrameworkCookies_OnlyBuiltByCookiePolicy(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			var typ ast.Expr
-			switch x := n.(type) {
-			case *ast.CompositeLit:
-				typ = x.Type
-			case *ast.CallExpr:
-				if id, ok := x.Fun.(*ast.Ident); ok && id.Name == "new" && len(x.Args) == 1 {
-					typ = x.Args[0]
-				}
-			}
-			if sel, ok := typ.(*ast.SelectorExpr); ok && sel.Sel.Name == "Cookie" {
-				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "http" {
-					offenders = append(offenders, fset.Position(n.Pos()).String())
-				}
-			}
-			return true
-		})
+		offenders = append(offenders, cookieConstructionSites(fset, f)...)
 		return nil
 	})
 	if err != nil {
@@ -375,5 +359,91 @@ func TestFrameworkCookies_OnlyBuiltByCookiePolicy(t *testing.T) {
 	}
 	if len(offenders) > 0 {
 		t.Errorf("http.Cookie constructed outside %s (build it with contract.CookiePolicy.Cookie):\n  %s", builder, strings.Join(offenders, "\n  "))
+	}
+}
+
+// cookieConstructionSites returns the positions in f that construct a
+// net/http Cookie: a composite literal or new() of the type, a variable
+// declared with it (its zero value is a cookie), or a local type naming it.
+// The package is resolved through f's imports, so a renamed or dot import
+// is caught too.
+func cookieConstructionSites(fset *token.FileSet, f *ast.File) []string {
+	httpNames := map[string]bool{}
+	dotImported := false
+	for _, imp := range f.Imports {
+		if strings.Trim(imp.Path.Value, "`\"") != "net/http" {
+			continue
+		}
+		switch {
+		case imp.Name == nil:
+			httpNames["http"] = true
+		case imp.Name.Name == ".":
+			dotImported = true
+		case imp.Name.Name != "_":
+			httpNames[imp.Name.Name] = true
+		}
+	}
+	isCookie := func(e ast.Expr) bool {
+		switch x := e.(type) {
+		case *ast.SelectorExpr:
+			pkg, ok := x.X.(*ast.Ident)
+			return ok && x.Sel.Name == "Cookie" && httpNames[pkg.Name] && pkg.Obj == nil
+		case *ast.Ident:
+			return dotImported && x.Name == "Cookie" && x.Obj == nil
+		}
+		return false
+	}
+	var sites []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		var typ ast.Expr
+		switch x := n.(type) {
+		case *ast.CompositeLit:
+			typ = x.Type
+		case *ast.CallExpr:
+			if id, ok := x.Fun.(*ast.Ident); ok && id.Name == "new" && len(x.Args) == 1 {
+				typ = x.Args[0]
+			}
+		case *ast.ValueSpec:
+			typ = x.Type
+		case *ast.TypeSpec:
+			typ = x.Type
+		}
+		if typ != nil && isCookie(typ) {
+			sites = append(sites, fset.Position(n.Pos()).String())
+		}
+		return true
+	})
+	return sites
+}
+
+// The cookie guard sees the construction whatever the syntax: a renamed
+// or dot import of net/http, new(), a zero-value variable or a local type
+// naming the cookie. Taking and passing a *http.Cookie is not flagged.
+func TestFrameworkCookies_GuardCatchesEveryConstruction(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"literal", `package p; import "net/http"; var _ = &http.Cookie{Name: "a"}`, 1},
+		{"renamed import", `package p; import h "net/http"; var _ = h.Cookie{Name: "a"}`, 1},
+		{"dot import", `package p; import . "net/http"; var _ = Cookie{Name: "a"}`, 1},
+		{"new", `package p; import "net/http"; var _ = new(http.Cookie)`, 1},
+		{"zero value", `package p; import "net/http"; func f() { var c http.Cookie; c.Name = "a"; _ = c }`, 1},
+		{"local type", `package p; import "net/http"; type jar = http.Cookie; var _ = jar{Name: "a"}`, 1},
+		{"pointer use only", `package p; import "net/http"; func f(w http.ResponseWriter, c *http.Cookie) { http.SetCookie(w, c) }`, 0},
+		{"other package's Cookie", `package p; import http "example.com/fake"; var _ = http.Cookie{}`, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			f, err := parser.ParseFile(fset, "fixture.go", tt.src, 0)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if got := cookieConstructionSites(fset, f); len(got) != tt.want {
+				t.Fatalf("guard flagged %d sites %v, want %d", len(got), got, tt.want)
+			}
+		})
 	}
 }

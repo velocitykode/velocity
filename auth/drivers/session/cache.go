@@ -40,20 +40,34 @@ var (
 
 	// ErrCacheStoreUnsupported is returned by NewCacheStore when the cache
 	// backend lacks the contract.CacheReplacer or contract.CacheSetStore
-	// capability. Without them the store cannot make Touch and the user
-	// index atomic, which is the point of this driver; the memory and
-	// redis cache drivers implement both.
-	ErrCacheStoreUnsupported = errors.New("velocity/auth/session: cache backend lacks replace or set operations")
+	// capability or locks. Without them the store cannot make record
+	// writes and the user index atomic, which is the point of this driver;
+	// the memory and redis cache drivers implement all three.
+	ErrCacheStoreUnsupported = errors.New("velocity/auth/session: cache backend lacks replace, set or lock operations")
 )
 
 // cacheBackend is what CacheStore needs from the cache: the base
-// operations plus the two optional capabilities that make the writes
-// atomic.
+// operations plus the optional capabilities that make the writes atomic.
+// Lock is the cache drivers' lock (the memory and redis drivers have it):
+// a record's read-update-write holds the record's lock, so two instances
+// sharing the backend never write a record from the same earlier read.
 type cacheBackend interface {
 	contract.Cache
 	contract.CacheReplacer
 	contract.CacheSetStore
+	Lock(key string, ttl ...time.Duration) contract.CacheLock
 }
+
+// cacheWritePrefix names a record's write lock.
+const cacheWritePrefix = "session:write:"
+
+// Bounds of a record's write lock: held no longer than recordLockHold (a
+// crashed holder frees it then) and waited for no longer than
+// recordLockWait before the write fails.
+const (
+	recordLockHold = 10 * time.Second
+	recordLockWait = 5 * time.Second
+)
 
 // CacheStore is an auth.ServerSessionStore backed by a velocity cache
 // store. It is the production driver: every app instance sharing the same
@@ -64,8 +78,11 @@ type cacheBackend interface {
 //
 //   - the per-user index is a backend set (contract.CacheSetStore), never
 //     read-modify-written in this process;
-//   - Touch goes through contract.CacheReplacer (SET XX), so a refresh that
-//     loses the race against a revocation cannot recreate the record;
+//   - Touch and UpdateData read, change and write a record under the
+//     record's lock, so no write lands on top of one made after its read
+//     (a Touch keeps the payload a concurrent save wrote), and the write
+//     goes through contract.CacheReplacer (SET XX), so one that loses the
+//     race against a revocation cannot recreate the record;
 //   - DeleteAllForUser rotates the user's generation token before touching
 //     the index, and Get rejects any record carrying an older token, so
 //     "sign out everywhere" is authoritative even when the index is
@@ -333,40 +350,62 @@ func (s *CacheStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 
 // Touch implements auth.ServerSessionStore. It slides the record: LastSeenAt
 // and ExpiresAt are set and the meta key's TTL follows the new ExpiresAt.
-// The refreshed record is written with contract.CacheReplacer, so it lands
-// only if the key still exists: a Delete or DeleteAllForUser between the
-// read and this write wins, and the caller sees ErrSessionNotFound. After
-// the write the user index's TTL is extended (never shortened) so the
-// index keeps outliving the records it lists.
+// The record is read and rewritten under its write lock, so Data stays
+// whatever the latest save left, and the write goes through
+// contract.CacheReplacer, so it lands only if the key still exists: a
+// Delete or DeleteAllForUser between the read and this write wins, and the
+// caller sees ErrSessionNotFound. After the write the user index's TTL is
+// extended (never shortened) so the index keeps outliving the records it
+// lists.
 func (s *CacheStore) Touch(ctx context.Context, id string, lastSeen, expiresAt time.Time) error {
-	return s.slide(ctx, id, lastSeen, expiresAt, false, nil)
+	return s.slide(ctx, id, lastSeen, expiresAt, nil)
 }
 
-// UpdateData implements auth.ServerSessionStore. It replaces the record's
-// Data and slides it exactly like Touch, through the same replace-if-present
-// write, so a save that loses the race against a revocation cannot recreate
-// the record.
-func (s *CacheStore) UpdateData(ctx context.Context, id string, data map[string]any, lastSeen, expiresAt time.Time) error {
-	return s.slide(ctx, id, lastSeen, expiresAt, true, data)
+// UpdateData implements auth.ServerSessionStore. Under the record's write
+// lock it reads the record, rewrites its Data through update and slides it
+// exactly like Touch, through the same replace-if-present write, so a save
+// that loses the race against a revocation cannot recreate the record.
+func (s *CacheStore) UpdateData(ctx context.Context, id string, update func(data map[string]any) (map[string]any, error), lastSeen, expiresAt time.Time) error {
+	if update == nil {
+		return errors.New("velocity/auth/session: nil data update")
+	}
+	return s.slide(ctx, id, lastSeen, expiresAt, update)
 }
 
-// slide is the replace-if-present write behind Touch and UpdateData.
-func (s *CacheStore) slide(ctx context.Context, id string, lastSeen, expiresAt time.Time, replaceData bool, data map[string]any) error {
+// slide is the locked, replace-if-present write behind Touch and
+// UpdateData; a nil update keeps the record's Data.
+func (s *CacheStore) slide(ctx context.Context, id string, lastSeen, expiresAt time.Time, update func(map[string]any) (map[string]any, error)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if id == "" {
 		return auth.ErrSessionNotFound
 	}
+	var err error
+	lockErr := s.backend.Lock(cacheWritePrefix+id, recordLockHold).Block(ctx, recordLockWait, func() {
+		err = s.slideLocked(ctx, id, lastSeen, expiresAt, update)
+	})
+	if lockErr != nil {
+		return fmt.Errorf("velocity/auth/session: lock session record: %w", lockErr)
+	}
+	return err
+}
+
+// slideLocked is slide's body, run under the record's write lock.
+func (s *CacheStore) slideLocked(ctx context.Context, id string, lastSeen, expiresAt time.Time, update func(map[string]any) (map[string]any, error)) error {
 	rec, err := s.live(ctx, id)
 	if err != nil {
 		return err
 	}
-	rec.LastSeenAt = lastSeen
-	rec.ExpiresAt = expiresAt
-	if replaceData {
+	if update != nil {
+		data, err := update(rec.Data)
+		if err != nil {
+			return err
+		}
 		rec.Data = data
 	}
+	rec.LastSeenAt = lastSeen
+	rec.ExpiresAt = expiresAt
 	encoded, err := encodeRecord(rec)
 	if err != nil {
 		return err

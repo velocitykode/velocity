@@ -9,8 +9,10 @@ package authtest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -313,7 +315,7 @@ func RunServerSessionStoreContractTests(t *testing.T, factory ServerSessionStore
 		}
 		stamp := time.Now().Add(5 * time.Minute).Truncate(time.Second)
 		slid := sess.ExpiresAt.Add(time.Hour).Truncate(time.Second)
-		if err := s.UpdateData(ctx, "data-1", map[string]any{"cart": "three items"}, stamp, slid); err != nil {
+		if err := s.UpdateData(ctx, "data-1", setData(map[string]any{"cart": "three items"}), stamp, slid); err != nil {
 			t.Fatalf("UpdateData: %v", err)
 		}
 		got, err := s.Get(ctx, "data-1")
@@ -334,7 +336,7 @@ func RunServerSessionStoreContractTests(t *testing.T, factory ServerSessionStore
 	t.Run("UpdateData_UnknownID_ReturnsErrSessionNotFoundAndNeverInserts", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()
-		err := s.UpdateData(ctx, "never-existed", map[string]any{"k": "v"}, time.Now(), time.Now().Add(time.Hour))
+		err := s.UpdateData(ctx, "never-existed", setData(map[string]any{"k": "v"}), time.Now(), time.Now().Add(time.Hour))
 		if !errors.Is(err, auth.ErrSessionNotFound) {
 			t.Fatalf("expected ErrSessionNotFound, got %v", err)
 		}
@@ -355,7 +357,7 @@ func RunServerSessionStoreContractTests(t *testing.T, factory ServerSessionStore
 			t.Fatalf("DeleteAllForUser: %v", err)
 		}
 		for _, id := range []string{"data-del", "data-bulk"} {
-			if err := s.UpdateData(ctx, id, map[string]any{"k": "v"}, time.Now(), time.Now().Add(time.Hour)); !errors.Is(err, auth.ErrSessionNotFound) {
+			if err := s.UpdateData(ctx, id, setData(map[string]any{"k": "v"}), time.Now(), time.Now().Add(time.Hour)); !errors.Is(err, auth.ErrSessionNotFound) {
 				t.Fatalf("%s: expected ErrSessionNotFound after revocation, got %v", id, err)
 			}
 			if _, err := s.Get(ctx, id); !errors.Is(err, auth.ErrSessionNotFound) {
@@ -370,9 +372,91 @@ func RunServerSessionStoreContractTests(t *testing.T, factory ServerSessionStore
 		sess := makeSession("data-expired", "user-1")
 		sess.ExpiresAt = time.Now().Add(-time.Minute)
 		_ = s.Put(ctx, sess)
-		err := s.UpdateData(ctx, "data-expired", map[string]any{"k": "v"}, time.Now(), time.Now().Add(time.Hour))
+		err := s.UpdateData(ctx, "data-expired", setData(map[string]any{"k": "v"}), time.Now(), time.Now().Add(time.Hour))
 		if !errors.Is(err, auth.ErrSessionExpired) {
 			t.Fatalf("expected ErrSessionExpired, got %v", err)
+		}
+	})
+
+	t.Run("UpdateData_SeesTheDataTheRecordHolds", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		sess := makeSession("data-seen", "user-1")
+		sess.Data = map[string]any{"first": "one"}
+		if err := s.Put(ctx, sess); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		addKey := func(k string) func(map[string]any) (map[string]any, error) {
+			return func(current map[string]any) (map[string]any, error) {
+				out := map[string]any{k: "set"}
+				for key, v := range current {
+					out[key] = v
+				}
+				return out, nil
+			}
+		}
+		if err := s.UpdateData(ctx, "data-seen", addKey("second"), time.Now(), time.Now().Add(time.Hour)); err != nil {
+			t.Fatalf("UpdateData: %v", err)
+		}
+		if err := s.Touch(ctx, "data-seen", time.Now(), time.Now().Add(time.Hour)); err != nil {
+			t.Fatalf("Touch: %v", err)
+		}
+		got, err := s.Get(ctx, "data-seen")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.Data["first"] != "one" || got.Data["second"] != "set" {
+			t.Fatalf("Data = %v, want the update applied to what the record held, kept by Touch", got.Data)
+		}
+		boom := errors.New("update refused")
+		refuse := func(map[string]any) (map[string]any, error) { return nil, boom }
+		if err := s.UpdateData(ctx, "data-seen", refuse, time.Now(), time.Now().Add(time.Hour)); !errors.Is(err, boom) {
+			t.Fatalf("UpdateData with a failing update = %v, want its error", err)
+		}
+		if got, _ := s.Get(ctx, "data-seen"); got == nil || got.Data["second"] != "set" {
+			t.Fatalf("a failed update changed the record: %v", got)
+		}
+	})
+
+	t.Run("UpdateData_ConcurrentUpdatesAllLand", func(t *testing.T) {
+		const writers = 8
+		s := factory(t)
+		ctx := context.Background()
+		if err := s.Put(ctx, makeSession("data-concurrent", "user-1")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		var wg sync.WaitGroup
+		errs := make(chan error, 2*writers)
+		for i := 0; i < writers; i++ {
+			key := fmt.Sprintf("k%d", i)
+			wg.Go(func() {
+				errs <- s.UpdateData(ctx, "data-concurrent", func(current map[string]any) (map[string]any, error) {
+					out := map[string]any{key: "set"}
+					for k, v := range current {
+						out[k] = v
+					}
+					return out, nil
+				}, time.Now(), time.Now().Add(time.Hour))
+			})
+			wg.Go(func() {
+				errs <- s.Touch(ctx, "data-concurrent", time.Now(), time.Now().Add(time.Hour))
+			})
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("concurrent write: %v", err)
+			}
+		}
+		got, err := s.Get(ctx, "data-concurrent")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		for i := 0; i < writers; i++ {
+			if got.Data[fmt.Sprintf("k%d", i)] != "set" {
+				t.Fatalf("an update was written over by a concurrent one: %v", got.Data)
+			}
 		}
 	})
 
@@ -383,7 +467,7 @@ func RunServerSessionStoreContractTests(t *testing.T, factory ServerSessionStore
 		if err := s.Put(ctx, sess); err != nil {
 			t.Fatalf("Put of a signed-out record: %v", err)
 		}
-		if err := s.UpdateData(ctx, "visitor-1", map[string]any{"flash": "hi"}, time.Now(), time.Now().Add(time.Hour)); err != nil {
+		if err := s.UpdateData(ctx, "visitor-1", setData(map[string]any{"flash": "hi"}), time.Now(), time.Now().Add(time.Hour)); err != nil {
 			t.Fatalf("UpdateData of a signed-out record: %v", err)
 		}
 		got, err := s.Get(ctx, "visitor-1")
@@ -558,4 +642,9 @@ func RunLoginThrottlerContractTests(t *testing.T, factory LoginThrottlerFactory)
 		}()
 		_, _ = rs.Reserve(nil, "no-req")
 	})
+}
+
+// setData returns an UpdateData update that stores data as it is.
+func setData(data map[string]any) func(map[string]any) (map[string]any, error) {
+	return func(map[string]any) (map[string]any, error) { return data, nil }
 }

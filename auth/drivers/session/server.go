@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sync/atomic"
 	"time"
 
@@ -73,6 +74,14 @@ func NewServerStore(config auth.SessionConfig, records auth.ServerSessionStore) 
 // auth.ErrNoServerSessionStore) until one is installed again.
 func (s *ServerStore) SetServerSessionStore(records auth.ServerSessionStore) {
 	s.records.Store(&recordsHolder{store: records})
+}
+
+// ServerSessionStore returns the record store the sessions are kept in. A
+// session scheme given this store (schemes.WithSessionStore) takes it as
+// its own server session store, so sign-in writes the record the session
+// is then saved into.
+func (s *ServerStore) ServerSessionStore() auth.ServerSessionStore {
+	return s.loadRecords()
 }
 
 func (s *ServerStore) loadRecords() auth.ServerSessionStore {
@@ -154,6 +163,9 @@ func (s *ServerStore) Get(r *http.Request, id string) (auth.Session, error) {
 	}
 	session.SetData(data)
 	session.SetFlashData(flash)
+	// A second, unshared copy of what the record held: Save writes only
+	// what this request changed relative to it.
+	session.loadedData, session.loadedFlash, _ = decodeRecordPayload(rec.Data)
 	return session, nil
 }
 
@@ -163,7 +175,12 @@ func (s *ServerStore) Get(r *http.Request, id string) (auth.Session, error) {
 //     saved to) and deletes the cookie.
 //   - An unmodified session writes nothing.
 //   - Otherwise the record takes the payload and slides to the lifetime
-//     policy's end (UpdateData, update-if-present). A session id with no
+//     policy's end (UpdateData, update-if-present). A session saved to the
+//     record it was loaded from writes only its own changes: each data and
+//     flash key it set, changed or removed since the load is applied to
+//     the payload the record holds when the write lands, so a request that
+//     overlapped this one keeps what it wrote (a drained flash stays
+//     drained, a key another request set stays set). A session id with no
 //     record yet is created (Put) only for a signed-out session; a
 //     signed-in session's record is written at sign-in, so a missing one
 //     means it was revoked and Save fails instead of recreating it. The
@@ -209,6 +226,7 @@ func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
 	if err != nil {
 		return err
 	}
+	data, flash := payloadSections(payload)
 	recordEnd := s.config.RecordExpiresAt(createdAt, now)
 
 	// Retire the record of an id the session rotated away from before
@@ -221,7 +239,16 @@ func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
 		ss.savedID = ""
 	}
 
-	err = records.UpdateData(ctx, id, payload, now, recordEnd)
+	update := func(map[string]any) (map[string]any, error) { return payload, nil }
+	if ss.savedID == id && ss.loadedData != nil {
+		update = func(current map[string]any) (map[string]any, error) {
+			curData, curFlash := payloadSections(current)
+			applyChanges(curData, ss.loadedData, data)
+			applyChanges(curFlash, ss.loadedFlash, flash)
+			return map[string]any{recordDataKey: curData, recordFlashKey: curFlash}, nil
+		}
+	}
+	err = records.UpdateData(ctx, id, update, now, recordEnd)
 	if errors.Is(err, auth.ErrSessionNotFound) && id != ss.savedID && ss.Get(auth.UserIDSessionKey) == nil {
 		err = records.Put(ctx, &auth.StoredSession{
 			ID:         id,
@@ -251,6 +278,7 @@ func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
 	http.SetCookie(w, cookie)
 
 	ss.savedID = id
+	ss.loadedData, ss.loadedFlash = data, flash
 	ss.createdAt = createdAt
 	ss.issuedAt = now
 	ss.MarkClean()
@@ -294,6 +322,13 @@ type ServerSession struct {
 	// issuedAt is when the id cookie was last issued (the record's
 	// LastSeenAt at load, or the last Save).
 	issuedAt time.Time
+
+	// loadedData and loadedFlash are the payload as this session last
+	// read or wrote it (JSON-shaped, shared with nothing), the base Save
+	// measures this request's changes against; nil for a session with no
+	// record yet.
+	loadedData  map[string]any
+	loadedFlash map[string]any
 
 	authenticationExpired bool
 	recordDeleted         bool
@@ -365,6 +400,38 @@ func encodeRecordPayload(data, flash map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("velocity/auth/session: encode session: %w", err)
 	}
 	return out, nil
+}
+
+// payloadSections returns fresh top-level copies of the data and flash
+// sections of a JSON-shaped payload (empty maps for a missing section).
+func payloadSections(payload map[string]any) (data, flash map[string]any) {
+	section := func(key string) map[string]any {
+		out := make(map[string]any)
+		if m, ok := payload[key].(map[string]any); ok {
+			for k, v := range m {
+				out[k] = v
+			}
+		}
+		return out
+	}
+	return section(recordDataKey), section(recordFlashKey)
+}
+
+// applyChanges writes into dst the keys now set or changed relative to
+// base, and removes from dst the keys base had and now lacks. Keys neither
+// touched are left as dst holds them. Values are JSON-shaped trees, so
+// equality is structural.
+func applyChanges(dst, base, now map[string]any) {
+	for k, v := range now {
+		if old, ok := base[k]; !ok || !reflect.DeepEqual(old, v) {
+			dst[k] = v
+		}
+	}
+	for k := range base {
+		if _, ok := now[k]; !ok {
+			delete(dst, k)
+		}
+	}
 }
 
 // decodeRecordPayload returns fresh copies of the data and flash maps a

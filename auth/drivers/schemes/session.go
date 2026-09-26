@@ -82,6 +82,10 @@ type sessionHolder struct {
 	// otherwise each recall on the same session. Held across store and
 	// user store calls, so it is separate from mu.
 	lifecycle sync.Mutex
+
+	// commitOnce makes the session middleware's commit run once per
+	// request, whichever write or return fires it.
+	commitOnce sync.Once
 }
 
 // queueOnSaveFailure appends fn to the undo steps the seam runs when the
@@ -442,16 +446,29 @@ type SessionSchemeOption func(*SessionScheme)
 // session the same way whichever store holds it. A nil store keeps the
 // default.
 //
-// When store also accepts a server session store (session.ServerStore
-// does, through auth.ServerSessionStoreReceiver), the scheme passes every
-// SetServerSessionStore call on to it, so the session's data and its
-// revocation index stay one record.
+// When store keeps sessions in server records (session.ServerStore), the
+// scheme takes that record store as its server session store, so sign-in
+// writes the record the session is saved into and revocation reads it;
+// nothing else needs installing. When store also accepts a server session
+// store (session.ServerStore does, through auth.ServerSessionStoreReceiver),
+// the scheme passes every later SetServerSessionStore call on to it, so the
+// session's data and its revocation index stay one record.
 func WithSessionStore(store auth.SessionStore) SessionSchemeOption {
 	return func(g *SessionScheme) {
-		if store != nil {
-			g.store = store
+		if store == nil {
+			return
+		}
+		g.store = store
+		if held, ok := store.(recordHoldingStore); ok {
+			g.serverStore = held.ServerSessionStore()
 		}
 	}
+}
+
+// recordHoldingStore is a session store that keeps sessions in server
+// records and names the record store (session.ServerStore).
+type recordHoldingStore interface {
+	ServerSessionStore() auth.ServerSessionStore
 }
 
 // NewSessionScheme creates a new session scheme. The encryptor seals the

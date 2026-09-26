@@ -537,8 +537,9 @@ func (c SessionConfig) RecordExpiresAt(createdAt, lastActive time.Time) time.Tim
 // CookiePolicy derives the framework cookie policy from the session
 // cookie's Path, Domain, Secure and SameSite. velocity.New calls it once on
 // the validated config and carries the result on app.Services, so every
-// framework cookie (flash, XSRF token, remember, maintenance bypass and
-// their deletions) follows the session cookie's attributes.
+// framework cookie (XSRF token, remember, maintenance bypass and their
+// deletions; flash rides in the session) follows the session cookie's
+// attributes.
 func (c SessionConfig) CookiePolicy() contract.CookiePolicy {
 	return contract.NewCookiePolicy(c.Path, c.Domain, c.Secure, c.SameSite)
 }
