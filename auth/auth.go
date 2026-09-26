@@ -138,17 +138,44 @@ var (
 	ErrNotInitialized     = errors.New("auth manager not initialized")
 	ErrInvalidSession     = errors.New("invalid session")
 
-	// ErrRememberClearPartial is returned (wrapped, with errors.Join'd
-	// causes) by Manager.RevokeSession and Manager.RevokeAllSessions when
-	// the server-side session deletion succeeded but the remember-me
-	// credential could not be established as ended: a scheme's
-	// RememberTokenClearer failed (including a failed user lookup), or,
-	// for RevokeSession, the session record could not be read to learn its
-	// owner. The sessions are revoked, but the remember credential may
-	// still be valid and sign the device back in on a fresh session; retry
-	// the revocation, or surface a degraded status to admins.
+	// ErrRememberClearPartial is matched (errors.Is) by the
+	// *RememberClearError Manager.RevokeSession and
+	// Manager.RevokeAllSessions return when the server-side session
+	// deletion succeeded but the remember-me credential could not be
+	// established as ended: a scheme's RememberTokenClearer failed
+	// (including a failed user lookup), or, for RevokeSession, the session
+	// record could not be read to learn its owner. The sessions are
+	// revoked, but the remember credential may still be valid and sign the
+	// device back in on a fresh session. Keep the degraded status (surface
+	// it to admins) until the credential is cleared by the user it
+	// belongs to: RevokeAllSessions(userID) retries that work, with the
+	// user id from RememberClearError.UserID or from the caller's own
+	// records. Retrying RevokeSession does not: its record is already
+	// deleted, so a retry finds no owner and returns nil.
 	ErrRememberClearPartial = errors.New("velocity/auth: remember token clear partially failed")
 )
+
+// RememberClearError reports a revocation whose remember-me credential
+// could not be established as ended (see ErrRememberClearPartial, which
+// it matches under errors.Is). Err joins the individual failures.
+type RememberClearError struct {
+	// UserID is the user whose remember credential may still be valid:
+	// the owner the revoked record named, or the user RevokeAllSessions
+	// was called for. Empty when RevokeSession could not read the record,
+	// so its owner is unknown to the manager.
+	UserID string
+	Err    error
+}
+
+// Error describes the partial failure and its causes.
+func (e *RememberClearError) Error() string {
+	return ErrRememberClearPartial.Error() + ": " + e.Err.Error()
+}
+
+// Unwrap returns ErrRememberClearPartial and the joined causes.
+func (e *RememberClearError) Unwrap() []error {
+	return []error{ErrRememberClearPartial, e.Err}
+}
 
 // Authenticatable represents a user that can be authenticated
 type Authenticatable interface {
@@ -173,7 +200,11 @@ type Authenticatable interface {
 // Implementations must pass authtest.RunUserStoreContractTests. See
 // authtest for the executable specification.
 type UserStore interface {
-	// FindByIDCtx retrieves a user by ID using the provided context.
+	// FindByIDCtx retrieves a user by ID using the provided context. An
+	// id with no user is reported as ErrUserNotFound (a nil user with a
+	// nil error is tolerated): revocation relies on it to tell a user that
+	// is gone, whose remember credential needs no clearing, from a failed
+	// lookup, which it reports as ErrRememberClearPartial.
 	FindByIDCtx(ctx context.Context, id interface{}) (Authenticatable, error)
 
 	// Deprecated: use FindByIDCtx with a request-scoped context.Context.
@@ -1007,18 +1038,22 @@ func (m *Manager) ServerSessionStore() ServerSessionStore {
 // session that survives it. When the credential cannot be established as
 // ended (a clear fails, or the record read fails for a reason other than
 // the record being gone or expired, so its owner is unknown) the record is
-// still deleted and the failure is logged and returned wrapped in
-// ErrRememberClearPartial.
+// still deleted and the failure is logged and returned as a
+// *RememberClearError (matching ErrRememberClearPartial) naming the owner
+// when it was read. A retry of RevokeSession cannot finish the clear,
+// since the record is gone; clear by the owner with RevokeAllSessions.
 func (m *Manager) RevokeSession(ctx context.Context, sessionID string) error {
 	store := m.ServerSessionStore()
 	if store == nil {
 		return ErrNoServerSessionStore
 	}
 	var partialErrs []error
+	var owner string
 	rec, err := store.Get(ctx, sessionID)
 	switch {
 	case err == nil:
 		if rec != nil && rec.UserID != "" {
+			owner = rec.UserID
 			for _, gc := range m.revocationCapabilities() {
 				if err := gc.clearRemember(ctx, m, rec.UserID); err != nil {
 					partialErrs = append(partialErrs, err)
@@ -1035,7 +1070,7 @@ func (m *Manager) RevokeSession(ctx context.Context, sessionID string) error {
 		return err
 	}
 	if len(partialErrs) > 0 {
-		return fmt.Errorf("%w: %w", ErrRememberClearPartial, errors.Join(partialErrs...))
+		return &RememberClearError{UserID: owner, Err: errors.Join(partialErrs...)}
 	}
 	return nil
 }
@@ -1055,9 +1090,10 @@ func (m *Manager) RevokeSession(ctx context.Context, sessionID string) error {
 // Remember-token clearing and refresh-token revocation are best-effort:
 // failures are logged but do not stop the store-side session deletion,
 // the load-bearing security action. Aggregate failures across the two
-// walks are joined and returned wrapped with ErrRememberClearPartial so
-// callers can detect partial success without losing the individual error
-// chain. A failed session deletion is returned as is.
+// walks are joined and returned as a *RememberClearError for userID
+// (matching ErrRememberClearPartial) so callers can detect partial success
+// without losing the individual error chain; calling RevokeAllSessions
+// again retries the clear. A failed session deletion is returned as is.
 func (m *Manager) RevokeAllSessions(ctx context.Context, userID string) error {
 	store := m.ServerSessionStore()
 	if store == nil {
@@ -1083,7 +1119,7 @@ func (m *Manager) RevokeAllSessions(ctx context.Context, userID string) error {
 		}
 	}
 	if len(partialErrs) > 0 {
-		return fmt.Errorf("%w: %w", ErrRememberClearPartial, errors.Join(partialErrs...))
+		return &RememberClearError{UserID: userID, Err: errors.Join(partialErrs...)}
 	}
 	return nil
 }

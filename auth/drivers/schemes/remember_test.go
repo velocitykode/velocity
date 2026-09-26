@@ -98,9 +98,11 @@ func TestSetRememberCookie_StoresHashedToken(t *testing.T) {
 	user := &mockRememberUser{id: "u1"}
 	w := httptest.NewRecorder()
 
-	if err := g.setRememberCookie(context.Background(), w, user); err != nil {
-		t.Fatalf("setRememberCookie: %v", err)
+	c, err := g.issueRememberCookie(context.Background(), user)
+	if err != nil {
+		t.Fatalf("issueRememberCookie: %v", err)
 	}
+	http.SetCookie(w, c)
 
 	// The stored token must be a hex sha256 digest (64 chars), NOT the raw
 	// base64 token that went into the cookie.
@@ -150,9 +152,11 @@ func TestSetRememberCookie_NonStringIdentifier(t *testing.T) {
 	user := &uintIDUser{id: 42}
 	w := httptest.NewRecorder()
 
-	if err := g.setRememberCookie(context.Background(), w, user); err != nil {
-		t.Fatalf("setRememberCookie with uint identifier: %v", err)
+	c, err := g.issueRememberCookie(context.Background(), user)
+	if err != nil {
+		t.Fatalf("issueRememberCookie with uint identifier: %v", err)
 	}
+	http.SetCookie(w, c)
 
 	cookies := w.Result().Cookies()
 	if len(cookies) != 1 {
@@ -186,9 +190,11 @@ func TestSetRememberCookie_UsesRememberLifetime(t *testing.T) {
 			g.userStore.Store(&userStoreHolder{p: &mockRememberStore{}})
 			g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
 			w := httptest.NewRecorder()
-			if err := g.setRememberCookie(context.Background(), w, &mockRememberUser{id: "u1"}); err != nil {
-				t.Fatalf("setRememberCookie: %v", err)
+			c, err := g.issueRememberCookie(context.Background(), &mockRememberUser{id: "u1"})
+			if err != nil {
+				t.Fatalf("issueRememberCookie: %v", err)
 			}
+			http.SetCookie(w, c)
 			cookies := w.Result().Cookies()
 			if len(cookies) != 1 || cookies[0].MaxAge != tt.wantSecs {
 				t.Fatalf("remember cookies = %+v, want one with MaxAge %d", cookies, tt.wantSecs)

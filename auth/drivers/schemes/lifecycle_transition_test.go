@@ -388,6 +388,17 @@ func TestRevocation_FailedRememberLookupIsReported(t *testing.T) {
 			if _, gerr := mem.Get(context.Background(), id); !errors.Is(gerr, auth.ErrSessionNotFound) {
 				t.Fatalf("session record after the revocation: %v, want it deleted", gerr)
 			}
+			var partial *auth.RememberClearError
+			if !errors.As(err, &partial) {
+				t.Fatalf("revocation error %T does not carry the user to clear", err)
+			}
+			wantOwner := "u1"
+			if tt.recordDown {
+				wantOwner = ""
+			}
+			if partial.UserID != wantOwner {
+				t.Fatalf("partial revocation names user %q, want %q", partial.UserID, wantOwner)
+			}
 			// The documented consequence the caller must act on: the
 			// remember credential survived.
 			clock.advance(time.Minute)
@@ -397,6 +408,45 @@ func TestRevocation_FailedRememberLookupIsReported(t *testing.T) {
 			}
 		})
 	}
+
+	// Retrying RevokeSession cannot finish the clear (its record is gone,
+	// so it finds no owner and succeeds while the credential stays valid);
+	// clearing by the user the error names does.
+	t.Run("recovery clears by the user", func(t *testing.T) {
+		clock := installLifetimeClock(t)
+		scheme, mem := newLifetimeSchemeFor(t, 120, 0, rememberModes[0])
+		users := &flakyUserStore{revokeTestStore: userStoreOf(t, scheme)}
+		scheme.SetUserStore(users)
+		mgr := auth.NewManager()
+		mgr.SetServerSessionStore(mem)
+		mgr.RegisterScheme("web", scheme)
+		b := newRememberBrowser(t, scheme)
+		b.do(http.MethodPost, "/login")
+		stolen := *b.cookies[rememberCookieName]
+		id := onlyRecord(t, mem, "").ID
+
+		users.down.Store(true)
+		err := mgr.RevokeSession(context.Background(), id)
+		users.down.Store(false)
+		var partial *auth.RememberClearError
+		if !errors.As(err, &partial) || partial.UserID != "u1" {
+			t.Fatalf("RevokeSession with a failed lookup returned %v, want a RememberClearError naming u1", err)
+		}
+		if err := mgr.RevokeSession(context.Background(), id); err != nil {
+			t.Fatalf("retried RevokeSession: %v", err)
+		}
+		if users.token("u1") == "" {
+			t.Fatal("premise: a retried RevokeSession cleared the credential; the recovery advice would not be needed")
+		}
+		if err := mgr.RevokeAllSessions(context.Background(), partial.UserID); err != nil {
+			t.Fatalf("RevokeAllSessions(%q): %v", partial.UserID, err)
+		}
+		clock.advance(time.Minute)
+		b.replayRememberOnly(stolen)
+		if b.signedIn() {
+			t.Fatal("remember credential still signs in after clearing by the named user")
+		}
+	})
 
 	t.Run("absent user", func(t *testing.T) {
 		scheme, _ := newLifetimeSchemeFor(t, 120, 0, rememberModes[0])

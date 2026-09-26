@@ -248,12 +248,18 @@ func (p *preCommitWriter) Unwrap() http.ResponseWriter {
 // are bound to the session id the save did not persist, runs the queued
 // undo steps instead, and is returned.
 //
-// The commit holds the holder's lifecycle lock exclusively, so it waits
-// for an authentication transition in flight (a recall between writing
-// the user and swapping the remember token) and never saves or takes the
-// queue halfway through one. Only the writes of the latest transition
-// run; a superseded one's (a remember-me sign-in the request then logged
-// out of) are dropped (see sessionHolder.takeAfterSave).
+// The save runs under the holder's lifecycle lock held exclusively, so it
+// waits for an authentication transition in flight (a recall between
+// writing the user and swapping the remember token) and never saves or
+// takes the queue halfway through one. Only the writes of the latest
+// transition run; a superseded one's (a remember-me sign-in the request
+// then logged out of) are dropped (see sessionHolder.takeAfterSave).
+// Still under the lock, the commit seals the request (a later sign-in or
+// recall is refused, since nothing it changed would be saved) and settles
+// the queued credentials (a sign-in's remember token reaches the user
+// store), then releases the lock and writes the queued cookies. A queued
+// write may therefore read the signed-in user of the request, and a
+// logout it runs comes after every credential the save issued.
 //
 // A response that already deletes the session cookie (Context.DeleteCookie)
 // ends the session: it is invalidated and saved destroyed, which removes a
@@ -263,24 +269,42 @@ func (p *preCommitWriter) Unwrap() http.ResponseWriter {
 // Renewal can never issue the cookie again after the handler deleted it.
 func commitSession(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) error {
 	holder.lifecycle.Lock()
-	defer holder.lifecycle.Unlock()
-	return commitSessionHeld(g, r, w, holder)
+	writes, err := commitSessionHeld(g, r, w, holder)
+	holder.lifecycle.Unlock()
+	for _, fn := range writes {
+		fn(w)
+	}
+	return err
 }
 
-// commitSessionHeld is commitSession for a caller that already holds the
-// holder's lifecycle lock exclusively: a Login or Logout outside the
-// session middleware, which commits its own save scope.
-func commitSessionHeld(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) error {
+// commitStandalone is commitSession for a Login or Logout outside the
+// session middleware, which holds the holder's lifecycle lock exclusively
+// and commits its own save scope. Its holder is the operation's own, so
+// nothing outside the operation queues on it or reads through it, and the
+// queued writes run while the lock is still held.
+func commitStandalone(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) error {
+	writes, err := commitSessionHeld(g, r, w, holder)
+	for _, fn := range writes {
+		fn(w)
+	}
+	return err
+}
+
+// commitSessionHeld saves the session and returns the queued writes for
+// the caller to run once it released the holder's lifecycle lock, which
+// it holds exclusively.
+func commitSessionHeld(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) ([]func(http.ResponseWriter), error) {
+	holder.seal()
 	session := holder.getSession()
 	if session == nil {
 		holder.takeAfterSave(true)
-		return nil
+		return nil, nil
 	}
 	ended := g.endSessionDeletedBy(r, w, session)
 	if ms, ok := session.(modifiedSession); ok && ms.IsDestroyed() {
 		ended = true
 	}
-	queued, undo := holder.takeAfterSave(ended)
+	queued := holder.takeAfterSave(ended)
 	g.renewOnActivity(r, session)
 	// Skip the save when no mutation occurred. The modifiedSession
 	// capability covers *auth.BaseSession and the cookie store's
@@ -289,19 +313,19 @@ func commitSessionHeld(g *SessionScheme, r *http.Request, w http.ResponseWriter,
 	// CookieStore.Save itself short-circuits on !IsModified() too).
 	if ms, ok := session.(modifiedSession); !ok || ms.IsModified() || ms.IsDestroyed() {
 		if err := saveSessionFromMiddleware(g, w, session); err != nil {
-			if len(queued) > 0 {
-				g.logWarn("velocity/auth: save-at-end middleware: cookies bound to the unsaved session dropped", "session_id", session.ID(), "count", len(queued))
+			if len(queued.writes) > 0 {
+				g.logWarn("velocity/auth: save-at-end middleware: cookies bound to the unsaved session dropped", "session_id", session.ID(), "count", len(queued.writes))
 			}
-			for _, fn := range undo {
+			for _, fn := range queued.undo {
 				fn()
 			}
-			return err
+			return nil, err
 		}
 	}
-	for _, fn := range queued {
-		fn(w)
+	for _, fn := range queued.settle {
+		fn()
 	}
-	return nil
+	return queued.writes, nil
 }
 
 // endSessionDeletedBy invalidates session when w already carries a
@@ -423,11 +447,13 @@ var ensureSession = func(g *SessionScheme, r *http.Request) {
 // solely to keep SessionMiddleware ergonomic to unit-test alongside the
 // store implementation it drives.
 //
-// A failed save writes no session cookie and the response goes out
-// without it: the browser keeps the session cookie it already holds, and
-// the changes this request made to the session are lost (after a sign-in,
-// the visitor is still signed out). The failure is logged; an oversize
-// cookie gets its own line naming the fix.
+// A failed save of a live session writes no session cookie and the
+// response goes out without it: the browser keeps the session cookie it
+// already holds, and the changes this request made to the session are
+// lost (after a sign-in, the visitor is still signed out). A destroyed
+// session's save writes the cookie deletion whether or not its server-side
+// teardown then fails. The failure is logged; an oversize cookie gets its
+// own line naming the fix.
 var saveSessionFromMiddleware = func(g *SessionScheme, w http.ResponseWriter, s auth.Session) error {
 	if err := s.Save(w); err != nil {
 		if errors.Is(err, session.ErrCookieTooLarge) {
