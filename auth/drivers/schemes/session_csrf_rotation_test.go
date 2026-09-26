@@ -270,7 +270,7 @@ func TestSessionScheme_RememberRevival_WritesXSRFCookie(t *testing.T) {
 		t.Fatalf("revival wrote XSRF-TOKEN %d times before the session save, want 0", got)
 	}
 	holder, _ := req.Context().Value(sessionCtxKey{}).(*sessionHolder)
-	if err := commitSession(scheme, w, holder); err != nil {
+	if err := commitSession(scheme, req, w, holder); err != nil {
 		t.Fatalf("commitSession: %v", err)
 	}
 	if got := len(rotator.xsrfWrote); got != 1 {
