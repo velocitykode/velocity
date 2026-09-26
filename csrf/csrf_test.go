@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf/stores"
 	"github.com/velocitykode/velocity/router"
 )
@@ -1084,12 +1085,12 @@ func TestXSRFCookie_WrittenOnSafeMethodWithSession(t *testing.T) {
 		t.Errorf("UnmaskToken(XSRF-TOKEN)=%q, want token=%q", got, token)
 	}
 	if !xsrf.Secure {
-		t.Error("XSRF-TOKEN cookie Secure should be true with default Config.Secure even on plain HTTP")
+		t.Error("XSRF-TOKEN cookie Secure should be true with default Config.CookiePolicy even on plain HTTP")
 	}
 }
 
 // TestXSRFCookie_PlainHTTPWithSecureFalseConfigEmitsNonSecureCookie pins
-// the explicit dev/test escape hatch: operators may set Secure=false so
+// the explicit dev/test escape hatch: operators may use an insecure cookie policy so
 // a local plain-HTTP browser accepts the XSRF-TOKEN cookie.
 func TestXSRFCookie_PlainHTTPWithSecureFalseConfigEmitsNonSecureCookie(t *testing.T) {
 	const sessionID = "test-session"
@@ -1097,7 +1098,7 @@ func TestXSRFCookie_PlainHTTPWithSecureFalseConfigEmitsNonSecureCookie(t *testin
 	cfg := DefaultConfig()
 	cfg.SessionIDResolver = testCookieResolver("session_id")
 	cfg.Store = stores.NewSessionStore()
-	cfg.Secure = false
+	cfg.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode)
 	c := New(cfg)
 
 	token, err := GenerateToken()
@@ -1120,13 +1121,13 @@ func TestXSRFCookie_PlainHTTPWithSecureFalseConfigEmitsNonSecureCookie(t *testin
 		t.Fatalf("XSRF-TOKEN cookie not set; cookies=%v", w.Result().Cookies())
 	}
 	if xsrf.Secure {
-		t.Error("XSRF-TOKEN cookie Secure should be false on plain HTTP only when Config.Secure=false")
+		t.Error("XSRF-TOKEN cookie Secure should be false on plain HTTP only under an insecure Config.CookiePolicy")
 	}
 }
 
 // TestXSRFCookie_ProxyTerminatedTLSPlainHTTPWithSecureConfig pins the
 // A05 regression: when TLS terminates before the Go process, r.TLS is
-// nil, but Config.Secure=true must still produce Secure XSRF-TOKEN
+// nil, but the default Config.CookiePolicy must still produce Secure XSRF-TOKEN
 // cookies on both write and clear paths.
 func TestXSRFCookie_ProxyTerminatedTLSPlainHTTPWithSecureConfig(t *testing.T) {
 	newCSRF := func(t *testing.T) *CSRF {
@@ -1134,7 +1135,7 @@ func TestXSRFCookie_ProxyTerminatedTLSPlainHTTPWithSecureConfig(t *testing.T) {
 		cfg := DefaultConfig()
 		cfg.SessionIDResolver = testCookieResolver("session_id")
 		cfg.Store = stores.NewSessionStore()
-		cfg.Secure = true
+		cfg.CookiePolicy = contract.CookiePolicy{}
 		return New(cfg)
 	}
 
@@ -1185,7 +1186,7 @@ func TestXSRFCookie_ProxyTerminatedTLSPlainHTTPWithSecureConfig(t *testing.T) {
 				t.Fatal("XSRF-TOKEN cookie not set")
 			}
 			if !xsrf.Secure {
-				t.Error("plain HTTP request with Config.Secure=true must emit Secure=true")
+				t.Error("plain HTTP request with the default Config.CookiePolicy must emit Secure=true")
 			}
 		})
 	}
@@ -1455,7 +1456,7 @@ func TestSessionIDResolver_PlaintextSessionIDAcrossEncryption(t *testing.T) {
 
 	cfg := DefaultConfig()
 	cfg.Store = stores.NewSessionStore()
-	cfg.Secure = false // test env
+	cfg.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode)
 	cfg.SessionIDResolver = func(r *http.Request) (string, error) {
 		// Mimics auth.Manager.Session(r).ID(): plaintext id, stable
 		// across cookie ciphertext rotations.
@@ -1504,7 +1505,7 @@ func TestSessionIDResolver_PlaintextSessionIDAcrossEncryption(t *testing.T) {
 func TestSessionIDResolver_ErrorPropagation(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Store = stores.NewSessionStore()
-	cfg.Secure = false
+	cfg.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode)
 	cfg.SessionIDResolver = func(r *http.Request) (string, error) {
 		return "", ErrNoSession
 	}
@@ -1983,18 +1984,18 @@ func TestClearXSRFCookie_WritesDeleteCookie(t *testing.T) {
 		t.Error("expected HttpOnly=false, got true (must match write path)")
 	}
 	if !xsrf.Secure {
-		t.Error("expected Secure=true with default Config.Secure even on plain HTTP (must match write path)")
+		t.Error("expected Secure=true with default Config.CookiePolicy even on plain HTTP (must match write path)")
 	}
 }
 
 // TestClearXSRFCookie_PlainHTTPWithSecureFalseConfigEmitsNonSecureDeleteCookie
-// pins the explicit dev/test escape hatch: Secure=false allows a
+// pins the explicit dev/test escape hatch: an insecure cookie policy allows a
 // plain-HTTP delete-cookie to match a plain-HTTP XSRF-TOKEN write.
 func TestClearXSRFCookie_PlainHTTPWithSecureFalseConfigEmitsNonSecureDeleteCookie(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.SessionIDResolver = testCookieResolver("session_id")
 	cfg.Store = stores.NewSessionStore()
-	cfg.Secure = false
+	cfg.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode)
 	c := New(cfg)
 
 	req := httptest.NewRequest("POST", "/logout", nil)
@@ -2006,7 +2007,7 @@ func TestClearXSRFCookie_PlainHTTPWithSecureFalseConfigEmitsNonSecureDeleteCooki
 		t.Fatalf("ClearXSRFCookie did not write an XSRF-TOKEN Set-Cookie; cookies=%v", w.Result().Cookies())
 	}
 	if xsrf.Secure {
-		t.Error("expected Secure=false on plain HTTP only when Config.Secure=false")
+		t.Error("expected Secure=false on plain HTTP only under an insecure Config.CookiePolicy")
 	}
 }
 
@@ -2052,6 +2053,77 @@ func TestClearXSRFCookie_NoopWhenDisabled(t *testing.T) {
 	for _, k := range w.Result().Cookies() {
 		if k.Name == "XSRF-TOKEN" {
 			t.Fatalf("ClearXSRFCookie wrote XSRF-TOKEN despite WriteXSRFCookie=false (%+v)", k)
+		}
+	}
+}
+
+// TestXSRFCookie_SecureIdenticalOnBootstrapPostLoginAndLogout pins that
+// the XSRF-TOKEN cookie's Secure attribute is the same on the safe-method
+// bootstrap write, the post-login rewrite and the logout clear for one
+// cookie policy and request scheme. The post-login write once hard-coded
+// Secure=true, so a dev policy over plain HTTP wrote a cookie the
+// browser dropped while the bootstrap and clear paths did not.
+func TestXSRFCookie_SecureIdenticalOnBootstrapPostLoginAndLogout(t *testing.T) {
+	policies := []struct {
+		name   string
+		policy contract.CookiePolicy
+	}{
+		{"secure policy", contract.CookiePolicy{}},
+		{"dev policy", contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode)},
+	}
+	schemes := []struct {
+		name string
+		tls  bool
+	}{
+		{"http", false},
+		{"https", true},
+	}
+	for _, p := range policies {
+		for _, sc := range schemes {
+			t.Run(p.name+"/"+sc.name, func(t *testing.T) {
+				const sessionID = "consistency-session"
+				cfg := DefaultConfig()
+				cfg.SessionIDResolver = testCookieResolver("session_id")
+				cfg.Store = stores.NewSessionStore()
+				cfg.CookiePolicy = p.policy
+				c := New(cfg)
+				if err := c.RotateToken("", sessionID); err != nil {
+					t.Fatalf("RotateToken: %v", err)
+				}
+				newReq := func(method string) *http.Request {
+					r := httptest.NewRequest(method, "/", nil)
+					r.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+					if sc.tls {
+						r.TLS = &tls.ConnectionState{}
+					}
+					return r
+				}
+
+				bw := httptest.NewRecorder()
+				c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				})).ServeHTTP(bw, newReq(http.MethodGet))
+
+				pw := httptest.NewRecorder()
+				c.WriteXSRFCookie(pw, sessionID)
+
+				lw := httptest.NewRecorder()
+				c.ClearXSRFCookie(lw, newReq(http.MethodPost))
+
+				want := p.policy.Secure()
+				for _, got := range []struct {
+					path string
+					w    *httptest.ResponseRecorder
+				}{{"bootstrap", bw}, {"post-login", pw}, {"logout", lw}} {
+					xsrf := findXSRFCookie(got.w.Result().Cookies())
+					if xsrf == nil {
+						t.Fatalf("%s: XSRF-TOKEN cookie not written", got.path)
+					}
+					if xsrf.Secure != want {
+						t.Errorf("%s: Secure=%v, want %v (the policy's)", got.path, xsrf.Secure, want)
+					}
+				}
+			})
 		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/router"
 )
@@ -163,7 +164,7 @@ func TestClient_AssertSessionHas_Mismatch_Fails(t *testing.T) {
 }
 
 // flashErrorsHandler writes a sealed "_velocity_errors" flash cookie using the
-// real router.SealFlash + router.FlashCookie write path, modelling a redirect
+// real router.SealFlash and the framework cookie policy, modelling a redirect
 // back with validation errors.
 func flashErrorsHandler(t *testing.T, enc crypto.Encryptor, bag map[string]any) http.Handler {
 	t.Helper()
@@ -173,7 +174,7 @@ func flashErrorsHandler(t *testing.T, enc crypto.Encryptor, bag map[string]any) 
 			t.Errorf("SealFlash: %v", err)
 			return
 		}
-		http.SetCookie(w, router.FlashCookie(router.FlashErrorsCookie, sealed, 300, false))
+		http.SetCookie(w, contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode).Cookie(router.FlashErrorsCookie, sealed, 300, true))
 	})
 }
 

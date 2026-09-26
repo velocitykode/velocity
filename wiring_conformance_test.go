@@ -193,8 +193,8 @@ func TestConformance_ServicesEventWiringCandidates(t *testing.T) {
 			continue
 		}
 		// A field whose static type is neither an interface nor an
-		// implementation of the contract (e.g. the InsecureFlashCookies
-		// bool) can never hold a dispatcher-aware value. Every interface
+		// implementation of the contract (e.g. the CookiePolicy
+		// struct) can never hold a dispatcher-aware value. Every interface
 		// field stays in scope regardless of its declared method set,
 		// because a concrete implementation may opt into the contract at
 		// runtime.

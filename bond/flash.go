@@ -3,6 +3,7 @@ package bond
 import (
 	"net/http"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/router"
 )
@@ -96,17 +97,15 @@ func flashEncryptorFor(r *http.Request) crypto.Encryptor {
 }
 
 // clearFlashCookies expires the flash cookies so they are consumed only
-// once. Built through router.FlashCookie with the same Secure decision
-// as the write path (router reads the identical Services field): a
-// clear whose Secure attribute differs from the write's is dropped by
-// browsers over plain HTTP, so the cookie would never clear in a
-// dev/test Secure=false deployment. Without routed services the clear
-// stays Secure, matching the write path's secure-by-default.
+// once. The deletions are built by the app's cookie policy, the same one
+// the router's write path uses, so Path, Domain, Secure and SameSite match
+// the write and the browser drops the cookies. Without routed services the
+// secure zero-value policy applies, matching the write path's default.
 func clearFlashCookies(w http.ResponseWriter, r *http.Request) {
-	secure := true
-	if services := router.ServicesFromRequest(r); services != nil && services.InsecureFlashCookies {
-		secure = false
+	var policy contract.CookiePolicy
+	if services := router.ServicesFromRequest(r); services != nil {
+		policy = services.CookiePolicy
 	}
-	http.SetCookie(w, router.FlashCookie(flashErrorsCookie, "", -1, secure))
-	http.SetCookie(w, router.FlashCookie(flashInputCookie, "", -1, secure))
+	http.SetCookie(w, policy.Cookie(flashErrorsCookie, "", -1, true))
+	http.SetCookie(w, policy.Cookie(flashInputCookie, "", -1, true))
 }

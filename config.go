@@ -68,7 +68,6 @@ type Config struct {
 	Session auth.SessionConfig
 
 	sessionSameSiteRaw string
-	csrfSameSiteRaw    string
 
 	// View configures the view engine. New builds the engine when any of
 	// RootTemplate, ErrorPage (VIEW_ERROR_PAGE) or SSREnabled
@@ -407,15 +406,7 @@ func ConfigFromEnv() Config {
 	csrfCfg.TokenLifetime = envDurationOrDefault("CSRF_TOKEN_LIFETIME", csrfCfg.TokenLifetime)
 	csrfCfg.HeaderName = envOrDefault("CSRF_HEADER", csrfCfg.HeaderName)
 	csrfCfg.FormField = envOrDefault("CSRF_FORM_FIELD", csrfCfg.FormField)
-	csrfCfg.CookieName = envOrDefault("CSRF_COOKIE_NAME", csrfCfg.CookieName)
 	csrfCfg.SessionCookieName = envOrDefault("CSRF_SESSION_COOKIE", config.Session.Name)
-	csrfSameSiteRaw := os.Getenv("CSRF_SAME_SITE")
-	if csrfSameSiteRaw != "" {
-		csrfCfg.SameSite = parseSameSite(csrfSameSiteRaw)
-	}
-	config.csrfSameSiteRaw = csrfSameSiteRaw
-	csrfCfg.Secure = os.Getenv("CSRF_SECURE") != "false"
-	csrfCfg.HttpOnly = envOrDefault("CSRF_HTTP_ONLY", "true") == "true"
 	csrfCfg.SingleUse = os.Getenv("CSRF_SINGLE_USE") == "true"
 	csrfCfg.ErrorMessage = envOrDefault("CSRF_ERROR_MESSAGE", csrfCfg.ErrorMessage)
 	csrfCfg.WriteXSRFCookie = envOrDefault("CSRF_WRITE_XSRF_COOKIE", "true") == "true"
@@ -682,9 +673,6 @@ func (c Config) Validate() error {
 		return fmt.Errorf("%w: server timeouts must be non-negative", ErrInvalidConfig)
 	}
 	if _, err := parseSameSiteStrict("SESSION_SAME_SITE", c.sessionSameSiteRaw); err != nil {
-		return err
-	}
-	if _, err := parseSameSiteStrict("CSRF_SAME_SITE", c.csrfSameSiteRaw); err != nil {
 		return err
 	}
 	if err := c.DB.Validate(); err != nil {

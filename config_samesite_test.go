@@ -58,23 +58,8 @@ func TestConfigValidateRejectsInvalidSessionSameSite(t *testing.T) {
 	}
 }
 
-func TestConfigValidateRejectsInvalidCSRFSameSite(t *testing.T) {
-	cfg := Config{csrfSameSiteRaw: "samesite=strict"}
-
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected invalid CSRF_SAME_SITE to fail validation")
-	}
-	if !errors.Is(err, ErrInvalidConfig) {
-		t.Fatalf("error should wrap ErrInvalidConfig; got %v", err)
-	}
-}
-
 func TestConfigValidateAcceptsValidSameSiteValues(t *testing.T) {
-	cfg := Config{
-		sessionSameSiteRaw: "strict",
-		csrfSameSiteRaw:    "none",
-	}
+	cfg := Config{sessionSameSiteRaw: "strict"}
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid SameSite values should pass validation: %v", err)
@@ -96,13 +81,11 @@ func TestConfigFromEnvThreadsSameSiteRawValuesIntoValidate(t *testing.T) {
 		key  string
 	}{
 		{name: "session", env: "SESSION_SAME_SITE", key: "SESSION_SAME_SITE"},
-		{name: "csrf", env: "CSRF_SAME_SITE", key: "CSRF_SAME_SITE"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("SESSION_SAME_SITE", "")
-			t.Setenv("CSRF_SAME_SITE", "")
 			t.Setenv(tt.env, "strictt")
 
 			err := ConfigFromEnv().Validate()

@@ -199,7 +199,7 @@ func TestDeleteCookie_SecureAndSameSiteByDefault(t *testing.T) {
 
 func TestDeleteCookie_InsecureOptOutFollowsServices(t *testing.T) {
 	c, w := NewTestContext("GET", "/")
-	c.SetServices(&app.Services{InsecureFlashCookies: true})
+	c.SetServices(&app.Services{CookiePolicy: contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode)})
 	c.DeleteCookie("session")
 
 	cookies := w.Result().Cookies()
@@ -207,30 +207,13 @@ func TestDeleteCookie_InsecureOptOutFollowsServices(t *testing.T) {
 		t.Fatalf("expected 1 cookie, got %d", len(cookies))
 	}
 	if cookies[0].Secure {
-		t.Error("expected Secure=false under InsecureFlashCookies opt-out")
-	}
-}
-
-func TestFlashCookie_Builder(t *testing.T) {
-	write := FlashCookie("name", "value", 300, true)
-	if write.Name != "name" || write.Value != "value" || write.MaxAge != 300 {
-		t.Errorf("unexpected identity fields: %#v", write)
-	}
-	if !write.Secure || !write.HttpOnly || write.SameSite != http.SameSiteLaxMode || write.Path != "/" {
-		t.Errorf("unexpected attributes: %#v", write)
-	}
-
-	clear := FlashCookie("name", "", -1, false)
-	if clear.MaxAge != -1 || clear.Value != "" || clear.Secure {
-		t.Errorf("unexpected clear cookie: %#v", clear)
-	}
-	if !clear.HttpOnly || clear.SameSite != http.SameSiteLaxMode || clear.Path != "/" {
-		t.Errorf("non-Secure clear attributes must be unchanged: %#v", clear)
+		t.Error("expected Secure=false under an insecure cookie policy")
 	}
 }
 
 // End to end through the router pool: a service-level opt-out reaches
-// FlashErrors via ctxWiring, and the pool's zero value stays Secure.
+// FlashErrors through the context's services, and the zero-value policy
+// stays Secure.
 func TestFlashWrite_SecureFollowsServices(t *testing.T) {
 	flashCookieFromResponse := func(t *testing.T, w *httptest.ResponseRecorder) *http.Cookie {
 		t.Helper()
@@ -265,10 +248,10 @@ func TestFlashWrite_SecureFollowsServices(t *testing.T) {
 	})
 
 	t.Run("validated opt-out drops Secure only", func(t *testing.T) {
-		w := serve(t, &app.Services{Crypto: newFlashEncryptor(t), InsecureFlashCookies: true})
+		w := serve(t, &app.Services{Crypto: newFlashEncryptor(t), CookiePolicy: contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode)})
 		got := flashCookieFromResponse(t, w)
 		if got.Secure {
-			t.Error("expected Secure=false under InsecureFlashCookies opt-out")
+			t.Error("expected Secure=false under an insecure cookie policy")
 		}
 		if !got.HttpOnly || got.SameSite != http.SameSiteLaxMode || got.Path != "/" || got.MaxAge != 300 {
 			t.Errorf("non-Secure attributes must be unchanged: %#v", got)

@@ -255,17 +255,9 @@ func (s *CookieStore) Save(w http.ResponseWriter, session auth.Session) error {
 
 	// Check if session was destroyed
 	if cookieSession.IsDestroyed() {
-		// Delete cookie
-		http.SetCookie(w, &http.Cookie{
-			Name:     s.config.Name,
-			Value:    "",
-			Path:     s.config.Path,
-			Domain:   s.config.Domain,
-			MaxAge:   -1,
-			HttpOnly: s.config.HttpOnly,
-			Secure:   s.config.Secure,
-			SameSite: s.config.SameSite,
-		})
+		// Delete cookie: same policy as the write, so the Path and Domain
+		// match and the browser drops it.
+		http.SetCookie(w, s.config.CookiePolicy().Cookie(s.config.Name, "", -1, s.config.HttpOnly))
 		return nil
 	}
 
@@ -323,15 +315,7 @@ func (s *CookieStore) Save(w http.ResponseWriter, session auth.Session) error {
 	// which silently dropped every Set-Cookie the framework emitted.
 	// Negative Lifetime is rejected at SessionConfig.Validate so we only
 	// have to handle the >0 and ==0 cases here.
-	cookie := &http.Cookie{
-		Name:     s.config.Name,
-		Value:    encrypted,
-		Path:     s.config.Path,
-		Domain:   s.config.Domain,
-		HttpOnly: s.config.HttpOnly,
-		Secure:   s.config.Secure,
-		SameSite: s.config.SameSite,
-	}
+	cookie := s.config.CookiePolicy().Cookie(s.config.Name, encrypted, 0, s.config.HttpOnly)
 	if s.config.Lifetime > 0 {
 		cookie.MaxAge = s.config.Lifetime * 60
 		cookie.Expires = cookieNowFn().Add(time.Duration(s.config.Lifetime) * time.Minute)

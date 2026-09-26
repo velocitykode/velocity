@@ -10,6 +10,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/session"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/csrf/stores"
@@ -89,7 +90,7 @@ func TestCSRF_SessionEncryptionRotation_EndToEnd(t *testing.T) {
 	// Wire CSRF with the same resolver shape used in app.go.
 	csrfCfg := csrf.DefaultConfig()
 	csrfCfg.Store = stores.NewSessionStore()
-	csrfCfg.Secure = false // test env
+	csrfCfg.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode) // test env
 	csrfCfg.SessionIDResolver = buildAppWiredResolver(enc, sessCfg.Name)
 	c := csrf.New(csrfCfg)
 

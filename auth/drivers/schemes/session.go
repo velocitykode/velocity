@@ -1356,33 +1356,16 @@ func (g *SessionScheme) issueRememberCookie(w http.ResponseWriter, user auth.Aut
 	user.SetRememberToken(hashed)
 
 	// Set cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     "remember_" + g.config.Name,
-		Value:    encrypted,
-		Path:     g.config.Path,
-		Domain:   g.config.Domain,
-		MaxAge:   int(ttl.Seconds()),
-		HttpOnly: true,
-		Secure:   g.config.Secure,
-		SameSite: g.config.SameSite,
-		Expires:  time.Now().Add(ttl),
-	})
+	cookie := g.config.CookiePolicy().Cookie("remember_"+g.config.Name, encrypted, int(ttl.Seconds()), true)
+	cookie.Expires = time.Now().Add(ttl)
+	http.SetCookie(w, cookie)
 
 	return nil
 }
 
 // clearRememberCookie clears remember me cookie
 func (g *SessionScheme) clearRememberCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     "remember_" + g.config.Name,
-		Value:    "",
-		Path:     g.config.Path,
-		Domain:   g.config.Domain,
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   g.config.Secure,
-		SameSite: g.config.SameSite,
-	})
+	http.SetCookie(w, g.config.CookiePolicy().Cookie("remember_"+g.config.Name, "", -1, true))
 }
 
 // generateRememberToken generates a random remember token.

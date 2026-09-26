@@ -18,7 +18,7 @@ import (
 
 	"golang.org/x/crypto/hkdf"
 
-	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/internal/maintpath"
 	"github.com/velocitykode/velocity/router"
@@ -286,7 +286,11 @@ func PreventRequestsDuringMaintenance(opts ...MaintenanceOption) router.Middlewa
 				candidate = strings.TrimPrefix(c.Request.URL.Path, "/")
 			}
 			if payload.Secret != "" && crypto.EqualString(candidate, payload.Secret) {
-				cookie := mintMaintenanceBypassCookieWithSalt(payload.Secret, maintenanceBypassDefaultTTL, cfg.salt)
+				var policy contract.CookiePolicy
+				if svc := c.ServicesIfSet(); svc != nil {
+					policy = svc.CookiePolicy
+				}
+				cookie := mintMaintenanceBypassCookieWithSalt(payload.Secret, maintenanceBypassDefaultTTL, cfg.salt, policy)
 				c.SetCookie(cookie)
 				// Redirect via http.Redirect directly because c.Redirect
 				// rewrites cross-host targets; "/" is always safe but
@@ -364,45 +368,34 @@ func computeMaintenanceMAC(macKey []byte, expiresUnix int64) []byte {
 	return mac.Sum(nil)
 }
 
-// mintMaintenanceBypassCookie returns a signed bypass cookie. The cookie
-// value is base64(expires_unix : hex(mac)). HttpOnly is always set; Secure
-// is set unless APP_ENV names a dev/test profile per
-// contract.IsDevOrTestEnv (development, dev, test, testing, local).
+// mintMaintenanceBypassCookie returns a signed bypass cookie built by the
+// secure zero-value cookie policy. The cookie value is
+// base64(expires_unix : hex(mac)) and the cookie is HttpOnly.
 func mintMaintenanceBypassCookie(secret string, ttl time.Duration) *http.Cookie {
-	return mintMaintenanceBypassCookieWithSalt(secret, ttl, maintenanceSalt())
+	return mintMaintenanceBypassCookieWithSalt(secret, ttl, maintenanceSalt(), contract.CookiePolicy{})
 }
 
 // mintMaintenanceBypassCookieWithSalt is the salt-parameterized core of
 // mintMaintenanceBypassCookie. The request path passes the salt captured at
-// middleware construction so it performs no environment read.
-func mintMaintenanceBypassCookieWithSalt(secret string, ttl time.Duration, salt []byte) *http.Cookie {
+// middleware construction so it performs no environment read, and the
+// app's cookie policy so the bypass cookie carries the same Path, Domain,
+// Secure and SameSite as every other framework cookie.
+func mintMaintenanceBypassCookieWithSalt(secret string, ttl time.Duration, salt []byte, policy contract.CookiePolicy) *http.Cookie {
 	expires := time.Now().Add(ttl).Unix()
 	macKey, err := deriveMaintenanceMACKeyWithSalt(secret, salt)
 	if err != nil {
 		// Fall back to a deliberately invalid cookie. The middleware will
 		// reject it on the next request, which is preferable to panicking
 		// in library code.
-		return &http.Cookie{
-			Name:   maintenanceBypassCookie,
-			Value:  "",
-			MaxAge: -1,
-			Path:   "/",
-		}
+		return policy.Cookie(maintenanceBypassCookie, "", -1, true)
 	}
 	mac := computeMaintenanceMAC(macKey, expires)
 	raw := strconv.FormatInt(expires, 10) + ":" + hex.EncodeToString(mac)
 	value := base64.RawURLEncoding.EncodeToString([]byte(raw))
 
-	return &http.Cookie{
-		Name:     maintenanceBypassCookie,
-		Value:    value,
-		Path:     "/",
-		Expires:  time.Unix(expires, 0),
-		MaxAge:   int(ttl.Seconds()),
-		HttpOnly: true,
-		Secure:   shouldUseSecureBypassCookie(),
-		SameSite: http.SameSiteLaxMode,
-	}
+	cookie := policy.Cookie(maintenanceBypassCookie, value, int(ttl.Seconds()), true)
+	cookie.Expires = time.Unix(expires, 0)
+	return cookie
 }
 
 // hasValidBypassCookie returns true when the request carries a non-expired
@@ -448,12 +441,4 @@ func hasValidBypassCookie(r *http.Request, secret string, salt []byte) bool {
 		return false
 	}
 	return true
-}
-
-// shouldUseSecureBypassCookie reports whether the bypass cookie should set
-// the Secure attribute. Defaults to true; relaxed only when APP_ENV names
-// a dev or test profile (per app.IsDevOrTestEnv) so local HTTP flows stay
-// usable.
-func shouldUseSecureBypassCookie() bool {
-	return !app.IsDevOrTestEnv(app.Env())
 }

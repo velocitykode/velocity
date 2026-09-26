@@ -50,14 +50,13 @@ type Services struct {
 	// without a router (e.g. unit tests).
 	RedirectAllowlist contract.RedirectAllowlist
 
-	// InsecureFlashCookies opts flash cookies (validation errors / old
-	// input) out of the Secure attribute. Set by velocity.New from the
-	// already-validated session-cookie config (SESSION_SECURE=false is
-	// only permitted in dev/test profiles), and read by both the router's
-	// flash-cookie write path and bond's flash-cookie clear path so the
-	// two always reach the same Secure decision. Stored inverted so the
-	// zero value means Secure (fail-secure for hand-built Services).
-	InsecureFlashCookies bool
+	// CookiePolicy is the Path, Domain, Secure and SameSite every cookie
+	// the framework writes or clears carries (session, remember, flash,
+	// XSRF token, maintenance bypass and their deletions). Set by
+	// velocity.New from the validated session config; the zero value is
+	// the secure default (Path "/", Secure, SameSite=Lax), so a hand-built
+	// Services still writes Secure cookies.
+	CookiePolicy contract.CookiePolicy
 
 	// compMu guards the type-keyed component registry (componentIdx /
 	// componentOrder) against concurrent registration and read.

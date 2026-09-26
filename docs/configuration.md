@@ -73,11 +73,11 @@ that cannot import `app`).
 |------|---------|---------|-------------------|-----------------|-------|
 | `SESSION_NAME` | `config.go` | `velocity_session` | no | none | |
 | `SESSION_LIFETIME` | `config.go` | `120` | no | longer-lived stolen cookies | minutes |
-| `SESSION_PATH` | `config.go` | `/` | no | scope of cookie | |
-| `SESSION_DOMAIN` | `config.go` | empty | no | scope of cookie | |
-| `SESSION_SECURE` | `config.go` | `true` | YES | cookie sent over HTTP | reject unless `APP_ENV` names a dev/test profile (`development`, `dev`, `test`, `testing`, `local` per `contract.NonProdEnvNames()`) |
+| `SESSION_PATH` | `config.go` | `/` | no | scope of cookie | Path of every framework cookie (session, remember, flash, `XSRF-TOKEN`, maintenance bypass) |
+| `SESSION_DOMAIN` | `config.go` | empty | no | scope of cookie | Domain of every framework cookie |
+| `SESSION_SECURE` | `config.go` | `true` | YES | cookie sent over HTTP | reject unless `APP_ENV` names a dev/test profile (`development`, `dev`, `test`, `testing`, `local` per `contract.NonProdEnvNames()`); Secure attribute of every framework cookie |
 | `SESSION_HTTP_ONLY` | `config.go` | `true` | YES (unless opt-in) | XSS can steal session | |
-| `SESSION_SAME_SITE` | `config.go` | `lax` | YES (must be set) | CSRF | one of `strict`, `lax`, `none` |
+| `SESSION_SAME_SITE` | `config.go` | `lax` | YES (must be set) | CSRF | one of `strict`, `lax`, `none`; SameSite of every framework cookie |
 
 ## Auth
 
@@ -100,15 +100,15 @@ that cannot import `app`).
 | `CSRF_TOKEN_LIFETIME` | `config.go` | from `csrf.DefaultConfig()` | no | longer-lived stolen tokens | duration |
 | `CSRF_HEADER` | `config.go` | from default | no | none | |
 | `CSRF_FORM_FIELD` | `config.go` | from default | no | none | |
-| `CSRF_COOKIE_NAME` | `config.go` | from default | no | none | |
 | `CSRF_SESSION_COOKIE` | `config.go` | matches `SESSION_NAME` | recommended | CSRF token keyed off wrong cookie -> always 419 or always-pass | |
-| `CSRF_SAME_SITE` | `config.go` | `lax` | YES (must be set) | CSRF | |
-| `CSRF_SECURE` | `config.go` | `true` | YES | token cookie over HTTP | reject unless `APP_ENV` names a dev/test profile (`development`, `dev`, `test`, `testing`, `local` per `contract.NonProdEnvNames()`) |
-| `CSRF_HTTP_ONLY` | `config.go` | `true` | YES (unless opt-in) | XSS can steal CSRF token | |
 | `CSRF_SINGLE_USE` | `config.go` | `false` | no | none | |
 | `CSRF_ERROR_MESSAGE` | `config.go` | default | no | none | |
 | `CSRF_WRITE_XSRF_COOKIE` | `config.go` | `true` | no | none | |
 | `CSRF_XSRF_COOKIE_NAME` | `config.go` | from default | no | none | |
+
+The `XSRF-TOKEN` cookie has no attribute keys of its own: its Path, Domain,
+Secure and SameSite follow `SESSION_PATH`, `SESSION_DOMAIN`, `SESSION_SECURE`
+and `SESSION_SAME_SITE` (the app's `contract.CookiePolicy`).
 
 ## Cache
 
@@ -234,12 +234,11 @@ A boot in production (`APP_ENV` set to anything other than `dev`, `development`,
 1. `APP_KEY` set (or `CRYPTO_KEY` explicitly). Missing -> `ErrNoAppKey`.
 2. `QUEUE_SIGNING_KEY` (or `APP_KEY`) set, OR `QUEUE_ACCEPT_UNSIGNED=true`.
 3. `SESSION_SECURE=true` (default), `SESSION_HTTP_ONLY=true` (default).
-4. `CSRF_SECURE=true` (default), `CSRF_HTTP_ONLY=true` (default).
-5. `CSRF_SAME_SITE` and `SESSION_SAME_SITE` set to a non-default value
-   (`lax`, `strict`, or `none`).
-6. A `ServerSessionStore` wired by a module OR
+4. `SESSION_SAME_SITE` set to a non-default value (`lax`, `strict`, or
+   `none`; `none` requires `SESSION_SECURE=true`).
+5. A `ServerSessionStore` wired by a module OR
    `SessionConfig.AllowCookieStoreInProduction=true`.
-7. `AUTH_TRUSTED_PROXIES` set when the deployment is behind a load
+6. `AUTH_TRUSTED_PROXIES` set when the deployment is behind a load
    balancer / reverse proxy. Empty means "trust nothing"; the framework
    defaults to the secure choice and ignores X-Forwarded-* headers.
 

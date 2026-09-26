@@ -1,7 +1,6 @@
 package velocity
 
 import (
-	"net/http"
 	"os"
 	"testing"
 
@@ -22,11 +21,7 @@ func TestConfigFromEnv_CSRFMatchesPackageDefault(t *testing.T) {
 		"CSRF_TOKEN_LIFETIME",
 		"CSRF_HEADER",
 		"CSRF_FORM_FIELD",
-		"CSRF_COOKIE_NAME",
 		"CSRF_SESSION_COOKIE",
-		"CSRF_SAME_SITE",
-		"CSRF_SECURE",
-		"CSRF_HTTP_ONLY",
 		"CSRF_SINGLE_USE",
 		"CSRF_ERROR_MESSAGE",
 		"CSRF_WRITE_XSRF_COOKIE",
@@ -47,18 +42,6 @@ func TestConfigFromEnv_CSRFMatchesPackageDefault(t *testing.T) {
 	}
 	if cfg.CSRF.FormField != def.FormField {
 		t.Errorf("FormField: env=%q default=%q", cfg.CSRF.FormField, def.FormField)
-	}
-	if cfg.CSRF.CookieName != def.CookieName {
-		t.Errorf("CookieName: env=%q default=%q", cfg.CSRF.CookieName, def.CookieName)
-	}
-	if cfg.CSRF.SameSite != def.SameSite {
-		t.Errorf("SameSite: env=%v default=%v", cfg.CSRF.SameSite, def.SameSite)
-	}
-	if cfg.CSRF.Secure != def.Secure {
-		t.Errorf("Secure: env=%v default=%v", cfg.CSRF.Secure, def.Secure)
-	}
-	if cfg.CSRF.HttpOnly != def.HttpOnly {
-		t.Errorf("HttpOnly: env=%v default=%v", cfg.CSRF.HttpOnly, def.HttpOnly)
 	}
 	if cfg.CSRF.SingleUse != def.SingleUse {
 		t.Errorf("SingleUse: env=%v default=%v", cfg.CSRF.SingleUse, def.SingleUse)
@@ -95,7 +78,4 @@ func TestConfigFromEnv_CSRFEnvOverridesXSRFCookie(t *testing.T) {
 	if cfg.CSRF.XSRFCookieName != "MY-XSRF" {
 		t.Errorf("CSRF_XSRF_COOKIE_NAME override; got %q", cfg.CSRF.XSRFCookieName)
 	}
-	// Silence the unused-import linter if http stops being needed
-	// elsewhere; reserved for follow-up Secure-flag checks.
-	_ = http.SameSiteLaxMode
 }

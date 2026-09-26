@@ -396,6 +396,15 @@ type SessionConfig struct {
 	AllowCookieStoreInProduction bool
 }
 
+// CookiePolicy derives the framework cookie policy from the session
+// cookie's Path, Domain, Secure and SameSite. velocity.New calls it once on
+// the validated config and carries the result on app.Services, so every
+// framework cookie (flash, XSRF token, remember, maintenance bypass and
+// their deletions) follows the session cookie's attributes.
+func (c SessionConfig) CookiePolicy() contract.CookiePolicy {
+	return contract.NewCookiePolicy(c.Path, c.Domain, c.Secure, c.SameSite)
+}
+
 // Validate checks the SessionConfig for insecure defaults. Pass env to
 // enable environment-aware rules: Secure=false is permitted when env is
 // "testing" or "development", rejected otherwise. An empty env is treated

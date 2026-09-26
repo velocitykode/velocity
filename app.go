@@ -309,8 +309,9 @@ func New(opts ...Option) (*App, error) {
 		})
 	}
 
-	// 5. Validate cookie-related configs (session, CSRF). The
-	// classification routes through the canonical vocabulary so "test"
+	// 5. Validate the session cookie config (the source of the cookie
+	// policy every framework cookie follows) and the CSRF config. The
+	// session classification routes through the canonical vocabulary so "test"
 	// and "testing" are silent, every other documented non-prod profile
 	// ("dev", "development", "local") warns, and only true production
 	// classes ("production", "prod", "staging", or any unknown value)
@@ -322,10 +323,8 @@ func New(opts ...Option) (*App, error) {
 			return nil, e
 		}
 	}
-	if err := a.config.CSRF.Validate(a.config.Env); err != nil {
-		if e := a.envGatedSecurityCheck("Insecure CSRF cookie config (dev only, will fail in production)", []any{"error", err}, fmt.Errorf("velocity: %w", err)); e != nil {
-			return nil, e
-		}
+	if err := a.config.CSRF.Validate(); err != nil {
+		return nil, fmt.Errorf("velocity: %w", err)
 	}
 
 	// 6. Initialize auth manager. No cleanup registration: *auth.Manager
@@ -429,6 +428,11 @@ func New(opts ...Option) (*App, error) {
 	// testing bypass keys off the app's configured Env (which velocitytest.NewApp
 	// sets in code, not via OS APP_ENV) rather than a per-request os.Getenv.
 	a.config.CSRF.Env = a.config.Env
+	// The XSRF token cookie follows the one framework cookie policy,
+	// derived from the session config validated at step 5, so its
+	// SameSite, Domain, Path and Secure match the session cookie on the
+	// bootstrap write, the post-login rewrite and the logout clear.
+	a.config.CSRF.CookiePolicy = a.config.Session.CookiePolicy()
 	csrfInstance, err := csrf.NewE(&a.config.CSRF)
 	if err != nil {
 		return nil, fmt.Errorf("velocity: failed to initialize csrf: %w", err)
@@ -654,15 +658,13 @@ func New(opts ...Option) (*App, error) {
 	// immediately, and any pooled Context carries the same Services
 	// pointer.
 	a.Services.RedirectAllowlist = a.Router
-	// Flash cookies (validation errors / old input) follow the session
-	// cookie's Secure stance. The session config was validated at step 5:
-	// Secure=false survives only in dev/test profiles, so this opt-out
-	// can never reach production. Stored inverted on Services (zero value
-	// = Secure) and read by the router's flash write path, Context cookie
-	// deletion, and bond's flash clear path, keeping the Secure attribute
-	// identical across all of them. Set BEFORE SetServices for the same
+	// Every framework cookie (flash, XSRF token, remember, maintenance
+	// bypass, Context.DeleteCookie) follows the session cookie's Path,
+	// Domain, Secure and SameSite. The session config was validated at
+	// step 5: Secure=false survives only in dev/test profiles, and
+	// SameSite=None only with Secure. Set BEFORE SetServices for the same
 	// reason as RedirectAllowlist above.
-	a.Services.InsecureFlashCookies = !a.config.Session.Secure
+	a.Services.CookiePolicy = a.config.Session.CookiePolicy()
 	a.Router.SetServices(a.Services)
 	// Wire the app logger into the router's default error path (one
 	// error-level entry per 500-class failure, a warn entry per request

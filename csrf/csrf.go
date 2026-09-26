@@ -264,7 +264,7 @@ func (c *CSRF) protect(w http.ResponseWriter, r *http.Request) (*http.Request, *
 // the per-session CSRF token for the request's session, IF a session is
 // resolvable. Used by the safe-method bootstrap path inside Middleware.
 //
-// Secure is true when the request is HTTPS or Config.Secure is set.
+// The cookie is built by Config.CookiePolicy.
 // See writeXSRFCookieForSession for the cookie attribute details.
 func (c *CSRF) maybeWriteXSRFCookie(w http.ResponseWriter, r *http.Request) {
 	if c == nil || c.config == nil {
@@ -284,7 +284,7 @@ func (c *CSRF) maybeWriteXSRFCookie(w http.ResponseWriter, r *http.Request) {
 	// Without this, the cookie and the page-prop could diverge if the
 	// store mints the token twice (transient inconsistency, or a slow
 	// race between Get and Set). See request_token.go.
-	c.writeXSRFCookieForSession(w, r, sessionID, r.TLS != nil || c.config.Secure)
+	c.writeXSRFCookieForSession(w, r, sessionID)
 }
 
 // WriteXSRFCookie writes the XSRF-TOKEN cookie for sessionID to w. It
@@ -299,11 +299,9 @@ func (c *CSRF) maybeWriteXSRFCookie(w http.ResponseWriter, r *http.Request) {
 // SingleUse is enabled (the cookie value would go stale on the next
 // unsafe request that consumes the token).
 //
-// Secure: this is the post-rotation write so we cannot read r.TLS. The
-// cookie is marked Secure=true unconditionally; HTTP-only dev
-// deployments must either disable WriteXSRFCookie or rely on the
-// safe-method bootstrap path (which has the request in hand and so can
-// downgrade Secure appropriately).
+// The cookie is built by Config.CookiePolicy, the same policy as the
+// safe-method bootstrap write and the logout clear, so its Secure,
+// SameSite, Path and Domain are identical on all three.
 func (c *CSRF) WriteXSRFCookie(w http.ResponseWriter, sessionID string) {
 	if c == nil || c.config == nil || w == nil || sessionID == "" {
 		return
@@ -313,12 +311,12 @@ func (c *CSRF) WriteXSRFCookie(w http.ResponseWriter, sessionID string) {
 	// observe the drift surface the cache exists to close (it runs
 	// once after RotateToken, not paired with a sharePropsFunc read),
 	// so a direct GetToken is fine.
-	c.writeXSRFCookieForSession(w, nil, sessionID, true)
+	c.writeXSRFCookieForSession(w, nil, sessionID)
 }
 
 // writeXSRFCookieForSession is the shared body used by both
-// maybeWriteXSRFCookie (safe-method bootstrap, knows request scheme) and
-// WriteXSRFCookie (post-rotation, secure assumed). Both opt-out guards
+// maybeWriteXSRFCookie (safe-method bootstrap) and WriteXSRFCookie
+// (post-rotation). The cookie is built by Config.CookiePolicy. Both opt-out guards
 // (WriteXSRFCookie=false, SingleUse=true) are applied here.
 //
 // When r is non-nil and the request carries a TokenForRequest cache
@@ -327,7 +325,7 @@ func (c *CSRF) WriteXSRFCookie(w http.ResponseWriter, sessionID string) {
 // (sharePropsFunc, template helper) agree byte-for-byte. When r is nil
 // (post-rotation WriteXSRFCookie call site), fall back to direct
 // Store.Get via GetToken.
-func (c *CSRF) writeXSRFCookieForSession(w http.ResponseWriter, r *http.Request, sessionID string, secure bool) {
+func (c *CSRF) writeXSRFCookieForSession(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if !c.config.WriteXSRFCookie {
 		return
 	}
@@ -379,17 +377,10 @@ func (c *CSRF) writeXSRFCookieForSession(w http.ResponseWriter, r *http.Request,
 			}
 		}
 	}
-	cookie := &http.Cookie{
-		Name: cookieName,
-		// URL-encode so axios-style clients can echo the value
-		// verbatim in X-XSRF-TOKEN without double-encoding.
-		Value:    url.QueryEscape(token),
-		Path:     "/",
-		HttpOnly: false, // SPAs must read this
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   maxAge,
-	}
+	// URL-encode so axios-style clients can echo the value verbatim in
+	// X-XSRF-TOKEN without double-encoding. Not HttpOnly: SPAs must read
+	// this cookie.
+	cookie := c.config.CookiePolicy.Cookie(cookieName, url.QueryEscape(token), maxAge, false)
 	http.SetCookie(w, cookie)
 }
 
@@ -808,17 +799,9 @@ func (c *CSRF) RotateToken(oldID, newID string) error {
 // delete-Set-Cookie (Max-Age=-1) for XSRF-TOKEN so the browser drops
 // the value tied to a just-revoked session.
 //
-// The cookie attributes (Name, Path, SameSite) MUST match those written
-// by writeXSRFCookieForSession so the user agent treats this as the
-// same cookie and actually removes it. Domain is intentionally left at
-// the default (host-only) to match the write path, which also does not
-// set Domain.
-//
-// Secure mirrors the safe-method bootstrap path: Secure=true when the
-// request is HTTPS or Config.Secure is true. This keeps production
-// proxy-terminated TLS deployments secure even though r.TLS is nil in
-// the Go process, while still allowing explicit Secure=false dev/test
-// configs to delete a plain-HTTP cookie.
+// The deletion is built by Config.CookiePolicy, the same policy as the
+// writes, so Name, Path, Domain, Secure and SameSite match and the user
+// agent treats it as the same cookie and removes it.
 //
 // Called from SessionScheme.Logout right after RevokeToken.
 func (c *CSRF) ClearXSRFCookie(w http.ResponseWriter, r *http.Request) {
@@ -832,15 +815,7 @@ func (c *CSRF) ClearXSRFCookie(w http.ResponseWriter, r *http.Request) {
 	if cookieName == "" {
 		cookieName = "XSRF-TOKEN"
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: false,
-		Secure:   r.TLS != nil || c.config.Secure,
-		SameSite: http.SameSiteLaxMode,
-	})
+	http.SetCookie(w, c.config.CookiePolicy.Cookie(cookieName, "", -1, false))
 }
 
 // RevokeToken implements contract.CSRFTokenRotator. It deletes the token

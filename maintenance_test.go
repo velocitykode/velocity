@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/maintpath"
 	"github.com/velocitykode/velocity/router"
 )
@@ -536,26 +537,43 @@ func TestBypass_MalformedDownFileBlocksBypass(t *testing.T) {
 	}
 }
 
-// TestShouldUseSecureBypassCookie covers the APP_ENV-driven Secure flag.
-func TestShouldUseSecureBypassCookie(t *testing.T) {
+// TestMaintenanceBypassCookie_FollowsCookiePolicy asserts the bypass
+// cookie takes Path, Domain, Secure and SameSite from the app's cookie
+// policy, like every other framework cookie, and stays HttpOnly.
+func TestMaintenanceBypassCookie_FollowsCookiePolicy(t *testing.T) {
 	cases := []struct {
-		env  string
-		want bool
+		name   string
+		policy contract.CookiePolicy
+		want   http.Cookie
 	}{
-		{"", true},
-		{"production", true},
-		{"staging", true},
-		{"development", false},
-		{"dev", false},
-		{"testing", false},
-		{"test", false},
-		{"DEVELOPMENT", false},
+		{
+			name:   "zero value is secure",
+			policy: contract.CookiePolicy{},
+			want:   http.Cookie{Path: "/", Secure: true, SameSite: http.SameSiteLaxMode},
+		},
+		{
+			name:   "session attributes",
+			policy: contract.NewCookiePolicy("/app", "example.test", true, http.SameSiteNoneMode),
+			want:   http.Cookie{Path: "/app", Domain: "example.test", Secure: true, SameSite: http.SameSiteNoneMode},
+		},
+		{
+			name:   "dev opt-out",
+			policy: contract.NewCookiePolicy("/", "", false, http.SameSiteStrictMode),
+			want:   http.Cookie{Path: "/", Secure: false, SameSite: http.SameSiteStrictMode},
+		},
 	}
 	for _, tc := range cases {
-		t.Run(tc.env, func(t *testing.T) {
-			t.Setenv("APP_ENV", tc.env)
-			if got := shouldUseSecureBypassCookie(); got != tc.want {
-				t.Errorf("env=%q: got %v, want %v", tc.env, got, tc.want)
+		t.Run(tc.name, func(t *testing.T) {
+			got := mintMaintenanceBypassCookieWithSalt("letmein", maintenanceBypassDefaultTTL, maintenanceSalt(), tc.policy)
+			if got.Path != tc.want.Path || got.Domain != tc.want.Domain || got.Secure != tc.want.Secure || got.SameSite != tc.want.SameSite {
+				t.Errorf("got Path=%q Domain=%q Secure=%v SameSite=%v, want Path=%q Domain=%q Secure=%v SameSite=%v",
+					got.Path, got.Domain, got.Secure, got.SameSite, tc.want.Path, tc.want.Domain, tc.want.Secure, tc.want.SameSite)
+			}
+			if !got.HttpOnly {
+				t.Error("bypass cookie must be HttpOnly")
+			}
+			if got.Value == "" || got.MaxAge <= 0 {
+				t.Errorf("bypass cookie not minted: value=%q MaxAge=%d", got.Value, got.MaxAge)
 			}
 		})
 	}

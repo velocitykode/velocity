@@ -184,7 +184,7 @@ func newProtectInstance(t *testing.T, fx protectFixture, token string, reason *e
 	t.Helper()
 	cfg := testConfig()
 	cfg.Store = stores.NewSessionStore()
-	cfg.Secure = false
+	cfg.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode)
 	if fx.config != nil {
 		fx.config(cfg)
 	}

@@ -41,11 +41,9 @@ func (m Mode) String() string {
 	}
 }
 
-// ErrInsecureCSRFConfig is returned from Config.Validate when the
-// configuration would produce cookies that are exploitable in production
-// (Secure=false outside testing/dev, HttpOnly=false without opt-in, zero
-// SameSite, or SameSite=None without Secure). New also returns this error
-// when Mode requests an unsupported binding strategy.
+// ErrInsecureCSRFConfig is returned from Config.Validate and New when
+// Mode requests an unsupported binding strategy, and from New when no
+// SessionIDResolver is configured.
 var ErrInsecureCSRFConfig = errors.New("velocity/csrf: insecure config")
 
 // Config holds CSRF protection configuration
@@ -54,7 +52,6 @@ type Config struct {
 	TokenLifetime     time.Duration
 	HeaderName        string
 	FormField         string
-	CookieName        string
 	SessionCookieName string // Name of the session cookie to read session ID from
 
 	// Env is the application environment (APP_ENV), set by the framework from
@@ -82,18 +79,16 @@ type Config struct {
 	// Mode selects how tokens are bound to the client. Default ModeSession.
 	Mode Mode
 
-	// Security settings
-	SameSite http.SameSite
-	Secure   bool
-	// HttpOnly matches the casing of net/http.Cookie.HttpOnly.
-	HttpOnly  bool
+	// SingleUse consumes a token on its first successful validation.
 	SingleUse bool
 
-	// AllowJSAccess opts in to HttpOnly=false. Without this flag the
-	// CSRF cookie MUST be HttpOnly - JavaScript has no legitimate need
-	// to read it in the default flow (forms and XHR echo the value via
-	// hidden input / custom header). Name intentionally loud.
-	AllowJSAccess bool
+	// CookiePolicy is the Path, Domain, Secure and SameSite of the XSRF
+	// token cookie, its post-login rewrite and its logout deletion.
+	// velocity.New sets it to the app's policy (derived from the session
+	// config), so the token cookie follows SESSION_SAME_SITE,
+	// SESSION_DOMAIN, SESSION_PATH and SESSION_SECURE. The zero value is
+	// the secure default (Path "/", Secure, SameSite=Lax).
+	CookiePolicy contract.CookiePolicy
 
 	// WriteXSRFCookie controls whether the middleware writes a non-
 	// HttpOnly cookie carrying the per-session CSRF token on safe
@@ -106,14 +101,8 @@ type Config struct {
 	// Security notes:
 	//   - The cookie is intentionally NOT HttpOnly: SPA JS must read it
 	//     to echo into the header on unsafe requests.
-	//   - Secure is true when the request scheme is https OR when
-	//     Config.Secure is set (the default), so the token cookie is
-	//     Secure behind a TLS-terminating proxy. Only an explicit
-	//     Secure=false dev/test config emits a non-Secure cookie over
-	//     plain HTTP.
-	//   - SameSite=Lax matches the Set-Cookie semantics most SPAs need
-	//     (the cookie travels on top-level POST navigations from the
-	//     same site but not cross-site).
+	//   - Secure, SameSite, Path and Domain come from CookiePolicy, the
+	//     same attributes as the session cookie.
 	//   - The cookie carries the SAME per-session token reachable via
 	//     GetToken(sessionID). Single-use tokens MUST NOT be exposed via
 	//     this cookie - they are consumed on validation and the client
@@ -175,13 +164,9 @@ func DefaultConfig() *Config {
 		TokenLifetime:     24 * time.Hour,
 		HeaderName:        "X-CSRF-Token",
 		FormField:         "_token",
-		CookieName:        "csrf_token",
 		SessionCookieName: "session_id", // Default session cookie name
 		MaxFormBodyBytes:  DefaultMaxFormBodyBytes,
 		Mode:              ModeSession,
-		SameSite:          http.SameSiteLaxMode,
-		Secure:            true,
-		HttpOnly:          true,
 		SingleUse:         false,
 		WriteXSRFCookie:   true,
 		XSRFCookieName:    "XSRF-TOKEN",
@@ -196,38 +181,18 @@ func DefaultConfig() *Config {
 // configured header.
 const DefaultMaxFormBodyBytes int64 = 1 << 20
 
-// Validate checks the Config for insecure defaults. Pass env to enable
-// environment-aware rules: Secure=false is allowed when env is a dev or
-// test profile (per contract.IsDevOrTestEnv: "development", "dev", "test",
-// "testing", "local"), rejected otherwise. An empty env is treated as
-// production for strict validation.
+// Validate checks the Config. The XSRF cookie's attributes come from
+// CookiePolicy, which velocity.New derives from the validated session
+// config, so no cookie rule lives here.
 //
 // Rules:
 //   - Mode must be ModeSession (ModeDoubleSubmit is reserved)
-//   - HttpOnly must be true unless AllowJSAccess is set
-//   - Secure must be true outside the canonical dev/test profiles
-//   - SameSite must be set (non-zero value)
-//   - SameSite=None requires Secure=true
-func (c *Config) Validate(env string) error {
+func (c *Config) Validate() error {
 	if c == nil {
 		return fmt.Errorf("%w: nil config", ErrInsecureCSRFConfig)
 	}
 	if c.Mode != ModeSession {
 		return fmt.Errorf("%w: Mode=%s is not yet implemented; use ModeSession", ErrInsecureCSRFConfig, c.Mode)
-	}
-	if !c.HttpOnly && !c.AllowJSAccess {
-		return fmt.Errorf("%w: HttpOnly=false requires AllowJSAccess=true opt-in", ErrInsecureCSRFConfig)
-	}
-	if !c.Secure && !contract.IsDevOrTestEnv(env) {
-		return fmt.Errorf("%w: Secure=false is not permitted in %q env (set APP_ENV to a dev or test profile to allow)", ErrInsecureCSRFConfig, env)
-	}
-	// SameSite is an int enum. SameSiteDefaultMode (0) is ambiguous (browsers
-	// differ). Require an explicit value.
-	if c.SameSite == http.SameSiteDefaultMode {
-		return fmt.Errorf("%w: SameSite must be set to Lax, Strict, or None (got default/zero)", ErrInsecureCSRFConfig)
-	}
-	if c.SameSite == http.SameSiteNoneMode && !c.Secure {
-		return fmt.Errorf("%w: SameSite=None requires Secure=true", ErrInsecureCSRFConfig)
 	}
 	return nil
 }

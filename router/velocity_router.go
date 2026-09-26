@@ -1126,7 +1126,6 @@ func (r *VelocityRouterV2) currentWiring() ctxWiring {
 		validateFn:           r.validateFn,
 		validateDataFn:       r.validateDataFn,
 		intendedFn:           r.intendedFn,
-		insecureFlashCookies: r.services != nil && r.services.InsecureFlashCookies,
 	}
 }
 

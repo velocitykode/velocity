@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/router"
 )
@@ -382,13 +383,13 @@ func TestClearFlashCookies_ExpiresBothCookies(t *testing.T) {
 }
 
 // The clear path must reach the same Secure decision as the router's
-// write path (both read app.Services.InsecureFlashCookies): a Secure
+// write path (both build through app.Services.CookiePolicy): a Secure
 // clear over plain HTTP is dropped by browsers, so a mismatch would
 // leave the flash cookie unclearable in a dev Secure=false deployment.
 func TestClearFlashCookies_InsecureOptOutFollowsServices(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r = router.WithServices(r, &app.Services{InsecureFlashCookies: true})
+	r = router.WithServices(r, &app.Services{CookiePolicy: contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode)})
 
 	clearFlashCookies(w, r)
 
@@ -398,7 +399,7 @@ func TestClearFlashCookies_InsecureOptOutFollowsServices(t *testing.T) {
 	}
 	for _, c := range cookies {
 		if c.Secure {
-			t.Errorf("cookie %s: expected Secure=false under InsecureFlashCookies opt-out", c.Name)
+			t.Errorf("cookie %s: expected Secure=false under an insecure cookie policy", c.Name)
 		}
 		if c.MaxAge != -1 || !c.HttpOnly || c.SameSite != http.SameSiteLaxMode || c.Path != "/" {
 			t.Errorf("cookie %s: non-Secure attributes must be unchanged: %#v", c.Name, c)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/session"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/csrf"
 	csrfstores "github.com/velocitykode/velocity/csrf/stores"
@@ -105,7 +106,7 @@ func TestCSRFRotation_RememberCookieRevival_RotatesAndPersists(t *testing.T) {
 	// that pulls the plaintext id off the encrypted vel_session cookie
 	// (mirrors app.go's auto-installed resolver).
 	csrfCfg := csrf.DefaultConfig()
-	csrfCfg.Secure = false
+	csrfCfg.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode)
 	csrfCfg.Store = csrfstores.NewSessionStore()
 	csrfCfg.SessionIDResolver = func(r *http.Request) (string, error) {
 		c, err := r.Cookie("vel_session")

@@ -149,11 +149,6 @@ type Context struct {
 	// Wired during app init via Router.SetIntendedResolver so router need
 	// not import auth. Returns "" when nothing is stashed.
 	intendedFn func(c *Context) string
-	// insecureFlashCookies opts flash cookies out of the Secure
-	// attribute. Carried from app.Services.InsecureFlashCookies (a
-	// validated dev/test-only opt-out). Stored inverted so the pool's
-	// zero value after reset() means Secure.
-	insecureFlashCookies bool
 }
 
 // NewContext creates a new Context from http.Request and http.ResponseWriter.
@@ -178,9 +173,6 @@ func NewContext(w http.ResponseWriter, r *http.Request) *Context {
 		params:   params,
 		values:   make(map[string]interface{}),
 		services: svc,
-		// Inherit the flash-cookie Secure decision with the services so
-		// Wrap-built contexts agree with pool-built ones.
-		insecureFlashCookies: svc != nil && svc.InsecureFlashCookies,
 	}
 }
 
@@ -658,7 +650,6 @@ type ctxWiring struct {
 	validateFn           func(c *Context, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error
 	validateDataFn       func(c *Context, data map[string]interface{}, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error
 	intendedFn           func(c *Context) string
-	insecureFlashCookies bool
 }
 
 // applyWiring installs the router-owned wiring fields on the context.
@@ -670,7 +661,6 @@ func (c *Context) applyWiring(w ctxWiring) {
 	c.validateFn = w.validateFn
 	c.validateDataFn = w.validateDataFn
 	c.intendedFn = w.intendedFn
-	c.insecureFlashCookies = w.insecureFlashCookies
 }
 
 // snapshotWiring captures the context's wiring so it can be copied onto
@@ -685,7 +675,6 @@ func (c *Context) snapshotWiring() ctxWiring {
 		validateFn:           c.validateFn,
 		validateDataFn:       c.validateDataFn,
 		intendedFn:           c.intendedFn,
-		insecureFlashCookies: c.insecureFlashCookies,
 	}
 }
 
@@ -707,7 +696,6 @@ func (c *Context) reset() {
 	c.validateFn = nil
 	c.validateDataFn = nil
 	c.intendedFn = nil
-	c.insecureFlashCookies = false
 }
 
 // IsAjax reports whether the request is an XMLHttpRequest
@@ -906,7 +894,6 @@ func SanitizeRedirect(target string, allowedHosts []string) string {
 // on r.Context() so that any downstream Wrap / NewContext inherits it.
 func (c *Context) SetServices(s *app.Services) {
 	c.services = s
-	c.insecureFlashCookies = s != nil && s.InsecureFlashCookies
 	if s != nil {
 		c.Request = WithServices(c.Request, s)
 	}
@@ -2004,13 +1991,22 @@ func (c *Context) SaveFile(fh *multipart.FileHeader, dst string, opts ...FileVal
 // Cookie delete helper
 // ---------------------------------------------------------------------------
 
-// DeleteCookie expires a cookie by name. The deletion cookie carries the
-// same Secure/SameSite attributes as the framework's other cookie
-// deletions: Secure follows the validated app cookie config (a Secure
-// deletion sent over plain HTTP is dropped by browsers, so the dev/test
-// opt-out must apply here too), SameSite is Lax.
+// DeleteCookie expires a cookie by name. The deletion is built by the
+// app's cookie policy (Services.CookiePolicy), so it carries the same
+// Path, Domain, Secure and SameSite as every framework cookie write and a
+// browser drops the cookie it names (a deletion whose Path or Domain
+// differs from the write leaves the cookie in place).
 func (c *Context) DeleteCookie(name string) {
-	c.SetCookie(FlashCookie(name, "", -1, !c.insecureFlashCookies))
+	c.SetCookie(c.cookiePolicy().Cookie(name, "", -1, true))
+}
+
+// cookiePolicy returns the app's cookie policy, or the secure zero-value
+// policy when no services are wired (raw test contexts).
+func (c *Context) cookiePolicy() contract.CookiePolicy {
+	if c.services == nil {
+		return contract.CookiePolicy{}
+	}
+	return c.services.CookiePolicy
 }
 
 // ---------------------------------------------------------------------------
@@ -2079,7 +2075,7 @@ func flashAADFor(name string) string {
 // carries no per-field messages. OpenFlashErrors exposes the messages at
 // the top level and under the bag's name.
 func (c *Context) FlashErrors(errs any) {
-	writeFlashCookie(c.Response, c.flashEncryptor(), FlashErrorsCookie, flashErrorsPayload(errs), !c.insecureFlashCookies)
+	writeFlashCookie(c.Response, c.flashEncryptor(), FlashErrorsCookie, flashErrorsPayload(errs), c.cookiePolicy())
 }
 
 // Members of the error bag envelope FlashErrors seals for a value that
@@ -2174,7 +2170,7 @@ func fieldMapMessages(errs any) any {
 // a redirect and is available on the next request. See FlashErrors for
 // authentication and configuration notes.
 func (c *Context) FlashInput(input any) {
-	writeFlashCookie(c.Response, c.flashEncryptor(), FlashInputCookie, input, !c.insecureFlashCookies)
+	writeFlashCookie(c.Response, c.flashEncryptor(), FlashInputCookie, input, c.cookiePolicy())
 }
 
 // flashEncryptor returns the app's crypto.Encryptor when services are
@@ -2285,42 +2281,18 @@ func unwrapErrorBag(value any) any {
 	return prop
 }
 
-// FlashCookie builds the canonical framework cookie: Path=/, HttpOnly,
-// SameSite=Lax, with the given Secure attribute. Every site that writes
-// or clears a flash cookie (writeFlashCookie here, bond's clear path)
-// and DeleteCookie MUST build it through this helper so the attributes
-// - Secure in particular - never diverge between write and clear: a
-// Secure write paired with a non-Secure clear (or vice versa over plain
-// HTTP, where browsers drop Secure cookies) leaves the cookie
-// unclearable.
-//
-// secure should be true unless the app's validated session-cookie
-// config opted out (app.Services.InsecureFlashCookies, dev/test only).
-// Pass a negative maxAge to delete the cookie.
-func FlashCookie(name, value string, maxAge int, secure bool) *http.Cookie {
-	return &http.Cookie{
-		Name:     name,
-		Value:    value,
-		Path:     "/",
-		MaxAge:   maxAge,
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
-	}
-}
-
-// writeFlashCookie encrypts value with enc and sets it as an HttpOnly,
-// SameSite=Lax cookie with the given Secure attribute. Silently no-ops
+// writeFlashCookie encrypts value with enc and sets it as an HttpOnly
+// cookie built by the app's cookie policy. Silently no-ops
 // when enc is nil or encryption fails so the handler never blocks on a
 // flash-write failure (the missing cookie surfaces on the next render
 // as the absence of flashed errors / old input).
-func writeFlashCookie(w http.ResponseWriter, enc contract.Encryptor, name string, value any, secure bool) {
+func writeFlashCookie(w http.ResponseWriter, enc contract.Encryptor, name string, value any, policy contract.CookiePolicy) {
 	sealed, err := SealFlash(enc, name, value)
 	if err != nil {
 		return
 	}
 	// 5 minutes; cleared on read.
-	http.SetCookie(w, FlashCookie(name, sealed, 300, secure))
+	http.SetCookie(w, policy.Cookie(name, sealed, 300, true))
 }
 
 // Validate checks the request against rules. On failure it writes
