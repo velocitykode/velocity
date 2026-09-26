@@ -63,11 +63,12 @@ func CaptureStackTrace(skip int) *StackTrace {
 			continue
 		}
 
+		pkg, fn := splitSymbol(frame.Function)
 		trace.Frames = append(trace.Frames, StackFrame{
 			File:     frame.File,
 			Line:     frame.Line,
-			Function: extractFunctionName(frame.Function),
-			Package:  extractPackageName(frame.Function),
+			Function: fn,
+			Package:  pkg,
 		})
 
 		if !more {
@@ -78,31 +79,43 @@ func CaptureStackTrace(skip int) *StackTrace {
 	return trace
 }
 
-// extractFunctionName extracts the function name from a fully qualified name.
+// extractFunctionName returns the function's name within its package from
+// a function symbol as runtime.Frame.Function names it, receiver and
+// closure suffixes included: "run.func2.1" for "main.run.func2.1",
+// "(*T).M" for "example.com/p.(*T).M". See splitSymbol.
 func extractFunctionName(fullName string) string {
-	// Split by last slash to get package.function
-	lastSlash := strings.LastIndex(fullName, "/")
-	if lastSlash >= 0 {
-		fullName = fullName[lastSlash+1:]
-	}
-
-	// Find the last dot that separates package from function
-	lastDot := strings.LastIndex(fullName, ".")
-	if lastDot >= 0 {
-		return fullName[lastDot+1:]
-	}
-
-	return fullName
+	_, fn := splitSymbol(fullName)
+	return fn
 }
 
-// extractPackageName extracts the package name from a fully qualified function name.
+// extractPackageName returns the import path of a function symbol as
+// runtime.Frame.Function names it: "main" for "main.run.func2.1",
+// "example.com/p" for "example.com/p.(*T).M". See splitSymbol.
 func extractPackageName(fullName string) string {
-	// Find the last dot that separates package from function
-	lastDot := strings.LastIndex(fullName, ".")
-	if lastDot >= 0 {
-		return fullName[:lastDot]
+	pkg, _ := splitSymbol(fullName)
+	return pkg
+}
+
+// splitSymbol splits a function symbol into its import path and the
+// function's name within the package at the first dot after the path's
+// last slash. The Go runtime writes a dot inside the last element of an
+// import path as %2e ("gopkg.in/yaml%2ev3.Unmarshal"), so that dot always
+// ends the path, and everything after it (a method's receiver, a closure's
+// func2.1 suffixes, a generic's type arguments) is the function's. The
+// last slash is looked for before the first '[' only, so a slash inside
+// type arguments cannot move the boundary. For a symbol with a dot,
+// pkg + "." + fn is the symbol; a symbol without one is all function and
+// no package.
+func splitSymbol(sym string) (pkg, fn string) {
+	head := sym
+	if i := strings.IndexByte(head, '['); i >= 0 {
+		head = head[:i]
 	}
-	return ""
+	start := strings.LastIndexByte(head, '/') + 1
+	if dot := strings.IndexByte(sym[start:], '.'); dot >= 0 {
+		return sym[:start+dot], sym[start+dot+1:]
+	}
+	return "", sym
 }
 
 // String returns a formatted string representation of the stack trace.

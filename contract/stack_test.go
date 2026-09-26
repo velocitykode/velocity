@@ -1,8 +1,10 @@
 package contract
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -273,5 +275,107 @@ func TestCaptureStackTrace_WithRuntimeFrames(t *testing.T) {
 	}
 	if !found {
 		t.Error("Should find test function in stack")
+	}
+}
+
+// TestSplitSymbol asserts a function symbol splits into its import path
+// and the function's full name within the package at the first dot after
+// the last slash, so pkg + "." + fn is the symbol for every symbol with a
+// dot, and one without a dot is all function.
+func TestSplitSymbol(t *testing.T) {
+	tests := []struct {
+		name, sym, wantPkg, wantFn string
+	}{
+		{"plain function", "main.main", "main", "main"},
+		{"init function", "main.init.0", "main", "init.0"},
+		{"method", "example.com/shop/cart.Cart.Total", "example.com/shop/cart", "Cart.Total"},
+		{"pointer method", "github.com/velocitykode/velocity/router.(*VelocityRouterV2).ServeHTTP", "github.com/velocitykode/velocity/router", "(*VelocityRouterV2).ServeHTTP"},
+		{"nested closure", "main.run.func2.1.1", "main", "run.func2.1.1"},
+		{"closure in a method", "example.com/p.(*T).Run.func1", "example.com/p", "(*T).Run.func1"},
+		{"method value", "example.com/p.T.M-fm", "example.com/p", "T.M-fm"},
+		{"generic function", "example.com/p.Map[...]", "example.com/p", "Map[...]"},
+		{"closure in a generic function", "example.com/p.Map[...].func1", "example.com/p", "Map[...].func1"},
+		{"generic method", "example.com/p.(*Box[...]).Get", "example.com/p", "(*Box[...]).Get"},
+		{"type arguments naming another path", "example.com/p.Map[example.com/q.T,go.shape.int]", "example.com/p", "Map[example.com/q.T,go.shape.int]"},
+		{"%2e-encoded path element", "gopkg.in/yaml%2ev3.Unmarshal", "gopkg.in/yaml%2ev3", "Unmarshal"},
+		{"dotted earlier path element", "github.com/foo.bar/pkg.Func.func1", "github.com/foo.bar/pkg", "Func.func1"},
+		{"no dot", "simple", "", "simple"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pkg, fn := splitSymbol(tt.sym)
+			if pkg != tt.wantPkg || fn != tt.wantFn {
+				t.Fatalf("splitSymbol(%q) = (%q, %q), want (%q, %q)", tt.sym, pkg, fn, tt.wantPkg, tt.wantFn)
+			}
+			if got := extractPackageName(tt.sym); got != pkg {
+				t.Errorf("extractPackageName(%q) = %q, want %q", tt.sym, got, pkg)
+			}
+			if got := extractFunctionName(tt.sym); got != fn {
+				t.Errorf("extractFunctionName(%q) = %q, want %q", tt.sym, got, fn)
+			}
+			if pkg != "" && pkg+"."+fn != tt.sym {
+				t.Errorf("%q + \".\" + %q = %q, want the symbol %q", pkg, fn, pkg+"."+fn, tt.sym)
+			}
+		})
+	}
+}
+
+// rawStack returns the caller's stack as CaptureStackTrace sees it
+// (runtime frames dropped), as runtime symbols with file and line.
+func rawStack() []runtime.Frame {
+	var pcs [32]uintptr
+	n := runtime.Callers(2, pcs[:])
+	frames := runtime.CallersFrames(pcs[:n])
+	var out []runtime.Frame
+	for {
+		f, more := frames.Next()
+		if !strings.HasPrefix(f.Function, "runtime.") {
+			out = append(out, f)
+		}
+		if !more {
+			return out
+		}
+	}
+}
+
+// TestCaptureStackTrace_ClosureNamedFully asserts a frame captured inside
+// a nested closure names the closure fully (Package the import path,
+// Function the full name within it), and that String prints every frame
+// as its runtime symbol, as before the split moved.
+func TestCaptureStackTrace_ClosureNamedFully(t *testing.T) {
+	var (
+		st  *StackTrace
+		raw []runtime.Frame
+	)
+	func() {
+		func() {
+			st, raw = CaptureStackTrace(0), rawStack()
+		}()
+	}()
+
+	const pkgPath = "github.com/velocitykode/velocity/contract"
+	first := st.Frames[0]
+	if first.Package != pkgPath {
+		t.Errorf("Package = %q, want %q", first.Package, pkgPath)
+	}
+	// The compiler names the inner closure "<test>.func1.1", or with the
+	// outer closure inlined "<test>.<test>.func1.func2"; either way the
+	// whole chain from the test function down is kept.
+	if prefix := "TestCaptureStackTrace_ClosureNamedFully."; !strings.HasPrefix(first.Function, prefix) || !strings.Contains(first.Function[len(prefix):], "func") {
+		t.Errorf("Function = %q, want the closure's full name under %q", first.Function, prefix)
+	}
+
+	if len(raw) != len(st.Frames) {
+		t.Fatalf("captured %d frames, runtime reports %d", len(st.Frames), len(raw))
+	}
+	var want strings.Builder
+	for i, f := range raw {
+		fmt.Fprintf(&want, "#%d %s:%d\n    %s\n", i, f.File, f.Line, f.Function)
+		if got := st.Frames[i].Package + "." + st.Frames[i].Function; got != f.Function {
+			t.Errorf("frame %d: Package.Function = %q, want the symbol %q", i, got, f.Function)
+		}
+	}
+	if got := st.String(); got != want.String() {
+		t.Errorf("String() =\n%s\nwant\n%s", got, want.String())
 	}
 }
