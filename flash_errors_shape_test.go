@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
@@ -57,7 +58,7 @@ func flashShapeApp(t *testing.T) (*App, *http.Client, *httptest.Server) {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
-	a.Services.InsecureFlashCookies = true // plain-HTTP httptest server
+	a.Services.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode) // plain-HTTP httptest server
 	if err := a.Bootstrap(); err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
