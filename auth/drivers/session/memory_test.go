@@ -80,8 +80,16 @@ func TestSessionStore_Put_Validation(t *testing.T) {
 	if err := s.Put(ctx, &auth.StoredSession{UserID: "u1"}); err == nil {
 		t.Fatal("empty id must error")
 	}
-	if err := s.Put(ctx, &auth.StoredSession{ID: "s1"}); err == nil {
-		t.Fatal("empty user id must error")
+	// An empty user id is a signed-out visitor's record: stored, never
+	// indexed for the user operations.
+	if err := s.Put(ctx, &auth.StoredSession{ID: "s1"}); err != nil {
+		t.Fatalf("signed-out record rejected: %v", err)
+	}
+	if _, err := s.Get(ctx, "s1"); err != nil {
+		t.Fatalf("signed-out record not stored: %v", err)
+	}
+	if list, err := s.ListForUser(ctx, ""); err != nil || len(list) != 0 {
+		t.Fatalf("signed-out record listed: %v %v", list, err)
 	}
 }
 

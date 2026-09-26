@@ -35,18 +35,20 @@ var (
 	ErrNoServerSessionStore = errors.New("velocity/auth: no server session store configured")
 )
 
-// StoredSession is the server-side persisted view of a session. It is the
-// shape passed across the ServerSessionStore boundary; the cookie / scheme
-// layer is unchanged. Data is the per-session bag (kept narrow on purpose,
-// large blobs belong elsewhere).
+// StoredSession is the server-side persisted view of a session: one record
+// per session, which is both the revocation index entry and, with
+// session.ServerStore, the home of the session's data.
 type StoredSession struct {
-	// ID is the opaque session identifier (matches the cookie value).
+	// ID is the opaque session identifier.
 	ID string
 	// UserID is the authenticated user identifier (string form for
-	// driver portability).
+	// driver portability). Empty for a signed-out visitor's session,
+	// which only session.ServerStore writes: such a record is never
+	// indexed, listed or removed by DeleteAllForUser.
 	UserID string
-	// Data carries arbitrary per-session values; drivers must accept any
-	// JSON-shaped tree.
+	// Data carries the session's payload when session.ServerStore holds
+	// the session (nil when the payload lives in the cookie); drivers must
+	// accept any JSON-shaped tree.
 	Data map[string]any
 	// CreatedAt records when the session was first written.
 	CreatedAt time.Time
@@ -87,11 +89,11 @@ type SessionMeta struct {
 }
 
 // ServerSessionStore is the driver-agnostic interface for persisting
-// session records on the server. It exists alongside (not in place of)
-// the cookie-side SessionStore in session.go: the cookie store handles
-// per-request serialization, while ServerSessionStore underwrites
+// session records on the server, one record per session. It underwrites
 // administrative operations like "log out every device" and "list my
-// active sessions". Implementations must be safe for concurrent use.
+// active sessions", and session.ServerStore (a SessionStore) keeps the
+// session's data in the same record, so the cookie carries only the id.
+// Implementations must be safe for concurrent use.
 //
 // Implementations must pass authtest.RunServerSessionStoreContractTests.
 // See authtest for the executable specification.
@@ -102,13 +104,25 @@ type ServerSessionStore interface {
 	Get(ctx context.Context, id string) (*StoredSession, error)
 
 	// Put creates or replaces a session record. Implementations must
-	// update LastSeenAt to time.Now() and reject records with empty ID
-	// or UserID.
+	// update LastSeenAt to time.Now() and reject records with an empty ID.
+	// An empty UserID is a signed-out visitor's record: it is stored and
+	// returned by Get like any other, but never indexed for the user
+	// operations (ListForUser, DeleteAllForUser).
 	//
-	// Put is the Login-time write only. It must never be used for the
-	// activity refresh: a create-or-replace issued after a concurrent
-	// Delete would resurrect a revoked session. Use Touch for that.
+	// Put is the create write only: the sign-in record, and the first save
+	// of a signed-out visitor's session. It must never be used to refresh
+	// or update an existing record: a create-or-replace issued after a
+	// concurrent Delete would resurrect a revoked session. Use Touch and
+	// UpdateData for that.
 	Put(ctx context.Context, session *StoredSession) error
+
+	// UpdateData replaces the record's Data and slides it like Touch
+	// (LastSeenAt to lastSeen, ExpiresAt to expiresAt), leaving every
+	// other field as it is. session.ServerStore saves the session through
+	// it. Like Touch it is update-if-present: ErrSessionNotFound when no
+	// record exists for id (never an insert), ErrSessionExpired (and the
+	// record removed) when the record has passed its current ExpiresAt.
+	UpdateData(ctx context.Context, id string, data map[string]any, lastSeen, expiresAt time.Time) error
 
 	// Touch is the activity refresh: it sets LastSeenAt to lastSeen and
 	// ExpiresAt to expiresAt on an existing record, so an active session's

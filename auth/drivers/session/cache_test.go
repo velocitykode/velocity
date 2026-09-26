@@ -502,8 +502,16 @@ func TestCacheStore_PutValidation(t *testing.T) {
 	if err := s.Put(ctx, &auth.StoredSession{UserID: "u"}); err == nil {
 		t.Fatal("empty id accepted")
 	}
-	if err := s.Put(ctx, &auth.StoredSession{ID: "s"}); err == nil {
-		t.Fatal("empty user id accepted")
+	// An empty user id is a signed-out visitor's record: stored with no
+	// generation token and no index entry.
+	if err := s.Put(ctx, &auth.StoredSession{ID: "s"}); err != nil {
+		t.Fatalf("signed-out record rejected: %v", err)
+	}
+	if _, err := s.Get(ctx, "s"); err != nil {
+		t.Fatalf("signed-out record not stored: %v", err)
+	}
+	if err := s.Delete(ctx, "s"); err != nil {
+		t.Fatalf("Delete signed-out record: %v", err)
 	}
 	if _, err := s.Get(ctx, ""); !errors.Is(err, auth.ErrSessionNotFound) {
 		t.Fatalf("Get empty id: %v", err)

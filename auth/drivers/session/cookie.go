@@ -11,6 +11,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -20,6 +21,21 @@ import (
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 )
+
+// maxCookieBytes is the largest Set-Cookie line (name, value and
+// attributes) the cookie store writes. RFC 6265 section 6.1 asks browsers
+// to accept at least 4096 bytes per cookie, and they drop a larger one
+// whole, so a bigger session cookie would be lost with no signal.
+const maxCookieBytes = 4096
+
+// ErrCookieTooLarge is returned by CookieStore.Save when the encrypted
+// session would make a Set-Cookie line longer than 4096 bytes. Nothing is
+// written: the browser keeps the cookie it already holds, and the changes
+// this request made to the session are lost. Encryption and encoding
+// roughly double the payload, so the cookie store holds about 2 KB of
+// session data; a session that needs more belongs in session.ServerStore
+// (SESSION_STORE=server).
+var ErrCookieTooLarge = errors.New("velocity/auth/session: session cookie exceeds 4096 bytes")
 
 // CookieStore implements SessionStore using encrypted cookies.
 //
@@ -317,6 +333,11 @@ func (s *CookieStore) Save(w http.ResponseWriter, session auth.Session) error {
 		}
 		cookie.MaxAge = maxAge
 		cookie.Expires = expiresAt
+	}
+	// Refuse a cookie the browser would drop: nothing is sent, and the
+	// session stays modified so the error is the whole outcome.
+	if size := len(cookie.String()); size > maxCookieBytes {
+		return fmt.Errorf("%w: %d bytes", ErrCookieTooLarge, size)
 	}
 	http.SetCookie(w, cookie)
 

@@ -211,16 +211,6 @@ type modifiedSession interface {
 // write volume.
 const lastSeenDebounce = 60 * time.Second
 
-// serverRecordGrace is how long the server record outlives the idle window
-// of the cookie it backs. The seam writes a cookie only after the record
-// was touched within lastSeenDebounce, so a record expiring one debounce
-// interval after the policy's end is never earlier than the cookie: an
-// idle session is ended by the cookie check (reported as
-// auth.ErrSessionExpired) and never mistaken for a revocation because a
-// store had already reaped its record. The cookie check is server-side, so
-// the grace extends nothing a client can use.
-const serverRecordGrace = lastSeenDebounce
-
 // userStoreHolder boxes an auth.UserStore so atomic.Pointer can hold the
 // two-word interface as a single addressable value (H-10 fix). Without the
 // box, swaps would race on the interface itab + data pair.
@@ -347,29 +337,55 @@ func (g *SessionScheme) effectiveAttemptFloor() time.Duration {
 	return d
 }
 
-// NewSessionScheme creates a new session scheme.
-// The encryptor parameter is optional — pass nil if crypto is not configured
-// (session scheme will still work if a non-cookie store is used later).
-func NewSessionScheme(userStore auth.UserStore, config auth.SessionConfig, encryptor ...crypto.Encryptor) (*SessionScheme, error) {
-	var enc crypto.Encryptor
-	if len(encryptor) > 0 {
-		enc = encryptor[0]
-	}
+// SessionSchemeOption configures a SessionScheme at construction.
+type SessionSchemeOption func(*SessionScheme)
 
-	store, err := session.NewCookieStore(config, enc)
-	if err != nil {
-		return nil, err
+// WithSessionStore makes the scheme load and save sessions through store
+// instead of the default session.CookieStore. Handlers read and write the
+// session the same way whichever store holds it. A nil store keeps the
+// default.
+//
+// When store also accepts a server session store (session.ServerStore
+// does, through auth.ServerSessionStoreReceiver), the scheme passes every
+// SetServerSessionStore call on to it, so the session's data and its
+// revocation index stay one record.
+func WithSessionStore(store auth.SessionStore) SessionSchemeOption {
+	return func(g *SessionScheme) {
+		if store != nil {
+			g.store = store
+		}
 	}
+}
 
+// NewSessionScheme creates a new session scheme. The encryptor seals the
+// cookie store's session cookie and the remember-me cookie; it may be nil
+// only with WithSessionStore (and then remember-me is unavailable). Without
+// WithSessionStore the scheme keeps sessions in a session.CookieStore.
+func NewSessionScheme(userStore auth.UserStore, config auth.SessionConfig, encryptor crypto.Encryptor, opts ...SessionSchemeOption) (*SessionScheme, error) {
 	g := &SessionScheme{
-		store:     store,
 		config:    config,
 		hasher:    auth.NewBcryptHasher(10),
-		encryptor: enc,
+		encryptor: encryptor,
+	}
+	for _, opt := range opts {
+		opt(g)
+	}
+	if g.store == nil {
+		store, err := session.NewCookieStore(config, encryptor)
+		if err != nil {
+			return nil, err
+		}
+		g.store = store
 	}
 	g.userStore.Store(&userStoreHolder{p: userStore})
 	g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
 	return g, nil
+}
+
+// SessionStore returns the store the scheme loads and saves sessions
+// through.
+func (g *SessionScheme) SessionStore() auth.SessionStore {
+	return g.store
 }
 
 // SetLoginThrottler installs a rate-limiter for Attempt() calls. Passing nil
@@ -403,15 +419,21 @@ func (g *SessionScheme) getLoginChallenge() auth.LoginChallenge {
 // SetServerSessionStore installs (or removes when nil) a server-side session
 // store. When set, the scheme records sessions on Login, looks them up on
 // Check/User to honor administrative revocations, and deletes them on
-// Logout. Cookie-only behavior is preserved when the store is nil.
+// Logout. Cookie-only behavior is preserved when the store is nil. When the
+// scheme's session store keeps sessions in server records
+// (session.ServerStore), it is pointed at the same store, so each session
+// has one record.
 //
 // Manager.SetServerSessionStore propagates to every registered scheme via
 // the auth.ServerSessionStoreReceiver interface, so consumers normally do
 // not need to call this directly.
 func (g *SessionScheme) SetServerSessionStore(store auth.ServerSessionStore) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	g.serverStore = store
+	g.mu.Unlock()
+	if recv, ok := g.store.(auth.ServerSessionStoreReceiver); ok {
+		recv.SetServerSessionStore(store)
+	}
 }
 
 // SetTrustedProxies installs the parsed proxy-network list used for
@@ -598,6 +620,12 @@ func (g *SessionScheme) resolveAuthenticatedUser(r *http.Request) (auth.Authenti
 			// an expired session from one that was never signed in.
 			if ex, ok := session.(interface{ AuthenticationExpired() bool }); ok && ex.AuthenticationExpired() {
 				return nil, false, auth.ErrSessionExpired
+			}
+			// A server-held session whose record was deleted arrives the
+			// same way: the data went with the record, so the revocation
+			// is reported here rather than by consultServerStore.
+			if rd, ok := session.(interface{ RecordDeleted() bool }); ok && rd.RecordDeleted() {
+				return nil, false, auth.ErrSessionRevoked
 			}
 			return nil, false, nil
 		}
@@ -913,14 +941,19 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 		})
 	}
 
+	// The sign-in record is written before the session is saved, inside
+	// the middleware and outside it alike: a session store that keeps the
+	// session in that record (session.ServerStore) saves into it and never
+	// creates a signed-in record itself. When the save then fails, the
+	// record names an id no client received and ends with its TTL.
+	g.recordServerSession(r, session, user)
+
 	if standalone {
 		holder.setSession(session)
 		if err := commitSession(g, r, w, holder); err != nil {
 			return err
 		}
 	}
-
-	g.recordServerSession(r, session, user)
 	return nil
 }
 
@@ -1181,6 +1214,11 @@ func (g *SessionScheme) consultServerStore(r *http.Request, session auth.Session
 	}
 
 	rec, err := store.Get(r.Context(), sessionID)
+	if err == nil && rec.UserID == "" {
+		// A signed-out visitor's record never vouches for a session that
+		// carries a user: only a sign-in writes a record with its owner.
+		rec, err = nil, auth.ErrSessionNotFound
+	}
 	if err == nil && g.pastAbsoluteCap(rec) {
 		// Records written before the cap existed, or by another writer,
 		// may carry an ExpiresAt past the cap: the cap is enforced on
@@ -1258,14 +1296,10 @@ func (g *SessionScheme) maybeRefreshLastSeen(ctx context.Context, store auth.Ser
 
 // recordExpiry is the server record's ExpiresAt for a session created at
 // createdAt and last active at lastActive: the lifetime policy's end plus
-// serverRecordGrace, or the zero time (no expiry) when the policy has
-// neither an idle timeout nor an absolute cap.
+// its grace (auth.SessionConfig.RecordExpiresAt), or the zero time (no
+// expiry) when the policy has neither an idle timeout nor an absolute cap.
 func (g *SessionScheme) recordExpiry(createdAt, lastActive time.Time) time.Time {
-	end := g.config.ExpiresAt(createdAt, lastActive)
-	if end.IsZero() {
-		return end
-	}
-	return end.Add(serverRecordGrace)
+	return g.config.RecordExpiresAt(createdAt, lastActive)
 }
 
 // pastAbsoluteCap reports whether rec is older than the absolute lifetime.

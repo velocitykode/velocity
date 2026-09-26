@@ -221,6 +221,10 @@ func (s *CacheStore) live(ctx context.Context, id string) (*cacheRecord, error) 
 		s.evict(ctx, rec)
 		return nil, auth.ErrSessionExpired
 	}
+	// A signed-out visitor's record has no user to revoke in bulk.
+	if rec.UserID == "" {
+		return rec, nil
+	}
 	// Fail closed: a record without a token, or one whose token does not
 	// match the current (possibly unreadable) generation, is revoked.
 	if rec.Generation == "" || rec.Generation != s.generation(ctx, rec.UserID) {
@@ -253,9 +257,10 @@ func (s *CacheStore) Get(ctx context.Context, id string) (*auth.StoredSession, e
 	return rec.toStored(), nil
 }
 
-// Put implements auth.ServerSessionStore. It is the Login-time write: the
-// record is stamped with the user's current generation token, LastSeenAt
-// is set to now, and the id joins the user's index set.
+// Put implements auth.ServerSessionStore. It is the create write: a
+// signed-in record is stamped with the user's current generation token and
+// its id joins the user's index set; a signed-out visitor's record (empty
+// UserID) gets neither. LastSeenAt is set to now.
 func (s *CacheStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -266,13 +271,15 @@ func (s *CacheStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 	if sess.ID == "" {
 		return errors.New("velocity/auth/session: empty session id")
 	}
-	if sess.UserID == "" {
-		return errors.New("velocity/auth/session: empty user id")
-	}
-
-	gen, err := s.ensureGeneration(ctx, sess.UserID)
-	if err != nil {
-		return err
+	// A signed-out visitor's record (empty UserID) carries no generation
+	// token and joins no index: no user operation can reach it.
+	var gen string
+	if sess.UserID != "" {
+		var err error
+		gen, err = s.ensureGeneration(ctx, sess.UserID)
+		if err != nil {
+			return err
+		}
 	}
 	now := s.clock()
 	rec := &cacheRecord{
@@ -293,7 +300,7 @@ func (s *CacheStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 	// A session id re-bound to a different user must leave the previous
 	// owner's index so ListForUser stays consistent.
 	if raw, ok := s.backend.GetStringCtx(ctx, cacheMetaKey(rec.ID)); ok {
-		if prev, err := decodeRecord(raw); err == nil && prev.UserID != rec.UserID {
+		if prev, err := decodeRecord(raw); err == nil && prev.UserID != "" && prev.UserID != rec.UserID {
 			_ = s.backend.SetRemoveCtx(ctx, cacheUserKey(prev.UserID), rec.ID)
 		}
 	}
@@ -305,6 +312,9 @@ func (s *CacheStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 	ttl := recordTTL(rec.ExpiresAt, now)
 	if err := s.backend.PutCtx(ctx, cacheMetaKey(rec.ID), encoded, ttl); err != nil {
 		return fmt.Errorf("velocity/auth/session: put session: %w", err)
+	}
+	if rec.UserID == "" {
+		return nil
 	}
 	// SetAddCtx is extend-only, so the index lives as long as its
 	// longest-lived member (forever once a non-expiring session joins).
@@ -329,6 +339,19 @@ func (s *CacheStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 // the write the user index's TTL is extended (never shortened) so the
 // index keeps outliving the records it lists.
 func (s *CacheStore) Touch(ctx context.Context, id string, lastSeen, expiresAt time.Time) error {
+	return s.slide(ctx, id, lastSeen, expiresAt, false, nil)
+}
+
+// UpdateData implements auth.ServerSessionStore. It replaces the record's
+// Data and slides it exactly like Touch, through the same replace-if-present
+// write, so a save that loses the race against a revocation cannot recreate
+// the record.
+func (s *CacheStore) UpdateData(ctx context.Context, id string, data map[string]any, lastSeen, expiresAt time.Time) error {
+	return s.slide(ctx, id, lastSeen, expiresAt, true, data)
+}
+
+// slide is the replace-if-present write behind Touch and UpdateData.
+func (s *CacheStore) slide(ctx context.Context, id string, lastSeen, expiresAt time.Time, replaceData bool, data map[string]any) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -341,6 +364,9 @@ func (s *CacheStore) Touch(ctx context.Context, id string, lastSeen, expiresAt t
 	}
 	rec.LastSeenAt = lastSeen
 	rec.ExpiresAt = expiresAt
+	if replaceData {
+		rec.Data = data
+	}
 	encoded, err := encodeRecord(rec)
 	if err != nil {
 		return err
@@ -352,6 +378,9 @@ func (s *CacheStore) Touch(ctx context.Context, id string, lastSeen, expiresAt t
 	}
 	if !replaced {
 		return auth.ErrSessionNotFound
+	}
+	if rec.UserID == "" {
+		return nil
 	}
 	indexTTL := ttl
 	if indexTTL > 0 {

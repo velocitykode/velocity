@@ -136,12 +136,33 @@ func newLifetimeScheme(t *testing.T, idle, absolute int, withStore bool) (*Sessi
 	return scheme, mem
 }
 
-var lifetimeModes = []struct {
+type lifetimeMode struct {
 	name      string
 	withStore bool
-}{
-	{"server store", true},
-	{"cookie only", false},
+	// serverSide keeps the session itself in the server record
+	// (session.ServerStore over the memory store), the cookie carrying
+	// only the id.
+	serverSide bool
+}
+
+var lifetimeModes = []lifetimeMode{
+	{name: "server store", withStore: true},
+	{name: "cookie only", withStore: false},
+	{name: "session in the server record", withStore: true, serverSide: true},
+}
+
+// newLifetimeSchemeFor builds the scheme newLifetimeScheme does for mode.
+func newLifetimeSchemeFor(t *testing.T, idle, absolute int, mode lifetimeMode) (*SessionScheme, *session.MemoryStore) {
+	t.Helper()
+	scheme, mem := newLifetimeScheme(t, idle, absolute, mode.withStore)
+	if mode.serverSide {
+		st, err := session.NewServerStore(scheme.config, mem)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scheme.store = st
+	}
+	return scheme, mem
 }
 
 // An active session (a request every 5 minutes) outlives the idle
@@ -151,7 +172,7 @@ func TestSessionLifetime_ActiveSessionSlidesUntilAbsoluteCap(t *testing.T) {
 	for _, mode := range lifetimeModes {
 		t.Run(mode.name, func(t *testing.T) {
 			clock := installLifetimeClock(t)
-			scheme, _ := newLifetimeScheme(t, 120, 480, mode.withStore)
+			scheme, _ := newLifetimeSchemeFor(t, 120, 480, mode)
 			b := newLifetimeBrowser(t, scheme)
 			if code := b.do(http.MethodPost, "/login").Code; code != http.StatusOK {
 				t.Fatalf("login: status %d", code)
@@ -189,7 +210,7 @@ func TestSessionLifetime_IdleSessionEndsOnNextRequest(t *testing.T) {
 	for _, mode := range lifetimeModes {
 		t.Run(mode.name, func(t *testing.T) {
 			clock := installLifetimeClock(t)
-			scheme, mem := newLifetimeScheme(t, 120, 480, mode.withStore)
+			scheme, mem := newLifetimeSchemeFor(t, 120, 480, mode)
 			b := newLifetimeBrowser(t, scheme)
 			b.do(http.MethodPost, "/login")
 			clock.advance(90 * time.Minute)
@@ -293,7 +314,7 @@ func TestSessionLifetime_ActivityReissuesCookieDebounced(t *testing.T) {
 		for _, mode := range lifetimeModes {
 			t.Run(path+"/"+mode.name, func(t *testing.T) {
 				clock := installLifetimeClock(t)
-				scheme, mem := newLifetimeScheme(t, 120, 480, mode.withStore)
+				scheme, mem := newLifetimeSchemeFor(t, 120, 480, mode)
 				b := newLifetimeBrowser(t, scheme)
 				b.do(http.MethodPost, "/login")
 

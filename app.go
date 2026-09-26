@@ -15,6 +15,7 @@ import (
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
+	"github.com/velocitykode/velocity/auth/drivers/session"
 	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
@@ -342,16 +343,24 @@ func New(opts ...Option) (*App, error) {
 	// user store issues its queries through orm.Model[T], which resolves
 	// the connection from the default manager installed in step 4 above and
 	// owns placeholder dialect selection itself.
-	a.Auth = initAuth(a.config.Auth, a.config.Session, a.Log, a.Crypto)
-
-	// 7. Initialize cache
+	//
+	// The cache is initialized first: with SESSION_STORE=server the
+	// session scheme keeps sessions in cache-backed server records.
 	a.Cache = initCache(a.config.Cache)
 	cleanups = append(cleanups, func() {
 		if a.Cache != nil {
 			_ = a.Cache.Shutdown(context.Background())
 		}
 	})
+	sessionOpts, sessionRecords, err := sessionStoreFromConfig(a.config.Session, a.Cache)
+	if err != nil {
+		return nil, err
+	}
+	a.Auth = initAuth(a.config.Auth, a.config.Session, a.Log, a.Crypto, sessionOpts...)
 	if authManager, ok := a.Auth.(*auth.Manager); ok {
+		if sessionRecords != nil {
+			authManager.SetServerSessionStore(sessionRecords)
+		}
 		installLoginThrottler(authManager, a.Cache, a.Log)
 	}
 
@@ -982,6 +991,39 @@ func (a *App) Errors(fn func(contract.ErrorHandler)) *App {
 func (a *App) UseOutboxRelay(r *orm.Relay) *App {
 	a.outboxRelay = r
 	return a
+}
+
+// sessionStoreFromConfig returns the session scheme options for the store
+// SessionConfig.Store names, and the server session store New installs on
+// the auth manager with it (nil for the cookie store).
+//
+// "cookie" (or empty) keeps the scheme's default session.CookieStore.
+// "server" builds a session.CacheStore over the default cache store and a
+// session.ServerStore over it: the session's data lives in the same record
+// the scheme's revocation checks read, and the cookie carries only the id.
+// A cache that cannot back it (no default store, or one without the
+// replace and set operations) fails New; there is no fallback to the
+// cookie store.
+func sessionStoreFromConfig(cfg auth.SessionConfig, caches contract.CacheManager) ([]schemes.SessionSchemeOption, auth.ServerSessionStore, error) {
+	if cfg.Store != auth.SessionStoreServer {
+		return nil, nil, nil
+	}
+	if caches == nil {
+		return nil, nil, fmt.Errorf("velocity: SESSION_STORE=server needs a cache store: %w", session.ErrCacheStoreNilBackend)
+	}
+	backend, err := caches.DefaultStore()
+	if err != nil {
+		return nil, nil, fmt.Errorf("velocity: SESSION_STORE=server needs a cache store: %w", err)
+	}
+	records, err := session.NewCacheStore(backend)
+	if err != nil {
+		return nil, nil, fmt.Errorf("velocity: SESSION_STORE=server: %w", err)
+	}
+	store, err := session.NewServerStore(cfg, records)
+	if err != nil {
+		return nil, nil, fmt.Errorf("velocity: SESSION_STORE=server: %w", err)
+	}
+	return []schemes.SessionSchemeOption{schemes.WithSessionStore(store)}, records, nil
 }
 
 // sessionFlashBag returns the flash bag of the session the save seam bound

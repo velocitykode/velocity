@@ -115,13 +115,22 @@ func (s *MemoryStore) removeLocked(id string) {
 // state through the returned pointer.
 func cloneStored(in *auth.StoredSession) *auth.StoredSession {
 	out := *in
-	if in.Data != nil {
-		out.Data = make(map[string]any, len(in.Data))
-		for k, v := range in.Data {
-			out.Data[k] = v
-		}
-	}
+	out.Data = cloneData(in.Data)
 	return &out
+}
+
+// cloneData copies the top level of a record's Data. Nested values are
+// shared: writers hand the store a fresh tree on every write and never
+// mutate one they handed over.
+func cloneData(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // Get returns the StoredSession for id. Expired sessions are removed
@@ -151,7 +160,8 @@ func (s *MemoryStore) Get(ctx context.Context, id string) (*auth.StoredSession, 
 	return snap, nil
 }
 
-// Put creates or replaces a session record. ID and UserID are required;
+// Put creates or replaces a session record. ID is required; an empty
+// UserID is a signed-out visitor's record, kept out of the user index.
 // LastSeenAt is updated to the current time on every call.
 func (s *MemoryStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 	if err := ctx.Err(); err != nil {
@@ -162,9 +172,6 @@ func (s *MemoryStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 	}
 	if sess.ID == "" {
 		return errors.New("velocity/auth/session: empty session id")
-	}
-	if sess.UserID == "" {
-		return errors.New("velocity/auth/session: empty user id")
 	}
 	stored := cloneStored(sess)
 	now := s.clock()
@@ -186,6 +193,9 @@ func (s *MemoryStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 		}
 	}
 	s.byID[stored.ID] = stored
+	if stored.UserID == "" {
+		return nil
+	}
 	set, ok := s.byUser[stored.UserID]
 	if !ok {
 		set = make(map[string]struct{})
@@ -201,6 +211,19 @@ func (s *MemoryStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 // activity refresh that loses the race against Delete or DeleteAllForUser
 // cannot resurrect the revoked session.
 func (s *MemoryStore) Touch(ctx context.Context, id string, lastSeen, expiresAt time.Time) error {
+	return s.slide(ctx, id, lastSeen, expiresAt, false, nil)
+}
+
+// UpdateData replaces an existing record's Data and slides it like Touch,
+// under the store mutex. It never inserts: a missing id returns
+// auth.ErrSessionNotFound and an expired record is removed and reported as
+// auth.ErrSessionExpired.
+func (s *MemoryStore) UpdateData(ctx context.Context, id string, data map[string]any, lastSeen, expiresAt time.Time) error {
+	return s.slide(ctx, id, lastSeen, expiresAt, true, data)
+}
+
+// slide is the update-if-present write behind Touch and UpdateData.
+func (s *MemoryStore) slide(ctx context.Context, id string, lastSeen, expiresAt time.Time, replaceData bool, data map[string]any) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -216,6 +239,9 @@ func (s *MemoryStore) Touch(ctx context.Context, id string, lastSeen, expiresAt 
 	}
 	sess.LastSeenAt = lastSeen
 	sess.ExpiresAt = expiresAt
+	if replaceData {
+		sess.Data = cloneData(data)
+	}
 	return nil
 }
 

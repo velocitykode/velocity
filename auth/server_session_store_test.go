@@ -60,6 +60,20 @@ func (f *fakeServerSessionStore) Touch(_ context.Context, id string, lastSeen, e
 	return nil
 }
 
+func (f *fakeServerSessionStore) UpdateData(_ context.Context, id string, data map[string]any, lastSeen, expiresAt time.Time) error {
+	f.record("update:" + id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.byID[id]
+	if !ok {
+		return ErrSessionNotFound
+	}
+	s.Data = data
+	s.LastSeenAt = lastSeen
+	s.ExpiresAt = expiresAt
+	return nil
+}
+
 func (f *fakeServerSessionStore) Delete(_ context.Context, id string) error {
 	f.record("delete:" + id)
 	f.mu.Lock()

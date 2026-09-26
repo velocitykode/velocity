@@ -516,6 +516,9 @@ func (f *flakyStore) Put(ctx context.Context, s *auth.StoredSession) error {
 func (f *flakyStore) Touch(ctx context.Context, id string, lastSeen, expiresAt time.Time) error {
 	return f.inner.Touch(ctx, id, lastSeen, expiresAt)
 }
+func (f *flakyStore) UpdateData(ctx context.Context, id string, data map[string]any, lastSeen, expiresAt time.Time) error {
+	return f.inner.UpdateData(ctx, id, data, lastSeen, expiresAt)
+}
 func (f *flakyStore) Delete(ctx context.Context, id string) error { return f.inner.Delete(ctx, id) }
 func (f *flakyStore) DeleteAllForUser(ctx context.Context, userID string) error {
 	return f.inner.DeleteAllForUser(ctx, userID)

@@ -79,6 +79,7 @@ that cannot import `app`).
 | `SESSION_SECURE` | `config.go` | `true` | YES | cookie sent over HTTP | reject unless `APP_ENV` names a dev/test profile (`development`, `dev`, `test`, `testing`, `local` per `contract.NonProdEnvNames()`); Secure attribute of every framework cookie |
 | `SESSION_HTTP_ONLY` | `config.go` | `true` | YES (unless opt-in) | XSS can steal session | |
 | `SESSION_SAME_SITE` | `config.go` | `lax` | YES (must be set) | CSRF | one of `strict`, `lax`, `none`; SameSite of every framework cookie |
+| `SESSION_STORE` | `config.go` | `cookie` | YES (unknown value fails `New`) | lost session writes | `cookie`: the whole session (data, flash, old input) in the encrypted cookie; a save that would make the cookie exceed 4096 bytes sends nothing and logs a warning (about 2 KB of session data fits). `server`: the session lives in its server record in the default cache store (`session.CacheStore`, the same record the revocation checks read) and the cookie carries only the session id; `New` fails when the cache cannot hold session records (the `file` driver cannot; `memory` and `redis` can). No fallback between them |
 
 ## Auth
 

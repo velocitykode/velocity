@@ -71,7 +71,13 @@ type Session interface {
 	Save(w http.ResponseWriter) error
 }
 
-// SessionStore handles session storage
+// SessionStore loads and saves the session a request carries. The session
+// scheme reads and writes the session only through it, so handlers use the
+// same session API whichever store holds the data. The framework ships two:
+// session.CookieStore keeps the session in an encrypted cookie (at most 4096
+// bytes on the wire), and session.ServerStore keeps it in the session's
+// server record and sends only the id. Pass one to the scheme with
+// schemes.WithSessionStore.
 type SessionStore interface {
 	// Create a new session
 	Create(id string) (Session, error)
@@ -364,6 +370,18 @@ func generateSessionID() (string, error) {
 	return base64.URLEncoding.EncodeToString(b), nil
 }
 
+// Session store names for SessionConfig.Store.
+const (
+	// SessionStoreCookie keeps the whole session (data and flash) in the
+	// encrypted session cookie. It is the default.
+	SessionStoreCookie = "cookie"
+
+	// SessionStoreServer keeps the session on the server, in the record the
+	// ServerSessionStore holds for it; the cookie carries only the session
+	// id.
+	SessionStoreServer = "server"
+)
+
 // SessionConfig holds session configuration.
 //
 // IdleLifetime and AbsoluteLifetime are the session's one lifetime policy,
@@ -418,6 +436,13 @@ type SessionConfig struct {
 	// single-host risk profile (small / dev-like prod) MUST opt in here;
 	// the name is loud so reviewers notice. See audit H-04.
 	AllowCookieStoreInProduction bool
+
+	// Store names where the session lives: SessionStoreCookie (the
+	// default when empty) keeps it in the encrypted cookie, which browsers
+	// cap at 4096 bytes; SessionStoreServer keeps it in the server session
+	// record and sends only the id. velocity.New reads it (env
+	// SESSION_STORE) to pick the session scheme's store.
+	Store string
 }
 
 // defaultAbsoluteLifetime is the absolute session-age cap applied when
@@ -464,6 +489,27 @@ func (c SessionConfig) ExpiresAt(createdAt, lastActive time.Time) time.Time {
 		}
 	}
 	return end
+}
+
+// sessionRecordGrace is how long a server session record outlives the
+// session it backs. The session scheme touches the record at most once a
+// minute and always before it writes a cookie, so a record that ends one
+// minute after the policy's end is never gone while the cookie is live: an
+// idle session is reported as expired, never as revoked because a store had
+// already reaped its record. The session is checked server-side against the
+// policy's end, so the grace extends nothing a client can use.
+const sessionRecordGrace = time.Minute
+
+// RecordExpiresAt returns when the server record of a session created at
+// createdAt and last active at lastActive ends: ExpiresAt plus one minute of
+// grace, so the record always outlives the cookie it backs. A policy with
+// neither an idle timeout nor an absolute cap returns the zero time.
+func (c SessionConfig) RecordExpiresAt(createdAt, lastActive time.Time) time.Time {
+	end := c.ExpiresAt(createdAt, lastActive)
+	if end.IsZero() {
+		return end
+	}
+	return end.Add(sessionRecordGrace)
 }
 
 // CookiePolicy derives the framework cookie policy from the session

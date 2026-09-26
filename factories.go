@@ -102,7 +102,7 @@ func initStorage(config StorageConfig, logger log.Logger) *storage.Manager {
 //
 // Misconfigured schemes are skipped with a warning so the app can still start -
 // only the broken scheme is unavailable at runtime.
-func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger, enc crypto.Encryptor) *auth.Manager {
+func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger, enc crypto.Encryptor, sessionOpts ...schemes.SessionSchemeOption) *auth.Manager {
 	manager := auth.NewManager()
 
 	// Route auth diagnostics (authentication/authorization denials, hasher
@@ -151,7 +151,7 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger
 	for name, schemeCfg := range authCfg.Schemes {
 		switch schemeCfg.Driver {
 		case "session":
-			scheme, err := schemes.NewSessionScheme(userStore, sessCfg, enc)
+			scheme, err := schemes.NewSessionScheme(userStore, sessCfg, enc, sessionOpts...)
 			if err != nil {
 				if logger != nil {
 					logger.Warn("Failed to create session scheme", "scheme", name, "error", err)

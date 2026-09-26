@@ -1,11 +1,13 @@
 package schemes
 
 import (
+	"errors"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/auth/drivers/session"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 	"github.com/velocitykode/velocity/router"
 )
@@ -256,8 +258,18 @@ var ensureSession = func(g *SessionScheme, r *http.Request) {
 // the save path without reaching into router/http internals. It exists
 // solely to keep SessionMiddleware ergonomic to unit-test alongside the
 // store implementation it drives.
+//
+// A failed save writes no session cookie and the response goes out
+// without it: the browser keeps the session cookie it already holds, and
+// the changes this request made to the session are lost (after a sign-in,
+// the visitor is still signed out). The failure is logged; an oversize
+// cookie gets its own line naming the fix.
 var saveSessionFromMiddleware = func(g *SessionScheme, w http.ResponseWriter, s auth.Session) error {
 	if err := s.Save(w); err != nil {
+		if errors.Is(err, session.ErrCookieTooLarge) {
+			g.logWarn("velocity/auth: session not saved: the session cookie would exceed 4096 bytes, so none was sent; keep less in the session or set SESSION_STORE=server", "session_id", s.ID(), "error", err)
+			return err
+		}
 		g.logWarn("velocity/auth: save-at-end middleware: session save failed", "session_id", s.ID(), "error", err)
 		return err
 	}

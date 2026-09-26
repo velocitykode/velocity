@@ -347,6 +347,10 @@ func ConfigFromEnv() Config {
 		Secure:           os.Getenv("SESSION_SECURE") != "false",
 		HttpOnly:         envOrDefault("SESSION_HTTP_ONLY", "true") == "true",
 		SameSite:         parseSameSite(sessionSameSiteRaw),
+		// Where the session lives: "cookie" (the default) in the
+		// encrypted cookie, "server" in the session's server record
+		// with only the id in the cookie (needs a cache backend).
+		Store: envOrDefault("SESSION_STORE", auth.SessionStoreCookie),
 	}
 	config.sessionSameSiteRaw = sessionSameSiteRaw
 
@@ -675,6 +679,11 @@ func (c Config) Validate() error {
 	}
 	if _, err := parseSameSiteStrict("SESSION_SAME_SITE", c.sessionSameSiteRaw); err != nil {
 		return err
+	}
+	switch c.Session.Store {
+	case "", auth.SessionStoreCookie, auth.SessionStoreServer:
+	default:
+		return fmt.Errorf("%w: SESSION_STORE=%q is not one of %q, %q", ErrInvalidConfig, c.Session.Store, auth.SessionStoreCookie, auth.SessionStoreServer)
 	}
 	if err := c.DB.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)

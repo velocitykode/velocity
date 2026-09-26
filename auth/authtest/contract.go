@@ -304,6 +304,100 @@ func RunServerSessionStoreContractTests(t *testing.T, factory ServerSessionStore
 		}
 	})
 
+	t.Run("UpdateData_PresentSession_ReplacesDataAndSlides", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		sess := makeSession("data-1", "user-1")
+		if err := s.Put(ctx, sess); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		stamp := time.Now().Add(5 * time.Minute).Truncate(time.Second)
+		slid := sess.ExpiresAt.Add(time.Hour).Truncate(time.Second)
+		if err := s.UpdateData(ctx, "data-1", map[string]any{"cart": "three items"}, stamp, slid); err != nil {
+			t.Fatalf("UpdateData: %v", err)
+		}
+		got, err := s.Get(ctx, "data-1")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.Data["cart"] != "three items" || got.Data["k"] != nil {
+			t.Fatalf("Data = %v, want exactly the new payload", got.Data)
+		}
+		if !got.LastSeenAt.Equal(stamp) || !got.ExpiresAt.Equal(slid) {
+			t.Fatalf("UpdateData did not slide: LastSeenAt %v ExpiresAt %v, want %v %v", got.LastSeenAt, got.ExpiresAt, stamp, slid)
+		}
+		if got.UserID != "user-1" || got.IPAddress != sess.IPAddress || got.UserAgent != sess.UserAgent {
+			t.Fatalf("UpdateData altered the record's identity fields: %+v", got)
+		}
+	})
+
+	t.Run("UpdateData_UnknownID_ReturnsErrSessionNotFoundAndNeverInserts", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		err := s.UpdateData(ctx, "never-existed", map[string]any{"k": "v"}, time.Now(), time.Now().Add(time.Hour))
+		if !errors.Is(err, auth.ErrSessionNotFound) {
+			t.Fatalf("expected ErrSessionNotFound, got %v", err)
+		}
+		if _, err := s.Get(ctx, "never-existed"); !errors.Is(err, auth.ErrSessionNotFound) {
+			t.Fatalf("UpdateData inserted a record for an unknown id: %v", err)
+		}
+	})
+
+	t.Run("UpdateData_AfterRevocation_DoesNotResurrect", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		_ = s.Put(ctx, makeSession("data-del", "user-1"))
+		_ = s.Put(ctx, makeSession("data-bulk", "user-bulk"))
+		if err := s.Delete(ctx, "data-del"); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		if err := s.DeleteAllForUser(ctx, "user-bulk"); err != nil {
+			t.Fatalf("DeleteAllForUser: %v", err)
+		}
+		for _, id := range []string{"data-del", "data-bulk"} {
+			if err := s.UpdateData(ctx, id, map[string]any{"k": "v"}, time.Now(), time.Now().Add(time.Hour)); !errors.Is(err, auth.ErrSessionNotFound) {
+				t.Fatalf("%s: expected ErrSessionNotFound after revocation, got %v", id, err)
+			}
+			if _, err := s.Get(ctx, id); !errors.Is(err, auth.ErrSessionNotFound) {
+				t.Fatalf("%s: UpdateData resurrected a revoked session: %v", id, err)
+			}
+		}
+	})
+
+	t.Run("UpdateData_ExpiredSession_ReturnsErrSessionExpired", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		sess := makeSession("data-expired", "user-1")
+		sess.ExpiresAt = time.Now().Add(-time.Minute)
+		_ = s.Put(ctx, sess)
+		err := s.UpdateData(ctx, "data-expired", map[string]any{"k": "v"}, time.Now(), time.Now().Add(time.Hour))
+		if !errors.Is(err, auth.ErrSessionExpired) {
+			t.Fatalf("expected ErrSessionExpired, got %v", err)
+		}
+	})
+
+	t.Run("Put_SignedOutSession_IsStoredButNeverListed", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		sess := makeSession("visitor-1", "")
+		if err := s.Put(ctx, sess); err != nil {
+			t.Fatalf("Put of a signed-out record: %v", err)
+		}
+		if err := s.UpdateData(ctx, "visitor-1", map[string]any{"flash": "hi"}, time.Now(), time.Now().Add(time.Hour)); err != nil {
+			t.Fatalf("UpdateData of a signed-out record: %v", err)
+		}
+		got, err := s.Get(ctx, "visitor-1")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.UserID != "" || got.Data["flash"] != "hi" {
+			t.Fatalf("signed-out record = %+v", got)
+		}
+		if list, err := s.ListForUser(ctx, ""); err != nil || len(list) != 0 {
+			t.Fatalf("ListForUser(\"\") = %v, %v; a signed-out record is never listed", list, err)
+		}
+	})
+
 	t.Run("Delete_UnknownID_IsIdempotent", func(t *testing.T) {
 		s := factory(t)
 		if err := s.Delete(context.Background(), "never-existed"); err != nil {
