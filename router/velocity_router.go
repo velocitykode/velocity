@@ -63,6 +63,14 @@ type VelocityRouterV2 struct {
 	// Called by ShutdownEventDispatcher to drain workers.
 	stopEventDispatcher func(context.Context) error
 
+	// asyncPool is the worker pool the current async delivery mode
+	// (SetAsyncEventDispatcher) feeds, nil in sync mode. It holds the
+	// pool's own delivery target, so BindEventDispatcher re-points only
+	// the current pool; a retired pool still draining after a timed-out
+	// shutdown keeps delivering to its own target. Written only by the
+	// serialized configuration calls, like eventDispatcher.
+	asyncPool *asyncEventPool
+
 	// OnEventDispatchError, if set, is invoked when the event dispatcher
 	// returns a non-nil error (most notably ErrEventBufferFull under an
 	// async dispatcher with a saturated buffer). If nil, the router
@@ -365,9 +373,48 @@ func (r *VelocityRouterV2) CloseFileRoot() error {
 	return err
 }
 
-// SetEventDispatcher sets the event dispatcher on this router instance.
+// SetEventDispatcher sets the event dispatcher on this router instance and
+// makes delivery synchronous: events reach fn on the dispatching goroutine.
+//
+// The framework re-wires the app dispatcher through BindEventDispatcher
+// at each lifecycle boundary: in New before and after the WithModules
+// lifecycle, and in bootstrap after the chain modules' Start, after the
+// event registration step (Middleware, Routes, Events callbacks) and
+// after the Errors step. A dispatcher set here before the last boundary,
+// inside a bootstrap callback included, is replaced by the app's current
+// Services.Events (unless events were disabled from the start). An app
+// that wants an independent dispatcher on the router sets it after
+// Bootstrap() returns and before Serve().
+//
+// Router event configuration calls (SetEventDispatcher,
+// SetAsyncEventDispatcher, BindEventDispatcher, ShutdownEventDispatcher)
+// must be serialized and must not overlap serving. Concurrent
+// configuration is not supported. The normal lifecycle keeps them apart,
+// with one known gap: when the HTTP server's drain times out on Shutdown,
+// ShutdownEventDispatcher runs while a straggling handler may still
+// dispatch (tracked separately).
 func (r *VelocityRouterV2) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
+	r.asyncPool = nil
 	r.eventDispatcher = fn
+}
+
+// BindEventDispatcher points the router's events at fn and keeps the
+// configured delivery mode: under SetAsyncEventDispatcher the current
+// worker pool keeps running and delivers every event it dequeues from now
+// on to fn; otherwise it behaves as SetEventDispatcher. The framework
+// calls it at every lifecycle boundary (see SetEventDispatcher) with the
+// app's current Services.Events, so that dispatcher wins over one the app
+// configured earlier, while an async mode the app configured survives. A
+// nil fn drops later events.
+//
+// Like the other configuration calls it must be serialized and must not
+// overlap serving (see SetEventDispatcher).
+func (r *VelocityRouterV2) BindEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
+	if r.asyncPool == nil {
+		r.eventDispatcher = fn
+		return
+	}
+	r.asyncPool.setTarget(fn)
 }
 
 // dispatchInstanceEvent dispatches an event using the instance-level dispatcher.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
@@ -32,16 +33,51 @@ var ErrEventBufferFull = errors.New("velocity/router: event buffer full, droppin
 //
 // Calling SetAsyncEventDispatcher replaces any previously installed
 // dispatcher. If a prior async dispatcher is running, it is stopped
-// first; any events still in its buffer are dropped.
+// first: its channel is closed and the call waits for its workers to
+// deliver the events still buffered, to that pool's own target. When the
+// prior pool was already stopped with a deadline that expired, the call
+// does not wait again; that pool keeps draining in the background.
+//
+// A later BindEventDispatcher (the framework re-wiring the app dispatcher
+// at a lifecycle boundary, see SetEventDispatcher) re-points this pool at
+// the app's current Services.Events and keeps delivery async;
+// SetEventDispatcher switches delivery back to sync. So fn survives only
+// until the next boundary: an app that wants an independent sink calls it
+// after Bootstrap() returns and before Serve(). Configuration calls must
+// be serialized (see SetEventDispatcher).
 func (r *VelocityRouterV2) SetAsyncEventDispatcher(fn func(ctx context.Context, event interface{}) error, workers, bufferSize int) {
 	workers, bufferSize = normalizeAsyncSizing(workers, bufferSize)
 	r.stopPriorAsyncDispatcher()
 
+	pool := &asyncEventPool{}
+	pool.setTarget(fn)
 	ch := make(chan asyncDispatchItem, bufferSize)
-	wg := r.startEventWorkers(ch, fn, workers)
+	wg := r.startEventWorkers(ch, pool, workers)
 
 	r.eventDispatcher = makeNonBlockingEnqueuer(ch)
 	r.stopEventDispatcher = makeDrainCloser(ch, wg)
+	r.asyncPool = pool
+}
+
+// eventTargetFn is the function an async worker pool delivers to.
+type eventTargetFn func(ctx context.Context, event interface{}) error
+
+// asyncEventPool is one async worker pool's delivery target. Each pool
+// owns its holder, so re-pointing the current pool never redirects an
+// older pool that is still draining.
+type asyncEventPool struct {
+	target atomic.Pointer[eventTargetFn]
+}
+
+// setTarget sets the function the pool's workers deliver to; nil makes
+// them drop events.
+func (p *asyncEventPool) setTarget(fn func(ctx context.Context, event interface{}) error) {
+	if fn == nil {
+		p.target.Store(nil)
+		return
+	}
+	t := eventTargetFn(fn)
+	p.target.Store(&t)
 }
 
 // asyncDispatchItem couples a buffered event with the ctx that was in
@@ -73,9 +109,10 @@ func (r *VelocityRouterV2) stopPriorAsyncDispatcher() {
 }
 
 // startEventWorkers spawns worker goroutines that consume events from
-// ch and invoke fn with panic recovery. Listener failures route through
-// the shared reporter so drops/panics surface via the same metrics.
-func (r *VelocityRouterV2) startEventWorkers(ch <-chan asyncDispatchItem, fn func(ctx context.Context, event interface{}) error, workers int) *sync.WaitGroup {
+// ch and invoke the pool's current target with panic recovery. Listener
+// failures route through the shared reporter so drops/panics surface via
+// the same metrics.
+func (r *VelocityRouterV2) startEventWorkers(ch <-chan asyncDispatchItem, pool *asyncEventPool, workers int) *sync.WaitGroup {
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
@@ -85,16 +122,21 @@ func (r *VelocityRouterV2) startEventWorkers(ch <-chan asyncDispatchItem, fn fun
 		// panics in addition but bypass the drop counter.
 		go func() {
 			defer wg.Done()
-			r.runEventWorker(ch, fn)
+			r.runEventWorker(ch, pool)
 		}()
 	}
 	return &wg
 }
 
-// runEventWorker drains a single channel until close.
-func (r *VelocityRouterV2) runEventWorker(ch <-chan asyncDispatchItem, fn func(ctx context.Context, event interface{}) error) {
+// runEventWorker drains a single channel until close, delivering each
+// event to the pool's target current when it is dequeued.
+func (r *VelocityRouterV2) runEventWorker(ch <-chan asyncDispatchItem, pool *asyncEventPool) {
 	for item := range ch {
-		safeInvokeListener(fn, item.ctx, item.event, r.onListenerFailure)
+		t := pool.target.Load()
+		if t == nil {
+			continue
+		}
+		safeInvokeListener(*t, item.ctx, item.event, r.onListenerFailure)
 	}
 }
 

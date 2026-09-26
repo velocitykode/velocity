@@ -102,7 +102,9 @@ func (queueWorkCmd) run(a *App, args []string) error {
 // driver, and its event dispatcher, so the worker's job lifecycle events
 // reach listeners and a permanently failed job reaches the error reporters
 // through the dispatcher's failure-report bridge. With events disabled
-// (WithoutEvents) the worker gets no dispatcher.
+// (WithoutEvents) the worker gets no dispatcher. The dispatcher is bound
+// when the options are built (see buildEventDispatch), after bootstrap, so
+// it is the one every module and the Events callback left in place.
 func queueWorkOptions(a *App, opts console.QueueWorkOptions) console.QueueWorkOptions {
 	if a.Log != nil {
 		opts.Logger = a.Log

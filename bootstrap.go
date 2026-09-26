@@ -144,6 +144,12 @@ func (a *App) runBootstrap() error {
 			a.Log.Warn("events are disabled via WithoutEvents; skipping event listener registration callbacks")
 		}
 	}
+	// Lifecycle boundary: the Middleware, Routes and Events callbacks may
+	// have replaced Services.Events (set it to nil included), replaced an
+	// aware service instance or registered an aware component. The
+	// dispatch closures are bound to the value wired before, so re-wire
+	// every consumer to the dispatcher the app holds now.
+	wireInstanceEvents(a)
 
 	// 5. Register scheduled jobs
 	dispatchModuleCallback(a.chainModules, func(sp chain.ScheduleModule) {
@@ -178,10 +184,12 @@ func (a *App) runBootstrap() error {
 	if a.errorsFn != nil {
 		a.errorsFn(a.Services.Errors)
 	}
-	// The background failure reporters are bound to a handler value (see
-	// wireFailureReporters); bind them to the one the app holds now that
-	// every module and the Errors callback have run.
-	wireFailureReporters(a)
+	// Last lifecycle boundary. The background failure reporters are bound
+	// to a handler value (see wireFailureReporters) and the dispatch
+	// closures to a dispatcher value; wireInstanceEvents re-binds both to
+	// the ones the app holds now that every module and the Schedule,
+	// Commands, Seeders and Errors callbacks have run.
+	wireInstanceEvents(a)
 
 	// 9. Refuse to run with CookieStore-only sessions in production
 	// unless the operator explicitly opted in. The CookieStore in-process
@@ -201,17 +209,55 @@ func (a *App) runBootstrap() error {
 // the contract are skipped silently (e.g. when a feature is disabled). It
 // also (re)installs the background failure reporters on the current error
 // handler (see wireFailureReporters).
+//
+// The closure it hands out is bound to the dispatcher a.Services.Events
+// holds now (see buildEventDispatch), so it runs, unconditionally, at every
+// lifecycle boundary that can change that field or the set of consumers:
+// in New before and after the WithModules lifecycle, and in bootstrap
+// after the chain modules' Start, after the event registration step
+// (Middleware, Routes and Events callbacks) and after the Errors step.
+//
+// Policy: at each boundary the app's current Services.Events wins for
+// every consumer, including a router, service or component the app gave a
+// different dispatcher inside an earlier callback; a nil Services.Events
+// clears them all. The one exception is an app whose events were disabled
+// from the start (WithoutEvents) and never wired: its sweeps leave every
+// consumer as it is. The router's delivery mode is kept
+// (BindEventDispatcher), so async delivery the app configured survives.
+// An app that wants an independent sink on the router or a service
+// configures it after the last boundary: call Bootstrap(), configure the
+// sink, then Serve() (Serve skips the already-run bootstrap). Configuring
+// it inside a bootstrap callback, or in one unbroken chain ending in
+// Serve(), is overwritten.
+//
+// Every setter it calls is synchronized except the router's, which is
+// only safe because every call happens before the router serves; router
+// configuration calls must be serialized.
 func wireInstanceEvents(a *App) {
 	// The failure reporters follow the error handler, not the dispatcher,
 	// so they are (re)installed whether or not events are enabled.
 	wireFailureReporters(a)
 
 	dispatch := buildEventDispatch(a)
-	if dispatch == nil {
+	if dispatch == nil && !a.eventsWired {
+		// Events disabled from the start (WithoutEvents): leave every
+		// service without a dispatcher, as New constructed it.
 		return
 	}
+	// A nil dispatch past this point means a module or callback set
+	// Services.Events to nil after an earlier sweep wired it: clear the
+	// earlier closure everywhere so dispatch becomes a no-op, as with
+	// WithoutEvents, instead of reaching the replaced dispatcher. The flag
+	// stays set, so every later boundary also clears a consumer introduced
+	// after this sweep (a router async dispatcher or a component the app
+	// configured with the old dispatcher) while Services.Events stays nil.
+	if dispatch != nil {
+		a.eventsWired = true
+	}
 
-	a.Router.SetEventDispatcher(dispatch)
+	// Bind, not Set: an async delivery mode the app configured on the
+	// router (SetAsyncEventDispatcher) survives the re-wire.
+	a.Router.BindEventDispatcher(dispatch)
 
 	// C-03-fb2 HIGH 1: the batch package fires lifecycle events
 	// (BatchCreated, BatchJobCompleted, BatchJobFailed, BatchCompleted,
@@ -239,7 +285,7 @@ func wireInstanceEvents(a *App) {
 		mgr.SetTxEventBus(a.Services.Events)
 	}
 
-	wireComponentEvents(a)
+	wireComponentEvents(a, dispatch)
 }
 
 // wireFailureReporters installs the two reporters background failures reach
@@ -341,18 +387,29 @@ func eventWiringCandidates(a *App) []any {
 	return []any{a.DB, a.Cache, a.Notification, a.View, a.Mail, a.Queue, a.Scheduler, a.Auth, a.Crypto, a.CSRF}
 }
 
-// buildEventDispatch returns the canonical dispatch closure wrapping
-// a.Services.Events with nil-ctx defaulting, or nil when events are
-// disabled (WithoutEvents) so callers can skip wiring entirely.
+// buildEventDispatch returns the canonical dispatch closure with nil-ctx
+// defaulting, bound to the dispatcher a.Services.Events holds now, read
+// once, or nil when there is none (WithoutEvents) so callers can skip
+// wiring entirely.
+//
+// The closure never reads a.Services.Events when it dispatches: services
+// dispatch from goroutines a module Start may have launched (a queue push
+// firing job.queued, a scheduler tick, an ORM event), and a later module
+// Start assigning Services.Events would otherwise be an unsynchronized
+// write against those reads. wireInstanceEvents re-runs at each lifecycle
+// point that can change the field, so a replaced dispatcher is what later
+// dispatches reach; a dispatch already in flight finishes on the one
+// captured before.
 func buildEventDispatch(a *App) func(ctx context.Context, event any) error {
-	if a.Services.Events == nil {
+	d := a.Services.Events
+	if d == nil {
 		return nil
 	}
 	return func(ctx context.Context, event any) error {
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		return a.Services.Events.Dispatch(ctx, event)
+		return d.Dispatch(ctx, event)
 	}
 }
 
@@ -360,7 +417,7 @@ func buildEventDispatch(a *App) func(ctx context.Context, event any) error {
 // (registered value plus its hook adapters) that implements
 // contract.EventDispatcherAware. It is called from wireInstanceEvents so it
 // re-runs after each module lifecycle (WithModules in New, chain modules
-// in bootstrap): modules
+// in bootstrap) and after bootstrap's event registration step: modules
 // register components only during Init/Start, so the New-time sweep would
 // always see an empty registry. SetEventDispatcher overwrite is idempotent on
 // every conforming type, so re-sweeping already wired components is safe.
@@ -374,11 +431,11 @@ func buildEventDispatch(a *App) func(ctx context.Context, event any) error {
 // Instead the setter is simply called twice in that case, which is safe
 // because SetEventDispatcher implementations are required to be synchronized
 // (CLAUDE.md security rule #3); the last write wins and there is no race.
-func wireComponentEvents(a *App) {
-	dispatch := buildEventDispatch(a)
-	if dispatch == nil {
-		return
-	}
+//
+// dispatch is the closure wireInstanceEvents built for this sweep (nil
+// clears an earlier one), so components get the same dispatcher value as
+// the services.
+func wireComponentEvents(a *App, dispatch func(ctx context.Context, event any) error) {
 	a.Services.RangeComponents(func(_ app.ComponentKey, v any, hooks []any) bool {
 		if s, ok := v.(contract.EventDispatcherAware); ok {
 			s.SetEventDispatcher(dispatch)

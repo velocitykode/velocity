@@ -93,6 +93,13 @@ type App struct {
 	seeders      *chain.Seeders
 	errorsFn     func(contract.ErrorHandler)
 	bootstrapped bool
+	// eventsWired records that wireInstanceEvents has ever handed
+	// consumers a non-nil dispatch closure. It is sticky: once set, every
+	// later sweep that finds Services.Events nil clears the consumers
+	// instead of leaving the replaced dispatcher wired, while an app with
+	// events disabled from the start (WithoutEvents) is never touched.
+	// Only the lifecycle goroutine (New, bootstrap) touches it.
+	eventsWired bool
 	// bootstrapErr is the sticky result of the first bootstrap() run.
 	// A failed bootstrap must NOT be re-run (modules, middleware and
 	// routes registered before the failure would double-register), so
