@@ -139,11 +139,14 @@ var (
 	ErrInvalidSession     = errors.New("invalid session")
 
 	// ErrRememberClearPartial is returned (wrapped, with errors.Join'd
-	// causes) by Manager.RevokeAllSessions when the server-side session
-	// deletion succeeded but one or more schemes' RememberTokenClearer
-	// implementations failed. The load-bearing security action (revoking
-	// active sessions) has succeeded; callers can decide whether to retry
-	// the clear, surface a degraded status to admins, or ignore.
+	// causes) by Manager.RevokeSession and Manager.RevokeAllSessions when
+	// the server-side session deletion succeeded but the remember-me
+	// credential could not be established as ended: a scheme's
+	// RememberTokenClearer failed (including a failed user lookup), or,
+	// for RevokeSession, the session record could not be read to learn its
+	// owner. The sessions are revoked, but the remember credential may
+	// still be valid and sign the device back in on a fresh session; retry
+	// the revocation, or surface a degraded status to admins.
 	ErrRememberClearPartial = errors.New("velocity/auth: remember token clear partially failed")
 )
 
@@ -1001,20 +1004,32 @@ func (m *Manager) ServerSessionStore() ServerSessionStore {
 //
 // The credential is cleared before the record is deleted, so a recall
 // racing the revocation cannot mint a replacement credential for a
-// session that survives it. A clear failure is logged and returned
-// wrapped in ErrRememberClearPartial after the record is deleted.
+// session that survives it. When the credential cannot be established as
+// ended (a clear fails, or the record read fails for a reason other than
+// the record being gone or expired, so its owner is unknown) the record is
+// still deleted and the failure is logged and returned wrapped in
+// ErrRememberClearPartial.
 func (m *Manager) RevokeSession(ctx context.Context, sessionID string) error {
 	store := m.ServerSessionStore()
 	if store == nil {
 		return ErrNoServerSessionStore
 	}
 	var partialErrs []error
-	if rec, err := store.Get(ctx, sessionID); err == nil && rec != nil && rec.UserID != "" {
-		for _, gc := range m.revocationCapabilities() {
-			if err := gc.clearRemember(ctx, m, rec.UserID); err != nil {
-				partialErrs = append(partialErrs, err)
+	rec, err := store.Get(ctx, sessionID)
+	switch {
+	case err == nil:
+		if rec != nil && rec.UserID != "" {
+			for _, gc := range m.revocationCapabilities() {
+				if err := gc.clearRemember(ctx, m, rec.UserID); err != nil {
+					partialErrs = append(partialErrs, err)
+				}
 			}
 		}
+	case errors.Is(err, ErrSessionNotFound), errors.Is(err, ErrSessionExpired):
+		// No live record, so no owner whose credential this session holds.
+	default:
+		m.logWarn("velocity/auth: revoke session: record read failed; remember-me not cleared", "session_id", sessionID, "error", err)
+		partialErrs = append(partialErrs, fmt.Errorf("session record read: %w", err))
 	}
 	if err := store.Delete(ctx, sessionID); err != nil {
 		return err

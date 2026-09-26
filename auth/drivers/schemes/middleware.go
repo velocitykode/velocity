@@ -248,20 +248,39 @@ func (p *preCommitWriter) Unwrap() http.ResponseWriter {
 // are bound to the session id the save did not persist, runs the queued
 // undo steps instead, and is returned.
 //
+// The commit holds the holder's lifecycle lock exclusively, so it waits
+// for an authentication transition in flight (a recall between writing
+// the user and swapping the remember token) and never saves or takes the
+// queue halfway through one. Only the writes of the latest transition
+// run; a superseded one's (a remember-me sign-in the request then logged
+// out of) are dropped (see sessionHolder.takeAfterSave).
+//
 // A response that already deletes the session cookie (Context.DeleteCookie)
 // ends the session: it is invalidated and saved destroyed, which removes a
-// server record and sends the one deletion, and the queued writes, bound
-// to the ended session, are dropped. Renewal can never issue the cookie
-// again after the handler deleted it.
+// server record and sends the one deletion. A session saved destroyed (so
+// ended, or by Logout) runs none of the queued writes, which are bound to
+// the ended session; its save does not persist anything they could name.
+// Renewal can never issue the cookie again after the handler deleted it.
 func commitSession(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) error {
-	queued, undo := holder.takeAfterSave()
+	holder.lifecycle.Lock()
+	defer holder.lifecycle.Unlock()
+	return commitSessionHeld(g, r, w, holder)
+}
+
+// commitSessionHeld is commitSession for a caller that already holds the
+// holder's lifecycle lock exclusively: a Login or Logout outside the
+// session middleware, which commits its own save scope.
+func commitSessionHeld(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) error {
 	session := holder.getSession()
 	if session == nil {
+		holder.takeAfterSave(true)
 		return nil
 	}
-	if g.endSessionDeletedBy(w, session) {
-		queued = nil
+	ended := g.endSessionDeletedBy(w, session)
+	if ms, ok := session.(modifiedSession); ok && ms.IsDestroyed() {
+		ended = true
 	}
+	queued, undo := holder.takeAfterSave(ended)
 	g.renewOnActivity(r, session)
 	// Skip the save when no mutation occurred. The modifiedSession
 	// capability covers *auth.BaseSession and the cookie store's

@@ -41,7 +41,7 @@ func (p *revokeTestStore) FindByID(id interface{}) (auth.Authenticatable, error)
 	if u, ok := p.users[key]; ok {
 		return u, nil
 	}
-	return nil, errors.New("not found")
+	return nil, auth.ErrUserNotFound
 }
 func (p *revokeTestStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
 	return nil, errors.New("unused")
