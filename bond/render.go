@@ -16,9 +16,10 @@ func (b *Bond) Render(w http.ResponseWriter, r *http.Request, component string, 
 	// 1. Merge shared props with component props
 	mergedProps := b.mergeSharedProps(r, props)
 
-	// 1.5. Apply flash data (validation errors + old input from cookies).
-	// Flash data overrides component props so redirect-back-with-errors wins.
-	applyFlashData(w, r, mergedProps)
+	// 1.5. Drain flashed validation errors and old input from the session
+	// flash bag, on every render (see bond/flash.go). They override
+	// component props so redirect-back-with-errors wins.
+	applyFlashData(r, mergedProps)
 
 	// 2. Check if this is a partial reload
 	isPartial := b.isPartialReload(r, component)
@@ -40,14 +41,14 @@ func (b *Bond) Render(w http.ResponseWriter, r *http.Request, component string, 
 
 	// 5. Build page object.
 	//
-	// Flash drains only on full responses. Inertia v2 clients skip the
-	// `flash` event on deferred-prop and partial requests, so consuming
-	// the bag here would silently lose the message: the bag clears
-	// server-side but the toast never fires client-side. The bag stays
-	// intact for the next full render.
+	// Flash messages drain only on full responses. Inertia v2 clients skip
+	// the `flash` event on deferred-prop and partial requests, so consuming
+	// the messages here would silently lose them: the bag clears
+	// server-side but the toast never fires client-side. They stay in the
+	// bag for the next full render.
 	var flash map[string]any
 	if !isPartial {
-		flash = b.flashFor(w, r)
+		flash = flashFor(r)
 	}
 	page := Page{
 		Component:      component,

@@ -13,25 +13,9 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/contract"
-	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/validation"
 )
-
-// testFormEncryptor returns an AES-256-GCM encryptor for vform tests
-// that exercise flash-cookie emission. Sealing requires an encryptor;
-// without one, ctx.FlashErrors no-ops and the cookie is never set.
-func testFormEncryptor(t *testing.T) crypto.Encryptor {
-	t.Helper()
-	enc, err := crypto.NewEncryptor(crypto.Config{
-		Key:    "base64:MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
-		Cipher: "AES-256-GCM",
-	})
-	if err != nil {
-		t.Fatalf("failed to build encryptor: %v", err)
-	}
-	return enc
-}
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -94,11 +78,7 @@ func jsonCtx(t *testing.T, body string) (*router.Context, *httptest.ResponseReco
 	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	c := router.NewContext(w, r)
-	// Wire a real encryptor so ctx.FlashErrors / FlashInput can seal the
-	// flash cookies. Tests that need a DB still attach one via
-	// SetServices directly; they can preserve Crypto by reading it
-	// off the existing services first.
-	c.SetServices(&app.Services{Crypto: testFormEncryptor(t)})
+	c.SetServices(&app.Services{})
 	return c, w
 }
 
@@ -326,10 +306,9 @@ func (v backView) Back(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, v.to, http.StatusSeeOther)
 }
 
-// formCtx builds a *router.Context for a JSON body whose services carry the
-// flash encryptor and, when view is non-nil, a view engine. headers are
-// set on the request.
-func formCtx(t *testing.T, body string, view contract.ViewEngine, headers map[string]string) (*router.Context, *httptest.ResponseRecorder, crypto.Encryptor) {
+// formCtx builds a *router.Context for a JSON body whose services carry,
+// when view is non-nil, a view engine. headers are set on the request.
+func formCtx(t *testing.T, body string, view contract.ViewEngine, headers map[string]string) (*router.Context, *httptest.ResponseRecorder) {
 	t.Helper()
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/signup", strings.NewReader(body))
@@ -337,10 +316,9 @@ func formCtx(t *testing.T, body string, view contract.ViewEngine, headers map[st
 	for k, v := range headers {
 		r.Header.Set(k, v)
 	}
-	enc := testFormEncryptor(t)
 	c := router.NewContext(w, r)
-	c.SetServices(&app.Services{Crypto: enc, View: view})
-	return c, w, enc
+	c.SetServices(&app.Services{View: view})
+	return c, w
 }
 
 // TestForm_Failure asserts a failed Form writes nothing and returns a
@@ -360,7 +338,7 @@ func TestForm_Failure(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, w, _ := formCtx(t, `{"email":"bad","password":"x"}`, tt.view, tt.headers)
+			ctx, w := formCtx(t, `{"email":"bad","password":"x"}`, tt.view, tt.headers)
 
 			form, err := Form[signupRequest](ctx)
 			if form != nil {

@@ -47,7 +47,7 @@ func TestFrameworkRenderRules_AnswerOnlyTheStatusOwner(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a, _, rec, _ := validationApp(t, backToSignup{})
+			a, _, rec, bag := validationApp(t, backToSignup{})
 			h, ok := a.Services.Errors.(*problem.Handler)
 			if !ok {
 				t.Fatalf("Services.Errors is %T, want *problem.Handler", a.Services.Errors)
@@ -116,9 +116,8 @@ func TestFrameworkRenderRules_AnswerOnlyTheStatusOwner(t *testing.T) {
 			if got := w.Header().Get("Location"); got != tt.wantLocation {
 				t.Errorf("Location = %q, want %q", got, tt.wantLocation)
 			}
-			flashed := strings.Contains(strings.Join(w.Header().Values("Set-Cookie"), "\n"), router.FlashErrorsCookie+"=")
-			if flashed != tt.wantFlash {
-				t.Errorf("errors flashed = %v, want %v (Set-Cookie %q)", flashed, tt.wantFlash, w.Header().Values("Set-Cookie"))
+			if flashed := bag.has(router.FlashErrorsKey); flashed != tt.wantFlash {
+				t.Errorf("errors flashed = %v, want %v", flashed, tt.wantFlash)
 			}
 			if tt.wantBody != "" && w.Body.String() != tt.wantBody {
 				t.Errorf("body = %q, want %q", w.Body.String(), tt.wantBody)

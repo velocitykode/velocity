@@ -1385,8 +1385,8 @@ func TestDecryptBytesWithAAD_NilEmptyEquivalent(t *testing.T) {
 // TestDecryptBytesWithAAD_PreviousKeyRotation pins M-04-9: an AAD-bound
 // payload sealed under a master key that has since been demoted into
 // Config.PreviousKeys must still decrypt cleanly when the same aad is
-// supplied. Without rotation iteration on this path, a flash cookie /
-// signed-AAD payload encrypted just before a key rotation would silently
+// supplied. Without rotation iteration on this path, an AAD-bound
+// payload encrypted just before a key rotation would silently
 // fail across the rotation window even though the operator kept the old
 // master available for exactly this case.
 func TestDecryptBytesWithAAD_PreviousKeyRotation(t *testing.T) {

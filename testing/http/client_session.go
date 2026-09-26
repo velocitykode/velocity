@@ -13,14 +13,13 @@ package http
 //
 //   - WithSession seeds arbitrary session keys (the session-store analogue of
 //     ActingAs seeding the authenticated user).
-//   - AssertSessionHasErrors reads the validation-error bag back from the
-//     encrypted "_velocity_errors" flash cookie. There is NO server-side
-//     session store for flash data in velocity: validation errors live only in
-//     that cookie (see bond/flash.go + router.SealFlash/OpenFlash), so the
-//     cookie IS the realistic readback path. Decryption needs the app encryptor
-//     (the same key the router sealed the cookie with); it is passed to the
-//     assertion explicitly (resp.AssertSessionHasErrors(enc, "email")) so this
-//     glue holds no encryptor state on TestClient/TestResponse.
+//   - AssertSessionHasErrors reads the validation errors back from the session
+//     flash bag (router.FlashErrorsKey) of the session the response saved:
+//     router.Context.FlashErrors flashes them into the session, so the
+//     session cookie the response sets IS the realistic readback path. The
+//     scheme is passed to the assertion explicitly
+//     (resp.AssertSessionHasErrors(scheme, "email")) so this glue holds no
+//     scheme state on TestClient/TestResponse.
 //   - AssertSessionHas / AssertSessionMissing read the client's current session
 //     (the one seeded by WithSession) by replaying the client's own cookies onto
 //     a probe request and asking the scheme for the session (the same path as
@@ -52,11 +51,12 @@ package http
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
-	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -105,27 +105,27 @@ func (c *TestClient) WithSession(scheme *schemes.SessionScheme, data map[string]
 	return c
 }
 
-// AssertSessionHasErrors asserts that the response carried a decryptable
-// "_velocity_errors" flash cookie containing each named field. A failure
-// flashed under a named error bag counts its fields as present, the same as
-// the page's errors prop. Decryption uses
-// enc (the same key the router sealed the cookie with); the bag is
-// AEAD-encrypted, so without the matching encryptor the cookie cannot be opened.
+// AssertSessionHasErrors asserts that the session the response saved under
+// the given scheme carries flashed validation errors for each named field, the
+// errors the next page receives as its "errors" prop. A failure flashed under
+// a named error bag counts its fields as present, the same as on the page.
+// The session is read through the scheme from the response's own Set-Cookie,
+// so it must be the scheme (store and key) the app saved it with.
 //
-// A nil encryptor, a missing cookie, a decrypt/authentication failure, or a
-// non-object payload is reported as a clean failure via t.Errorf, never a panic,
-// matching the safe handling in bond/flash.go.
-func (r *TestResponse) AssertSessionHasErrors(enc crypto.Encryptor, fields ...string) *TestResponse {
+// A nil scheme, a response that saved no session, a session the scheme cannot
+// open, or a session without flashed errors is reported as a clean failure via
+// t.Errorf, never a panic. The read does not consume the errors.
+func (r *TestResponse) AssertSessionHasErrors(scheme *schemes.SessionScheme, fields ...string) *TestResponse {
 	r.t.Helper()
 
-	if enc == nil {
-		r.t.Errorf("AssertSessionHasErrors: a non-nil crypto.Encryptor is required to open the flash error bag")
+	if scheme == nil {
+		r.t.Errorf("AssertSessionHasErrors: a non-nil *schemes.SessionScheme is required to read the session flash bag")
 		return r
 	}
 
-	bag := r.openFlashErrors(enc)
+	bag := r.flashedErrors(scheme)
 	if bag == nil {
-		r.t.Errorf("AssertSessionHasErrors: no decryptable %q flash cookie on the response", router.FlashErrorsCookie)
+		r.t.Errorf("AssertSessionHasErrors: the response saved no session carrying flashed errors (%q)", router.FlashErrorsKey)
 		return r
 	}
 
@@ -200,33 +200,26 @@ func (c *TestClient) sessionFromClient(scheme *schemes.SessionScheme) auth.Sessi
 	return scheme.Session(c.authProbeRequest())
 }
 
-// openFlashErrors returns the "_velocity_errors" bag from the response cookies
-// as the page sees it, or nil when the cookie is absent or fails to open. It
-// opens through router.OpenFlashErrors, the helper bond/flash.go uses on the
-// read path, so a failure flashed under a named error bag exposes its fields
-// at the top level (and under the bag's name) exactly as on the page; crypto
-// is never reimplemented here.
-func (r *TestResponse) openFlashErrors(enc crypto.Encryptor) map[string]any {
-	var sealed string
+// flashedErrors returns the errors flashed into the session the response
+// saved, as the page sees them, or nil when the response set no session the
+// scheme can open or the session carries no flashed errors. The session is
+// opened through the scheme on a probe request carrying the response's
+// cookies (the path the next request takes), so crypto and the store are
+// never reimplemented here; the probe session is discarded, so the read does
+// not consume the errors.
+func (r *TestResponse) flashedErrors(scheme *schemes.SessionScheme) map[string]any {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	for _, cookie := range r.recorder.Result().Cookies() {
-		if cookie.Name == router.FlashErrorsCookie {
-			sealed = cookie.Value
-			break
+		if cookie.MaxAge >= 0 && cookie.Value != "" {
+			req.AddCookie(cookie)
 		}
 	}
-	if sealed == "" {
+	session := scheme.Session(schemes.WithSessionContext(req))
+	if session == nil {
 		return nil
 	}
-
-	value, err := router.OpenFlashErrors(enc, sealed)
-	if err != nil {
-		return nil
-	}
-	bag, ok := value.(map[string]any)
-	if !ok {
-		return nil
-	}
-	return bag
+	errs, _ := session.GetFlash(router.FlashErrorsKey).(map[string]any)
+	return errs
 }
 
 // mapKeys returns the keys of m, for failure messages.

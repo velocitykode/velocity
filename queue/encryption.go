@@ -23,16 +23,14 @@ import (
 // Only Data is encrypted. The envelope metadata the drivers need for
 // routing and bookkeeping (Type, Queue, Attempts, CreatedAt, trace ids,
 // DedupeKey) stays readable. The payload Type is bound into the
-// ciphertext as AAD (mirroring the flash-cookie pattern in
-// router.SealFlash) so a ciphertext cannot be transplanted onto a
+// ciphertext as AAD so a ciphertext cannot be transplanted onto a
 // different job type. That binding is mandatory: queue encryption
 // requires a cipher that authenticates AAD: AES-GCM (AEAD) or the CBC
 // encrypt-then-MAC construction, which binds AAD into its HMAC. Ciphers
 // that cannot authenticate AAD fail sealing closed rather than degrading
 // to an unbound EncryptBytes envelope, because without the type binding
 // a valid ciphertext for one job type could be replayed as the Data of
-// another. (router.SealFlash accepts that degradation for flash cookies;
-// queue payloads do not.)
+// another.
 //
 // Ordering: encrypt-then-sign. Producers seal Data BEFORE the wrapper is
 // marshalled and signed, so the HMAC covers the ciphertext (and the

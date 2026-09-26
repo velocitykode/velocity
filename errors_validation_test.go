@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
@@ -54,10 +55,53 @@ func signupFailure(t *testing.T) *validation.Failure {
 	return validation.NewFailure(result)
 }
 
-// validationApp builds a pipeline app with debug off, a flash encryptor
-// and, when view is non-nil, a view engine, with one route per validation
-// entry point.
-func validationApp(t *testing.T, view contract.ViewEngine) (*App, *levelLogger, *recordingReporter, crypto.Encryptor) {
+// recordedFlashBag is a contract.FlashBag held in memory, standing in for
+// the session flash bag of every request a validationApp serves.
+type recordedFlashBag struct {
+	mu      sync.Mutex
+	entries map[string]any
+}
+
+func (b *recordedFlashBag) Flash(key string, value any) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.entries == nil {
+		b.entries = map[string]any{}
+	}
+	b.entries[key] = value
+}
+
+func (b *recordedFlashBag) GetFlash(key string) any {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	v := b.entries[key]
+	delete(b.entries, key)
+	return v
+}
+
+func (b *recordedFlashBag) FlushFlash() map[string]any {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := b.entries
+	b.entries = nil
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// has reports whether the bag holds key.
+func (b *recordedFlashBag) has(key string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ok := b.entries[key]
+	return ok
+}
+
+// validationApp builds a pipeline app with debug off, a recorded session
+// flash bag and, when view is non-nil, a view engine, with one route per
+// validation entry point.
+func validationApp(t *testing.T, view contract.ViewEngine) (*App, *levelLogger, *recordingReporter, *recordedFlashBag) {
 	t.Helper()
 	a, logs, rec := newPipelineApp(t)
 	a.Services.Errors.SetDebug(false)
@@ -70,6 +114,8 @@ func validationApp(t *testing.T, view contract.ViewEngine) (*App, *levelLogger, 
 	}
 	a.Services.Crypto = enc
 	a.Services.View = view
+	bag := &recordedFlashBag{}
+	a.Services.FlashBag = func(*http.Request) contract.FlashBag { return bag }
 
 	a.Router.Post("/validate", func(c *router.Context) error {
 		return c.Validate(signupForm{}.Rules())
@@ -100,7 +146,7 @@ func validationApp(t *testing.T, view contract.ViewEngine) (*App, *levelLogger, 
 		f.Bag = "login"
 		return f
 	})
-	return a, logs, rec, enc
+	return a, logs, rec, bag
 }
 
 // postSignup posts invalidSignup to path with headers.
@@ -153,9 +199,9 @@ func assertValidationProblem(t *testing.T, w *httptest.ResponseRecorder) {
 }
 
 // assertFlashRedirect asserts the browser answer: 303 to location with the
-// errors and old input flash cookies (Path=/, HttpOnly, SameSite=Lax,
-// Max-Age=300), old input redacted. It returns the decrypted errors.
-func assertFlashRedirect(t *testing.T, w *httptest.ResponseRecorder, enc crypto.Encryptor, location string) map[string]any {
+// errors and old input flashed into the session flash bag, old input
+// redacted, and no cookie of their own. It returns the flashed errors.
+func assertFlashRedirect(t *testing.T, w *httptest.ResponseRecorder, bag *recordedFlashBag, location string) map[string]any {
 	t.Helper()
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303 (body %q)", w.Code, w.Body.String())
@@ -163,56 +209,45 @@ func assertFlashRedirect(t *testing.T, w *httptest.ResponseRecorder, enc crypto.
 	if got := w.Header().Get("Location"); got != location {
 		t.Errorf("Location = %q, want %q", got, location)
 	}
-	cookies := map[string]*http.Cookie{}
-	for _, c := range w.Result().Cookies() {
-		cookies[c.Name] = c
+	if cookies := w.Result().Cookies(); len(cookies) != 0 {
+		t.Errorf("Set-Cookie = %v, want none: flash rides in the session", cookies)
 	}
-	for _, name := range []string{router.FlashErrorsCookie, router.FlashInputCookie} {
-		c := cookies[name]
-		if c == nil {
-			t.Fatalf("cookie %s missing (got %v)", name, w.Result().Cookies())
-		}
-		if c.Path != "/" || !c.HttpOnly || c.SameSite != http.SameSiteLaxMode || c.MaxAge != 300 {
-			t.Errorf("cookie %s = path %q httponly %v samesite %v maxage %d; want / true Lax 300",
-				name, c.Path, c.HttpOnly, c.SameSite, c.MaxAge)
-		}
+	errs, _ := bag.GetFlash(router.FlashErrorsKey).(map[string]any)
+	if errs == nil {
+		t.Fatalf("no errors flashed under %q", router.FlashErrorsKey)
 	}
-	errs, err := router.OpenFlash(enc, router.FlashErrorsCookie, cookies[router.FlashErrorsCookie].Value)
-	if err != nil {
-		t.Fatalf("open errors cookie: %v", err)
+	old, _ := bag.GetFlash(router.FlashInputKey).(map[string]any)
+	if old == nil {
+		t.Fatalf("no old input flashed under %q", router.FlashInputKey)
 	}
-	old, err := router.OpenFlash(enc, router.FlashInputCookie, cookies[router.FlashInputCookie].Value)
-	if err != nil {
-		t.Fatalf("open old input cookie: %v", err)
+	if old["email"] != "bad" {
+		t.Errorf("old email = %v, want bad", old["email"])
 	}
-	oldMap, _ := old.(map[string]any)
-	if oldMap["email"] != "bad" {
-		t.Errorf("old email = %v, want bad", oldMap["email"])
-	}
-	if _, leaked := oldMap["password"]; leaked {
+	if _, leaked := old["password"]; leaked {
 		t.Error("old input carries the password")
 	}
-	errMap, _ := errs.(map[string]any)
-	return errMap
+	return errs
 }
 
 // TestValidationFailure_Wire drives every validation entry point (the
 // ctx.Validate callback, vform.Form, ctx.BindValid, a Failure returned by
 // hand) through the real app for each kind of client, and asserts the wire
-// answer: 422 problem+json for a JSON client or an app with no view
-// engine, the flash-and-redirect flow for a browser with a view engine. A
-// validation failure is never reported.
+// answer: 422 problem+json for a JSON client, an app with no view engine
+// or a request without a session, the flash-and-redirect flow for a
+// browser with a view engine and a session. A validation failure is never
+// reported.
 func TestValidationFailure_Wire(t *testing.T) {
 	jsonClient := map[string]string{"Accept": "application/json"}
 	browser := map[string]string{"Accept": "text/html,application/xhtml+xml"}
 	inertia := map[string]string{"X-Inertia": "true", "Accept": "text/html"}
 
 	tests := []struct {
-		name     string
-		path     string
-		headers  map[string]string
-		noView   bool
-		location string // empty: expect the problem+json answer
+		name      string
+		path      string
+		headers   map[string]string
+		noView    bool
+		noSession bool
+		location  string // empty: expect the problem+json answer
 	}{
 		{name: "validate json client", path: "/validate", headers: jsonClient},
 		{name: "validate browser", path: "/validate", headers: browser, location: "/signup"},
@@ -231,6 +266,8 @@ func TestValidationFailure_Wire(t *testing.T) {
 		{name: "manual inertia", path: "/manual", headers: inertia, location: "/signup"},
 		{name: "manual redirect target", path: "/manual-redirect", headers: browser, location: "/elsewhere"},
 		{name: "manual unsafe redirect target goes back", path: "/manual-unsafe-redirect", headers: browser, location: "/signup"},
+		{name: "validate browser no session", path: "/validate", headers: browser, noSession: true},
+		{name: "manual inertia no session", path: "/manual", headers: inertia, noSession: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -238,14 +275,20 @@ func TestValidationFailure_Wire(t *testing.T) {
 			if tt.noView {
 				view = nil
 			}
-			a, logs, rec, enc := validationApp(t, view)
+			a, logs, rec, bag := validationApp(t, view)
+			if tt.noSession {
+				a.Services.FlashBag = func(*http.Request) contract.FlashBag { return nil }
+			}
 
 			w := postSignup(a, tt.path, tt.headers)
 
 			if tt.location == "" {
 				assertValidationProblem(t, w)
+				if got := bag.FlushFlash(); got != nil {
+					t.Errorf("flashed %v with a problem answer", got)
+				}
 			} else {
-				errs := assertFlashRedirect(t, w, enc, tt.location)
+				errs := assertFlashRedirect(t, w, bag, tt.location)
 				if errs["email"] == nil || errs["password"] == nil {
 					t.Errorf("flashed errors = %v, want email and password", errs)
 				}
@@ -261,20 +304,20 @@ func TestValidationFailure_Wire(t *testing.T) {
 }
 
 // TestValidationFailure_ErrorBag asserts a Failure naming a bag flashes its
-// errors as the error bag envelope: the bag's name and field -> first
-// message.
+// errors as the page sees them: field -> first message at the top level
+// and the same fields under the bag's name.
 func TestValidationFailure_ErrorBag(t *testing.T) {
-	a, _, _, enc := validationApp(t, backToSignup{})
+	a, _, _, bag := validationApp(t, backToSignup{})
 	w := postSignup(a, "/manual-bag", map[string]string{"Accept": "text/html"})
 
-	errs := assertFlashRedirect(t, w, enc, "/signup")
-	if errs[router.FlashErrorBagKey] != "login" {
-		t.Errorf("flashed bag = %v, want login (%v)", errs[router.FlashErrorBagKey], errs)
-	}
-	messages, _ := errs[router.FlashBaggedErrorsKey].(map[string]any)
+	errs := assertFlashRedirect(t, w, bag, "/signup")
+	messages, _ := errs["login"].(map[string]any)
 	for _, field := range []string{"email", "password"} {
 		if msg, ok := messages[field].(string); !ok || msg == "" {
-			t.Errorf("flashed %s = %v, want its first message (%v)", field, messages[field], errs)
+			t.Errorf("flashed login.%s = %v, want its first message (%v)", field, messages[field], errs)
+		}
+		if errs[field] != messages[field] {
+			t.Errorf("flashed %s = %v, want the bag's message %v", field, errs[field], messages[field])
 		}
 	}
 }
@@ -337,8 +380,8 @@ func TestValidationFailure_UserRulesSeeEveryEntryPoint(t *testing.T) {
 
 // TestValidationFailure_BrowserFlashIdenticalAcrossEntryPoints asserts
 // every validation entry point gives a browser the same answer through the
-// framework render rule: 303 back, both flash cookies with the same
-// attributes, and the same sealed errors and old input.
+// framework render rule: 303 back and the same flashed errors and old
+// input.
 func TestValidationFailure_BrowserFlashIdenticalAcrossEntryPoints(t *testing.T) {
 	type answer struct {
 		status   int
@@ -348,22 +391,12 @@ func TestValidationFailure_BrowserFlashIdenticalAcrossEntryPoints(t *testing.T) 
 	}
 	answers := map[string]answer{}
 	for _, path := range []string{"/manual", "/validate", "/vform", "/bindvalid"} {
-		a, _, _, enc := validationApp(t, backToSignup{})
+		a, _, _, bag := validationApp(t, backToSignup{})
 		w := postSignup(a, path, map[string]string{"Accept": "text/html"})
-		assertFlashRedirect(t, w, enc, "/signup")
 		got := answer{status: w.Code, location: w.Header().Get("Location")}
-		for _, c := range w.Result().Cookies() {
-			value, err := router.OpenFlash(enc, c.Name, c.Value)
-			if err != nil {
-				t.Fatalf("%s: open %s: %v", path, c.Name, err)
-			}
-			switch c.Name {
-			case router.FlashErrorsCookie:
-				got.errs = value
-			case router.FlashInputCookie:
-				got.old = value
-			}
-		}
+		got.errs = bag.entries[router.FlashErrorsKey]
+		got.old = bag.entries[router.FlashInputKey]
+		assertFlashRedirect(t, w, bag, "/signup")
 		answers[path] = got
 	}
 	want := answers["/manual"]
@@ -607,14 +640,10 @@ func neverJSON(h contract.ErrorHandler) {
 // props.errors (field -> first message) and under props.errors.{bag}.
 func TestValidationFailure_ErrorBagReachesInertiaProps(t *testing.T) {
 	a := newInertiaApp(t, "", false)
-	enc, err := crypto.NewEncryptor(crypto.Config{
-		Key:    "base64:MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
-		Cipher: "AES-256-GCM",
-	})
-	if err != nil {
-		t.Fatalf("NewEncryptor: %v", err)
-	}
-	a.Services.Crypto = enc
+	// One flash bag stands in for the visitor's session across both
+	// requests.
+	flashed := &recordedFlashBag{}
+	a.Services.FlashBag = func(*http.Request) contract.FlashBag { return flashed }
 	engine, ok := a.Services.View.(*view.Engine)
 	if !ok {
 		t.Fatal("view engine not built")
@@ -637,9 +666,6 @@ func TestValidationFailure_ErrorBagReachesInertiaProps(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/form", nil)
 	req.Header.Set("X-Inertia", "true")
 	req.Header.Set("X-Inertia-Version", "v1")
-	for _, c := range w.Result().Cookies() {
-		req.AddCookie(c)
-	}
 	w = httptest.NewRecorder()
 	a.Router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {

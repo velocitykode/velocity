@@ -12,10 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/velocitykode/velocity/contract"
-	"github.com/velocitykode/velocity/crypto"
-	"github.com/velocitykode/velocity/log"
-	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/auth/drivers/schemes"
 	"github.com/velocitykode/velocity/router"
 	vhttp "github.com/velocitykode/velocity/testing/http"
 	"github.com/velocitykode/velocity/validation"
@@ -37,28 +35,32 @@ func (flashShapeLogin) Rules() validation.Rules {
 	}
 }
 
-// flashShapeApp boots a real app (New + Bootstrap) with the view engine's
-// Inertia middleware, a login page and the POST routes whose flashed errors
+// flashShapeApp boots a real app (New + Bootstrap) the way a starter does
+// (ConfigFromEnv, AUTH_SCHEME=web) with the view engine's Inertia
+// middleware, a login page and the POST routes whose flashed errors
 // the page renders. It returns the app, a cookie-carrying client that does
 // not follow redirects, and the test server.
 func flashShapeApp(t *testing.T) (*App, *http.Client, *httptest.Server) {
 	t.Helper()
-	key := strings.Repeat("k", 32)
-	a, err := New(WithConfig(Config{
-		Env:    "testing",
-		Port:   "0",
-		Cache:  CacheConfig{Driver: "memory", Prefix: "test_cache"},
-		Log:    log.LogConfig{Driver: "null", Config: make(map[string]any)},
-		Queue:  QueueConfig{Driver: "memory"},
-		Mail:   mail.MailConfig{Driver: "log"},
-		Crypto: crypto.Config{Key: key, Cipher: "AES-256-GCM"},
-		View:   view.Config{RootTemplate: inertiaTestTemplate, Version: "v1"},
-	}))
+	for k, v := range map[string]string{
+		"APP_ENV":        "local",
+		"APP_KEY":        strings.Repeat("k", 32),
+		"AUTH_SCHEME":    "web",
+		"LOG_DRIVER":     "null",
+		"CACHE_DRIVER":   "memory",
+		"QUEUE_DRIVER":   "memory",
+		"MAIL_DRIVER":    "log",
+		"SESSION_SECURE": "false", // plain-HTTP httptest server
+	} {
+		t.Setenv(k, v)
+	}
+	cfg := ConfigFromEnv()
+	cfg.View = view.Config{RootTemplate: inertiaTestTemplate, Version: "v1"}
+	a, err := New(WithConfig(cfg))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
-	a.Services.CookiePolicy = contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode) // plain-HTTP httptest server
 	if err := a.Bootstrap(); err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
@@ -202,6 +204,14 @@ func (r *flashShapeRecorder) Errorf(format string, args ...any) {
 // under a named error bag.
 func TestAssertSessionHasErrors_EverySource(t *testing.T) {
 	a, _, _ := flashShapeApp(t)
+	scheme, err := auth.FromServices(a.Services).DefaultScheme()
+	if err != nil {
+		t.Fatalf("DefaultScheme: %v", err)
+	}
+	sessionScheme, ok := scheme.(*schemes.SessionScheme)
+	if !ok {
+		t.Fatalf("default scheme is %T, want *schemes.SessionScheme", scheme)
+	}
 	form := url.Values{"email": {"bad"}, "password": {"x"}}
 	for _, path := range []string{"/vform", "/vform-bag", "/handler", "/handler-strings"} {
 		t.Run(strings.TrimPrefix(path, "/"), func(t *testing.T) {
@@ -209,9 +219,9 @@ func TestAssertSessionHasErrors_EverySource(t *testing.T) {
 			vhttp.NewTestClient(rec, a.Router).
 				WithHeader("Referer", "/login").
 				PostForm(path, form).
-				AssertSessionHasErrors(a.Services.Crypto, "email")
+				AssertSessionHasErrors(sessionScheme, "email")
 			if len(rec.failures) != 0 {
-				t.Errorf("AssertSessionHasErrors(enc, \"email\") after POST %s failed: %v", path, rec.failures)
+				t.Errorf("AssertSessionHasErrors(scheme, \"email\") after POST %s failed: %v", path, rec.failures)
 			}
 		})
 	}

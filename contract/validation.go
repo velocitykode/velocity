@@ -116,7 +116,7 @@ var ErrValidationFailed = errors.New("velocity/validation: validation failed")
 // ValidationErrors represents validation errors.
 //
 // Errors maps field -> message(s) and is the user-facing shape carried into
-// flash cookies, JSON responses, and view data.
+// the session flash bag, JSON responses, and view data.
 //
 // RulesByField is a parallel index mapping field -> rule-name(s) that
 // produced each error, in the same order as Errors[field]. Tests should

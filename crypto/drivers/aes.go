@@ -439,8 +439,8 @@ func (d *AESDriver) EncryptBytesWithAAD(plaintext, aad []byte) (string, error) {
 // (cannot distinguish wrong key, wrong aad, tamper, or AAD-vs-no-AAD
 // payload mixing).
 //
-// Key rotation via PreviousKeys IS iterated here: a flash cookie or
-// signed-AAD payload encrypted under a rotated-out key would otherwise
+// Key rotation via PreviousKeys IS iterated here: an AAD-bound
+// payload (an encrypted queued job, app data) encrypted under a rotated-out key would otherwise
 // silently fail across the rotation window even though the operator
 // kept the previous key in Config.PreviousKeys for exactly this case.
 // The active key is attempted first; on auth mismatch, each previous

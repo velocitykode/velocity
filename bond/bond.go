@@ -101,11 +101,6 @@ type Bond struct {
 	// the app's event bus.
 	eventDispatcher func(ctx context.Context, event interface{}) error
 
-	// flashReader returns one-shot flash data for the request, which
-	// bond merges onto Page.Flash during Render. Wired by the framework
-	// via SetFlashReader so bond stays decoupled from auth.
-	flashReader FlashReader
-
 	// errorComponent is the component rendered as the error page, or ""
 	// when none is configured (see SetErrorComponent).
 	errorComponent string

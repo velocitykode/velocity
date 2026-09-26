@@ -88,9 +88,10 @@ func cookiePolicyGet(t *testing.T, client *http.Client, u string) map[string]*ht
 	return out
 }
 
-// SESSION_SAME_SITE and SESSION_DOMAIN reach the XSRF-TOKEN cookie and
-// both flash cookies, not only the session cookie.
-func TestCookiePolicy_SessionSameSiteAndDomainReachXSRFAndFlashCookies(t *testing.T) {
+// SESSION_SAME_SITE and SESSION_DOMAIN reach the XSRF-TOKEN cookie, not
+// only the session cookie; flashed errors and old input ride in the
+// session cookie and write no cookie of their own.
+func TestCookiePolicy_SessionSameSiteAndDomainReachXSRFCookie(t *testing.T) {
 	srv := cookiePolicyApp(t, map[string]string{
 		"SESSION_SAME_SITE": "none",
 		"SESSION_SECURE":    "true",
@@ -108,13 +109,16 @@ func TestCookiePolicy_SessionSameSiteAndDomainReachXSRFAndFlashCookies(t *testin
 	if sess.SameSite != http.SameSiteNoneMode || sess.Domain != "example.test" {
 		t.Fatalf("session cookie SameSite=%v Domain=%q, want None and example.test", sess.SameSite, sess.Domain)
 	}
+	for name := range flash {
+		if name != "velocity_session" && name != "XSRF-TOKEN" {
+			t.Errorf("flashing errors and old input wrote cookie %q; flash rides in the session cookie", name)
+		}
+	}
 	for _, tc := range []struct {
 		name   string
 		cookie *http.Cookie
 	}{
 		{"XSRF-TOKEN", page["XSRF-TOKEN"]},
-		{router.FlashErrorsCookie, flash[router.FlashErrorsCookie]},
-		{router.FlashInputCookie, flash[router.FlashInputCookie]},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.cookie == nil {

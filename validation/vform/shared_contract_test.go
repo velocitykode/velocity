@@ -162,7 +162,7 @@ func formThroughVform(t *testing.T, db orm.Database, body string) (*Result, erro
 	httpReq := httptest.NewRequest(http.MethodPost, "/accounts", strings.NewReader(body))
 	httpReq.Header.Set("Content-Type", "application/json")
 	ctx := router.NewContext(w, httpReq)
-	ctx.SetServices(&app.Services{DB: db, Crypto: testFormEncryptor(t)})
+	ctx.SetServices(&app.Services{DB: db})
 
 	_, result, err := Validate[accountRequest](ctx)
 	return result, err

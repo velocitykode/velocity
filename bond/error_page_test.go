@@ -291,23 +291,19 @@ func TestApplyFlashData_ErrorBag(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			enc := testFlashEncryptor(t)
-			wc := httptest.NewRecorder()
-			c := router.NewContext(wc, httptest.NewRequest(http.MethodPost, "/login", nil))
-			c.SetServices(&app.Services{Crypto: enc})
+			bag := &memoryFlashBag{}
+			c := router.NewContext(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/login", nil))
+			c.SetServices(&app.Services{FlashBag: bagOf(bag)})
 			c.FlashErrors(tt.flashed)
-			cookies := wc.Result().Cookies()
-			if len(cookies) != 1 {
-				t.Fatalf("FlashErrors set %d cookies, want 1", len(cookies))
-			}
 
-			r := requestWithServices(t, enc)
-			r.AddCookie(cookies[0])
 			props := Props{}
-			applyFlashData(httptest.NewRecorder(), r, props)
-
-			if !reflect.DeepEqual(props["errors"], tt.want) {
-				t.Errorf("errors prop = %#v, want %#v", props["errors"], tt.want)
+			applyFlashData(requestWithFlashBag(bag), props)
+			errs, ok := props["errors"].(AlwaysProp)
+			if !ok {
+				t.Fatalf("errors prop = %#v, want an always prop", props["errors"])
+			}
+			if !reflect.DeepEqual(errs.Value(), tt.want) {
+				t.Errorf("errors prop = %#v, want %#v", errs.Value(), tt.want)
 			}
 		})
 	}

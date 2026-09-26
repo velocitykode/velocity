@@ -122,9 +122,8 @@ func TestDecrypt_ErrorsCollapseToErrDecrypt(t *testing.T) {
 // TestDecrypt_StructuralErrorsStayDistinct asserts that ErrInvalidPayload
 // remains distinguishable from ErrDecrypt. Structural envelope failures
 // (empty input, non-base64 outer, non-JSON inner) are not cryptographic
-// decisions and revealing them does not leak oracle bits. Callers like
-// the flash cookie reader actually need that distinction to fall back
-// across encryption paths.
+// decisions and revealing them does not leak oracle bits. Callers may
+// need that distinction to fall back across encryption paths.
 func TestDecrypt_StructuralErrorsStayDistinct(t *testing.T) {
 	key := []byte("0123456789abcdef")
 	d, err := NewAESDriver(key, nil, "AES-128-CBC")

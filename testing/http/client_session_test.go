@@ -9,7 +9,6 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
-	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/router"
 )
@@ -163,18 +162,19 @@ func TestClient_AssertSessionHas_Mismatch_Fails(t *testing.T) {
 	}
 }
 
-// flashErrorsHandler writes a sealed "_velocity_errors" flash cookie using the
-// real router.SealFlash and the framework cookie policy, modelling a redirect
-// back with validation errors.
-func flashErrorsHandler(t *testing.T, enc crypto.Encryptor, bag map[string]any) http.Handler {
+// flashErrorsHandler flashes bag as validation errors into the session inside
+// the scheme's session middleware, which saves it on the response, modelling
+// router.Context.FlashErrors on a redirect back.
+func flashErrorsHandler(t *testing.T, scheme *schemes.SessionScheme, bag map[string]any) http.Handler {
 	t.Helper()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sealed, err := router.SealFlash(enc, router.FlashErrorsCookie, bag)
+		err := scheme.SessionMiddleware()(func(c *router.Context) error {
+			scheme.Session(c.Request).Flash(router.FlashErrorsKey, bag)
+			return nil
+		})(router.NewContext(w, r))
 		if err != nil {
-			t.Errorf("SealFlash: %v", err)
-			return
+			t.Errorf("session middleware: %v", err)
 		}
-		http.SetCookie(w, contract.NewCookiePolicy("/", "", false, http.SameSiteLaxMode).Cookie(router.FlashErrorsCookie, sealed, 300, true))
 	})
 }
 
@@ -194,13 +194,13 @@ func TestResponse_AssertSessionHasErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, enc := newSessionTestScheme(t)
-			client := NewTestClient(t, flashErrorsHandler(t, enc, bag))
+			scheme, _ := newSessionTestScheme(t)
+			client := NewTestClient(t, flashErrorsHandler(t, scheme, bag))
 			resp := client.Get("/")
 
 			mt := &sessionMockT{}
 			resp.t = mt
-			resp.AssertSessionHasErrors(enc, tt.fields...)
+			resp.AssertSessionHasErrors(scheme, tt.fields...)
 
 			if got := len(mt.errors) > 0; got != tt.wantErr {
 				t.Errorf("wantErr=%v, got errors=%v", tt.wantErr, mt.errors)
@@ -209,26 +209,24 @@ func TestResponse_AssertSessionHasErrors(t *testing.T) {
 	}
 }
 
-func TestResponse_AssertSessionHasErrors_NoCookie_Fails(t *testing.T) {
-	_, enc := newSessionTestScheme(t)
-	// Handler writes nothing, so there is no flash cookie to decrypt.
+func TestResponse_AssertSessionHasErrors_NoSession_Fails(t *testing.T) {
+	scheme, _ := newSessionTestScheme(t)
+	// Handler writes nothing, so the response saved no session to read.
 	client := NewTestClient(t, noopHandler())
 	resp := client.Get("/")
 
 	mt := &sessionMockT{}
 	resp.t = mt
-	resp.AssertSessionHasErrors(enc, "email")
+	resp.AssertSessionHasErrors(scheme, "email")
 
 	if len(mt.errors) == 0 {
-		t.Errorf("expected a failure when no flash cookie is present")
+		t.Errorf("expected a failure when the response saved no session")
 	}
 }
 
-func TestResponse_AssertSessionHasErrors_NoEncryptor_Fails(t *testing.T) {
-	_, enc := newSessionTestScheme(t)
-	// A nil encryptor is passed, so there is no key to open the bag and the
-	// assertion fails clean.
-	client := NewTestClient(t, flashErrorsHandler(t, enc, map[string]any{"email": "required"}))
+func TestResponse_AssertSessionHasErrors_NoScheme_Fails(t *testing.T) {
+	scheme, _ := newSessionTestScheme(t)
+	client := NewTestClient(t, flashErrorsHandler(t, scheme, map[string]any{"email": "required"}))
 	resp := client.Get("/")
 
 	mt := &sessionMockT{}
@@ -236,28 +234,38 @@ func TestResponse_AssertSessionHasErrors_NoEncryptor_Fails(t *testing.T) {
 	resp.AssertSessionHasErrors(nil, "email")
 
 	if len(mt.errors) == 0 {
-		t.Errorf("expected a failure when no encryptor is set")
+		t.Errorf("expected a failure when no scheme is given")
 	}
 }
 
 func TestResponse_AssertSessionHasErrors_WrongKey_Fails(t *testing.T) {
-	_, enc := newSessionTestScheme(t)
+	scheme, _ := newSessionTestScheme(t)
 
-	// A different key cannot authenticate the sealed cookie, so the bag must
-	// read as absent rather than partially trusted.
+	// A scheme under a different key cannot open the session cookie, so the
+	// errors must read as absent rather than partially trusted.
 	other, err := crypto.NewEncryptor(crypto.Config{Key: strings.Repeat("z", 32), Cipher: "AES-256-GCM"})
 	if err != nil {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
+	otherScheme, err := schemes.NewSessionScheme(stubUserStore{}, auth.SessionConfig{
+		Name:     "vel_session",
+		Lifetime: 3600,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}, other)
+	if err != nil {
+		t.Fatalf("NewSessionScheme: %v", err)
+	}
 
-	client := NewTestClient(t, flashErrorsHandler(t, enc, map[string]any{"email": "required"}))
+	client := NewTestClient(t, flashErrorsHandler(t, scheme, map[string]any{"email": "required"}))
 	resp := client.Get("/")
 
 	mt := &sessionMockT{}
 	resp.t = mt
-	resp.AssertSessionHasErrors(other, "email")
+	resp.AssertSessionHasErrors(otherScheme, "email")
 
 	if len(mt.errors) == 0 {
-		t.Errorf("expected a failure when decrypting with the wrong key")
+		t.Errorf("expected a failure when the session is opened under the wrong key")
 	}
 }

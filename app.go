@@ -816,6 +816,14 @@ func New(opts ...Option) (*App, error) {
 		return raw
 	})
 
+	// Wire the session flash bag: FlashErrors / FlashInput flash into it,
+	// view.For(ctx).Flash flashes messages into it, and the view engine
+	// drains it when it renders the next page. It is the session the save
+	// seam bound to the request, so a drain is saved with the response
+	// that delivered it; a request without one (the default scheme keeps
+	// no session) flashes nothing.
+	a.Services.FlashBag = sessionFlashBag
+
 	// 17. Initialize validator
 	a.Validator = validation.NewValidator()
 
@@ -1008,4 +1016,14 @@ func (a *App) Errors(fn func(contract.ErrorHandler)) *App {
 func (a *App) UseOutboxRelay(r *orm.Relay) *App {
 	a.outboxRelay = r
 	return a
+}
+
+// sessionFlashBag returns the flash bag of the session the save seam bound
+// to r, or nil when r carries none. See app.Services.FlashBag.
+func sessionFlashBag(r *http.Request) contract.FlashBag {
+	sess := schemes.SessionFromRequest(r)
+	if sess == nil {
+		return nil
+	}
+	return sess
 }

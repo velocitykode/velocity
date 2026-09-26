@@ -70,56 +70,6 @@ func (s *fakeSession) FlushFlash() map[string]any { return nil }
 
 var _ auth.Session = (*fakeSession)(nil)
 
-// sessionAwareScheme is a Scheme that also satisfies auth.SessionAware so the
-// ReqEngine flash path can locate the recording session.
-type sessionAwareScheme struct {
-	session auth.Session
-}
-
-func (g *sessionAwareScheme) Check(*http.Request) bool                { return false }
-func (g *sessionAwareScheme) User(*http.Request) auth.Authenticatable { return nil }
-func (g *sessionAwareScheme) ID(*http.Request) any                    { return nil }
-func (g *sessionAwareScheme) SetUserStore(auth.UserStore)             {}
-func (g *sessionAwareScheme) Logout(http.ResponseWriter, *http.Request) error {
-	return nil
-}
-func (g *sessionAwareScheme) Login(http.ResponseWriter, *http.Request, auth.Authenticatable, ...bool) error {
-	return nil
-}
-func (g *sessionAwareScheme) LoginByID(http.ResponseWriter, *http.Request, any, ...bool) error {
-	return nil
-}
-func (g *sessionAwareScheme) Attempt(http.ResponseWriter, *http.Request, map[string]any, ...bool) (bool, error) {
-	return false, nil
-}
-func (g *sessionAwareScheme) Session(*http.Request) auth.Session { return g.session }
-
-var (
-	_ auth.Scheme       = (*sessionAwareScheme)(nil)
-	_ auth.SessionAware = (*sessionAwareScheme)(nil)
-)
-
-// nonSessionScheme satisfies auth.Scheme without implementing SessionAware so
-// Manager.Session returns nil (e.g. JWT-only deployments).
-type nonSessionScheme struct{}
-
-func (g *nonSessionScheme) Check(*http.Request) bool                        { return false }
-func (g *nonSessionScheme) User(*http.Request) auth.Authenticatable         { return nil }
-func (g *nonSessionScheme) ID(*http.Request) any                            { return nil }
-func (g *nonSessionScheme) SetUserStore(auth.UserStore)                     {}
-func (g *nonSessionScheme) Logout(http.ResponseWriter, *http.Request) error { return nil }
-func (g *nonSessionScheme) Login(http.ResponseWriter, *http.Request, auth.Authenticatable, ...bool) error {
-	return nil
-}
-func (g *nonSessionScheme) LoginByID(http.ResponseWriter, *http.Request, any, ...bool) error {
-	return nil
-}
-func (g *nonSessionScheme) Attempt(http.ResponseWriter, *http.Request, map[string]any, ...bool) (bool, error) {
-	return false, nil
-}
-
-var _ auth.Scheme = (*nonSessionScheme)(nil)
-
 // stubViewEngine implements contract.ViewEngine but is not a *view.Engine, so
 // view.FromContext returns nil when this value is wired onto a context.
 type stubViewEngine struct{}
@@ -139,27 +89,26 @@ func (stubAuthManager) Authorize(*http.Request, string, ...any) error {
 
 var _ contract.AuthManager = stubAuthManager{}
 
-// newRedirectCtx builds a router.Context wired with the given view engine and
-// optional auth manager. Pass authMgr == nil to install a stub auth manager
-// (one that auth.FromContext cannot recognise) so the call site does not
-// panic on c.Auth().
-func newRedirectCtx(t *testing.T, method, path string, engine contract.ViewEngine, authMgr contract.AuthManager) (*router.Context, *httptest.ResponseRecorder) {
+// newRedirectCtx builds a router.Context wired with the given view engine
+// and a Services.FlashBag that hands out bag (nil: the request carries no
+// session). A stub auth manager is installed so c.Auth() does not panic.
+func newRedirectCtx(t *testing.T, method, path string, engine contract.ViewEngine, bag contract.FlashBag) (*router.Context, *httptest.ResponseRecorder) {
 	t.Helper()
 	if engine == nil {
 		t.Fatal("newRedirectCtx requires a non-nil view engine")
 	}
-	if authMgr == nil {
-		authMgr = stubAuthManager{}
-	}
 	ctx, rec := router.NewTestContext(method, path)
-	ctx.SetServices(&app.Services{View: engine, Auth: authMgr})
+	ctx.SetServices(&app.Services{
+		View: engine,
+		Auth: stubAuthManager{},
+		FlashBag: func(*http.Request) contract.FlashBag {
+			if bag == nil {
+				return nil
+			}
+			return bag
+		},
+	})
 	return ctx, rec
-}
-
-func newAuthManagerWithSession(sess auth.Session) *auth.Manager {
-	m := auth.NewManager()
-	m.RegisterScheme("web", &sessionAwareScheme{session: sess})
-	return m
 }
 
 // ---- Top-level sugar ----------------------------------------------------
@@ -270,7 +219,7 @@ func TestFor_NoEngine_ReturnsNilAndChainIsNoop(t *testing.T) {
 func TestFor_FlashThenRedirect_FlashesWithoutSaving(t *testing.T) {
 	engine := newTestEngine(t)
 	sess := &fakeSession{}
-	ctx, rec := newRedirectCtx(t, "POST", "/submit", engine, newAuthManagerWithSession(sess))
+	ctx, rec := newRedirectCtx(t, "POST", "/submit", engine, sess)
 
 	For(ctx).Flash("error", "x").Redirect("/foo")
 
@@ -292,7 +241,7 @@ func TestFor_FlashThenRedirect_FlashesWithoutSaving(t *testing.T) {
 func TestFor_TwoFlashThenRedirect_AppliesBothWithoutSaving(t *testing.T) {
 	engine := newTestEngine(t)
 	sess := &fakeSession{}
-	ctx, _ := newRedirectCtx(t, "POST", "/submit", engine, newAuthManagerWithSession(sess))
+	ctx, _ := newRedirectCtx(t, "POST", "/submit", engine, sess)
 
 	For(ctx).Flash("error", "x").Flash("info", "y").Redirect("/foo")
 
@@ -314,7 +263,7 @@ func TestFor_TwoFlashThenRedirect_AppliesBothWithoutSaving(t *testing.T) {
 func TestFor_RedirectWithoutFlash_DoesNotLoadOrSaveSession(t *testing.T) {
 	engine := newTestEngine(t)
 	sess := &fakeSession{}
-	ctx, rec := newRedirectCtx(t, "POST", "/submit", engine, newAuthManagerWithSession(sess))
+	ctx, rec := newRedirectCtx(t, "POST", "/submit", engine, sess)
 
 	For(ctx).Redirect("/foo")
 
@@ -332,7 +281,7 @@ func TestFor_RedirectWithoutFlash_DoesNotLoadOrSaveSession(t *testing.T) {
 func TestFor_FlashMany_AppliesAllWithoutSaving(t *testing.T) {
 	engine := newTestEngine(t)
 	sess := &fakeSession{}
-	ctx, _ := newRedirectCtx(t, "POST", "/submit", engine, newAuthManagerWithSession(sess))
+	ctx, _ := newRedirectCtx(t, "POST", "/submit", engine, sess)
 
 	For(ctx).FlashMany(map[string]any{
 		"success": "a",
@@ -359,7 +308,7 @@ func TestFor_FlashMany_AppliesAllWithoutSaving(t *testing.T) {
 func TestFor_RenderWithPriorFlash_RendersWithoutSaving(t *testing.T) {
 	engine := newTestEngine(t)
 	sess := &fakeSession{}
-	ctx, rec := newRedirectCtx(t, "GET", "/page", engine, newAuthManagerWithSession(sess))
+	ctx, rec := newRedirectCtx(t, "GET", "/page", engine, sess)
 	ctx.Request.Header.Set("X-Inertia", "true")
 
 	err := For(ctx).Flash("toast", "saved").Render("Comp")
@@ -378,21 +327,18 @@ func TestFor_RenderWithPriorFlash_RendersWithoutSaving(t *testing.T) {
 	}
 }
 
-// ---- Auth wiring edge cases --------------------------------------------
+// ---- Session edge cases -------------------------------------------------
 
-func TestFor_Flash_NoAuthManager_IsNoopAndDoesNotSave(t *testing.T) {
+func TestFor_Flash_NoSession_IsNoop(t *testing.T) {
 	engine := newTestEngine(t)
-	// stubAuthManager wired so c.Auth() does not panic but
-	// auth.FromContext returns nil (it is not an *auth.Manager).
-	ctx, rec := newRedirectCtx(t, "POST", "/submit", engine, stubAuthManager{})
+	// The request carries no session: Services.FlashBag returns nil, as it
+	// does when the default scheme keeps no session (JWT-only).
+	ctx, rec := newRedirectCtx(t, "POST", "/submit", engine, nil)
 
 	re := For(ctx)
 	if re == nil {
 		t.Fatal("For returned nil; expected a live ReqEngine when *view.Engine is wired")
 	}
-
-	// Flash must not panic and must leave flashed=false so the subsequent
-	// Redirect skips session Save entirely.
 	re.Flash("error", "x").Redirect("/foo")
 
 	if rec.Code != http.StatusSeeOther {
@@ -401,29 +347,16 @@ func TestFor_Flash_NoAuthManager_IsNoopAndDoesNotSave(t *testing.T) {
 	if got := rec.Header().Get("Location"); got != "/foo" {
 		t.Errorf("Location = %q, want /foo", got)
 	}
-	// Nothing observable on the session: there is no real session here.
-	// What we assert is that the flow completed without panic and that
-	// the response carries the expected redirect.
 }
 
-func TestFor_Flash_SchemeNotSessionAware_IsNoop(t *testing.T) {
+func TestFor_Flash_NoServices_IsNoop(t *testing.T) {
 	engine := newTestEngine(t)
-	mgr := auth.NewManager()
-	mgr.RegisterScheme("web", &nonSessionScheme{})
-
-	ctx, rec := newRedirectCtx(t, "POST", "/submit", engine, mgr)
-	sess := &fakeSession{} // unused; nonSessionScheme never hands it out
-	_ = sess
+	ctx, rec := newRedirectCtx(t, "POST", "/submit", engine, nil)
+	ctx.Services().FlashBag = nil
 
 	For(ctx).Flash("error", "x").Redirect("/foo")
 
-	// Manager.Session returns nil because nonSessionScheme does not
-	// implement SessionAware, so the ReqEngine never acquires a session.
-	// The redirect still fires.
 	if rec.Code != http.StatusSeeOther {
 		t.Errorf("status = %d, want 303", rec.Code)
-	}
-	if got := rec.Header().Get("Location"); got != "/foo" {
-		t.Errorf("Location = %q, want /foo", got)
 	}
 }

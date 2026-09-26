@@ -17,9 +17,10 @@ import (
 // negotiation: JSONWhen, API mode, API prefixes, then the Accept header)
 // falls through to negotiation, which answers 422
 // application/problem+json with the per-field "errors". Any other request
-// with a view engine gets the errors and old input flashed and a redirect
-// back (or to Failure.RedirectTo). With no view engine the failure still
-// renders as problem+json. Every validation entry point (ctx.Validate,
+// with a view engine and a session gets the errors and old input flashed
+// into the session flash bag and a redirect back (or to
+// Failure.RedirectTo). With no view engine, or no session to carry the
+// errors across the redirect, the failure still renders as problem+json. Every validation entry point (ctx.Validate,
 // vform.Form, ctx.BindValid) returns its *validation.Failure with nothing
 // written, so this rule is the one browser answer for all of them.
 func installValidationErrorRules(h *problem.Handler) {
@@ -31,16 +32,19 @@ func installValidationErrorRules(h *problem.Handler) {
 // renderValidationFailure is the render rule for a *validation.Failure. It
 // returns false for a request the handler answers with JSON (rc.WantsJSON
 // carries the handler's negotiation), so negotiation renders it. With no
-// view engine it renders the failure as JSON through h.RenderJSON, which
-// keeps the configured JSON renderer and BeforeRender hooks.
+// view engine, or when the request carries no session whose flash bag
+// could take the errors to the next page (a redirect back would lose them),
+// it renders the failure as JSON through h.RenderJSON, which keeps the
+// configured JSON renderer and BeforeRender hooks.
 func renderValidationFailure(h *problem.Handler, rc contract.RenderContext, err error, ctx *contract.ErrorContext) bool {
 	var f *validation.Failure
 	if !errors.As(err, &f) || rc.WantsJSON() {
 		return false
 	}
 	r := rc.Request()
-	view := viewEngineOf(router.ServicesFromRequest(r))
-	if view == nil {
+	services := router.ServicesFromRequest(r)
+	view := viewEngineOf(services)
+	if view == nil || !carriesFlashBag(services, r) {
 		return h.RenderJSON(rc, err, ctx)
 	}
 	flashFailure(router.NewContext(rc.Writer(), r), rc, view, f)
@@ -48,9 +52,9 @@ func renderValidationFailure(h *problem.Handler, rc contract.RenderContext, err 
 }
 
 // flashFailure writes the browser answer to a validation failure: the
-// errors (router.Context.FlashErrors seals field -> first message, in the
-// error bag envelope when f.Bag is set) and the redacted old input as
-// flash cookies on c, then a 303 to f.RedirectTo when it is a safe
+// errors (router.Context.FlashErrors flashes field -> first message, also
+// under the error bag's name when f.Bag is set) and the redacted old input
+// into the session flash bag, then a 303 to f.RedirectTo when it is a safe
 // same-origin target, else view.Back.
 func flashFailure(c *router.Context, rc contract.RenderContext, view contract.ViewEngine, f *validation.Failure) {
 	result := f.Result
@@ -72,4 +76,9 @@ func viewEngineOf(s *app.Services) contract.ViewEngine {
 		return nil
 	}
 	return s.View
+}
+
+// carriesFlashBag reports whether r carries a session flash bag in s.
+func carriesFlashBag(s *app.Services, r *http.Request) bool {
+	return s != nil && s.FlashBag != nil && s.FlashBag(r) != nil
 }

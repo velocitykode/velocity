@@ -55,8 +55,7 @@ func (b *Bond) ClearShared() {
 // callbacks OUTSIDE any lock. A panic inside a user callback would otherwise
 // leak the RLock permanently (sync.RWMutex is not goroutine-attached and does
 // not unwind on panic), wedging every future writer and every reader queued
-// behind it. Mirrors the safeInvokeForUntil pattern in events/dispatcher.go
-// and flashFor in bond/flash_v2.go.
+// behind it. Mirrors the safeInvokeForUntil pattern in events/dispatcher.go.
 func (b *Bond) mergeSharedProps(r *http.Request, componentProps Props) Props {
 	b.mu.RLock()
 	sharePropsFunc := b.sharePropsFunc

@@ -73,7 +73,7 @@ that cannot import `app`).
 |------|---------|---------|-------------------|-----------------|-------|
 | `SESSION_NAME` | `config.go` | `velocity_session` | no | none | |
 | `SESSION_LIFETIME` | `config.go` | `120` | no | longer-lived stolen cookies | minutes |
-| `SESSION_PATH` | `config.go` | `/` | no | scope of cookie | Path of every framework cookie (session, remember, flash, `XSRF-TOKEN`, maintenance bypass) |
+| `SESSION_PATH` | `config.go` | `/` | no | scope of cookie | Path of every framework cookie (session, remember, `XSRF-TOKEN`, maintenance bypass); flash rides in the session cookie |
 | `SESSION_DOMAIN` | `config.go` | empty | no | scope of cookie | Domain of every framework cookie |
 | `SESSION_SECURE` | `config.go` | `true` | YES | cookie sent over HTTP | reject unless `APP_ENV` names a dev/test profile (`development`, `dev`, `test`, `testing`, `local` per `contract.NonProdEnvNames()`); Secure attribute of every framework cookie |
 | `SESSION_HTTP_ONLY` | `config.go` | `true` | YES (unless opt-in) | XSS can steal session | |

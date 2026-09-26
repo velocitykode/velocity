@@ -1,6 +1,7 @@
 package app
 
 import (
+	"net/http"
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
@@ -57,6 +58,15 @@ type Services struct {
 	// the secure default (Path "/", Secure, SameSite=Lax), so a hand-built
 	// Services still writes Secure cookies.
 	CookiePolicy contract.CookiePolicy
+
+	// FlashBag returns the flash bag of the session the request carries,
+	// or nil when it carries none (no session scheme is the default, or
+	// the request did not pass through the session middleware). The router
+	// flashes validation errors and old input into it, the view layer
+	// flashes messages into it, and the view engine drains it when it
+	// renders the next page. Set by velocity.New; nil on a hand-built
+	// Services, which flashes nothing.
+	FlashBag func(r *http.Request) contract.FlashBag
 
 	// compMu guards the type-keyed component registry (componentIdx /
 	// componentOrder) against concurrent registration and read.

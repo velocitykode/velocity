@@ -2014,75 +2014,99 @@ func (c *Context) cookiePolicy() contract.CookiePolicy {
 // ---------------------------------------------------------------------------
 
 const (
-	// FlashErrorsCookie is the cookie name for flash validation errors.
-	FlashErrorsCookie = "_velocity_errors"
-	// FlashInputCookie is the cookie name for flash old input.
-	FlashInputCookie = "_velocity_old"
-
-	// MaxFlashCookieSize bounds the size of a flash cookie value (the
-	// authenticated, base64-encoded ciphertext). 4 KiB is the per-cookie
-	// limit common to all major browsers; oversized cookies are rejected
-	// on read to prevent an attacker from forcing a large decrypt path.
-	MaxFlashCookieSize = 4096
-
-	// flashErrorsAAD / flashInputAAD domain-separate the two flash
-	// cookies so a ciphertext valid for "_velocity_errors" cannot be
-	// replayed as "_velocity_old" (or vice versa) under the same app
-	// key. The "v1" tag reserves room for future format migrations.
-	flashErrorsAAD = "velocity:flash-cookie:errors:v1"
-	flashInputAAD  = "velocity:flash-cookie:old:v1"
+	// FlashErrorsKey is the session flash bag entry that carries validation
+	// errors to the next page, where the view engine delivers it as the
+	// "errors" prop.
+	FlashErrorsKey = "form.errors"
+	// FlashInputKey is the session flash bag entry that carries old form
+	// input to the next page, where the view engine delivers it as the
+	// "old" prop.
+	FlashInputKey = "form.old"
 )
 
-// flashAADFor returns the AAD label bound into the ciphertext for the
-// given flash cookie name. Returns an empty string for unknown names so
-// the caller fails closed without panicking on a typo.
-func flashAADFor(name string) string {
-	switch name {
-	case FlashErrorsCookie:
-		return flashErrorsAAD
-	case FlashInputCookie:
-		return flashInputAAD
-	}
-	return ""
-}
-
-// FlashErrors stashes validation errors as a flash cookie so they survive
-// a redirect and are available on the next request. The cookie payload is
-// encrypted with the app key via AES-GCM (or AES-CBC+HMAC, whichever the
-// app's crypto.Encryptor was configured with), with the cookie name's AAD
-// label bound into the authentication check in both modes, so a
-// sibling-domain cookie injection cannot forge errors that bond would
-// inject into props on the next render, and an errors ciphertext can
-// never be replayed as old input (or vice versa).
-//
-// Silently no-ops when the app has no crypto.Encryptor wired (e.g. raw
-// test contexts) so callers do not have to handle a failure mode that
-// only manifests in misconfigured environments. Operators should treat
-// a missing encryptor as a configuration bug; the lack of a flash
-// cookie on the response is the visible symptom.
+// FlashErrors flashes validation errors into the session flash bag
+// (FlashErrorsKey) so the page the next render draws receives them as its
+// "errors" prop. They ride in the session with every other flash entry and
+// are drained when they are delivered.
 //
 // Every field reaches the page as one shape: field -> first message, a
 // string, the shape of validation.Result.All. A value carrying per-field
 // messages (an Errors() map[string][]string method, found through
 // errors.As when the value is an error, as on *validation.Failure) and a
-// plain map[string][]string are sealed as field -> first message, fields
+// plain map[string][]string are flashed as field -> first message, fields
 // without a message dropped; a map[string]any has each list value
 // ([]string or []any) replaced by its first element; a map[string]string
 // is already that shape. A value that also names an error bag (an
-// ErrorBag() string method returning a non-empty name) is sealed as the
-// envelope {FlashErrorBagKey: bag, FlashBaggedErrorsKey: messages}, where
-// messages is that field -> first message map, or the value itself when it
-// carries no per-field messages. OpenFlashErrors exposes the messages at
-// the top level and under the bag's name.
+// ErrorBag() string method returning a non-empty name) exposes its
+// messages both at the top level and under the bag's name, the key an
+// Inertia visit made with that errorBag reads.
+//
+// The value is stored in its JSON form, so every session store holds the
+// same shape. When the request carries no session (no session scheme is
+// the default) nothing is flashed and a warning is logged.
 func (c *Context) FlashErrors(errs any) {
-	writeFlashCookie(c.Response, c.flashEncryptor(), FlashErrorsCookie, flashErrorsPayload(errs), c.cookiePolicy())
+	c.flash(FlashErrorsKey, flashErrorsPayload(errs), true)
 }
 
-// Members of the error bag envelope FlashErrors seals for a value that
-// names its bag.
+// FlashInput flashes old form input into the session flash bag
+// (FlashInputKey) so the page the next render draws receives it as its
+// "old" prop. See FlashErrors for storage and the session-less case.
+func (c *Context) FlashInput(input any) {
+	c.flash(FlashInputKey, input, false)
+}
+
+// flash stores value, in its JSON form, under key in the request's session
+// flash bag; errs unwraps an error bag envelope into the page view first.
+// A request without a session, or a value that does not encode as JSON,
+// flashes nothing and logs a warning: the handler never fails on a flash.
+func (c *Context) flash(key string, value any, errs bool) {
+	bag := c.flashBag()
+	if bag == nil {
+		c.warnFlash("velocity/router: flash dropped: the request carries no session", key, nil)
+		return
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		c.warnFlash("velocity/router: flash dropped: value does not encode as JSON", key, err)
+		return
+	}
+	var stored any
+	if err := json.Unmarshal(encoded, &stored); err != nil {
+		c.warnFlash("velocity/router: flash dropped: value does not decode from JSON", key, err)
+		return
+	}
+	if errs {
+		stored = unwrapErrorBag(stored)
+	}
+	bag.Flash(key, stored)
+}
+
+// flashBag returns the session flash bag of the request, or nil when no
+// services are wired or the request carries no session.
+func (c *Context) flashBag() contract.FlashBag {
+	if c.services == nil || c.services.FlashBag == nil {
+		return nil
+	}
+	return c.services.FlashBag(c.Request)
+}
+
+// warnFlash logs a dropped flash at warn level when a logger is wired.
+func (c *Context) warnFlash(msg, key string, err error) {
+	if c.services == nil || c.services.Log == nil {
+		return
+	}
+	if err != nil {
+		c.services.Log.Warn(msg, "key", key, "error", err)
+		return
+	}
+	c.services.Log.Warn(msg, "key", key)
+}
+
+// Members of the error bag envelope flashErrorsPayload builds for a value
+// that names its bag; unwrapErrorBag turns it into the page view.
 const (
-	FlashErrorBagKey     = "__bag"
-	FlashBaggedErrorsKey = "__errors"
+	flashErrorBagKey     = "__bag"
+	flashBaggedErrorsKey = "__errors"
 )
 
 // errorBagNamer is a flashed errors value that names its error bag.
@@ -2095,7 +2119,7 @@ type fieldMessager interface {
 	Errors() map[string][]string
 }
 
-// flashErrorsPayload returns the value FlashErrors seals: field -> first
+// flashErrorsPayload returns the value FlashErrors stores: field -> first
 // message for a value carrying per-field messages or a field map, wrapped
 // in the error bag envelope when the value names a non-empty bag; any
 // other value unchanged.
@@ -2120,7 +2144,7 @@ func flashErrorsPayload(errs any) any {
 	if bag == "" {
 		return messages
 	}
-	return map[string]any{FlashErrorBagKey: bag, FlashBaggedErrorsKey: messages}
+	return map[string]any{flashErrorBagKey: bag, flashBaggedErrorsKey: messages}
 }
 
 // firstMessages returns field -> first message for the fields that have
@@ -2166,110 +2190,17 @@ func fieldMapMessages(errs any) any {
 	return errs
 }
 
-// FlashInput stashes old form input as a flash cookie so it survives
-// a redirect and is available on the next request. See FlashErrors for
-// authentication and configuration notes.
-func (c *Context) FlashInput(input any) {
-	writeFlashCookie(c.Response, c.flashEncryptor(), FlashInputCookie, input, c.cookiePolicy())
-}
-
-// flashEncryptor returns the app's crypto.Encryptor when services are
-// wired, else nil. Callers must handle nil by skipping the cookie write
-// rather than emitting an unauthenticated payload.
-func (c *Context) flashEncryptor() contract.Encryptor {
-	if c.services == nil {
-		return nil
-	}
-	return c.services.Crypto
-}
-
-// SealFlash JSON-encodes value, encrypts it with enc under the AAD bound
-// to name, and returns the cookie value. Returns the empty string and an
-// error when enc is nil, name is unrecognized, or encryption fails. The
-// returned string is safe to set as an HTTP cookie value (URL-base64,
-// no separators).
-//
-// Exposed so packages that read or write flash cookies outside the
-// router pipeline (e.g. bond/flash.go on the read path) can produce
-// payloads that this package will accept on the next request.
-func SealFlash(enc contract.Encryptor, name string, value any) (string, error) {
-	if enc == nil {
-		return "", errors.New("velocity/router: flash encryptor not configured")
-	}
-	aad := flashAADFor(name)
-	if aad == "" {
-		return "", fmt.Errorf("velocity/router: unknown flash cookie name %q", name)
-	}
-	plaintext, err := json.Marshal(value)
-	if err != nil {
-		return "", err
-	}
-	// Both AES modes bind the AAD: GCM via the AEAD tag, CBC via the
-	// HMAC framing. No non-AAD fallback exists; a ciphertext sealed
-	// under one cookie name can never verify under the other.
-	return enc.EncryptBytesWithAAD(plaintext, []byte(aad))
-}
-
-// OpenFlash inverts SealFlash. Returns the decoded JSON value on
-// success. Returns (nil, error) when the cookie is missing the AAD
-// binding for name, is over MaxFlashCookieSize, fails decryption, or
-// does not contain valid JSON. Callers MUST treat any error as "no
-// flash data" and never surface the error to the client.
-func OpenFlash(enc contract.Encryptor, name, cookieValue string) (any, error) {
-	if enc == nil {
-		return nil, errors.New("velocity/router: flash encryptor not configured")
-	}
-	if cookieValue == "" {
-		return nil, errors.New("velocity/router: empty flash cookie")
-	}
-	if len(cookieValue) > MaxFlashCookieSize {
-		return nil, fmt.Errorf("velocity/router: flash cookie exceeds %d bytes", MaxFlashCookieSize)
-	}
-	aad := flashAADFor(name)
-	if aad == "" {
-		return nil, fmt.Errorf("velocity/router: unknown flash cookie name %q", name)
-	}
-	// No non-AAD fallback: a cookie that does not verify under this
-	// name's AAD (wrong name, tampered, or sealed via plain
-	// EncryptBytes) is rejected outright. Flash cookies sealed by the
-	// pre-AAD CBC fallback stop decoding after an upgrade, which only
-	// drops in-flight flash data (5-minute cookies) once per deploy.
-	plaintext, err := enc.DecryptBytesWithAAD(cookieValue, []byte(aad))
-	if err != nil {
-		return nil, err
-	}
-	var result any
-	if err := json.Unmarshal(plaintext, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-// OpenFlashErrors opens a FlashErrorsCookie value sealed by FlashErrors and
-// returns the errors a page sees: field -> first message. A value sealed as
-// an error bag envelope exposes its fields both at the top level and under
-// the bag's name, the key an Inertia visit made with that errorBag reads;
-// any other value is returned as sealed. Errors are those of OpenFlash, and
-// callers MUST treat any error as "no flash data".
-func OpenFlashErrors(enc contract.Encryptor, cookieValue string) (any, error) {
-	value, err := OpenFlash(enc, FlashErrorsCookie, cookieValue)
-	if err != nil {
-		return nil, err
-	}
-	return unwrapErrorBag(value), nil
-}
-
-// unwrapErrorBag returns the page view of an opened errors value: an error
-// bag envelope becomes its fields at the top level plus the same fields
-// under the bag's name; anything else, including a malformed envelope, is
-// returned unchanged.
+// unwrapErrorBag returns the page view of a JSON-decoded errors value: an
+// error bag envelope becomes its fields at the top level plus the same
+// fields under the bag's name; anything else, including a malformed
+// envelope, is returned unchanged.
 func unwrapErrorBag(value any) any {
 	envelope, ok := value.(map[string]any)
 	if !ok || len(envelope) != 2 {
 		return value
 	}
-	bag, _ := envelope[FlashErrorBagKey].(string)
-	errs, isMap := envelope[FlashBaggedErrorsKey].(map[string]any)
+	bag, _ := envelope[flashErrorBagKey].(string)
+	errs, isMap := envelope[flashBaggedErrorsKey].(map[string]any)
 	if bag == "" || !isMap {
 		return value
 	}
@@ -2279,20 +2210,6 @@ func unwrapErrorBag(value any) any {
 	}
 	prop[bag] = errs
 	return prop
-}
-
-// writeFlashCookie encrypts value with enc and sets it as an HttpOnly
-// cookie built by the app's cookie policy. Silently no-ops
-// when enc is nil or encryption fails so the handler never blocks on a
-// flash-write failure (the missing cookie surfaces on the next render
-// as the absence of flashed errors / old input).
-func writeFlashCookie(w http.ResponseWriter, enc contract.Encryptor, name string, value any, policy contract.CookiePolicy) {
-	sealed, err := SealFlash(enc, name, value)
-	if err != nil {
-		return
-	}
-	// 5 minutes; cleared on read.
-	http.SetCookie(w, policy.Cookie(name, sealed, 300, true))
 }
 
 // Validate checks the request against rules. On failure it writes

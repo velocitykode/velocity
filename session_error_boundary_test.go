@@ -24,7 +24,7 @@ import (
 // TestInertiaErrorPage_FlashDrainedByErrorPageStaysDrained drives a flash
 // through a real app with the cookie session store: request 1 flashes a
 // message; request 2 fails with a 404 whose Inertia error page drains the
-// flash through the bond flash reader, and the session change the error
+// flash through the session flash bag, and the session change the error
 // page made must reach the browser on that 404; request 3 then carries no
 // flash.
 func TestInertiaErrorPage_FlashDrainedByErrorPageStaysDrained(t *testing.T) {
@@ -70,12 +70,6 @@ func TestInertiaErrorPage_FlashDrainedByErrorPageStaysDrained(t *testing.T) {
 	if !ok {
 		t.Fatal("view engine not built")
 	}
-	engine.Bond().SetFlashReader(func(_ http.ResponseWriter, r *http.Request) map[string]any {
-		if s := m.Session(r); s != nil {
-			return s.FlushFlash()
-		}
-		return nil
-	})
 	a.Router.Use(engine.Middleware())
 	a.Router.Get("/flash", func(c *router.Context) error {
 		m.Session(c.Request).Flash("notice", "saved")
@@ -162,7 +156,7 @@ func TestInertiaErrorPage_FlashDrainedByErrorPageStaysDrained(t *testing.T) {
 //
 // Request 1 flashes notice=saved. Request 2 is an Inertia GET that returns
 // problem.NotFound(); its error page shows the flash once and drains it
-// through the flash reader, so that 404 must carry the updated session
+// through the session flash bag, so that 404 must carry the updated session
 // cookie. Requests 3 and 4 (the same 404) must then carry no flash.
 func TestInertiaErrorPage_FlashDrainStaysDrainedWhereverBondIsRegistered(t *testing.T) {
 	tests := []struct {
@@ -213,12 +207,6 @@ func TestInertiaErrorPage_FlashDrainStaysDrainedWhereverBondIsRegistered(t *test
 			if !ok {
 				t.Fatal("view engine not built")
 			}
-			engine.Bond().SetFlashReader(func(_ http.ResponseWriter, r *http.Request) map[string]any {
-				if s := m.Session(r); s != nil {
-					return s.FlushFlash()
-				}
-				return nil
-			})
 
 			if tt.bondBefore {
 				a.Router.Use(engine.Middleware())

@@ -69,7 +69,7 @@ func TestComputeMAC_BindsIVAndCiphertext(t *testing.T) {
 // TestComputeMACWithAAD_FramingPin pins the exact AAD MAC framing:
 // HMAC(hmacKey, "velocity-aad\x00" || be64(len(aad)) || aad || iv || ct).
 // Changing this framing invalidates every AAD-bound CBC ciphertext in
-// the wild (flash cookies and app data), so it must not drift.
+// the wild (queued job data and app data), so it must not drift.
 func TestComputeMACWithAAD_FramingPin(t *testing.T) {
 	hmacKey := []byte("0123456789abcdef0123456789abcdef")
 	iv := []byte("0123456789abcdef") // 16 bytes

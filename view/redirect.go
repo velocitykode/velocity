@@ -3,7 +3,7 @@ package view
 import (
 	"net/http"
 
-	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -51,11 +51,11 @@ func Back(ctx *router.Context) {
 // Render, which returns ErrNoEngine so the handler's error reaches the
 // error pipeline instead of an empty response.
 type ReqEngine struct {
-	ctx  *router.Context
-	e    *Engine
-	w    http.ResponseWriter
-	r    *http.Request
-	sess auth.Session
+	ctx *router.Context
+	e   *Engine
+	w   http.ResponseWriter
+	r   *http.Request
+	bag contract.FlashBag
 }
 
 // For returns a request-bound view handle for chainable handler calls,
@@ -68,30 +68,31 @@ func For(ctx *router.Context) *ReqEngine {
 	return &ReqEngine{ctx: ctx, e: e, w: ctx.Response, r: ctx.Request}
 }
 
-// Flash sets a one-shot flash entry on the request's session bag. The
-// session middleware persists the bag into the encrypted session cookie
-// before the response a terminal method (Redirect / Location / Back /
-// Render) writes, so the next request, or this Render, drains it.
+// Flash sets a one-shot flash entry in the session flash bag
+// (app.Services.FlashBag), the one channel every flash rides. The session
+// middleware saves it with the response the terminal method (Redirect /
+// Location / Back / Render) writes, and the next full render, or this
+// Render, drains it onto Page.Flash.
 //
-// Returns the receiver for chaining. Silently no-ops when no auth manager
-// is on the context or the default scheme does not back sessions (e.g.
-// JWT-only deployments).
+// Returns the receiver for chaining. Silently no-ops when the request
+// carries no session (the default scheme keeps none, e.g. JWT-only
+// deployments).
 func (re *ReqEngine) Flash(key string, value any) *ReqEngine {
 	if re == nil {
 		return nil
 	}
-	if re.sess == nil {
-		mgr := auth.FromContext(re.ctx)
-		if mgr == nil {
+	if re.bag == nil {
+		services := re.ctx.ServicesIfSet()
+		if services == nil || services.FlashBag == nil {
 			return re
 		}
-		sess := mgr.Session(re.r)
-		if sess == nil {
+		bag := services.FlashBag(re.r)
+		if bag == nil {
 			return re
 		}
-		re.sess = sess
+		re.bag = bag
 	}
-	re.sess.Flash(key, value)
+	re.bag.Flash(key, value)
 	return re
 }
 
@@ -145,8 +146,8 @@ func (re *ReqEngine) Back() {
 	re.e.Back(re.w, re.r)
 }
 
-// Render renders an Inertia component. bond.Render's flash reader drains
-// any pending flash bag onto Page.Flash on this response, and the session
+// Render renders an Inertia component. bond.Render drains any pending
+// flash bag onto Page.Flash on this (full) response, and the session
 // middleware saves the drained session with it. On a nil receiver (no
 // view engine wired) it returns ErrNoEngine and writes nothing.
 func (re *ReqEngine) Render(component string, props ...Props) error {

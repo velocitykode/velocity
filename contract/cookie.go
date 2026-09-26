@@ -4,7 +4,7 @@ import "net/http"
 
 // CookiePolicy is the one set of cookie attributes every cookie the
 // framework writes or clears carries: the session cookie, the remember
-// cookie, the flash cookies, the XSRF token cookie, the maintenance
+// cookie, the XSRF token cookie, the maintenance
 // bypass cookie and every deletion of them. It is derived once from the
 // validated session configuration and carried on app.Services, so a
 // SameSite, Domain, Path or Secure setting reaches every framework cookie

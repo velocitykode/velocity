@@ -103,7 +103,7 @@ go test -run ^$ -fuzz FuzzSanitizeRedirect -fuzztime=5m ./router/
 ```
 
 Currently instrumented: JWT validation, redirect sanitization, validation
-rule normalization, flash cookie decoding, CSRF decoding. Add a target whenever you
+rule normalization, CSRF decoding. Add a target whenever you
 write a parser / decoder / sanitizer that sees untrusted bytes.
 
 ## Goroutine leaks (goleak)

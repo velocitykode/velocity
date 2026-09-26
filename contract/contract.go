@@ -185,7 +185,7 @@ type Logger interface {
 // Signatures mirror the concrete crypto.Encryptor interface exactly so it
 // satisfies this contract with no adapter, and an Encryptor value is
 // interchangeable with a crypto.Encryptor anywhere the concrete interface
-// is expected (router.Context.Crypto, the bond flash encryptor, the CSRF
+// is expected (router.Context.Crypto, the CSRF
 // session-id resolver). The Encrypt* methods return the base64 envelope
 // string and the Decrypt* methods take that envelope string back; the
 // *WithAAD variants bind additional authenticated data to the ciphertext

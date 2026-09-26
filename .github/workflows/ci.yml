@@ -74,8 +74,6 @@ jobs:
         run: go test -run=^$ -fuzz=FuzzSanitizeRedirect -fuzztime=30s ./contract/
       - name: Fuzz rule normalization
         run: go test -run=^$ -fuzz=FuzzNormalizeRuleSet -fuzztime=30s ./validation/
-      - name: Fuzz flash cookie decode
-        run: go test -run=^$ -fuzz=FuzzReadFlashCookie -fuzztime=30s ./bond/
       - name: Fuzz CSRF token validate
         run: go test -run=^$ -fuzz=FuzzValidateToken_CRLFInput -fuzztime=30s ./csrf/
 

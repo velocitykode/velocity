@@ -144,8 +144,9 @@ Validation, ORM, queue, and router — designed to work together.
 Handlers return errors rather than writing error responses. The error
 pipeline reports each failure once and renders one answer that fits the
 request: `application/problem+json` for JSON clients, an error page for
-browsers, and, when a view engine is wired, a failed validation flashes its
-errors and old input and redirects back.
+browsers, and, when a view engine is wired and the request carries a session,
+a failed validation flashes its errors and old input into the session and
+redirects back.
 
 ## Why Velocity
 
