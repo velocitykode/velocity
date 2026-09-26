@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
 // TokenSessionKey is the session bag key the CSRF token lives under.
@@ -32,7 +33,7 @@ type SessionBag interface {
 
 // defaultConsumedTokenLifetime is how long a consumed single-use token is
 // remembered when NewSessionBagStore is given no lifetime.
-const defaultConsumedTokenLifetime = 24 * time.Hour
+const defaultConsumedTokenLifetime = 30 * 24 * time.Hour
 
 // consumedPruneInterval bounds how often ConsumeIfMatch sweeps expired
 // entries out of the consumed-token set.
@@ -53,9 +54,14 @@ const consumedPruneInterval = time.Minute
 // Single-use tokens: ConsumeIfMatch removes the token from the session and
 // records it as consumed in this process for consumedLifetime, because a
 // session that lives in the cookie is still carried, token included, by a
-// captured copy of the previous cookie. A token is therefore accepted once
-// per process: a replay on the same instance is refused, including a
-// concurrent double submit. Across instances single-use is best effort.
+// captured copy of the previous cookie, and the session scheme renews such
+// a copy on activity. The record therefore has to last as long as any
+// renewal of that copy can: the session's absolute cap. A session that
+// still carries a consumed token gives it up the next time the store reads
+// it (Get removes it, so a fresh token is minted and saved in its place).
+// A token is accepted once per instance (ConsumedPerInstance): a replay on
+// the same instance is refused, including a concurrent double submit; a
+// replay on another instance can be accepted once there.
 type SessionBagStore struct {
 	bagFor           func(ctx context.Context) SessionBag
 	consumedLifetime time.Duration
@@ -70,9 +76,9 @@ type SessionBagStore struct {
 // NewSessionBagStore returns a store that keeps tokens in the session
 // bagFor returns for a request context (nil when the request carries no
 // session). consumedLifetime is how long a consumed single-use token stays
-// refused; set it to the longest time a session cookie stays valid (the
-// session's idle timeout, or its absolute cap when it has none). Zero means
-// 24 hours.
+// refused; set it to the session's absolute cap, the longest a captured
+// session cookie can be kept alive by renewal. Zero means 30 days, the
+// default absolute cap.
 func NewSessionBagStore(bagFor func(ctx context.Context) SessionBag, consumedLifetime time.Duration) *SessionBagStore {
 	if consumedLifetime <= 0 {
 		consumedLifetime = defaultConsumedTokenLifetime
@@ -108,16 +114,34 @@ func token(b SessionBag) string {
 	return v
 }
 
-// Get returns the token held in the session with id id.
+// Get returns the token held in the session with id id. A token this
+// process recorded as consumed is removed from the session instead and
+// reported as not found, so a captured session that still carries it is
+// given a fresh token and never hands the consumed one back to a page.
 func (s *SessionBagStore) Get(ctx context.Context, id string) (string, error) {
 	b, err := s.bag(ctx, id)
 	if err != nil {
 		return "", err
 	}
-	if t := token(b); t != "" {
-		return t, nil
+	t := token(b)
+	if t == "" {
+		return "", ErrTokenNotFound
 	}
-	return "", ErrTokenNotFound
+	if s.wasConsumed(t) {
+		b.Remove(TokenSessionKey)
+		return "", ErrTokenNotFound
+	}
+	return t, nil
+}
+
+// wasConsumed reports whether this process recorded t as consumed and the
+// record has not expired.
+func (s *SessionBagStore) wasConsumed(t string) bool {
+	key := sha256.Sum256([]byte(t))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	until, ok := s.consumed[key]
+	return ok && !sessionclock.Now().After(until)
 }
 
 // Set puts token in the session with id id. The session saves it with the
@@ -152,8 +176,8 @@ func (s *SessionBagStore) Exists(ctx context.Context, id string) bool {
 // ConsumeIfMatch implements csrf.AtomicConsumer. It compares the session's
 // token with expected in constant time and, on a match this process has not
 // consumed before, removes it from the session and records it as consumed.
-// The record is taken under one lock, so of two concurrent requests
-// carrying the same token exactly one is accepted.
+// The record is taken under one lock, so of two concurrent requests on this
+// instance carrying the same token exactly one is accepted.
 func (s *SessionBagStore) ConsumeIfMatch(ctx context.Context, id string, expected string) (bool, error) {
 	b, err := s.bag(ctx, id)
 	if err != nil {
@@ -164,7 +188,7 @@ func (s *SessionBagStore) ConsumeIfMatch(ctx context.Context, id string, expecte
 		return false, nil
 	}
 	key := sha256.Sum256([]byte(held))
-	now := time.Now()
+	now := sessionclock.Now()
 
 	s.mu.Lock()
 	if now.After(s.nextPrune) {
@@ -177,6 +201,7 @@ func (s *SessionBagStore) ConsumeIfMatch(ctx context.Context, id string, expecte
 	}
 	if until, ok := s.consumed[key]; ok && !now.After(until) {
 		s.mu.Unlock()
+		b.Remove(TokenSessionKey)
 		return false, nil
 	}
 	s.consumed[key] = now.Add(s.consumedLifetime)
@@ -184,4 +209,11 @@ func (s *SessionBagStore) ConsumeIfMatch(ctx context.Context, id string, expecte
 
 	b.Remove(TokenSessionKey)
 	return true, nil
+}
+
+// ConsumptionScope implements csrf.AtomicConsumer: the token travels with
+// the session to every instance while the consumed record stays in this
+// process.
+func (s *SessionBagStore) ConsumptionScope() ConsumptionScope {
+	return ConsumedPerInstance
 }

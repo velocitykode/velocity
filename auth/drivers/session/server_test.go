@@ -306,3 +306,35 @@ func TestCookieStore_OversizeSessionIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// failingDeleteRecords is a record store whose Delete fails.
+type failingDeleteRecords struct{ auth.ServerSessionStore }
+
+func (failingDeleteRecords) Delete(context.Context, string) error {
+	return errors.New("records down")
+}
+
+// A save under a rotated id that cannot remove the old id's record fails
+// and writes no cookie: the old record, which a captured cookie still
+// names, must not stay live next to the new one.
+func TestServerStore_RotatedIDThatCannotBeRetiredFailsTheSave(t *testing.T) {
+	store, records := serverStoreFixture(t)
+	sess, _ := store.Create("")
+	sess.Put("cart", "three items")
+	w := httptest.NewRecorder()
+	if err := sess.Save(w); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, _ := store.Get(requestWith(w), sess.ID())
+	store.SetServerSessionStore(failingDeleteRecords{records})
+	if err := loaded.Regenerate(); err != nil {
+		t.Fatalf("Regenerate: %v", err)
+	}
+	w2 := httptest.NewRecorder()
+	if err := loaded.Save(w2); err == nil {
+		t.Fatal("Save under a rotated id whose old record cannot be removed succeeded")
+	}
+	if got := sessionCookieOf(w2, testConfig().Name); got != "" {
+		t.Fatalf("a failed save wrote a cookie: %s", got)
+	}
+}

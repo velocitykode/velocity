@@ -113,12 +113,20 @@ it, so there is no store key: with either `SESSION_STORE` it survives a
 restart, validates on every instance that shares `APP_KEY` (and, for
 `SESSION_STORE=server`, the cache), and ends with the session
 (`SESSION_IDLE_LIFETIME`, `SESSION_ABSOLUTE_LIFETIME`, logout). Login rotates
-it; the CSRF middleware must run on the app router, inside the session
-middleware `velocity.New` installs, or it issues and accepts no token. With
-`CSRF_SINGLE_USE=true` a consumed token is also refused by the instance that
-accepted it for as long as a captured session cookie stays valid, so a
-replayed request is refused on that instance; across instances single use is
-best effort. The `XSRF-TOKEN` cookie is a browser-session cookie (no Max-Age).
+it and retires the previous session id, so a captured pre-login session
+cookie and its token are refused (with the cookie store on the instance that
+served the login, and on every instance for a signed-in session when a
+server session store or revocation index is shared). A signed-in session the
+shared store rejects gets no token on any instance. The CSRF middleware must
+run on the app router, inside the session middleware `velocity.New`
+installs, or it issues and accepts no token. With `CSRF_SINGLE_USE=true` a
+consumed token is also refused by the instance that accepted it until the
+session's absolute cap (`SESSION_ABSOLUTE_LIFETIME`), the longest a captured
+session cookie can be kept alive by renewal, and a session that still
+carries it gives it up for a fresh one; across instances single use is best
+effort, and the middleware logs that once. `CSRF_SINGLE_USE=true` with a
+negative `SESSION_ABSOLUTE_LIFETIME` (no cap) fails `velocity.New`. The
+`XSRF-TOKEN` cookie is a browser-session cookie (no Max-Age).
 An app that binds CSRF to its own resolver (`CSRF_SESSION_COOKIE` not the
 session cookie, or `Config.CSRF.SessionIDResolver` set in code) gets the
 per-process `stores.MemoryStore` unless it sets `Config.CSRF.Store`.

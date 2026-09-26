@@ -144,10 +144,8 @@ func (s *MemoryStore) Delete(_ context.Context, id string) error {
 // ConsumeIfMatch implements csrf.AtomicConsumer. It atomically (under the
 // store's write lock) compares the stored token for id against expected
 // using a constant-time comparison, and deletes the entry only on match.
-// In-memory locking is sufficient for the single-process case; cross-
-// process deployments backed by Redis or another remote store must
-// implement their own driver that uses a Lua script or equivalent atomic
-// primitive.
+// The token and its entry live only in this process, so the lock covers
+// every caller that can accept it (ConsumedEverywhere).
 //
 // Returns consumed=true only when the entry existed, was unexpired, and
 // matched expected. A missing/expired/mismatched entry returns
@@ -208,4 +206,11 @@ func (s *MemoryStore) cleanup(ctx context.Context) {
 			s.mu.Unlock()
 		}
 	}
+}
+
+// ConsumptionScope implements csrf.AtomicConsumer: a token this store holds
+// never leaves the process, so the process lock covers every instance that
+// can accept it.
+func (s *MemoryStore) ConsumptionScope() ConsumptionScope {
+	return ConsumedEverywhere
 }

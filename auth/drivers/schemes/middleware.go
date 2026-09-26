@@ -110,6 +110,7 @@ func (g *SessionScheme) serveWithSession(c *router.Context, next router.HandlerF
 	// remember cookie, and those methods only see the request.
 	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil {
 		holder.setResponseWriter(c.Response)
+		holder.markSaveScope()
 	}
 
 	// Eagerly bind a session to the request so anonymous-but-

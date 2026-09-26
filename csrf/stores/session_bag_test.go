@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
 // testBag is a session bag with an id.
@@ -157,16 +159,15 @@ func TestSessionBagStore_ConcurrentDoubleSubmitAcceptsOne(t *testing.T) {
 
 // The consumed record ends after its lifetime and is pruned.
 func TestSessionBagStore_ConsumedRecordExpires(t *testing.T) {
-	s := NewSessionBagStore(bagFromContext, 20*time.Millisecond)
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	t.Cleanup(sessionclock.Set(func() time.Time { return now }))
+	s := NewSessionBagStore(bagFromContext, time.Hour)
 	bag := newTestBag("sess-1")
 	bag.Put(TokenSessionKey, "tok")
 	if ok, _ := s.ConsumeIfMatch(withBag(bag), "sess-1", "tok"); !ok {
 		t.Fatal("first submit refused")
 	}
-	time.Sleep(40 * time.Millisecond)
-	s.mu.Lock()
-	s.nextPrune = time.Time{}
-	s.mu.Unlock()
+	now = now.Add(time.Hour + time.Second)
 	other := newTestBag("sess-2")
 	other.Put(TokenSessionKey, "tok-2")
 	if ok, _ := s.ConsumeIfMatch(withBag(other), "sess-2", "tok-2"); !ok {
@@ -177,5 +178,47 @@ func TestSessionBagStore_ConsumedRecordExpires(t *testing.T) {
 	s.mu.Unlock()
 	if n != 1 {
 		t.Fatalf("%d consumed records held, want 1 (the expired one pruned)", n)
+	}
+}
+
+// A captured session that still carries a consumed token gives it up the
+// next time the store reads it: Get reports no token (so a fresh one is
+// minted) and removes the consumed one from the session, and so does a
+// refused replay, so the session saved with the response no longer
+// carries it.
+func TestSessionBagStore_CapturedSessionGivesUpAConsumedToken(t *testing.T) {
+	s := NewSessionBagStore(bagFromContext, time.Hour)
+	bag := newTestBag("sess-1")
+	bag.Put(TokenSessionKey, "tok")
+	if ok, _ := s.ConsumeIfMatch(withBag(bag), "sess-1", "tok"); !ok {
+		t.Fatal("first submit refused")
+	}
+
+	read := newTestBag("sess-1")
+	read.Put(TokenSessionKey, "tok")
+	if _, err := s.Get(withBag(read), "sess-1"); !errors.Is(err, ErrTokenNotFound) {
+		t.Fatalf("Get on a captured session carrying the consumed token = %v, want ErrTokenNotFound", err)
+	}
+	if read.Get(TokenSessionKey) != nil {
+		t.Fatal("Get left the consumed token in the session")
+	}
+
+	replayed := newTestBag("sess-1")
+	replayed.Put(TokenSessionKey, "tok")
+	if ok, _ := s.ConsumeIfMatch(withBag(replayed), "sess-1", "tok"); ok {
+		t.Fatal("the replay was accepted")
+	}
+	if replayed.Get(TokenSessionKey) != nil {
+		t.Fatal("a refused replay left the consumed token in the session")
+	}
+}
+
+// The session-bag store's single use reaches one instance, and it says so.
+func TestSessionBagStore_ConsumptionScope(t *testing.T) {
+	if got := NewSessionBagStore(bagFromContext, 0).ConsumptionScope(); got != ConsumedPerInstance {
+		t.Fatalf("SessionBagStore scope = %v, want ConsumedPerInstance", got)
+	}
+	if got := NewMemoryStore(time.Hour).ConsumptionScope(); got != ConsumedEverywhere {
+		t.Fatalf("MemoryStore scope = %v, want ConsumedEverywhere", got)
 	}
 }

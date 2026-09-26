@@ -55,6 +55,13 @@ type sessionHolder struct {
 	// Nil when the scheme is driven outside the middleware, so a non-nil
 	// writer is also the mark that the request runs inside the save seam.
 	respWriter http.ResponseWriter
+	// saveScope marks a holder whose session is saved when the scope ends:
+	// the session middleware's (serveWithSession) and the one a Login or
+	// Logout outside it commits itself (seamHolder, sessionContext). A
+	// holder WithSessionContext attached on its own caches the session but
+	// nothing saves it, so state written into that session would be lost;
+	// SessionFromContext answers only inside a save scope.
+	saveScope bool
 	// afterSave holds cookie writes that must follow the session save:
 	// Login's XSRF-TOKEN and remember cookies are bound to the session id
 	// the save persists, so the seam runs them only once that save
@@ -93,7 +100,7 @@ func seamHolder(r *http.Request) (holder *sessionHolder, standalone bool) {
 	if ok && holder != nil && holder.getResponseWriter() != nil {
 		return holder, false
 	}
-	return &sessionHolder{}, true
+	return &sessionHolder{saveScope: true}, true
 }
 
 // getSession returns the cached session under a read lock.
@@ -128,6 +135,22 @@ func (h *sessionHolder) setStoreCache(rec *auth.StoredSession, err error) {
 	h.storeOnce = true
 	h.storeRec = rec
 	h.storeErr = err
+}
+
+// markSaveScope marks the holder as belonging to a scope that saves its
+// session.
+func (h *sessionHolder) markSaveScope() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.saveScope = true
+}
+
+// inSaveScope reports whether the holder's session is saved when its scope
+// ends.
+func (h *sessionHolder) inSaveScope() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.saveScope
 }
 
 // getResponseWriter returns the response writer installed by
@@ -193,18 +216,22 @@ func SessionFromRequest(r *http.Request) auth.Session {
 }
 
 // SessionFromContext returns the session the request whose context ctx
-// is, or descends from, is served under: the session the session
-// middleware bound (see SessionFromRequest), or the session a scheme
-// passes with a CSRF token rotation or revocation. Nil when there is none.
+// is, or descends from, is served under, when that session is saved at the
+// end of the request: the session the session middleware bound (see
+// SessionFromRequest), or the session a Login or Logout outside the
+// middleware passes with a CSRF token rotation or revocation and then
+// commits itself. Nil when there is none, including a session cached by a
+// holder WithSessionContext attached on its own, which nothing saves.
 //
 // The framework's CSRF token store reads it to keep the token in the
-// session, so the token is saved with the session.
+// session, so the token is saved with the session and never written into
+// one that is not.
 func SessionFromContext(ctx context.Context) auth.Session {
 	if ctx == nil {
 		return nil
 	}
 	holder, ok := ctx.Value(sessionCtxKey{}).(*sessionHolder)
-	if !ok || holder == nil {
+	if !ok || holder == nil || !holder.inSaveScope() {
 		return nil
 	}
 	return holder.getSession()
@@ -219,7 +246,7 @@ func sessionContext(r *http.Request, session auth.Session) context.Context {
 	if SessionFromContext(r.Context()) == session {
 		return r.Context()
 	}
-	return context.WithValue(r.Context(), sessionCtxKey{}, &sessionHolder{session: session})
+	return context.WithValue(r.Context(), sessionCtxKey{}, &sessionHolder{session: session, saveScope: true})
 }
 
 // modifiedSession is the optional capability the save-at-end middleware uses
@@ -976,11 +1003,24 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 	// must not outlive the regenerate boundary.
 	oldSessionID := session.ID()
 
+	// Retire the session this sign-in rotates away from, with everything
+	// it carried (a signed-in identity, the CSRF token in its bag): a
+	// captured copy of its cookie must not stay usable next to the new
+	// session. The server record goes first, and a failure aborts the
+	// login before anything changed; the cookie store's revocation follows
+	// the regenerate below.
+	if err := g.retireServerRecord(r, oldSessionID); err != nil {
+		return fmt.Errorf("velocity/auth: login aborted: previous session not retired: %w", err)
+	}
+
 	// Regenerate session ID for security. A failure here must abort the
 	// login: proceeding with the old session ID opens a session-fixation
 	// window (an attacker who planted the cookie keeps access).
 	if err := session.Regenerate(); err != nil {
 		return fmt.Errorf("velocity/auth: login aborted: session regenerate failed: %w", err)
+	}
+	if rev, ok := g.store.(sessionRevoker); ok && oldSessionID != "" {
+		rev.Revoke(oldSessionID)
 	}
 
 	// Rotate the CSRF token alongside the session ID (H-02). Without
@@ -1247,6 +1287,43 @@ func (g *SessionScheme) Session(r *http.Request) auth.Session {
 	return g.getSession(r)
 }
 
+// ResolveSession returns the session r is served under when the session
+// scheme accepts it, for state bound to a session rather than to a signed-in
+// user (the framework's CSRF token resolver). The session is:
+//
+//   - the session the session middleware bound to r, which covers an
+//     anonymous visitor's first request, before its cookie is written; or
+//   - the session the session store loads from r's cookie. The store answers
+//     a missing, undecryptable, revoked or expired cookie with a freshly
+//     created session, which is born modified; that answer, and a session
+//     that cannot report whether it is fresh, return auth.ErrSessionNotFound.
+//
+// A session that carries a signed-in user must also be accepted by the
+// server session store when one is installed, the same check
+// authentication makes (consultServerStore): a deleted record returns
+// auth.ErrSessionRevoked and an expired one auth.ErrSessionExpired, so a
+// session signed out or revoked on another instance is refused here too.
+// Remember-me recall is not attempted.
+func (g *SessionScheme) ResolveSession(r *http.Request) (auth.Session, error) {
+	sess := sessionFromHolder(r)
+	if sess == nil || sess.ID() == "" {
+		sess = g.getSession(r)
+		if sess == nil || sess.ID() == "" {
+			return nil, auth.ErrSessionNotFound
+		}
+		fresh, ok := sess.(interface{ IsModified() bool })
+		if !ok || fresh.IsModified() {
+			return nil, auth.ErrSessionNotFound
+		}
+	}
+	if sess.Get(auth.UserIDSessionKey) != nil {
+		if err := g.consultServerStore(r, sess); err != nil {
+			return nil, err
+		}
+	}
+	return sess, nil
+}
+
 // getSession gets or creates session for request
 func (g *SessionScheme) getSession(r *http.Request) auth.Session {
 	// Check request context cache first
@@ -1401,15 +1478,12 @@ func (g *SessionScheme) pastAbsoluteCap(rec *auth.StoredSession) bool {
 
 // recordServerSession writes the freshly-issued session to the server-side
 // store on Login. Failures are logged and swallowed so a transient store
-// outage does not break login (the cookie is already issued; the user is
-// authenticated for this request and subsequent reads will fail-closed).
+// outage does not break login (the user is authenticated for this request
+// and subsequent reads will fail-closed).
 //
-// Note on re-Login (e.g. password change followed by re-issue on the same
-// request): session.Regenerate() inside Login already produced a fresh id,
-// so this writes a brand-new record. The previous row is left for the
-// MemoryStore sweep / Redis TTL to reap; the "active sessions" listing
-// may briefly show two rows for the same user. Acceptable trade-off vs.
-// tracking the prior id across the regenerate boundary.
+// session.Regenerate() inside Login already produced a fresh id, so this
+// writes a brand-new record; Login removed the previous id's record before
+// the regenerate (retireServerRecord).
 func (g *SessionScheme) recordServerSession(r *http.Request, session auth.Session, user auth.Authenticatable) {
 	store := g.getServerStore()
 	if store == nil {
@@ -1437,6 +1511,22 @@ func (g *SessionScheme) recordServerSession(r *http.Request, session auth.Sessio
 	if err := store.Put(r.Context(), rec); err != nil {
 		g.logWarn("velocity/auth: server session store put (login) failed", "session_id", sessionID, "error", err)
 	}
+}
+
+// retireServerRecord removes the server record of session id, the session a
+// sign-in rotates away from, so a captured copy of its cookie is refused on
+// every instance that consults the record store. No store, an empty id and
+// an id with no record are nothing to retire; any other store failure is
+// returned so the sign-in fails closed.
+func (g *SessionScheme) retireServerRecord(r *http.Request, id string) error {
+	store := g.getServerStore()
+	if store == nil || id == "" {
+		return nil
+	}
+	if err := store.Delete(r.Context(), id); err != nil && !errors.Is(err, auth.ErrSessionNotFound) {
+		return err
+	}
+	return nil
 }
 
 // ClearRememberTokensForUser implements auth.RememberTokenClearer. It

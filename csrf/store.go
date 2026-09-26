@@ -1,6 +1,10 @@
 package csrf
 
-import "context"
+import (
+	"context"
+
+	"github.com/velocitykode/velocity/csrf/stores"
+)
 
 // Store keeps the CSRF token of each session. Every call carries the
 // context of the request it serves (the request context, or the context a
@@ -24,26 +28,27 @@ type Store interface {
 	Exists(ctx context.Context, id string) bool
 }
 
-// AtomicConsumer is an optional capability stores may implement to support
-// safe cross-process single-use token enforcement. ConsumeIfMatch reads the
-// token bound to id, compares it (constant-time) against expected, and
-// deletes the entry only when they match - all in one atomic operation
-// from the perspective of concurrent callers across all replicas.
+// AtomicConsumer is an optional capability a Store may implement for
+// single-use tokens. ConsumeIfMatch reads the token held for id, compares it
+// in constant time with expected, and removes it only when they match, as
+// one step: of concurrent callers that share the store's consumption
+// record, exactly one consumes a token. Which callers share that record is
+// what ConsumptionScope reports (stores.ConsumedEverywhere or
+// stores.ConsumedPerInstance), and it decides whether single use is exact
+// across a deployment or only on each instance.
 //
 // Returned values:
-//   - consumed=true  : entry existed AND matched expected AND was deleted
-//   - consumed=false : entry did not exist, expired, or did not match expected
+//   - consumed=true  : a token was held for id, matched expected, and is
+//     now consumed
+//   - consumed=false : no token was held, it did not match, or it was
+//     consumed before
 //   - err != nil     : underlying store failure (network, etc.); consumed is
 //     meaningless and must be ignored
 //
-// This is the only primitive that closes the multi-replica single-use race:
-// the per-process sync.Mutex in csrf.CSRF cannot prevent replica A and
-// replica B from both accepting the same token within the same instant.
-// Stores that cannot implement an atomic compare-and-delete (e.g. a thin
-// SQL store without row-level locking) should NOT implement this interface;
-// the CSRF middleware then uses Get+Delete instead and emits a one-time
-// warning so operators know their deployment is single-use-best-effort
-// rather than single-use-exact.
+// A store that cannot compare and remove in one step (e.g. a thin SQL store
+// without row-level locking) should not implement this interface; the CSRF
+// middleware then reads, compares and deletes under a per-process lock and
+// logs a one-time warning that single use is exact per process only.
 //
 // Implementations MUST use constant-time comparison for the value match
 // (crypto/subtle.ConstantTimeCompare) to avoid leaking a token-length
@@ -51,4 +56,8 @@ type Store interface {
 // refresh handler.
 type AtomicConsumer interface {
 	ConsumeIfMatch(ctx context.Context, id string, expected string) (consumed bool, err error)
+
+	// ConsumptionScope reports which instances share the record
+	// ConsumeIfMatch consults, and so how far its guarantee reaches.
+	ConsumptionScope() stores.ConsumptionScope
 }

@@ -2130,3 +2130,74 @@ func TestXSRFCookie_SecureIdenticalOnBootstrapPostLoginAndLogout(t *testing.T) {
 		}
 	}
 }
+
+// perInstanceStore is a MemoryStore that reports its consumption record as
+// kept per instance, the way the session-bag store's is.
+type perInstanceStore struct{ *stores.MemoryStore }
+
+func (perInstanceStore) ConsumptionScope() stores.ConsumptionScope {
+	return stores.ConsumedPerInstance
+}
+
+// TestSingleUse_WarningNamesHowFarSingleUseReaches pins that the middleware
+// is honest about the single-use guarantee: a store whose consumption
+// covers every instance logs nothing, and one whose consumption record is
+// kept per instance logs, once, that single use is exact per instance only.
+func TestSingleUse_WarningNamesHowFarSingleUseReaches(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		store Store
+		want  string
+	}{
+		{"consumed everywhere", stores.NewMemoryStore(), ""},
+		{"consumed per instance", perInstanceStore{stores.NewMemoryStore()}, "exact per instance only"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			const sessionID = "sess"
+			cfg := DefaultConfig()
+			cfg.SessionIDResolver = testCookieResolver("session_id")
+			cfg.SingleUse = true
+			cfg.Store = tt.store
+			c := New(cfg)
+
+			var buf bytes.Buffer
+			prevOut, prevFlags := log.Writer(), log.Flags()
+			log.SetOutput(&buf)
+			log.SetFlags(0)
+			t.Cleanup(func() {
+				log.SetOutput(prevOut)
+				log.SetFlags(prevFlags)
+			})
+
+			for range 2 {
+				token, err := GenerateToken()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := tt.store.Set(context.Background(), sessionID, token); err != nil {
+					t.Fatal(err)
+				}
+				req := httptest.NewRequest("POST", "/submit", nil)
+				req.Header.Set("X-CSRF-Token", token)
+				req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+				w := httptest.NewRecorder()
+				c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				})).ServeHTTP(w, req)
+				if w.Code != http.StatusOK {
+					t.Fatalf("validate = %d, want 200", w.Code)
+				}
+			}
+			got := buf.String()
+			if tt.want == "" {
+				if got != "" {
+					t.Fatalf("logged %q, want nothing", got)
+				}
+				return
+			}
+			if strings.Count(got, tt.want) != 1 {
+				t.Fatalf("log = %q, want %q exactly once", got, tt.want)
+			}
+		})
+	}
+}

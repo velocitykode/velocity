@@ -162,7 +162,8 @@ func (s *ServerStore) Get(r *http.Request, id string) (auth.Session, error) {
 //     record yet is created (Put) only for a signed-out session; a
 //     signed-in session's record is written at sign-in, so a missing one
 //     means it was revoked and Save fails instead of recreating it. The
-//     record of an id the session rotated away from is removed.
+//     record of an id the session rotated away from is removed first; a
+//     failure to remove it fails the save.
 //
 // Any store failure is returned and no cookie is written.
 func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
@@ -205,6 +206,16 @@ func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
 	}
 	recordEnd := s.config.RecordExpiresAt(createdAt, now)
 
+	// Retire the record of an id the session rotated away from before
+	// writing under the new id, and fail closed when that is not possible:
+	// a captured cookie naming the old id must not keep a live record.
+	if ss.savedID != "" && ss.savedID != id {
+		if err := records.Delete(ctx, ss.savedID); err != nil && !errors.Is(err, auth.ErrSessionNotFound) {
+			return fmt.Errorf("velocity/auth/session: retire previous session record: %w", err)
+		}
+		ss.savedID = ""
+	}
+
 	err = records.UpdateData(ctx, id, payload, now, recordEnd)
 	if errors.Is(err, auth.ErrSessionNotFound) && id != ss.savedID && ss.Get(auth.UserIDSessionKey) == nil {
 		err = records.Put(ctx, &auth.StoredSession{
@@ -217,10 +228,6 @@ func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
 	}
 	if err != nil {
 		return fmt.Errorf("velocity/auth/session: save session record: %w", err)
-	}
-	if ss.savedID != "" && ss.savedID != id {
-		// Best effort: the old record ends with its TTL anyway.
-		_ = records.Delete(ctx, ss.savedID)
 	}
 
 	// The cookie carries the id alone and ends when the policy ends the

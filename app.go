@@ -402,7 +402,11 @@ func New(opts ...Option) (*App, error) {
 		// on every replica that can read the session, and ends with the
 		// session. A Store the app set is kept.
 		if a.config.CSRF.Store == nil {
-			a.config.CSRF.Store = stores.NewSessionBagStore(csrfSessionBag, csrfConsumedTokenLifetime(a.config.Session))
+			consumedLifetime := csrfConsumedTokenLifetime(a.config.Session)
+			if a.config.CSRF.SingleUse && consumedLifetime <= 0 {
+				return nil, fmt.Errorf("%w: CSRF_SINGLE_USE needs a session absolute lifetime: with SESSION_ABSOLUTE_LIFETIME negative a captured session cookie can be renewed forever, so a consumed token could never be refused for as long as it can be replayed", ErrInvalidConfig)
+			}
+			a.config.CSRF.Store = stores.NewSessionBagStore(csrfSessionBag, consumedLifetime)
 		}
 	} else if a.config.CSRF.SessionIDResolver == nil {
 		a.config.CSRF.SessionIDResolver = func(r *http.Request) (string, error) {
@@ -1050,12 +1054,10 @@ func csrfSessionBag(ctx context.Context) stores.SessionBag {
 
 // csrfConsumedTokenLifetime is how long a consumed single-use CSRF token is
 // refused on this instance: as long as a captured copy of the session
-// cookie that carried it can stay valid, the idle timeout, or the absolute
-// cap when the session has no idle timeout. Zero (a session with neither)
-// leaves the store's own default.
+// cookie that carried it can stay valid. The session scheme renews a
+// cookie on activity, so a captured copy can be kept alive until the
+// session's absolute cap; the lifetime is that cap. Zero means the session
+// has no cap, and New refuses single-use tokens for it.
 func csrfConsumedTokenLifetime(session auth.SessionConfig) time.Duration {
-	if idle := session.IdleTimeout(); idle > 0 {
-		return idle
-	}
 	return session.AbsoluteTimeout()
 }

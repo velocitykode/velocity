@@ -589,39 +589,24 @@ func defaultSessionScheme(a *App) *schemes.SessionScheme {
 // csrfSessionResolver returns the CSRF SessionIDResolver New installs
 // when CSRF binds to the session cookie. It answers with the id of the
 // session the request is served under, and only with a session the
-// session store accepts:
-//
-//   - Inside the session middleware it returns the id of the session the
-//     middleware attached. That covers an anonymous visitor's first GET:
-//     the middleware mints the session before the CSRF safe-method
-//     bootstrap runs, so XSRF-TOKEN is written for the id the response
-//     is about to set.
-//   - Otherwise (the CSRF middleware mounted outside a.Router, or the
-//     resolver called directly) it loads the session through the current
-//     session scheme, the same store Get every handler uses, which
-//     rejects a cookie that fails to decrypt, was revoked at logout or is
-//     past its lifetime. The store answers a rejected or missing cookie
-//     with a freshly created session, which is born modified; that
-//     answer, a session that cannot report whether it is fresh, and no
-//     session scheme all return csrf.ErrNoSession, so no token is minted
-//     for or accepted from a session the client does not hold.
+// current session scheme accepts (SessionScheme.ResolveSession): the
+// session the session middleware attached (an anonymous visitor's first
+// GET included, so XSRF-TOKEN is written for the id the response is about
+// to set), or the session the session store loads from the cookie, which
+// rejects a cookie that fails to decrypt, was revoked at logout or is past
+// its lifetime. A signed-in session must also be accepted by the server
+// session store when one is installed, so a session signed out on another
+// instance gets no token and passes with none. A rejected session and no
+// session scheme return csrf.ErrNoSession, so no token is minted for or
+// accepted from a session the client does not hold.
 func csrfSessionResolver(current func() *schemes.SessionScheme) func(*http.Request) (string, error) {
 	return func(r *http.Request) (string, error) {
-		if sess := schemes.SessionFromRequest(r); sess != nil {
-			if id := sess.ID(); id != "" {
-				return id, nil
-			}
-		}
 		scheme := current()
 		if scheme == nil {
 			return "", csrf.ErrNoSession
 		}
-		sess := scheme.Session(r)
-		if sess == nil || sess.ID() == "" {
-			return "", csrf.ErrNoSession
-		}
-		fresh, ok := sess.(interface{ IsModified() bool })
-		if !ok || fresh.IsModified() {
+		sess, err := scheme.ResolveSession(r)
+		if err != nil {
 			return "", csrf.ErrNoSession
 		}
 		return sess.ID(), nil
