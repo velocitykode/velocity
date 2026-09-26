@@ -431,7 +431,7 @@ func (c SessionConfig) Validate(env string) error {
 	if !c.Secure && !contract.IsDevOrTestEnv(env) {
 		return fmt.Errorf("%w: Secure=false is not permitted in %q env (set APP_ENV to a dev or test profile to allow)", ErrInsecureSessionConfig, env)
 	}
-	if c.SameSite == http.SameSiteDefaultMode {
+	if c.SameSite == 0 || c.SameSite == http.SameSiteDefaultMode {
 		return fmt.Errorf("%w: SameSite must be set to Lax, Strict, or None (got default/zero)", ErrInsecureSessionConfig)
 	}
 	if c.SameSite == http.SameSiteNoneMode && !c.Secure {

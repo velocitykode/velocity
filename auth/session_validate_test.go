@@ -76,6 +76,12 @@ func TestSessionConfig_Validate_RejectsInsecureDefaults(t *testing.T) {
 		},
 		{
 			name:    "SameSite zero value rejected",
+			mutate:  func(c *SessionConfig) { c.SameSite = 0 },
+			env:     "production",
+			wantErr: true,
+		},
+		{
+			name:    "SameSite default mode rejected",
 			mutate:  func(c *SessionConfig) { c.SameSite = http.SameSiteDefaultMode },
 			env:     "production",
 			wantErr: true,
