@@ -8,6 +8,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // Middleware returns HTTP middleware for Inertia protocol handling.
@@ -102,9 +103,9 @@ func (b *Bond) serveBuffered(w http.ResponseWriter, r *http.Request, next http.H
 	// pipe) so we surface it as a warning only; the response is
 	// already committed, nothing useful to do except log.
 	if err := bw.flush(w); err != nil {
-		b.log().Warn("velocity/bond: flush buffered response failed",
+		b.log().With(trace.LogFields(r.Context())...).Warn("velocity/bond: flush buffered response failed",
 			"err", err,
-			"path", r.URL.Path,
+			"url", r.URL.Path,
 		)
 	}
 }

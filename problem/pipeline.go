@@ -73,7 +73,7 @@ func (h *Handler) HandleRequest(rc RenderContext, err error, ctx *ErrorContext) 
 		r := requestOf(rc)
 		h.report(s, err, ctx, r)
 		if serverCancelled(err, r) {
-			safeWarn(s.logger, "problem: request cut off by server shutdown", "error", err.Error(), "method", r.Method, "path", requestPath(r))
+			safeWarn(s.logger, "problem: request cut off by server shutdown", append(trace.LogFields(r.Context()), "error", err.Error(), "method", r.Method, "url", requestPath(r))...)
 		}
 	}
 	if written || rc == nil {

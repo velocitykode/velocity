@@ -149,6 +149,9 @@ type Context struct {
 	// Wired during app init via Router.SetIntendedResolver so router need
 	// not import auth. Returns "" when nothing is stashed.
 	intendedFn func(c *Context) string
+	// logger is Services.Log bound to LogFields, built by the first Log
+	// call of the request.
+	logger contract.Logger
 }
 
 // NewContext creates a new Context from http.Request and http.ResponseWriter.
@@ -696,6 +699,7 @@ func (c *Context) reset() {
 	c.validateFn = nil
 	c.validateDataFn = nil
 	c.intendedFn = nil
+	c.logger = nil
 }
 
 // IsAjax reports whether the request is an XMLHttpRequest
@@ -977,11 +981,34 @@ func (c *Context) Cache() contract.CacheManager {
 	return s.Cache
 }
 
-// Log returns the logger.
+// Log returns the application logger (Services.Log) bound to this request:
+// every line it writes carries LogFields, the request, trace and span ids
+// and the method and route. It is built on the first call and reused for
+// the rest of the request.
 func (c *Context) Log() contract.Logger {
-	s := c.mustServices()
-	requireService(c, s.Log, "log")
-	return s.Log
+	if c.logger == nil {
+		s := c.mustServices()
+		requireService(c, s.Log, "log")
+		c.logger = s.Log.With(c.LogFields()...)
+	}
+	return c.logger
+}
+
+// LogFields returns the key-value pairs that tie a log line to this
+// request: trace.LogFields of the request context (request_id, trace_id,
+// span_id), the method and, when a route matched, its pattern as route.
+// Reading them generates the request's lazy ids. It returns nil when the
+// context has no request.
+func (c *Context) LogFields() []any {
+	r := c.Request
+	if r == nil {
+		return nil
+	}
+	fields := append(trace.LogFields(r.Context()), "method", r.Method)
+	if route := GetRoutePattern(r); route != "" {
+		fields = append(fields, "route", route)
+	}
+	return fields
 }
 
 // Queue returns the queue driver.

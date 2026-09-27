@@ -1423,8 +1423,8 @@ func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err err
 	ctx.Response = rw
 
 	if fn := r.errorHandler; fn != nil {
-		// The IDs are lazy; materialize them only for a handler that
-		// reports, never on the default path.
+		// The IDs are lazy; materialize them for a handler that reports.
+		// The default path reads them only when it logs the failure.
 		if req := ctx.Request; req != nil {
 			info.RequestID = GetRequestID(req)
 			info.TraceID = trace.GetTraceID(req.Context())
@@ -1444,9 +1444,16 @@ func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err err
 	return failureOf(err, &f, rw, info.Committed)
 }
 
+// UnhandledErrorMessage is the message of the line a failed request no
+// error handler takes is logged with: the router's default error path and
+// the error-pipeline bridge's no-handler fallback both write it.
+const UnhandledErrorMessage = "unhandled error in HTTP handler"
+
 // logDefault emits the single default-path log entry for a failed request
-// at level, the level the resolution chose; f classifies err. No-op when
-// no logger is wired (standalone router) or the resolution logs nothing.
+// at level, the level the resolution chose; f classifies err. The line is
+// bound to the request's LogFields and carries the error, the path as url
+// and a recovered panic's stack. No-op when no logger is wired (standalone
+// router) or the resolution logs nothing.
 func (r *VelocityRouterV2) logDefault(ctx *Context, err error, f *errorFacts, info ErrorInfo, level defaultLogLevel) {
 	l := r.logger
 	if l == nil || (level != logError && level != logWarn) {
@@ -1459,17 +1466,19 @@ func (r *VelocityRouterV2) logDefault(ctx *Context, err error, f *errorFacts, in
 	}
 	kvs := []any{"error", err.Error()}
 	if ctx != nil && ctx.Request != nil {
-		kvs = append(kvs, "method", ctx.Request.Method, "path", ctx.Request.URL.Path)
+		l = l.With(ctx.LogFields()...)
+		if ctx.Request.URL != nil {
+			kvs = append(kvs, "url", ctx.Request.URL.Path)
+		}
 	}
 	if info.Stack != "" {
 		kvs = append(kvs, "stack", info.Stack)
 	}
-	const msg = "unhandled error in HTTP handler"
 	if level == logWarn {
-		l.Warn(msg, kvs...)
+		l.Warn(UnhandledErrorMessage, kvs...)
 		return
 	}
-	l.Error(msg, kvs...)
+	l.Error(UnhandledErrorMessage, kvs...)
 }
 
 // Handle returns the underlying http.Handler

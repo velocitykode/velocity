@@ -40,7 +40,7 @@ func TestAppLogger_WritesToLoggerSwappedAfterNew(t *testing.T) {
 			setup: func(a *App) { a.Services.Errors = nil },
 			err:   errors.New("boom"),
 			level: "error",
-			msg:   "routerbridge: no error handler; answered by the router default",
+			msg:   "unhandled error in HTTP handler",
 		},
 	}
 	for _, tt := range tests {

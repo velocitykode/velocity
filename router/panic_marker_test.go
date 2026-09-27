@@ -360,8 +360,8 @@ func TestFinalize_PanickingHookIsARecoveredPanic(t *testing.T) {
 			if v, _ := errLog.kv(0, "stack"); v == nil || v == "" {
 				t.Error("logged no stack")
 			}
-			if v, _ := errLog.kv(0, "path"); v != tt.path {
-				t.Errorf("logged path = %v, want %s", v, tt.path)
+			if v, _ := errLog.kv(0, "url"); v != tt.path {
+				t.Errorf("logged url = %v, want %s", v, tt.path)
 			}
 		})
 	}

@@ -42,8 +42,10 @@ func WithUserID(id contract.RequestUserIdentifier) Option {
 }
 
 // WithLogger sets the logger for a failed request that no error handler
-// takes: with no handler resolved the bridge logs one error-level line
-// (the error, method and path) and then answers through
+// takes: with no handler resolved the bridge logs one error-level line,
+// router.UnhandledErrorMessage bound to the request's LogFields with the
+// error, the path as url and a recovered panic's stack, as the router's
+// default error path does, and then answers through
 // router.DefaultErrorHandler, which logs nothing itself. Nil logs nothing.
 func WithLogger(logger contract.Logger) Option {
 	return func(c *config) { c.logger = logger }
@@ -70,28 +72,31 @@ func Install(r *router.VelocityRouterV2, opts ...Option) {
 			h = cfg.resolve()
 		}
 		if h == nil {
-			logUnhandled(cfg.logger, c, err)
+			logUnhandled(cfg.logger, c, err, info)
 		}
 		handle(c, err, info, h, cfg.userID)
 	})
 }
 
 // logUnhandled logs the error-level line for a failed request no error
-// handler takes. A panicking logger is swallowed so the response is still
-// written.
-func logUnhandled(logger contract.Logger, c *router.Context, err error) {
+// handler takes, under the router default's message and keys. A panicking
+// logger is swallowed so the response is still written.
+func logUnhandled(logger contract.Logger, c *router.Context, err error, info router.ErrorInfo) {
 	if logger == nil || c == nil || err == nil {
 		return
 	}
 	defer func() { _ = recover() }()
 	kvs := []any{"error", err.Error()}
 	if r := c.Request; r != nil {
-		kvs = append(kvs, "method", r.Method)
+		logger = logger.With(c.LogFields()...)
 		if r.URL != nil {
-			kvs = append(kvs, "path", r.URL.Path)
+			kvs = append(kvs, "url", r.URL.Path)
 		}
 	}
-	logger.Error("routerbridge: no error handler; answered by the router default", kvs...)
+	if info.Stack != "" {
+		kvs = append(kvs, "stack", info.Stack)
+	}
+	logger.Error(router.UnhandledErrorMessage, kvs...)
 }
 
 // Handle hands one failed request to h: it builds the ErrorContext from

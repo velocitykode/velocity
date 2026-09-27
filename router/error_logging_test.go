@@ -76,8 +76,16 @@ func TestVelocityRouterV2_DefaultErrorLogging(t *testing.T) {
 		if v, ok := capture.kv(0, "method"); !ok || v != "GET" {
 			t.Errorf("expected method kv GET, got %v", v)
 		}
-		if v, ok := capture.kv(0, "path"); !ok || v != "/boom" {
-			t.Errorf("expected path kv /boom, got %v", v)
+		if v, ok := capture.kv(0, "url"); !ok || v != "/boom" {
+			t.Errorf("expected url kv /boom, got %v", v)
+		}
+		for _, key := range []string{"request_id", "trace_id", "span_id"} {
+			if v, ok := capture.kv(0, key); !ok || v == "" {
+				t.Errorf("expected a %s kv, got %v", key, v)
+			}
+		}
+		if v, ok := capture.kv(0, "route"); !ok || v != "/boom" {
+			t.Errorf("expected route kv /boom, got %v", v)
 		}
 		if _, ok := capture.kv(0, "stack"); ok {
 			t.Error("non-panic error should not carry a stack kv")
