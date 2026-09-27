@@ -26,6 +26,7 @@ func (p *GRPCModule) Init(s *velocity.Services) error {
 	p.server = velgrpc.NewServer(
 		velgrpc.WithPort(port),
 		velgrpc.WithLogger(s.Log),
+		velgrpc.WithReporter(s.Errors),
 	)
 
 	// vel:grpc:services

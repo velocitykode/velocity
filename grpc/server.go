@@ -87,6 +87,11 @@ type Server struct {
 	// WithoutDefaultRecovery for callers that wire their own outermost recovery.
 	disableDefaultRecovery bool
 
+	// reporter receives the default recovery interceptor's reports: every
+	// recovered panic and every internal error a handler returns. Set via
+	// WithReporter.
+	reporter contract.Reporter
+
 	// Registration functions to call after server is built
 	registrations []RegistrationFunc
 
@@ -252,6 +257,18 @@ func WithoutDefaultRecovery() ServerOption {
 	}
 }
 
+// WithReporter sets where the panic-recovery interceptor Build installs
+// reports a recovered panic and an internal error a handler returns
+// (codes.Internal or codes.Unknown), each once, with the method named: pass
+// the app's error handler (Services.Errors), so they reach the Reporter
+// chain. The client gets the same status either way. Without it, a
+// recovered panic is logged and a handler error is not reported.
+func WithReporter(reporter contract.Reporter) ServerOption {
+	return func(s *Server) {
+		s.reporter = reporter
+	}
+}
+
 // WithLogger sets the logger for the gRPC server and its default recovery
 // interceptor. Without it, or with nil, the server writes through the
 // framework's standalone fallback logger, which writes warnings and errors
@@ -414,6 +431,7 @@ func (s *Server) Build() error {
 		rec := interceptors.Recovery(
 			interceptors.WithRecoveryLogger(s.logger),
 			interceptors.WithRecoveryEventDispatcher(s.eventDispatchFunc()),
+			interceptors.WithRecoveryReporter(s.reporter),
 		)
 		unary = append([]grpc.UnaryServerInterceptor{rec.Unary}, unary...)
 		stream = append([]grpc.StreamServerInterceptor{rec.Stream}, stream...)
