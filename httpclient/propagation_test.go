@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"sync"
 	"testing"
 
@@ -213,5 +214,66 @@ func TestClient_DoKeepsCallerHeaders(t *testing.T) {
 	}
 	if header, _ := up.last(); traceparentShape.FindStringSubmatch(header) == nil {
 		t.Errorf("upstream traceparent = %q, want one written by the client", header)
+	}
+}
+
+// TestClient_DoKeepsCallerHeadersUnderAnyKeySpelling pins that a carrier the
+// caller set by assigning the header map directly, under a lowercase or
+// mixed-case key that Header.Values does not look up, still wins: the
+// upstream receives the caller's value alone, never a second one written by
+// the client, and an empty value under such a key suppresses the carrier.
+func TestClient_DoKeepsCallerHeadersUnderAnyKeySpelling(t *testing.T) {
+	var mu sync.Mutex
+	var traceparent, requestID []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		traceparent, requestID = r.Header.Values("Traceparent"), r.Header.Values("X-Request-Id")
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := httpclient.New(httpclient.WithoutPrivateIPDeny())
+	ctx := trace.WithRequestID(trace.WithTrace(context.Background(), "4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7"), "ctx-id")
+	own := "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+
+	for _, tc := range []struct {
+		name                     string
+		traceparentKey, idKey    string
+		traceparentVal, idVal    string
+		wantTraceparent, wantIDs []string
+	}{
+		{name: "lowercase keys", traceparentKey: "traceparent", idKey: "x-request-id", traceparentVal: own, idVal: "caller-chosen",
+			wantTraceparent: []string{own}, wantIDs: []string{"caller-chosen"}},
+		{name: "mixed case keys", traceparentKey: "TraceParent", idKey: "X-REQUEST-ID", traceparentVal: own, idVal: "caller-chosen",
+			wantTraceparent: []string{own}, wantIDs: []string{"caller-chosen"}},
+		{name: "empty values under lowercase keys suppress", traceparentKey: "traceparent", idKey: "x-request-id",
+			wantTraceparent: []string{""}, wantIDs: []string{""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header[tc.traceparentKey] = []string{tc.traceparentVal}
+			req.Header[tc.idKey] = []string{tc.idVal}
+			resp, err := client.Do(ctx, req)
+			if err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			_ = resp.Body.Close()
+
+			mu.Lock()
+			defer mu.Unlock()
+			if !slices.Equal(traceparent, tc.wantTraceparent) {
+				t.Errorf("upstream traceparent values = %q, want %q", traceparent, tc.wantTraceparent)
+			}
+			if !slices.Equal(requestID, tc.wantIDs) {
+				t.Errorf("upstream X-Request-ID values = %q, want %q", requestID, tc.wantIDs)
+			}
+			if len(req.Header) != 2 {
+				t.Errorf("caller's request was mutated: %v", req.Header)
+			}
+		})
 	}
 }

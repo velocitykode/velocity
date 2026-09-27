@@ -561,6 +561,22 @@ func (c *Client) assertURLAllowed(ctx context.Context, u *url.URL) error {
 	return nil
 }
 
+// headerSet reports whether h holds a value for name under any spelling of
+// the key. Header.Values looks up the canonical key only, while a caller may
+// assign h[key] directly under a lowercase or mixed-case key, which net/http
+// sends as written.
+func headerSet(h http.Header, name string) bool {
+	if len(h.Values(name)) > 0 {
+		return true
+	}
+	for key, values := range h {
+		if len(values) > 0 && strings.EqualFold(key, name) {
+			return true
+		}
+	}
+	return false
+}
+
 // sameRedirectOrigin returns true when two URLs share the same eTLD+1
 // host. Scheme changes from https→http are treated as cross-origin to
 // avoid silently downgrading credentials onto an http hop.
@@ -581,8 +597,9 @@ func sameRedirectOrigin(a, b *url.URL) bool {
 // span, and the request carries it to the upstream as a W3C traceparent
 // header, together with ctx's request id as X-Request-ID (see
 // trace.Propagate). A traceparent or X-Request-ID the caller already set on
-// req is sent as is. The headers are written on the client's copy of the
-// request; req itself is not modified.
+// req, under any spelling of the header name, is sent as is. The headers
+// are written on the client's copy of the request; req itself is not
+// modified.
 func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
 	ctx, _ = trace.ContinueTrace(ctx)
 	req = req.WithContext(ctx)
@@ -593,7 +610,7 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 		req.Header = make(http.Header)
 	}
 	trace.Propagate(ctx, func(name, value string) {
-		if len(req.Header.Values(name)) == 0 {
+		if !headerSet(req.Header, name) {
 			req.Header.Set(name, value)
 		}
 	})
