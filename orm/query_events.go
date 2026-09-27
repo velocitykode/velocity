@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -19,7 +20,7 @@ const queryEventQueueSize = 1024
 // delivered.
 type pendingEvent struct {
 	ctx   context.Context
-	event Event
+	event contract.Event
 	flush chan struct{}
 }
 
@@ -52,11 +53,11 @@ func newEventPump() *eventPump {
 
 // start launches the delivery goroutine. dispatch is called once per event on
 // the pump goroutine.
-func (p *eventPump) start(dispatch func(context.Context, Event)) {
+func (p *eventPump) start(dispatch func(context.Context, contract.Event)) {
 	async.Go(func() { p.run(dispatch) })
 }
 
-func (p *eventPump) run(dispatch func(context.Context, Event)) {
+func (p *eventPump) run(dispatch func(context.Context, contract.Event)) {
 	for {
 		select {
 		case item := <-p.ch:
@@ -80,7 +81,7 @@ func (p *eventPump) run(dispatch func(context.Context, Event)) {
 // synchronous path let a listener panic propagate to whoever ran the query;
 // here there is no such caller, and letting the panic escape would kill the
 // pump and silence every later event.
-func (p *eventPump) deliver(dispatch func(context.Context, Event), item pendingEvent) {
+func (p *eventPump) deliver(dispatch func(context.Context, contract.Event), item pendingEvent) {
 	if item.flush != nil {
 		close(item.flush)
 		return
@@ -95,7 +96,7 @@ func (p *eventPump) deliver(dispatch func(context.Context, Event), item pendingE
 
 // enqueue hands an event to the pump. It never blocks: this runs inside a
 // driver callback holding a connection.
-func (p *eventPump) enqueue(ctx context.Context, ev Event) {
+func (p *eventPump) enqueue(ctx context.Context, ev contract.Event) {
 	if p.stopped.Load() {
 		return
 	}

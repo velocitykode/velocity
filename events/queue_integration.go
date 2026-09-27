@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/queue"
 )
 
@@ -716,7 +717,7 @@ func lookupListenerFactory(listenerType string) (func() Listener, bool) {
 // previous factory. Safe to call concurrently.
 //
 // The factory's interface{} return type avoids forcing every event to
-// implement the events.Event interface (BaseEvent / value structs without
+// implement contract.Event (BaseEvent / value structs without
 // Name() are valid event payloads). When an event does implement Event,
 // the factory can still return it -- the dispatcher does not call Name()
 // on the hydrated value.
@@ -843,7 +844,7 @@ func (d *PriorityDispatcher) getListenersForEvent(event interface{}) []Listener 
 
 // StoppableEvent allows events to signal that propagation should stop
 type StoppableEvent interface {
-	Event
+	contract.Event
 	// ShouldStopPropagation returns true if event propagation should stop
 	ShouldStopPropagation() bool
 	// StopPropagation marks the event to stop propagation

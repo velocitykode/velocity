@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func TestAsyncEventDispatcher_DeliversAllEvents(t *testing.T) {
@@ -134,9 +136,9 @@ func TestDispatchInstanceEvent_DropsCountedAndCallbackInvoked(t *testing.T) {
 		return ErrEventBufferFull
 	})
 
-	var seen []Event
+	var seen []contract.Event
 	var seenErr error
-	r.OnEventDispatchError = func(err error, event Event) {
+	r.OnEventDispatchError = func(err error, event contract.Event) {
 		seenErr = err
 		seen = append(seen, event)
 	}

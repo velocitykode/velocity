@@ -5,12 +5,14 @@ import (
 	"errors"
 	"sync"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // TestEventInterface_TxRecover ensures TxRecover satisfies the Event
 // interface and returns the documented "orm.tx_recover" name.
 func TestEventInterface_TxRecover(t *testing.T) {
-	var e Event = &TxRecover{}
+	var e contract.Event = &TxRecover{}
 	if got := e.Name(); got != "orm.tx_recover" {
 		t.Fatalf("TxRecover.Name = %q, want %q", got, "orm.tx_recover")
 	}
@@ -47,9 +49,9 @@ func TestManager_SetLogger_StoresLogger(t *testing.T) {
 
 	// Fire a synthetic TxRecover event through the dispatcher to verify
 	// the event name matches the one documented.
-	var captured Event
+	var captured contract.Event
 	m.SetEventDispatcher(func(_ context.Context, e any) error {
-		captured = e.(Event)
+		captured = e.(contract.Event)
 		return nil
 	})
 	m.dispatchEvent(context.Background(), &TxRecover{

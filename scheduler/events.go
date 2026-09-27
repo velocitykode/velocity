@@ -9,18 +9,12 @@ import (
 	"github.com/velocitykode/velocity/trace"
 )
 
-// Event is the typed surface for scheduler events. Matches the shape of
-// events.Event, orm.Event, and router.Event so dispatchers can accept
-// events from any package through a single interface.
-type Event interface {
-	Name() string
-}
-
-// Compile-time assertions that every scheduler event implements Event.
+// Compile-time assertions that every scheduler event implements
+// contract.Event.
 var (
-	_ Event = (*ScheduledTaskStarting)(nil)
-	_ Event = (*ScheduledTaskFinished)(nil)
-	_ Event = (*ScheduledTaskFailed)(nil)
+	_ contract.Event = (*ScheduledTaskStarting)(nil)
+	_ contract.Event = (*ScheduledTaskFinished)(nil)
+	_ contract.Event = (*ScheduledTaskFailed)(nil)
 )
 
 // ScheduledTaskStarting is dispatched when a scheduled task begins

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -56,9 +57,9 @@ func TestShutdownEventDispatcher_LateRequestEventIsCountedDrop(t *testing.T) {
 	var (
 		dropMu     sync.Mutex
 		dropErrs   []error
-		dropEvents []router.Event
+		dropEvents []contract.Event
 	)
-	r.OnEventDispatchError = func(err error, ev router.Event) {
+	r.OnEventDispatchError = func(err error, ev contract.Event) {
 		dropMu.Lock()
 		defer dropMu.Unlock()
 		dropErrs = append(dropErrs, err)
@@ -224,9 +225,9 @@ func TestShutdownEventDispatcher_ConcurrentSendersNeverPanic(t *testing.T) {
 	var (
 		dropMu     sync.Mutex
 		dropErrs   []error
-		dropEvents []router.Event
+		dropEvents []contract.Event
 	)
-	r.OnEventDispatchError = func(err error, ev router.Event) {
+	r.OnEventDispatchError = func(err error, ev contract.Event) {
 		dropMu.Lock()
 		defer dropMu.Unlock()
 		dropErrs = append(dropErrs, err)

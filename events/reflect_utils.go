@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // eventNameCache memoizes the dot-notation event name derived for a
@@ -15,13 +17,13 @@ import (
 var eventNameCache sync.Map // reflect.Type -> string
 
 // resolveEventName extracts the event name from various types.
-// For types implementing Event, returns Event.Name().
+// For types implementing contract.Event, returns Name().
 // For strings, returns the string as-is.
 // For other types, derives the name from the type using camelToDot conversion
 // (e.g., UserRegistered -> user.registered).
 // Used by DefaultDispatcher and middleware where dot-notation is expected.
 func resolveEventName(event interface{}) string {
-	if e, ok := event.(Event); ok {
+	if e, ok := event.(contract.Event); ok {
 		return e.Name()
 	}
 
@@ -39,12 +41,12 @@ func resolveEventName(event interface{}) string {
 }
 
 // resolveEventNameRaw extracts the event name without case conversion.
-// For types implementing Event, returns Event.Name().
+// For types implementing contract.Event, returns Name().
 // For strings, returns the string as-is.
 // For other types, returns the raw type name (e.g., "NamedType").
 // Used by FakeDispatcher where raw type names are expected.
 func resolveEventNameRaw(event interface{}) string {
-	if e, ok := event.(Event); ok {
+	if e, ok := event.(contract.Event); ok {
 		return e.Name()
 	}
 

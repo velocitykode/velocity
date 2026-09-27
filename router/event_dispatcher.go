@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -153,7 +154,7 @@ func (r *VelocityRouterV2) runEventWorker(ch <-chan asyncDispatchItem, pool *asy
 // metrics stay coherent across sync and async paths.
 func (r *VelocityRouterV2) onListenerFailure(err error, ev interface{}) {
 	r.droppedEvents.Add(1)
-	typedEvent, _ := ev.(Event)
+	typedEvent, _ := ev.(contract.Event)
 	if r.OnEventDispatchError != nil {
 		r.OnEventDispatchError(err, typedEvent)
 		return

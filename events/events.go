@@ -7,12 +7,6 @@ import (
 	"github.com/velocitykode/velocity/contract"
 )
 
-// Event represents an event that can be dispatched
-type Event interface {
-	// Name returns the event name for identification
-	Name() string
-}
-
 // Listener is an alias for the stdlib-only contract.EventListener interface.
 // The canonical definition lives in the contract leaf.
 type Listener = contract.EventListener
@@ -44,7 +38,7 @@ type Dispatcher = contract.Dispatcher
 
 // Broadcastable represents an event that should be broadcast
 type Broadcastable interface {
-	Event
+	contract.Event
 
 	// ShouldBroadcast determines if the event should be broadcast
 	ShouldBroadcast() bool
@@ -112,7 +106,7 @@ type Observer interface {
 	Restored(ctx context.Context, model interface{}) error
 }
 
-// BaseEvent provides a base implementation of Event
+// BaseEvent provides a base implementation of contract.Event
 type BaseEvent struct {
 	EventName string
 }

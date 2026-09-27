@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // ---------------------------------------------------------------------------
@@ -471,7 +473,7 @@ func TestTypedEvent_OnEventDispatchError(t *testing.T) {
 	r.SetEventDispatcher(func(_ context.Context, event interface{}) error { return ErrEventBufferFull })
 
 	var seenName string
-	r.OnEventDispatchError = func(err error, event Event) {
+	r.OnEventDispatchError = func(err error, event contract.Event) {
 		if event != nil {
 			seenName = event.Name()
 		}

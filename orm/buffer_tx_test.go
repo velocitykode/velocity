@@ -13,7 +13,7 @@ import (
 )
 
 // txDomainEvent is a stand-in domain event used by the buffer integration
-// tests. It does not implement orm.Event on purpose to verify that user
+// tests. It does not implement contract.Event on purpose to verify that user
 // events flow through the untyped flush path.
 type txDomainEvent struct{ Tag string }
 

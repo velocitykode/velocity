@@ -4,12 +4,14 @@ import (
 	"context"
 	"sync"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // TestEventInterface_QueryExecuted ensures QueryExecuted satisfies the
-// new Event interface and returns the documented event name.
+// contract.Event facet and returns the documented event name.
 func TestEventInterface_QueryExecuted(t *testing.T) {
-	var e Event = &QueryExecuted{}
+	var e contract.Event = &QueryExecuted{}
 	if got := e.Name(); got != "query.executed" {
 		t.Fatalf("QueryExecuted.Name = %q, want %q", got, "query.executed")
 	}
@@ -17,14 +19,14 @@ func TestEventInterface_QueryExecuted(t *testing.T) {
 
 // TestEventInterface_QueryFailed ensures QueryFailed satisfies Event.
 func TestEventInterface_QueryFailed(t *testing.T) {
-	var e Event = &QueryFailed{}
+	var e contract.Event = &QueryFailed{}
 	if got := e.Name(); got != "query.failed" {
 		t.Fatalf("QueryFailed.Name = %q, want %q", got, "query.failed")
 	}
 }
 
 // TestManager_SetEventDispatcher_ReceivesEvent verifies the dispatcher
-// receives an orm.Event and can recover the typed payload via assertion.
+// receives a contract.Event and can recover the typed payload via assertion.
 func TestManager_SetEventDispatcher_ReceivesEvent(t *testing.T) {
 	var (
 		mu       sync.Mutex

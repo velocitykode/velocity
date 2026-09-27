@@ -91,7 +91,7 @@ type Manager struct {
 	// eventDispatcher is the typed event handler invoked by dispatchEvent.
 	// SetEventDispatcher (deprecated, untyped) adapts the legacy signature
 	// into a typed call so internal event firing remains type-safe.
-	eventDispatcher func(ctx context.Context, event Event) error
+	eventDispatcher func(ctx context.Context, event contract.Event) error
 	// hasDispatcher mirrors "eventDispatcher != nil" for the statement
 	// observation fast path, which runs inside a driver callback and must
 	// not take mu.
@@ -878,7 +878,7 @@ func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event any) err
 		return
 	}
 	m.rawEventDispatcher = fn
-	m.eventDispatcher = func(ctx context.Context, event Event) error {
+	m.eventDispatcher = func(ctx context.Context, event contract.Event) error {
 		return fn(ctx, event)
 	}
 
@@ -968,7 +968,7 @@ var _ contract.LoggerAware = (*Manager)(nil)
 // dispatchEvent dispatches an event if a dispatcher is configured. ctx
 // reaches every listener so trace IDs and request-scoped values flow
 // through; cancellation/deadline behavior depends on the dispatcher.
-func (m *Manager) dispatchEvent(ctx context.Context, event Event) {
+func (m *Manager) dispatchEvent(ctx context.Context, event contract.Event) {
 	m.mu.RLock()
 	fn := m.eventDispatcher
 	m.mu.RUnlock()

@@ -11,15 +11,6 @@ import (
 	"github.com/velocitykode/velocity/trace"
 )
 
-// Event is the typed contract every ORM event satisfies. Matches the shape of
-// events.Event and scheduler.Event so dispatchers can accept events from any
-// package through a single interface.
-//
-// Naming convention: package.snake_case (e.g. "query.executed", "query.failed").
-type Event interface {
-	Name() string
-}
-
 // QueryExecuted is dispatched when a database query completes. It fires for
 // every statement that reaches the database through an instrumented
 // connection - the query builder, Manager.Raw / Manager.Exec, statements

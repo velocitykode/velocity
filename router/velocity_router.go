@@ -80,10 +80,10 @@ type VelocityRouterV2 struct {
 	// drops under saturation are the kind of failure mode that only
 	// surfaces during an incident.
 	//
-	// The event parameter is typed as Event (instead of interface{}) so
-	// listener implementations can switch on concrete router events
-	// without a type assertion.
-	OnEventDispatchError func(err error, event Event)
+	// The event parameter is typed as contract.Event (instead of
+	// interface{}) so listener implementations can switch on concrete
+	// router events without a type assertion.
+	OnEventDispatchError func(err error, event contract.Event)
 
 	droppedEvents   atomic.Uint64
 	firstDropLogged atomic.Bool
@@ -413,7 +413,7 @@ func (r *VelocityRouterV2) BindEventDispatcher(fn func(ctx context.Context, even
 // counted via DroppedEventCount and logged once at WARN. The ctx is propagated
 // to the dispatcher so listeners observe the request-scoped values that ctx
 // already carries (request ID, trace IDs).
-func (r *VelocityRouterV2) dispatchInstanceEvent(ctx context.Context, event Event) {
+func (r *VelocityRouterV2) dispatchInstanceEvent(ctx context.Context, event contract.Event) {
 	if r.eventDispatcher == nil {
 		return
 	}
@@ -429,7 +429,7 @@ func (r *VelocityRouterV2) dispatchInstanceEvent(ctx context.Context, event Even
 
 // reportDispatchError increments the drop counter and invokes the
 // configured callback (or falls back to a once-logged WARN).
-func (r *VelocityRouterV2) reportDispatchError(err error, event Event) {
+func (r *VelocityRouterV2) reportDispatchError(err error, event contract.Event) {
 	r.droppedEvents.Add(1)
 	if r.OnEventDispatchError != nil {
 		r.OnEventDispatchError(err, event)

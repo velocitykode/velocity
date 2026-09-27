@@ -5,6 +5,15 @@ import (
 	"time"
 )
 
+// Event is the named-event facet. Every framework event implements it, and
+// a dispatcher routes an event that implements it under the name Name
+// returns. Framework event names follow one rule, documented on package
+// events.
+type Event interface {
+	// Name returns the name listeners subscribe to.
+	Name() string
+}
+
 // EventListener handles events when they are dispatched. Implementations receive
 // the caller-supplied context as the first argument so deadlines, trace IDs,
 // and tx scopes flow through to listener bodies; listeners that block on I/O
