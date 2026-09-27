@@ -25,8 +25,8 @@ func upsert[R any](rules []R, rule R, key func(R) any) []R {
 	return appendCopy(rules, rule)
 }
 
-// removeKey returns rules without the rules keyed k. A nil k removes
-// nothing. The input slice is never modified.
+// removeKey returns rules without the rules whose key (as key returns it)
+// is k. A nil k removes nothing. The input slice is never modified.
 func removeKey[R any](rules []R, k any, key func(R) any) []R {
 	if k == nil {
 		return rules
@@ -40,12 +40,35 @@ func removeKey[R any](rules []R, k any, key func(R) any) []R {
 	return out
 }
 
-func mapKey(r contract.MapRule) any           { return r.Key }
+func mapKey(r contract.MapRule) any           { return sourcedKey(r.Key, r.Sources) }
 func renderKey(r contract.RenderRule) any     { return r.Key }
 func reportKey(r contract.ReportRule) any     { return r.Key }
-func ignoreKey(r contract.IgnoreRule) any     { return r.Key }
-func levelKey(r contract.LevelRule) any       { return r.Key }
-func throttleKey(r contract.ThrottleRule) any { return r.Key }
+func ignoreKey(r contract.IgnoreRule) any     { return sourcedKey(r.Key, r.Sources) }
+func levelKey(r contract.LevelRule) any       { return sourcedKey(r.Key, r.Sources) }
+func throttleKey(r contract.ThrottleRule) any { return sourcedKey(r.Key, r.Sources) }
+
+// sourcedRule is the identity of a keyed map, ignore, level or throttle
+// rule written for sources other than requests alone: its Key and those
+// sources, so such a rule neither replaces nor removes the request rule
+// under the same Key.
+type sourcedRule struct {
+	key     any
+	sources contract.ErrorSource
+}
+
+// sourcedKey returns the identity of a rule keyed key that applies to
+// sources: key itself for a rule written for requests alone (an empty set,
+// or contract.ErrorSourceRequest), a sourcedRule otherwise, and nil for an
+// anonymous rule.
+func sourcedKey(key any, sources contract.ErrorSource) any {
+	if key == nil {
+		return nil
+	}
+	if sources == 0 || sources == contract.ErrorSourceRequest {
+		return key
+	}
+	return sourcedRule{key: key, sources: sources}
+}
 
 // AddMapRule registers a rule that replaces a matched error before it is
 // reported and rendered. Map rules are tried in registration order (a rule
@@ -102,11 +125,11 @@ func (h *Handler) AddIgnoreRule(rule contract.IgnoreRule) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if rule.Unignore {
-		h.ignoreRules = removeKey(h.ignoreRules, rule.Key, ignoreKey)
+		h.ignoreRules = removeKey(h.ignoreRules, ignoreKey(rule), ignoreKey)
 		h.unignoreRules = upsert(h.unignoreRules, rule, ignoreKey)
 		return
 	}
-	h.unignoreRules = removeKey(h.unignoreRules, rule.Key, ignoreKey)
+	h.unignoreRules = removeKey(h.unignoreRules, ignoreKey(rule), ignoreKey)
 	h.ignoreRules = upsert(h.ignoreRules, rule, ignoreKey)
 }
 

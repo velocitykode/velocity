@@ -67,7 +67,7 @@ func (h *Handler) HandleRequest(rc RenderContext, err error, ctx *ErrorContext) 
 		err, written = cause, true
 	}
 
-	err = h.applyMap(s, err)
+	err = h.applyMap(s, err, ctx.Source)
 	if !marked {
 		r := requestOf(rc)
 		h.report(s, err, ctx, r)
@@ -88,6 +88,17 @@ func (h *Handler) HandleRequest(rc RenderContext, err error, ctx *ErrorContext) 
 // Otherwise the mapped error is reported; a recovered panic is decided on
 // err before the map rules (see markRecovered) and always reported. A nil
 // ctx is replaced by a new one.
+//
+// The rules that apply are the ones written for ctx.Source (see
+// contract.ErrorSource): a report from background work (a failed job, a
+// listener, a scheduled task, a background goroutine) passes only the map,
+// ignore, level and throttle rules that name its source. The framework's
+// own ignore and level rules are written for requests, and the error's
+// own ShouldReport is not asked for background work: its answer is about a
+// client's request (every framework Reportable answers false for a client
+// outcome such as a 404 or a failed validation), and background work has
+// no client. IgnoreIf predicates (which see ctx), SelfReporting errors,
+// ReportFor rules and ContextUsing providers apply to every source.
 func (h *Handler) Report(err error, ctx *ErrorContext) {
 	h.TryReport(err, ctx)
 }
@@ -115,7 +126,7 @@ func (h *Handler) TryReport(err error, ctx *ErrorContext) bool {
 		return false
 	}
 	markRecovered(err, ctx)
-	return h.report(s, h.applyMap(s, err), ctx, nil)
+	return h.report(s, h.applyMap(s, err, ctx.Source), ctx, nil)
 }
 
 // Render writes the response for err through rc, applying user map rules
@@ -131,25 +142,27 @@ func (h *Handler) Render(rc RenderContext, err error, ctx *ErrorContext) {
 	s := h.snap()
 	ctx = fillRequestContext(ctx, rc, s.trustedProxies)
 	markRecovered(err, ctx)
-	h.render(s, rc, h.applyMap(s, err), ctx)
+	h.render(s, rc, h.applyMap(s, err, ctx.Source), ctx)
 }
 
-// ShouldReport reports whether err passes the report gate: not already
-// reported (a marker inside a recovered panic's value does not count); a
-// recovered panic always passes; otherwise an unignore rule
-// forces it through, or it must survive the dead-request cancel ignore
-// (applied whatever the error's own ShouldReport says), its own
-// ShouldReport, the framework ignores (skipped when ShouldReport says
+// ShouldReport reports whether err, reported for a request, passes the
+// report gate: not already reported (a marker inside a recovered panic's
+// value does not count); a recovered panic always passes; otherwise an
+// unignore rule forces it through, or it must survive the dead-request
+// cancel ignore (applied whatever the error's own ShouldReport says), its
+// own ShouldReport, the framework ignores (skipped when ShouldReport says
 // true), the user ignores and the IgnoreIf predicates. Throttling is
 // decided only when a report is made, so ShouldReport does not consume
-// throttle budget.
+// throttle budget. A report from background work is gated by the rules
+// written for its source instead (see Report).
 func (h *Handler) ShouldReport(err error) bool {
 	return h.passes(h.snap(), err, nil, nil, false)
 }
 
-// applyMap returns the replacement from the first matching user map rule,
-// or err. A panicking rule is logged and leaves err unchanged.
-func (h *Handler) applyMap(s *snapshot, err error) (out error) {
+// applyMap returns the replacement from the first user map rule written for
+// source whose Match succeeds, or err. A panicking rule is logged and
+// leaves err unchanged.
+func (h *Handler) applyMap(s *snapshot, err error, source contract.ErrorSource) (out error) {
 	out = err
 	defer func() {
 		if p := recover(); p != nil {
@@ -158,7 +171,7 @@ func (h *Handler) applyMap(s *snapshot, err error) (out error) {
 		}
 	}()
 	for _, rule := range s.mapRules {
-		if !rule.Match(err) {
+		if !rule.Sources.Includes(source) || !rule.Match(err) {
 			continue
 		}
 		if mapped := rule.Map(err); mapped != nil {
@@ -215,8 +228,9 @@ func carriesRecoveredPanic(err error) bool {
 	return errors.As(err, &rp)
 }
 
-// passes runs the report gate. r, when non-nil, lets a cancelled request
-// with a dead context be ignored; consume enables throttling.
+// passes runs the report gate with the rules written for ctx's source (a
+// request's for a nil ctx; see Report). r, when non-nil, lets a cancelled
+// request with a dead context be ignored; consume enables throttling.
 func (h *Handler) passes(s *snapshot, err error, ctx *ErrorContext, r *http.Request, consume bool) bool {
 	if err == nil || outsidePanic(err, ctx, contract.IsReported) {
 		return false
@@ -224,7 +238,8 @@ func (h *Handler) passes(s *snapshot, err error, ctx *ErrorContext, r *http.Requ
 	if isRecovered(err, ctx) {
 		return true
 	}
-	if !anyIgnoreMatch(s.unignoreRules, err) {
+	source := sourceOf(ctx)
+	if !anyIgnoreMatch(s.unignoreRules, err, source) {
 		// A cancel whose request context is dead is a fact about the
 		// request (the client went away, or the server cut it off while
 		// shutting down), not a property of the error, so no ShouldReport
@@ -235,16 +250,16 @@ func (h *Handler) passes(s *snapshot, err error, ctx *ErrorContext, r *http.Requ
 		}
 		ownDecision := false
 		var rep contract.Reportable
-		if errors.As(err, &rep) {
+		if source.Includes(contract.ErrorSourceRequest) && errors.As(err, &rep) {
 			if !rep.ShouldReport() {
 				return false
 			}
 			ownDecision = true
 		}
-		if !ownDecision && anyIgnoreMatch(s.frameworkIgnores, err) {
+		if !ownDecision && anyIgnoreMatch(s.frameworkIgnores, err, source) {
 			return false
 		}
-		if anyIgnoreMatch(s.ignoreRules, err) {
+		if anyIgnoreMatch(s.ignoreRules, err, source) {
 			return false
 		}
 		for _, pred := range s.ignorePredicates {
@@ -255,7 +270,7 @@ func (h *Handler) passes(s *snapshot, err error, ctx *ErrorContext, r *http.Requ
 	}
 	if consume {
 		for _, rule := range s.throttleRules {
-			if rule.Match(err) {
+			if rule.Sources.Includes(source) && rule.Match(err) {
 				return h.throttle.allow(rule, err)
 			}
 		}
@@ -263,13 +278,23 @@ func (h *Handler) passes(s *snapshot, err error, ctx *ErrorContext, r *http.Requ
 	return true
 }
 
-func anyIgnoreMatch(rules []contract.IgnoreRule, err error) bool {
+// anyIgnoreMatch reports whether a rule written for source matches err.
+func anyIgnoreMatch(rules []contract.IgnoreRule, err error, source contract.ErrorSource) bool {
 	for _, rule := range rules {
-		if rule.Match(err) {
+		if rule.Sources.Includes(source) && rule.Match(err) {
 			return true
 		}
 	}
 	return false
+}
+
+// sourceOf returns the source ctx names, or the zero source (a request's)
+// for a nil ctx.
+func sourceOf(ctx *ErrorContext) contract.ErrorSource {
+	if ctx == nil {
+		return 0
+	}
+	return ctx.Source
 }
 
 // report runs the gate and, when it passes, SelfReporting, the ReportFor
@@ -317,7 +342,7 @@ func (h *Handler) report(s *snapshot, err error, ctx *ErrorContext, r *http.Requ
 		}
 	}
 
-	ctx.Level = selectLevel(s, err, ctx.Level)
+	ctx.Level = selectLevel(s, err, ctx.Level, ctx.Source)
 
 	handled = true
 	for _, reporter := range s.reporters {
@@ -327,15 +352,16 @@ func (h *Handler) report(s *snapshot, err error, ctx *ErrorContext, r *http.Requ
 }
 
 // selectLevel returns the level of the first matching user level rule, then
-// framework level rule; otherwise current, or error when current is unset.
-func selectLevel(s *snapshot, err error, current contract.LogLevel) contract.LogLevel {
+// framework level rule, written for source; otherwise current, or error
+// when current is unset.
+func selectLevel(s *snapshot, err error, current contract.LogLevel, source contract.ErrorSource) contract.LogLevel {
 	for _, rule := range s.levelRules {
-		if rule.Match(err) {
+		if rule.Sources.Includes(source) && rule.Match(err) {
 			return rule.Level
 		}
 	}
 	for _, rule := range s.frameworkLevels {
-		if rule.Match(err) {
+		if rule.Sources.Includes(source) && rule.Match(err) {
 			return rule.Level
 		}
 	}

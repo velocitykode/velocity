@@ -55,6 +55,10 @@ type ScheduledTaskFailed struct {
 	TraceID    string
 	SpanID     string
 	ParentID   string
+
+	// Err is the failure itself, where Error is its text: the error the
+	// task returned. It is not serialized: the JSON form keeps Error alone.
+	Err error `json:"-"`
 }
 
 // Name returns the event name
@@ -64,12 +68,23 @@ func (e *ScheduledTaskFailed) Name() string {
 
 // FailureError implements contract.FailureEvent: a failed scheduled task
 // has no caller observing the error, so the dispatcher bridges it to the
-// error Reporter chain.
+// error Reporter chain. It returns Err, the task's own error with its
+// type; an event without Err (one decoded from its JSON form) returns a
+// new error with the Error text, or nil when there is none.
 func (e *ScheduledTaskFailed) FailureError() error {
+	if e.Err != nil {
+		return e.Err
+	}
 	if e.Error == "" {
 		return nil
 	}
 	return errors.New(e.Error)
+}
+
+// FailureSource implements contract.FailureEvent: the failure is a
+// scheduled task's.
+func (e *ScheduledTaskFailed) FailureSource() contract.ErrorSource {
+	return contract.ErrorSourceTask
 }
 
 // dispatchScheduledTaskStarting dispatches a ScheduledTaskStarting event
@@ -117,6 +132,7 @@ func dispatchScheduledTaskFailed(dispatch func(context.Context, interface{}), ct
 		Context:    ctx,
 		TaskName:   name,
 		Error:      errMsg,
+		Err:        err,
 		DurationMs: duration.Milliseconds(),
 		TraceID:    traceID,
 		SpanID:     spanID,

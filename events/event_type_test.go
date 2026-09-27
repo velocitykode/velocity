@@ -12,13 +12,15 @@ import (
 
 type shipmentFailed struct{}
 
-func (e *shipmentFailed) Name() string        { return "shop.shipment.failed" }
-func (e *shipmentFailed) FailureError() error { return errors.New("carrier rejected the parcel") }
+func (e *shipmentFailed) Name() string                        { return "shop.shipment.failed" }
+func (e *shipmentFailed) FailureError() error                 { return errors.New("carrier rejected the parcel") }
+func (e *shipmentFailed) FailureSource() contract.ErrorSource { return contract.ErrorSourceJob }
 
 type paymentFailed struct{}
 
-func (e *paymentFailed) Name() string        { return "shop.payment.failed" }
-func (e *paymentFailed) FailureError() error { return errors.New("card declined") }
+func (e *paymentFailed) Name() string                        { return "shop.payment.failed" }
+func (e *paymentFailed) FailureError() error                 { return errors.New("card declined") }
+func (e *paymentFailed) FailureSource() contract.ErrorSource { return contract.ErrorSourceJob }
 
 type orderPlaced struct{}
 

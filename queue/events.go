@@ -83,22 +83,27 @@ func (e *JobFailed) Name() string {
 
 // FailureError implements contract.FailureEvent: a permanently failed job
 // (retries exhausted) has no caller observing the error, so the dispatcher
-// bridges it to the error Reporter chain. When Err carries the report-once
-// marker (the job's Failed hook already reported the failure) it returns
-// Err, so the bridge's report gate skips it and the failure is reported
-// once. Otherwise it returns a new error with the Error text, or nil when
-// there is none, as it always has: the bridge reports the failure whatever
-// the type of the job's error, so rules the error handler keys on error
-// types for requests (statuses below 500 are the client's, a deadline is a
-// 503) do not drop or reshape a failed job's report.
+// bridges it to the error Reporter chain. It returns Err, the job's own
+// error with its type, so the rules and reporters written for jobs see it;
+// the rules the error handler keys on error types for requests do not
+// apply to it (see FailureSource). When Err carries the report-once marker
+// (the job's Failed hook already reported the failure) the bridge's report
+// gate skips it and the failure is reported once. An event without Err
+// (one decoded from its JSON form) returns a new error with the Error
+// text, or nil when there is none.
 func (e *JobFailed) FailureError() error {
-	if contract.IsReported(e.Err) {
+	if e.Err != nil {
 		return e.Err
 	}
 	if e.Error == "" {
 		return nil
 	}
 	return errors.New(e.Error)
+}
+
+// FailureSource implements contract.FailureEvent: the failure is a job's.
+func (e *JobFailed) FailureSource() contract.ErrorSource {
+	return contract.ErrorSourceJob
 }
 
 // JobRetrying is dispatched when a failed job is being retried

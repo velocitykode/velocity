@@ -15,7 +15,6 @@ import (
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/internal/eventqueue"
 	"github.com/velocitykode/velocity/orm"
-	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -328,20 +327,33 @@ func wireFailureReporters(a *App) {
 	eventqueue.SetFailureReporter(buildQueuedListenerReporter(h))
 }
 
+// backgroundErrorContext returns the ErrorContext a failure of background
+// work is reported with: stamped now, carrying the trace ID of ctx and
+// source, the kind of work that failed, so only the error handler's rules
+// written for that source apply (see contract.ErrorSource).
+func backgroundErrorContext(ctx context.Context, source contract.ErrorSource) *contract.ErrorContext {
+	return &contract.ErrorContext{
+		Timestamp: time.Now(),
+		TraceID:   trace.GetTraceID(ctx),
+		Source:    source,
+		Extra:     map[string]any{},
+	}
+}
+
 // buildFailureReporter returns the bridge target for FailureEvent
 // dispatches: it forwards the failure to h.Report with an ErrorContext
-// carrying the trace ID and event name. It returns nil (no bridge) when h
-// is nil.
+// carrying the trace ID, the source the event names and the event name.
+// It returns nil (no bridge) when h is nil.
 func buildFailureReporter(h contract.ErrorHandler) func(ctx context.Context, event interface{}, err error) {
 	if h == nil {
 		return nil
 	}
 	return func(ctx context.Context, event interface{}, err error) {
-		exCtx := &contract.ErrorContext{
-			Timestamp: time.Now(),
-			TraceID:   trace.GetTraceID(ctx),
-			Extra:     map[string]any{},
+		var source contract.ErrorSource
+		if fe, ok := event.(contract.FailureEvent); ok {
+			source = fe.FailureSource()
 		}
+		exCtx := backgroundErrorContext(ctx, source)
 		if n, ok := event.(interface{ Name() string }); ok {
 			exCtx.Extra["event"] = n.Name()
 		}
@@ -352,7 +364,9 @@ func buildFailureReporter(h contract.ErrorHandler) func(ctx context.Context, eve
 // buildQueuedListenerReporter returns the reporter a queued listener's
 // Failed hook calls once the listener has exhausted its retries (H-22): it
 // reports the failure through h.TryReport with an ErrorContext naming the
-// listener and event types, and returns TryReport's answer, whether the
+// listener and event types, under contract.ErrorSourceJob (a queued
+// listener runs as a job, so one rule written for jobs covers this report
+// and the queue.job.failed bridge's), and returns TryReport's answer, whether the
 // report was actually handled. The queue worker reads that answer
 // (events.EventListenerJob.FailureReported): a failure this did not report
 // is reported by the queue.job.failed event's bridge instead. It returns nil (no
@@ -362,7 +376,7 @@ func buildQueuedListenerReporter(h contract.ErrorHandler) events.FailureReporter
 		return nil
 	}
 	return func(job *events.EventListenerJob, jobErr error) bool {
-		exCtx := problem.NewErrorContext().
+		exCtx := backgroundErrorContext(context.Background(), contract.ErrorSourceJob).
 			WithExtra("subsystem", "events").
 			WithExtra("job", "EventListenerJob").
 			WithExtra("listener_type", job.ListenerType).

@@ -143,7 +143,8 @@ func TestDispatch_FailureBridgeRunsBeforeListeners(t *testing.T) {
 // re-triggering itself.
 type otherFailed struct{ err string }
 
-func (e *otherFailed) FailureError() error { return errors.New(e.err) }
+func (e *otherFailed) FailureError() error                 { return errors.New(e.err) }
+func (e *otherFailed) FailureSource() contract.ErrorSource { return contract.ErrorSourceJob }
 
 var _ contract.FailureEvent = (*otherFailed)(nil)
 
@@ -388,7 +389,8 @@ func TestListener_SameFailureEventWithReceivedCtx_NotReReported(t *testing.T) {
 // uncomparable (slice field); identity comparison cannot dedupe it.
 type uncomparableFailed struct{ errs []string }
 
-func (e uncomparableFailed) FailureError() error { return errors.New(e.errs[0]) }
+func (e uncomparableFailed) FailureError() error                 { return errors.New(e.errs[0]) }
+func (e uncomparableFailed) FailureSource() contract.ErrorSource { return contract.ErrorSourceJob }
 
 var _ contract.FailureEvent = uncomparableFailed{}
 

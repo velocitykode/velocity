@@ -125,6 +125,12 @@ type Dispatcher interface {
 // exactly once through the router's error boundary, which velocity.New
 // connects to the error handler.
 type FailureEvent interface {
-	// FailureError returns the failure as an error for reporting.
+	// FailureError returns the failure as an error for reporting: the
+	// error value itself where the event carries it, so its type reaches
+	// the rules and reporters.
 	FailureError() error
+	// FailureSource returns the kind of background work that failed. The
+	// report carries it (ErrorContext.Source), so only the rules written
+	// for that source apply.
+	FailureSource() ErrorSource
 }

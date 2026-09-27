@@ -169,11 +169,54 @@ func (l LogLevel) String() string {
 	}
 }
 
+// ErrorSource is the kind of work a reported error comes from: a request,
+// or background work no caller is waiting on. ErrorContext.Source holds one
+// source; the Sources field of a map, ignore, level or throttle rule holds
+// the set it applies to, sources OR-ed together. The zero value, on either
+// side, stands for ErrorSourceRequest: a report that names no source is a
+// request's, and a rule that names none is written for requests, so it
+// never applies to background work unless it names that work's source.
+type ErrorSource uint8
+
+// Error sources.
+const (
+	// ErrorSourceRequest is an HTTP or gRPC request.
+	ErrorSourceRequest ErrorSource = 1 << iota
+	// ErrorSourceJob is a queued job that failed for good, a queued event
+	// listener included.
+	ErrorSourceJob
+	// ErrorSourceListener is an event listener run with no caller waiting
+	// on it (DispatchAsync, DispatchAfter).
+	ErrorSourceListener
+	// ErrorSourceTask is a scheduled task.
+	ErrorSourceTask
+	// ErrorSourceGoroutine is a panic recovered in a background goroutine.
+	ErrorSourceGoroutine
+)
+
+// Includes reports whether the set s includes source, reading an empty set
+// or source as ErrorSourceRequest.
+func (s ErrorSource) Includes(source ErrorSource) bool {
+	return s.orRequest()&source.orRequest() != 0
+}
+
+// orRequest returns s, or ErrorSourceRequest when s is empty.
+func (s ErrorSource) orRequest() ErrorSource {
+	if s == 0 {
+		return ErrorSourceRequest
+	}
+	return s
+}
+
 // Every rule below carries Key and Match. Key identifies what the rule
 // matches (a type or a sentinel) so a later rule with an equal key can
 // override an earlier one and throttle buckets and unignores can target
 // it; it must be comparable, and nil marks an anonymous rule. Match
-// decides whether the rule applies to an error.
+// decides whether the rule applies to an error. Map, ignore, level and
+// throttle rules also carry Sources, the sources they apply to (see
+// ErrorSource): such a rule applies to a report only when it names the
+// report's source, and a rule registered again under an equal Key
+// replaces the earlier one only when both name the same sources.
 
 // MapRule replaces a matched error before it is reported and rendered.
 type MapRule struct {
@@ -183,6 +226,9 @@ type MapRule struct {
 	// first rule whose Match succeeds runs, so a nil result still ends the
 	// search.
 	Map func(err error) error
+	// Sources is the set of sources the rule applies to; empty means
+	// ErrorSourceRequest alone.
+	Sources ErrorSource
 }
 
 // RenderRule renders a matched error.
@@ -213,6 +259,9 @@ type IgnoreRule struct {
 	// Unignore inverts the rule: a matched error is reported even when an
 	// internal or user ignore would drop it.
 	Unignore bool
+	// Sources is the set of sources the rule applies to; empty means
+	// ErrorSourceRequest alone.
+	Sources ErrorSource
 }
 
 // LevelRule sets the log level for a matched error.
@@ -220,6 +269,9 @@ type LevelRule struct {
 	Key   any
 	Match ErrorMatcher
 	Level LogLevel
+	// Sources is the set of sources the rule applies to; empty means
+	// ErrorSourceRequest alone.
+	Sources ErrorSource
 }
 
 // ThrottleRule throttles reports of a matched error.
@@ -227,6 +279,9 @@ type ThrottleRule struct {
 	Key      any
 	Match    ErrorMatcher
 	Throttle Throttle
+	// Sources is the set of sources the rule applies to; empty means
+	// ErrorSourceRequest alone.
+	Sources ErrorSource
 }
 
 // Throttle limits how often matched errors are reported. The zero value
@@ -265,6 +320,10 @@ type ErrorContext struct {
 	Level      LogLevel
 	StackTrace *StackTrace
 	Extra      map[string]any
+	// Source is the kind of work the error comes from; empty means
+	// ErrorSourceRequest. It selects the rules that apply to the report
+	// (see ErrorSource).
+	Source ErrorSource
 }
 
 // WithRequestInfo adds request information to the context.

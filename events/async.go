@@ -43,6 +43,12 @@ func (e *AsyncFailed) FailureError() error {
 	return errors.New(e.Error)
 }
 
+// FailureSource implements contract.FailureEvent: the failure is a
+// listener's.
+func (e *AsyncFailed) FailureSource() contract.ErrorSource {
+	return contract.ErrorSourceListener
+}
+
 // NewAsyncDispatcher creates a new async dispatcher
 func NewAsyncDispatcher() *AsyncDispatcher {
 	return &AsyncDispatcher{}

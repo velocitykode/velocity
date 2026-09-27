@@ -203,11 +203,11 @@ func TestWorker_JobFailedCarriesFailureMarkedWhenHookReported(t *testing.T) {
 				t.Errorf("IsReported(Err) = %v, want %v", got, tt.wantMarked)
 			}
 			failure := event.FailureError()
-			if tt.wantMarked && failure != event.Err {
-				t.Errorf("FailureError() = %v, want the marked Err itself", failure)
+			if failure != event.Err {
+				t.Errorf("FailureError() = %v, want Err itself", failure)
 			}
-			if failure == nil || failure.Error() != errSelfReportedBoom.Error() || contract.IsReported(failure) != tt.wantMarked {
-				t.Errorf("FailureError() = %v (reported %v), want the failure's text, reported %v", failure, contract.IsReported(failure), tt.wantMarked)
+			if !errors.Is(failure, errSelfReportedBoom) || contract.IsReported(failure) != tt.wantMarked {
+				t.Errorf("FailureError() = %v (reported %v), want the job's own error, reported %v", failure, contract.IsReported(failure), tt.wantMarked)
 			}
 		})
 	}
@@ -244,23 +244,22 @@ func newStartedMemoryDriver(t *testing.T) *MemoryDriver {
 	return d
 }
 
-// TestJobFailed_FailureError asserts FailureError returns Err when it
-// carries the report-once marker, and otherwise a new error with the Error
-// text (Err or not), so the bridge's report of an unreported failure does
-// not depend on the job error's type; and that Err never reaches the
-// event's JSON form.
+// TestJobFailed_FailureError asserts FailureError returns Err itself,
+// marked reported or not, so the job error's type reaches the rules and
+// reporters written for jobs; a new error with the Error text for an event
+// without Err (one decoded from JSON); that Err never reaches the event's
+// JSON form; and that FailureSource names a job.
 func TestJobFailed_FailureError(t *testing.T) {
 	cause := contract.NewHTTPError(404)
 	marked := contract.MarkReported(cause)
 	if got := (&JobFailed{Error: cause.Error(), Err: marked}).FailureError(); got != marked {
 		t.Errorf("FailureError() with a marked Err = %v, want Err itself", got)
 	}
-	got := (&JobFailed{Error: cause.Error(), Err: cause}).FailureError()
-	if got == nil || got.Error() != cause.Error() || errors.Is(got, cause) {
-		t.Errorf("FailureError() with an unmarked Err = %#v, want a new error with the Error text", got)
+	if got := (&JobFailed{Error: cause.Error(), Err: cause}).FailureError(); got != error(cause) {
+		t.Errorf("FailureError() with an unmarked Err = %#v, want Err itself", got)
 	}
-	if _, _, ok := contract.StatusOf(got); ok {
-		t.Errorf("FailureError() with an unmarked Err carries the job error's HTTP status: %v", got)
+	if got := (&JobFailed{}).FailureSource(); got != contract.ErrorSourceJob {
+		t.Errorf("FailureSource() = %v, want ErrorSourceJob", got)
 	}
 	if got := (&JobFailed{Error: "smtp exploded"}).FailureError(); got == nil || got.Error() != "smtp exploded" {
 		t.Errorf("FailureError() without Err = %v, want the Error text", got)

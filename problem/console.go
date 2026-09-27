@@ -29,7 +29,7 @@ func (h *Handler) HandleConsole(stderr io.Writer, err error) int {
 	marked := contract.IsReported(err)
 	ctx := NewErrorContext()
 	markRecovered(err, ctx)
-	err = h.applyMap(s, err)
+	err = h.applyMap(s, err, ctx.Source)
 	if !marked {
 		h.report(s, err, ctx, nil)
 	}

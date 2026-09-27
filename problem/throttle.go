@@ -110,8 +110,11 @@ func (t *throttleBuckets) sweep(now time.Time) {
 	}
 }
 
-// throttleRuleID identifies a rule's buckets: its Key. AddThrottleRule
-// gives every rule it stores a Key, an anonymous rule one of its own.
+// throttleRuleID identifies a rule's buckets: its identity (see
+// sourcedKey), the Key of a rule written for requests alone, so a rule
+// written for background work under a request rule's Key counts in
+// buckets of its own. AddThrottleRule gives every rule it stores a Key, an
+// anonymous rule one of its own.
 func throttleRuleID(rule contract.ThrottleRule) any {
-	return rule.Key
+	return throttleKey(rule)
 }
