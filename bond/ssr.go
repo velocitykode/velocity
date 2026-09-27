@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/neturl"
 )
 
@@ -275,7 +276,8 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 		if json.Unmarshal(raw, &parsed) == nil && parsed.Error != "" {
 			payload = parsed
 		}
-		return g.handleFailure(ctx, page, payload, fmt.Errorf("velocity/bond: ssr server error: %w", errors.New(payload.Error)))
+		serverErr := errors.New(payload.Error)
+		return g.handleFailureWrapped(ctx, page, payload, serverErr, fmt.Errorf("velocity/bond: ssr server error: %w", serverErr))
 	}
 
 	var out SSRResponse
@@ -356,6 +358,13 @@ func (g *HTTPGateway) excluded(pageURL string) bool {
 // (nil, nil) for graceful CSR fallback, or (nil, err) when ThrowOnError
 // is set so callers can surface the failure.
 func (g *HTTPGateway) handleFailure(ctx context.Context, page Page, payload ssrServerError, err error) (*SSRResponse, error) {
+	return g.handleFailureWrapped(ctx, page, payload, err, err)
+}
+
+// handleFailureWrapped is handleFailure for a failure the event records as
+// failure (the SSR server's own message) and ThrowOnError returns as err,
+// which wraps it.
+func (g *HTTPGateway) handleFailureWrapped(ctx context.Context, page Page, payload ssrServerError, failure, err error) (*SSRResponse, error) {
 	g.mu.RLock()
 	dispatch := g.eventDispatcher
 	g.mu.RUnlock()
@@ -365,9 +374,10 @@ func (g *HTTPGateway) handleFailure(ctx context.Context, page Page, payload ssrS
 			ctx = context.Background()
 		}
 		_ = dispatch(ctx, SSRRenderFailed{
+			EventMeta:      eventmeta.Current(ctx),
 			Component:      page.Component,
 			URL:            page.URL,
-			Error:          payload.Error,
+			Err:            failure,
 			Type:           ParseSSRErrorType(payload.Type),
 			Hint:           payload.Hint,
 			BrowserAPI:     payload.BrowserAPI,

@@ -14,6 +14,41 @@ type Event interface {
 	Name() string
 }
 
+// EventMeta is the envelope every framework event embeds: the context the
+// event was dispatched under, the trace, span and parent span ids of the
+// work it records, and when it happened. Embedding promotes the fields
+// (event.TraceID, event.At), and Meta returns the envelope from a framework
+// event of any type, so code that handles them all reads it one way:
+//
+//	if m, ok := event.(interface{ Meta() contract.EventMeta }); ok {
+//		traceID := m.Meta().TraceID
+//	}
+//
+// Beyond the envelope a framework event encodes each fact one way: an event
+// that records an operation carries Duration time.Duration, one that records
+// a failure carries Err error (the failure itself, whose JSON form is its
+// text), and none carries a second timestamp beside At.
+type EventMeta struct {
+	// Context is the context the event was dispatched under. It is not
+	// part of the event's JSON form.
+	Context context.Context `json:"-"`
+	// TraceID is the trace the recorded work belongs to.
+	TraceID string
+	// SpanID is the span of the recorded work: the operation's own span
+	// when it runs as a span of its own (a query, a cache call, a delivery,
+	// a transaction), otherwise the span it ran under (a request, a job, a
+	// scheduled run).
+	SpanID string
+	// ParentID is the parent of SpanID, empty for a root span.
+	ParentID string
+	// At is when the event happened: when the work started for a started
+	// event, when it ended for a completed or failed one.
+	At time.Time
+}
+
+// Meta returns the envelope.
+func (m EventMeta) Meta() EventMeta { return m }
+
 // EventListener handles events when they are dispatched. Implementations receive
 // the caller-supplied context as the first argument so deadlines, trace IDs,
 // and tx scopes flow through to listener bodies; listeners that block on I/O

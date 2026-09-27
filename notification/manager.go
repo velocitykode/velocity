@@ -215,7 +215,7 @@ func (m *Manager) SendMany(ctx context.Context, notifiables []interface{}, notif
 					if spanCtx == nil {
 						spanCtx, _ = trace.ContinueTrace(ctx)
 					}
-					m.dispatchEvent(spanCtx, buildNotificationFailed(spanCtx, n, notification, "", err))
+					m.dispatchNotificationFailed(spanCtx, n, notification, "", err, 0)
 					errsMu.Lock()
 					errs = append(errs, fmt.Errorf("velocity/notification: send many panic: %w", err))
 					errsMu.Unlock()
@@ -249,7 +249,7 @@ func (m *Manager) sendViaChannel(ctx context.Context, channelName string, notifi
 	}
 	ch, err := m.Channel(channelName)
 	if err != nil {
-		m.dispatchEvent(ctx, buildNotificationFailed(ctx, notifiable, notification, channelName, err))
+		m.dispatchNotificationFailed(ctx, notifiable, notification, channelName, err, 0)
 		return fmt.Errorf("velocity/notification: channel %q: %w", channelName, err)
 	}
 
@@ -258,10 +258,10 @@ func (m *Manager) sendViaChannel(ctx context.Context, channelName string, notifi
 	duration := time.Since(start)
 
 	if err != nil {
-		m.dispatchEvent(ctx, buildNotificationFailed(ctx, notifiable, notification, channelName, err))
+		m.dispatchNotificationFailed(ctx, notifiable, notification, channelName, err, duration)
 		return fmt.Errorf("velocity/notification: channel %q: %w", channelName, err)
 	}
 
-	m.dispatchEvent(ctx, buildNotificationSent(ctx, notifiable, notification, channelName, duration))
+	m.dispatchNotificationSent(ctx, notifiable, notification, channelName, duration)
 	return nil
 }

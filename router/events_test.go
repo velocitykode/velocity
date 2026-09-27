@@ -183,7 +183,7 @@ func TestRequestEventsHandlerError(t *testing.T) {
 	// Verify RequestFailed was dispatched
 	failed := collector.findEvent(func(e interface{}) bool {
 		if rf, ok := e.(*RequestFailed); ok {
-			return rf.Error == http.ErrAbortHandler && rf.Recovered == false
+			return rf.Err == http.ErrAbortHandler && rf.Recovered == false
 		}
 		return false
 	})

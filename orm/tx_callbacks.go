@@ -7,6 +7,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
@@ -393,6 +394,7 @@ func runCallbackSafe(ctx context.Context, fn TxCallback, phase string, logger co
 				"phase", phase, "error", async.FromRecovered(p))
 			if dispatcher != nil {
 				dispatcher(&TxRecover{
+					EventMeta:  eventmeta.Current(ctx),
 					Cause:      "callback_panic",
 					PanicValue: fmt.Sprintf("%s: %v", phase, p),
 				})

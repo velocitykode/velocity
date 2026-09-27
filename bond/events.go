@@ -1,5 +1,12 @@
 package bond
 
+import (
+	"encoding/json"
+
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventmeta"
+)
+
 // Event name constants for the framework event dispatcher. Listeners
 // can subscribe by type (e.g. via events.Listen) or by this name.
 const EventSSRRenderFailed = "bond.ssr.render.failed"
@@ -34,13 +41,15 @@ func ParseSSRErrorType(s string) SSRErrorType {
 // the Inertia SsrRenderFailed event shape so listeners can emit the
 // same metrics/log structure across stacks.
 type SSRRenderFailed struct {
+	contract.EventMeta
 	// Component is the Inertia component name that failed to render.
 	Component string `json:"component"`
 	// URL is the page URL that was being rendered.
 	URL string `json:"url"`
-	// Error is the human-readable error message returned by the SSR
-	// server (or the local transport error for connection failures).
-	Error string `json:"error"`
+	// Err is the failure: the transport, read or decode error the gateway
+	// met, or for an answer outside 2xx an error with the message the SSR
+	// server returned. Its JSON form ("error") is its text.
+	Err error `json:"error"`
 	// Type categorizes the failure. "connection" for transport issues,
 	// "render"/"component-resolution"/"browser-api" when the SSR server
 	// reports a structured error, "unknown" as a catch-all.
@@ -59,3 +68,27 @@ type SSRRenderFailed struct {
 
 // Name returns the dispatcher name for this event.
 func (SSRRenderFailed) Name() string { return EventSSRRenderFailed }
+
+// MarshalJSON encodes the event with Err as its text.
+func (e SSRRenderFailed) MarshalJSON() ([]byte, error) {
+	type fields SSRRenderFailed
+	return json.Marshal(struct {
+		fields
+		Err string `json:"error"`
+	}{fields(e), eventmeta.ErrorText(e.Err)})
+}
+
+// UnmarshalJSON decodes the event's JSON form: Err becomes an error with
+// the encoded text.
+func (e *SSRRenderFailed) UnmarshalJSON(data []byte) error {
+	type fields SSRRenderFailed
+	v := struct {
+		*fields
+		Err string `json:"error"`
+	}{fields: (*fields)(e)}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	e.Err = eventmeta.TextError(v.Err)
+	return nil
+}

@@ -10,7 +10,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/velocitykode/velocity/grpc/grpcevents"
-	"github.com/velocitykode/velocity/trace"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
 // LoggingInterceptor creates a unary logging interceptor.
@@ -56,36 +56,41 @@ func dispatchRequestStarted(ctx context.Context, method string, start time.Time,
 		md = redactMetadata(inMD)
 	}
 
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
+	meta := eventmeta.Current(ctx)
+	meta.At = start
 	dispatchEvent(ctx, dispatcher, &grpcevents.RequestStarted{
+		EventMeta: meta,
 		Method:    method,
 		Protocol:  protocol,
-		StartTime: start,
-		Context:   ctx,
 		Metadata:  md,
-		TraceID:   traceID,
-		SpanID:    spanID,
-		ParentID:  parentID,
 	})
 }
 
+// statusCodeOf returns the gRPC status code a handler's error ends the call
+// with: OK for nil, Unknown for an error that carries no status.
+func statusCodeOf(err error) codes.Code {
+	if err == nil {
+		return codes.OK
+	}
+	if s, ok := status.FromError(err); ok {
+		return s.Code()
+	}
+	return codes.Unknown
+}
+
+// dispatchRequestCompleted dispatches the end of a unary call:
+// RequestFailed when the handler returned an error, RequestCompleted
+// otherwise.
 func dispatchRequestCompleted(ctx context.Context, method string, start time.Time, err error, dispatcher grpcevents.EventDispatchFunc) {
 	if dispatcher == nil {
 		return
 	}
 
-	end := time.Now()
-	duration := end.Sub(start)
+	meta := eventmeta.Current(ctx)
+	duration := meta.At.Sub(start)
 	protocol := detectProtocol(ctx)
 
-	code := codes.OK
-	if err != nil {
-		if s, ok := status.FromError(err); ok {
-			code = s.Code()
-		} else {
-			code = codes.Unknown
-		}
-	}
+	code := statusCodeOf(err)
 
 	var userID, teamID uint
 	if claims := ClaimsFromContext(ctx); claims != nil {
@@ -93,37 +98,26 @@ func dispatchRequestCompleted(ctx context.Context, method string, start time.Tim
 		teamID = claims.GetTeamID()
 	}
 
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	if err != nil {
 		dispatchEvent(ctx, dispatcher, &grpcevents.RequestFailed{
+			EventMeta:  meta,
 			Method:     method,
 			Protocol:   protocol,
-			StartTime:  start,
-			EndTime:    end,
 			Duration:   duration,
 			StatusCode: code,
-			Error:      err,
-			Context:    ctx,
+			Err:        err,
 			UserID:     userID,
 			TeamID:     teamID,
-			TraceID:    traceID,
-			SpanID:     spanID,
-			ParentID:   parentID,
 		})
-	} else {
-		dispatchEvent(ctx, dispatcher, &grpcevents.RequestCompleted{
-			Method:     method,
-			Protocol:   protocol,
-			StartTime:  start,
-			EndTime:    end,
-			Duration:   duration,
-			StatusCode: code,
-			Context:    ctx,
-			UserID:     userID,
-			TeamID:     teamID,
-			TraceID:    traceID,
-			SpanID:     spanID,
-			ParentID:   parentID,
-		})
+		return
 	}
+	dispatchEvent(ctx, dispatcher, &grpcevents.RequestCompleted{
+		EventMeta:  meta,
+		Method:     method,
+		Protocol:   protocol,
+		Duration:   duration,
+		StatusCode: code,
+		UserID:     userID,
+		TeamID:     teamID,
+	})
 }

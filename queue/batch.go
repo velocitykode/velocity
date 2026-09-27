@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
 // BatchID is a unique identifier for a batch.
@@ -221,9 +224,12 @@ func (b *Batch) CancelCtx(ctx context.Context) {
 		b.completedJobs.Store(updated.completedJobs.Load())
 		b.pendingJobs.Store(updated.pendingJobs.Load())
 	}
-	dispatchBatchEvent(ctx, b.dispatchEvent, &BatchCancelled{
-		BatchID:    string(b.id),
-		FailedJobs: b.FailedJobs(),
+	dispatchBatchEvent(ctx, b.dispatchEvent, func(meta contract.EventMeta) contract.Event {
+		return &BatchCancelled{
+			EventMeta:  meta,
+			BatchID:    string(b.id),
+			FailedJobs: b.FailedJobs(),
+		}
 	})
 }
 
@@ -241,11 +247,14 @@ func (b *Batch) recordSuccess(ctx context.Context) {
 	// without re-issuing a Find.
 	b.copyCountersFrom(updated)
 
-	dispatchBatchEvent(ctx, b.dispatchEvent, &BatchJobCompleted{
-		BatchID:       string(b.id),
-		CompletedJobs: int(updated.completedJobs.Load()),
-		TotalJobs:     b.totalJobs,
-		Progress:      b.Progress(),
+	dispatchBatchEvent(ctx, b.dispatchEvent, func(meta contract.EventMeta) contract.Event {
+		return &BatchJobCompleted{
+			EventMeta:     meta,
+			BatchID:       string(b.id),
+			CompletedJobs: int(updated.completedJobs.Load()),
+			TotalJobs:     b.totalJobs,
+			Progress:      b.Progress(),
+		}
 	})
 
 	if justFinished {
@@ -261,11 +270,14 @@ func (b *Batch) recordFailure(ctx context.Context, jobErr error) {
 	}
 	b.copyCountersFrom(updated)
 
-	dispatchBatchEvent(ctx, b.dispatchEvent, &BatchJobFailed{
-		BatchID:    string(b.id),
-		FailedJobs: int(updated.failedJobs.Load()),
-		TotalJobs:  b.totalJobs,
-		Error:      jobErr.Error(),
+	dispatchBatchEvent(ctx, b.dispatchEvent, func(meta contract.EventMeta) contract.Event {
+		return &BatchJobFailed{
+			EventMeta:  meta,
+			BatchID:    string(b.id),
+			FailedJobs: int(updated.failedJobs.Load()),
+			TotalJobs:  b.totalJobs,
+			Err:        jobErr,
+		}
 	})
 
 	// Catch fires on the first failure observed by ANY host. In-process
@@ -412,12 +424,15 @@ func (b *Batch) fireTerminalCallbacks(ctx context.Context, updated *Batch) {
 		dispatchBatchCallbackJob(ctx, name, CallbackFinally, b.id, errMsg)
 	}
 
-	dispatchBatchEvent(ctx, b.dispatchEvent, &BatchCompleted{
-		BatchID:       string(b.id),
-		TotalJobs:     b.totalJobs,
-		CompletedJobs: b.CompletedJobs(),
-		FailedJobs:    b.FailedJobs(),
-		HasFailures:   b.HasFailures(),
+	dispatchBatchEvent(ctx, b.dispatchEvent, func(meta contract.EventMeta) contract.Event {
+		return &BatchCompleted{
+			EventMeta:     meta,
+			BatchID:       string(b.id),
+			TotalJobs:     b.totalJobs,
+			CompletedJobs: b.CompletedJobs(),
+			FailedJobs:    b.FailedJobs(),
+			HasFailures:   b.HasFailures(),
+		}
 	})
 }
 
@@ -435,14 +450,18 @@ func (b *Batch) fireTerminalCallbacks(ctx context.Context, updated *Batch) {
 // dispatch (the batch's local dispatcher) is allowed to be nil: it is
 // only populated when the dispatcher process used WithEventDispatcher.
 // The global dispatcher is what makes cross-process subscriptions work.
-func dispatchBatchEvent(ctx context.Context, dispatch func(context.Context, interface{}), event interface{}) {
+//
+// build returns the event for the envelope of work running under ctx.
+func dispatchBatchEvent(ctx context.Context, dispatch func(context.Context, interface{}), build func(contract.EventMeta) contract.Event) {
+	g := globalEventDispatcher()
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	event := build(eventmeta.Current(ctx))
 	if dispatch != nil {
 		dispatch(ctx, event)
 	}
-	if g := globalEventDispatcher(); g != nil {
+	if g != nil {
 		_ = g(ctx, event)
 	}
 }
@@ -662,10 +681,13 @@ func (pb *PendingBatch) Dispatch(ctx context.Context, driver Driver) (*Batch, er
 		pushed++
 	}
 
-	dispatchBatchEvent(ctx, pb.dispatchEvent, &BatchCreated{
-		BatchID:   string(id),
-		TotalJobs: len(pb.jobs),
-		Queue:     pb.queue,
+	dispatchBatchEvent(ctx, pb.dispatchEvent, func(meta contract.EventMeta) contract.Event {
+		return &BatchCreated{
+			EventMeta: meta,
+			BatchID:   string(id),
+			TotalJobs: len(pb.jobs),
+			Queue:     pb.queue,
+		}
 	})
 
 	return batch, nil

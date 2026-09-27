@@ -2,23 +2,22 @@ package httpclient
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
-	"github.com/velocitykode/velocity/trace"
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
 // RequestSent is dispatched after an HTTP request completes successfully
 type RequestSent struct {
-	Context      context.Context
+	contract.EventMeta
 	Method       string
 	URL          string
 	StatusCode   int
-	DurationMs   int64
+	Duration     time.Duration
 	RequestSize  int64
 	ResponseSize int64
-	TraceID      string
-	SpanID       string
-	ParentID     string
 }
 
 // Name returns the event name
@@ -28,14 +27,11 @@ func (e *RequestSent) Name() string {
 
 // RequestFailed is dispatched when an HTTP request fails
 type RequestFailed struct {
-	Context    context.Context
-	Method     string
-	URL        string
-	Error      string
-	DurationMs int64
-	TraceID    string
-	SpanID     string
-	ParentID   string
+	contract.EventMeta
+	Method   string
+	URL      string
+	Err      error
+	Duration time.Duration
 }
 
 // Name returns the event name
@@ -43,38 +39,50 @@ func (e *RequestFailed) Name() string {
 	return "httpclient.request.failed"
 }
 
+// MarshalJSON encodes the event with Err as its text.
+func (e RequestFailed) MarshalJSON() ([]byte, error) {
+	type fields RequestFailed
+	return json.Marshal(struct {
+		fields
+		Err string `json:",omitempty"`
+	}{fields(e), eventmeta.ErrorText(e.Err)})
+}
+
+// UnmarshalJSON decodes the event's JSON form: Err becomes an error with
+// the encoded text.
+func (e *RequestFailed) UnmarshalJSON(data []byte) error {
+	type fields RequestFailed
+	v := struct {
+		*fields
+		Err string `json:",omitempty"`
+	}{fields: (*fields)(e)}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	e.Err = eventmeta.TextError(v.Err)
+	return nil
+}
+
 // dispatchRequestSent dispatches a RequestSent event
 func (c *Client) dispatchRequestSent(ctx context.Context, method, url string, statusCode int, duration time.Duration, requestSize, responseSize int64) {
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	c.dispatchEvent(ctx, &RequestSent{
-		Context:      ctx,
+		EventMeta:    eventmeta.Current(ctx),
 		Method:       method,
 		URL:          url,
 		StatusCode:   statusCode,
-		DurationMs:   duration.Milliseconds(),
+		Duration:     duration,
 		RequestSize:  requestSize,
 		ResponseSize: responseSize,
-		TraceID:      traceID,
-		SpanID:       spanID,
-		ParentID:     parentID,
 	})
 }
 
 // dispatchRequestFailed dispatches a RequestFailed event
 func (c *Client) dispatchRequestFailed(ctx context.Context, method, url string, err error, duration time.Duration) {
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	errMsg := ""
-	if err != nil {
-		errMsg = err.Error()
-	}
 	c.dispatchEvent(ctx, &RequestFailed{
-		Context:    ctx,
-		Method:     method,
-		URL:        url,
-		Error:      errMsg,
-		DurationMs: duration.Milliseconds(),
-		TraceID:    traceID,
-		SpanID:     spanID,
-		ParentID:   parentID,
+		EventMeta: eventmeta.Current(ctx),
+		Method:    method,
+		URL:       url,
+		Err:       err,
+		Duration:  duration,
 	})
 }

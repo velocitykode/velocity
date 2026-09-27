@@ -58,8 +58,8 @@ func TestManager_SetLogger_StoresLogger(t *testing.T) {
 	})
 	m.dispatchEvent(context.Background(), &TxRecover{
 		Cause:       "error",
-		OriginalErr: "boom",
-		RollbackErr: "rollback failed",
+		OriginalErr: errors.New("boom"),
+		RollbackErr: errors.New("rollback failed"),
 	})
 
 	if captured == nil {

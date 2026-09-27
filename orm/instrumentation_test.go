@@ -231,8 +231,8 @@ func TestInstrumentation_QueryFailedFires(t *testing.T) {
 	if !strings.Contains(f.Query, "no_such_table") {
 		t.Errorf("Query = %q, want the failing statement", f.Query)
 	}
-	if f.Error == "" {
-		t.Error("Error is empty")
+	if f.Err == nil {
+		t.Error("Err is nil")
 	}
 	if f.Connection != "sqlite" {
 		t.Errorf("Connection = %q, want sqlite", f.Connection)

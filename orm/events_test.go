@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 type testCtxKey string
@@ -77,7 +79,7 @@ func TestManagerDispatchEvent(t *testing.T) {
 	bindings := []any{1}
 
 	m.dispatchEvent(context.Background(), &QueryExecuted{
-		Context:      ctx,
+		EventMeta:    contract.EventMeta{Context: ctx},
 		SQL:          sql,
 		Bindings:     bindings,
 		RowsAffected: 5,
@@ -111,7 +113,7 @@ func TestManagerDispatchEventWithContext(t *testing.T) {
 	ctx := context.WithValue(context.Background(), testCtxKey("request_id"), "test-123")
 
 	m.dispatchEvent(context.Background(), &QueryExecuted{
-		Context:    ctx,
+		EventMeta:  contract.EventMeta{Context: ctx},
 		SQL:        "SELECT 1",
 		Connection: "sqlite",
 	})
@@ -139,7 +141,7 @@ func TestManagerDispatchEventBindings(t *testing.T) {
 
 	bindings := []any{1, "test", true, 3.14}
 	m.dispatchEvent(context.Background(), &QueryExecuted{
-		Context:    context.Background(),
+		EventMeta:  contract.EventMeta{Context: context.Background()},
 		SQL:        "INSERT INTO test",
 		Bindings:   bindings,
 		Connection: "postgres",
@@ -173,7 +175,7 @@ func TestManagerDispatchEventConnection(t *testing.T) {
 	for _, conn := range testCases {
 		collector.clear()
 		m.dispatchEvent(context.Background(), &QueryExecuted{
-			Context:    context.Background(),
+			EventMeta:  contract.EventMeta{Context: context.Background()},
 			SQL:        "SELECT 1",
 			Connection: conn,
 		})
@@ -194,7 +196,7 @@ func TestManagerDispatchEventNilDispatcher(t *testing.T) {
 	m := &Manager{}
 	// No dispatcher set - should not panic
 	m.dispatchEvent(context.Background(), &QueryExecuted{
-		Context: context.Background(),
-		SQL:     "SELECT 1",
+		EventMeta: contract.EventMeta{Context: context.Background()},
+		SQL:       "SELECT 1",
 	})
 }

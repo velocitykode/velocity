@@ -1,8 +1,10 @@
 package csrf
 
 import (
-	"context"
-	"time"
+	"net/http"
+
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
 // SessionMissing is dispatched when an unsafe request reaches the CSRF
@@ -15,13 +17,21 @@ import (
 // Config.SessionCookieName, or the session store rejected the cookie
 // (expired, revoked or undecryptable).
 type SessionMissing struct {
-	Context context.Context
-	Path    string
-	Method  string
-	At      time.Time
+	contract.EventMeta
+	Path   string
+	Method string
 }
 
 // Name returns the event name.
 func (e *SessionMissing) Name() string {
 	return "csrf.session.missed"
+}
+
+// dispatchSessionMissing dispatches SessionMissing for r.
+func (c *CSRF) dispatchSessionMissing(r *http.Request) {
+	c.dispatchEvent(r.Context(), &SessionMissing{
+		EventMeta: eventmeta.Current(r.Context()),
+		Path:      r.URL.Path,
+		Method:    r.Method,
+	})
 }

@@ -2,12 +2,12 @@ package events
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
-	"github.com/velocitykode/velocity/trace"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
 // AsyncFailed is dispatched when a listener fails with no caller waiting on
@@ -17,41 +17,53 @@ import (
 // Reporter chain. Applications can listen for it (for example for alerting
 // or metrics).
 type AsyncFailed struct {
-	// Context is the context the listener ran under: the caller's,
-	// detached from its cancellation, so it carries the caller's trace IDs.
-	Context context.Context
+	// EventMeta's Context is the context the listener ran under: the
+	// caller's, detached from its cancellation, so the envelope carries the
+	// caller's trace ids.
+	contract.EventMeta
 	// EventName is the name of the event the listener was handling.
 	EventName string
 	// ListenerName is the listener's Go type.
 	ListenerName string
-	// Error is the failure's text.
-	Error string
 	// Err is the failure itself: the listener's error, or the recovered
-	// panic as an error. It is not serialized: the JSON form keeps Error
-	// alone.
-	Err error `json:"-"`
-	// TraceID, SpanID and ParentID are the trace IDs of Context.
-	TraceID  string
-	SpanID   string
-	ParentID string
+	// panic as an error. Its JSON form is its text.
+	Err error
 }
 
 // Name returns the event name.
 func (e *AsyncFailed) Name() string { return "events.listener.failed" }
 
+// MarshalJSON encodes the event with Err as its text.
+func (e AsyncFailed) MarshalJSON() ([]byte, error) {
+	type fields AsyncFailed
+	return json.Marshal(struct {
+		fields
+		Err string `json:",omitempty"`
+	}{fields(e), eventmeta.ErrorText(e.Err)})
+}
+
+// UnmarshalJSON decodes the event's JSON form: Err becomes an error with
+// the encoded text.
+func (e *AsyncFailed) UnmarshalJSON(data []byte) error {
+	type fields AsyncFailed
+	v := struct {
+		*fields
+		Err string `json:",omitempty"`
+	}{fields: (*fields)(e)}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	e.Err = eventmeta.TextError(v.Err)
+	return nil
+}
+
 // FailureError implements contract.FailureEvent: a listener that failed with
 // no caller waiting on it has no caller observing the failure, so the
 // dispatcher bridges it to the error Reporter chain. It returns Err, the
-// failure with its type; an event without Err (one decoded from its JSON
-// form) returns a new error with the Error text, or nil when there is none.
+// failure with its type (for an event decoded from its JSON form, an error
+// with its text), or nil when there is none.
 func (e *AsyncFailed) FailureError() error {
-	if e.Err != nil {
-		return e.Err
-	}
-	if e.Error == "" {
-		return nil
-	}
-	return errors.New(e.Error)
+	return e.Err
 }
 
 // FailureSource implements contract.FailureEvent: the failure is a
@@ -63,16 +75,11 @@ func (e *AsyncFailed) FailureSource() contract.ErrorSource {
 // newAsyncFailed returns the AsyncFailed for listener, which failed with
 // err while handling event under ctx.
 func newAsyncFailed(ctx context.Context, event interface{}, listener Listener, err error) *AsyncFailed {
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	return &AsyncFailed{
-		Context:      ctx,
+		EventMeta:    eventmeta.Current(ctx),
 		EventName:    resolveEventName(event),
 		ListenerName: fmt.Sprintf("%T", listener),
-		Error:        err.Error(),
 		Err:          err,
-		TraceID:      traceID,
-		SpanID:       spanID,
-		ParentID:     parentID,
 	}
 }
 

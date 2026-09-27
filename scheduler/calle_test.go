@@ -87,8 +87,8 @@ func TestJob_CallE_FiresOnFailureForReturnedError(t *testing.T) {
 		if len(finished) != 0 {
 			t.Errorf("expected 0 ScheduledTaskFinished events, got %d", len(finished))
 		}
-		if !strings.Contains(failed[0].Error, "upstream timeout") {
-			t.Errorf("failed event Error = %q, want substring 'upstream timeout'", failed[0].Error)
+		if failed[0].Err == nil || !strings.Contains(failed[0].Err.Error(), "upstream timeout") {
+			t.Errorf("failed event Err = %v, want substring 'upstream timeout'", failed[0].Err)
 		}
 		if failed[0].TaskName != "calle-event-job" {
 			t.Errorf("failed event TaskName = %q, want 'calle-event-job'", failed[0].TaskName)

@@ -198,7 +198,7 @@ func TestWorker_FailedHookPanicKeepsWorkerRunning(t *testing.T) {
 
 			mu.Lock()
 			defer mu.Unlock()
-			if len(failed) != 1 || failed[0].Error != errPanickingHookJob.Error() {
+			if len(failed) != 1 || !errors.Is(failed[0].Err, errPanickingHookJob) {
 				t.Errorf("queue.job.failed dispatched %d times (%v), want once for the panicking job", len(failed), failed)
 			}
 			if n := tt.failedCount(t, d); n != 1 {

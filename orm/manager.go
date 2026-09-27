@@ -12,7 +12,9 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/events"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/orm/drivers"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -606,17 +608,24 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		acHandle.TruncateToBaseline()
 	}
 
-	dispatchTxExecuted := func(errMsg string) {
+	// txMeta is the envelope of an event about this transaction: the
+	// caller's ctx and the transaction's own span, stamped now.
+	txMeta := func() contract.EventMeta {
+		return contract.EventMeta{Context: ctx, TraceID: txTrace, SpanID: txSpanID, ParentID: parentSpanID, At: time.Now()}
+	}
+	dispatchTxExecuted := func(txErr error) {
+		meta := txMeta()
 		m.dispatchEvent(ctx, &TransactionExecuted{
-			Context:    ctx,
+			EventMeta:  meta,
 			Connection: connName,
-			Duration:   time.Since(txStart),
+			Duration:   meta.At.Sub(txStart),
 			Statements: int(txStmtCounter.Load()),
-			Error:      errMsg,
-			TraceID:    txTrace,
-			SpanID:     txSpanID,
-			ParentID:   parentSpanID,
+			Err:        txErr,
 		})
+	}
+	dispatchTxRecover := func(ev *TxRecover) {
+		ev.EventMeta = txMeta()
+		m.dispatchEvent(ctx, ev)
 	}
 
 	defer func() {
@@ -632,13 +641,13 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 				// fallback logger without one), and fire a typed event so
 				// callers with a dispatcher wired up observe it too.
 				logger.Error("velocity/orm: rollback failed after panic", "error", rbErr, "panic", fmt.Sprint(p))
-				m.dispatchEvent(ctx, &TxRecover{
+				dispatchTxRecover(&TxRecover{
 					Cause:       "panic",
 					PanicValue:  fmt.Sprint(p),
-					RollbackErr: rbErr.Error(),
+					RollbackErr: rbErr,
 				})
 			}
-			dispatchTxExecuted(fmt.Sprintf("panic: %v", p))
+			dispatchTxExecuted(panicerr.FromRecovered(p))
 			// Drain rollback callbacks before re-panicking. Each
 			// callback runs under its own recover so a misbehaving
 			// callback cannot mask the original panic value we
@@ -653,13 +662,13 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		dropAfterCommit()
 		if rbErr := doRollback(); rbErr != nil {
 			logger.Error("velocity/orm: rollback failed", "error", rbErr, "original_error", err)
-			m.dispatchEvent(ctx, &TxRecover{
+			dispatchTxRecover(&TxRecover{
 				Cause:       "error",
-				OriginalErr: err.Error(),
-				RollbackErr: rbErr.Error(),
+				OriginalErr: err,
+				RollbackErr: rbErr,
 			})
 		}
-		dispatchTxExecuted(err.Error())
+		dispatchTxExecuted(err)
 		drainOnRollback()
 		return err
 	}
@@ -679,7 +688,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		// strictly more dangerous than missing a side effect the
 		// operator's commit-failure callbacks can re-trigger.
 		dropAfterCommit()
-		dispatchTxExecuted(cmErr.Error())
+		dispatchTxExecuted(cmErr)
 		drainOnCommitFailure(cmErr)
 		return cmErr
 	}
@@ -695,7 +704,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 	// Inner-scope entries are still discarded on the rollback paths above
 	// (buffer.Drop / dropAfterCommit), so this only gates the success path.
 	if nested {
-		dispatchTxExecuted("")
+		dispatchTxExecuted(nil)
 		return nil
 	}
 
@@ -712,7 +721,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		if owned := drainAfterCommit(); owned != nil {
 			acErr = owned
 		}
-		dispatchTxExecuted("")
+		dispatchTxExecuted(nil)
 		drainOnCommit()
 		if acErr != nil {
 			return errors.Join(flushErr, acErr)
@@ -725,11 +734,11 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		// commit callbacks have already been drained on the happy
 		// path so we surface the listener error without re-running
 		// the callback drain.
-		dispatchTxExecuted("")
+		dispatchTxExecuted(nil)
 		drainOnCommit()
 		return acErr
 	}
-	dispatchTxExecuted("")
+	dispatchTxExecuted(nil)
 	drainOnCommit()
 	return nil
 }
@@ -988,6 +997,12 @@ func (m *Manager) log() contract.Logger {
 }
 
 var _ contract.LoggerAware = (*Manager)(nil)
+
+// dispatchTxRecover dispatches ev for work running under ctx's span.
+func (m *Manager) dispatchTxRecover(ctx context.Context, ev *TxRecover) {
+	ev.EventMeta = eventmeta.Current(ctx)
+	m.dispatchEvent(ctx, ev)
+}
 
 // dispatchEvent dispatches an event if a dispatcher is configured. ctx
 // reaches every listener so trace IDs and request-scoped values flow

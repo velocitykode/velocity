@@ -421,7 +421,7 @@ func TestTimeout_DefaultPathLogsWarnAndFails(t *testing.T) {
 			failed = ev
 		}
 	}
-	if failed == nil || !errors.Is(failed.Error, context.DeadlineExceeded) {
+	if failed == nil || !errors.Is(failed.Err, context.DeadlineExceeded) {
 		t.Errorf("RequestFailed = %+v, want one carrying context.DeadlineExceeded", failed)
 	}
 }

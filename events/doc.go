@@ -24,6 +24,17 @@
 // For example router.request.completed, queue.job.failed,
 // scheduler.task.started and cache.missed.
 //
+// # Event envelope
+//
+// Every framework event embeds contract.EventMeta: the context it was
+// dispatched under, the trace, span and parent ids of the work it records
+// and the time it happened (At). Meta returns the envelope from any of
+// them. An event recording an operation adds Duration (a time.Duration),
+// one recording a failure adds Err (the error itself, whose JSON form is
+// its text), and none carries a second timestamp. The Context is not part
+// of an event's JSON form, so a framework event decodes back into its type
+// when a queued listener in another process receives it.
+//
 // # Listening
 //
 // Listen takes a key that says which events reach the listener. Listening

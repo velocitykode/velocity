@@ -439,7 +439,7 @@ func TestBus_Events_Failed(t *testing.T) {
 		case *CommandDispatching:
 			events = append(events, "dispatching")
 		case *CommandFailed:
-			events = append(events, "failed:"+e.Error)
+			events = append(events, "failed:"+e.Err.Error())
 		case *CommandCompleted:
 			events = append(events, "completed")
 		}
@@ -748,7 +748,7 @@ func TestCommandJob_Failed_FiresEvent(t *testing.T) {
 	b.SetEventDispatcher(func(_ context.Context, event any) error {
 		switch e := event.(type) {
 		case *CommandFailed:
-			events = append(events, "failed:"+e.Error)
+			events = append(events, "failed:"+e.Err.Error())
 		}
 		return nil
 	})

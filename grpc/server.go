@@ -516,10 +516,12 @@ func (s *Server) Start() error {
 	s.running = true
 	s.served = true
 	s.startTime = time.Now()
-	started := &grpcevents.ServerStarted{Port: s.port, StartTime: s.startTime}
+	started := s.serverStartedLocked()
 	s.mu.Unlock()
 
-	s.dispatchEvent(context.Background(), started)
+	if started != nil {
+		s.dispatchEvent(context.Background(), started)
+	}
 	s.logger.Info("gRPC server starting", "address", s.listener.Addr().String())
 	return s.grpcServer.Serve(s.listener)
 }
@@ -539,14 +541,16 @@ func (s *Server) StartAsync() error {
 	s.running = true
 	s.served = true
 	s.startTime = time.Now()
-	started := &grpcevents.ServerStarted{Port: s.port, StartTime: s.startTime}
+	started := s.serverStartedLocked()
 	s.mu.Unlock()
 
 	// Run through async.GoWithRecover so the recover path flows through
 	// the canonical async package while still resetting s.running so the
 	// server can be restarted after a crash.
 	async.GoWithRecover(func() {
-		s.dispatchEvent(context.Background(), started)
+		if started != nil {
+			s.dispatchEvent(context.Background(), started)
+		}
 		s.logger.Info("gRPC server starting", "address", s.listener.Addr().String())
 		if err := s.grpcServer.Serve(s.listener); err != nil {
 			s.logger.Error("gRPC server error", "error", err)
@@ -625,6 +629,15 @@ func (s *Server) GracefulStop() {
 	}
 }
 
+// serverStartedLocked builds the ServerStarted event for the start just
+// recorded. Caller must hold s.mu.
+func (s *Server) serverStartedLocked() *grpcevents.ServerStarted {
+	return &grpcevents.ServerStarted{
+		EventMeta: contract.EventMeta{Context: context.Background(), At: s.startTime},
+		Port:      s.port,
+	}
+}
+
 // stoppedEventLocked builds the ServerStopped event for the current uptime
 // and clears startTime so a subsequent stop path (e.g. Shutdown delegating
 // to GracefulStop, or the Shutdown timeout falling back to Stop) emits
@@ -635,14 +648,14 @@ func (s *Server) stoppedEventLocked() *grpcevents.ServerStopped {
 	if s.startTime.IsZero() {
 		return nil
 	}
-	now := time.Now()
-	evt := &grpcevents.ServerStopped{
-		Port:     s.port,
-		StopTime: now,
-		Duration: now.Sub(s.startTime),
-	}
+	start := s.startTime
 	s.startTime = time.Time{}
-	return evt
+	now := time.Now()
+	return &grpcevents.ServerStopped{
+		EventMeta: contract.EventMeta{Context: context.Background(), At: now},
+		Port:      s.port,
+		Duration:  now.Sub(start),
+	}
 }
 
 // Shutdown gracefully stops the server with a context deadline

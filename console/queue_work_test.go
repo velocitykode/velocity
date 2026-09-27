@@ -114,7 +114,7 @@ func TestNewQueueWorker_WiresDispatcher(t *testing.T) {
 	if want := []string{"queue.job.started", "queue.job.failed"}; !slices.Equal(names, want) {
 		t.Errorf("dispatched events = %v, want %v", names, want)
 	}
-	if failed.Error != "work job exploded" || failed.Queue != "work" {
-		t.Errorf("queue.job.failed = {Error: %q, Queue: %q}, want {%q, %q}", failed.Error, failed.Queue, "work job exploded", "work")
+	if failed.Err == nil || failed.Err.Error() != "work job exploded" || failed.Queue != "work" {
+		t.Errorf("queue.job.failed = {Err: %v, Queue: %q}, want {%q, %q}", failed.Err, failed.Queue, "work job exploded", "work")
 	}
 }

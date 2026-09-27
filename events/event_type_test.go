@@ -74,7 +74,7 @@ func TestListen_OfTypeInterfaceSelectsEveryImplementer(t *testing.T) {
 	l := &firedListener{}
 	d.Listen(OfType[contract.FailureEvent](), l)
 
-	dispatchAll(t, d, &shipmentFailed{}, &orderPlaced{}, &paymentFailed{}, &AsyncFailed{Error: "boom"}, "shop.refund.failed")
+	dispatchAll(t, d, &shipmentFailed{}, &orderPlaced{}, &paymentFailed{}, &AsyncFailed{Err: errors.New("boom")}, "shop.refund.failed")
 
 	if got, want := received(l), []string{"*events.shipmentFailed", "*events.paymentFailed", "*events.AsyncFailed"}; !slices.Equal(got, want) {
 		t.Fatalf("received %v, want %v", got, want)

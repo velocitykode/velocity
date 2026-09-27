@@ -158,7 +158,7 @@ func TestStore_EmitsQueryFailed(t *testing.T) {
 	if !strings.Contains(failed[0].Query, "FROM `users`") {
 		t.Errorf("Query = %q, want the user store statement", failed[0].Query)
 	}
-	if failed[0].Error == "" {
-		t.Error("Error is empty")
+	if failed[0].Err == nil {
+		t.Error("Err is nil")
 	}
 }

@@ -7,9 +7,11 @@ import (
 	"reflect"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/pipeline"
 	"github.com/velocitykode/velocity/queue"
@@ -17,32 +19,61 @@ import (
 
 // CommandDispatching is fired before a command is handled.
 type CommandDispatching struct {
-	Context     context.Context
+	contract.EventMeta
 	CommandType string
 }
 
 func (e *CommandDispatching) Name() string { return "bus.command.started" }
 
 // CommandCompleted is fired after a command is handled successfully.
+// Duration is how long its handler ran.
 type CommandCompleted struct {
-	Context     context.Context
+	contract.EventMeta
 	CommandType string
+	Duration    time.Duration
 }
 
 func (e *CommandCompleted) Name() string { return "bus.command.completed" }
 
-// CommandFailed is fired when a command handler returns an error.
+// CommandFailed is fired when a command handler returns an error, and when
+// a queued command's retries run out. Duration is how long the handler
+// ran; it is zero for a queued command whose retries ran out.
 type CommandFailed struct {
-	Context     context.Context
+	contract.EventMeta
 	CommandType string
-	Error       string
+	Err         error
+	Duration    time.Duration
 }
 
 func (e *CommandFailed) Name() string { return "bus.command.failed" }
 
+// MarshalJSON encodes the event with Err as its text.
+func (e CommandFailed) MarshalJSON() ([]byte, error) {
+	type fields CommandFailed
+	return json.Marshal(struct {
+		fields
+		Err string `json:",omitempty"`
+	}{fields(e), eventmeta.ErrorText(e.Err)})
+}
+
+// UnmarshalJSON decodes the event's JSON form: Err becomes an error with
+// the encoded text.
+func (e *CommandFailed) UnmarshalJSON(data []byte) error {
+	type fields CommandFailed
+	v := struct {
+		*fields
+		Err string `json:",omitempty"`
+	}{fields: (*fields)(e)}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	e.Err = eventmeta.TextError(v.Err)
+	return nil
+}
+
 // CommandQueued is fired when a command is pushed to the queue.
 type CommandQueued struct {
-	Context     context.Context
+	contract.EventMeta
 	CommandType string
 }
 
@@ -244,8 +275,11 @@ func (b *Bus) Dispatch(cmd Command) error {
 
 	// Event dispatch errors are intentionally ignored, events are best-effort
 	// and must not affect command execution flow.
+	var start time.Time
 	if dispatchEvent != nil {
-		_ = dispatchEvent(ctx, &CommandDispatching{Context: ctx, CommandType: cmdType})
+		meta := eventmeta.Current(ctx)
+		start = meta.At
+		_ = dispatchEvent(ctx, &CommandDispatching{EventMeta: meta, CommandType: cmdType})
 	}
 
 	var err error
@@ -258,10 +292,12 @@ func (b *Bus) Dispatch(cmd Command) error {
 	}
 
 	if dispatchEvent != nil {
+		meta := eventmeta.Current(ctx)
+		duration := meta.At.Sub(start)
 		if err != nil {
-			_ = dispatchEvent(ctx, &CommandFailed{Context: ctx, CommandType: cmdType, Error: err.Error()})
+			_ = dispatchEvent(ctx, &CommandFailed{EventMeta: meta, CommandType: cmdType, Err: err, Duration: duration})
 		} else {
-			_ = dispatchEvent(ctx, &CommandCompleted{Context: ctx, CommandType: cmdType})
+			_ = dispatchEvent(ctx, &CommandCompleted{EventMeta: meta, CommandType: cmdType, Duration: duration})
 		}
 	}
 
@@ -339,7 +375,7 @@ func (b *Bus) DispatchAsyncCtx(ctx context.Context, cmd Command) error {
 	}
 
 	if dispatchEvent != nil {
-		_ = dispatchEvent(ctx, &CommandQueued{Context: ctx, CommandType: cmdType.String()})
+		_ = dispatchEvent(ctx, &CommandQueued{EventMeta: eventmeta.Current(ctx), CommandType: cmdType.String()})
 	}
 
 	return nil
@@ -553,7 +589,21 @@ func (j *commandJob) resolveCommand() (Command, *Bus, error) {
 	return cmd, b, nil
 }
 
+// Failed dispatches CommandFailed for a command whose retries ran out, with
+// no context in scope. The queue worker calls FailedCtx instead.
 func (j *commandJob) Failed(err error) {
+	j.FailedCtx(context.Background(), err)
+}
+
+var _ queue.FailedCtxer = (*commandJob)(nil)
+
+// FailedCtx implements queue.FailedCtxer: it dispatches CommandFailed for a
+// command whose retries ran out, under ctx, the context of the attempt that
+// failed it, so the event carries that attempt's trace ids.
+func (j *commandJob) FailedCtx(ctx context.Context, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	b := j.bus
 	if b == nil && j.BusID != "" {
 		if found, ok := lookupBus(j.BusID); ok {
@@ -573,12 +623,9 @@ func (j *commandJob) Failed(err error) {
 		if cmdType == "" && j.cmd != nil {
 			cmdType = reflect.TypeOf(j.cmd).String()
 		}
-		// Failed is invoked by the queue worker with no context in scope,
-		// so Background is the most-relevant ctx available.
-		ctx := context.Background()
 		// Event dispatch errors are intentionally ignored, event dispatch is
 		// best-effort and must not interfere with queue worker error handling.
-		_ = dispatchEvent(ctx, &CommandFailed{Context: ctx, CommandType: cmdType, Error: err.Error()})
+		_ = dispatchEvent(ctx, &CommandFailed{EventMeta: eventmeta.Current(ctx), CommandType: cmdType, Err: err})
 	}
 }
 

@@ -45,7 +45,7 @@ func TestJob_PanicDispatchesFailed(t *testing.T) {
 	if failed[0].TaskName != "panicking-job" {
 		t.Errorf("TaskName = %q, want panicking-job", failed[0].TaskName)
 	}
-	if !strings.Contains(failed[0].Error, "kaboom") {
-		t.Errorf("Error = %q, want substring 'kaboom'", failed[0].Error)
+	if failed[0].Err == nil || !strings.Contains(failed[0].Err.Error(), "kaboom") {
+		t.Errorf("Err = %v, want substring 'kaboom'", failed[0].Err)
 	}
 }

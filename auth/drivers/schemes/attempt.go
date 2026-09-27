@@ -9,6 +9,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
 // attemptCredentials runs the credential-check phase shared by
@@ -265,6 +266,7 @@ func maybeEmitRehashEvent(
 		return
 	}
 	if err := dispatch(ctx, auth.PasswordNeedsRehashEvent{
+		EventMeta:  eventmeta.Current(ctx),
 		UserID:     user.GetAuthIdentifier(),
 		SchemeName: schemeName,
 	}); err != nil && warn != nil {

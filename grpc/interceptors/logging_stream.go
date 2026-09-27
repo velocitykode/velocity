@@ -8,7 +8,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	"github.com/velocitykode/velocity/grpc/grpcevents"
-	"github.com/velocitykode/velocity/trace"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
 // tracedServerStream forwards every ServerStream method to the wrapped
@@ -73,26 +73,25 @@ func dispatchStreamStarted(ctx context.Context, method string, start time.Time, 
 		md = redactMetadata(inMD)
 	}
 
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
+	meta := eventmeta.Current(ctx)
+	meta.At = start
 	dispatchEvent(ctx, dispatcher, &grpcevents.StreamStarted{
+		EventMeta: meta,
 		Method:    method,
 		Protocol:  protocol,
-		StartTime: start,
-		Context:   ctx,
 		Metadata:  md,
-		TraceID:   traceID,
-		SpanID:    spanID,
-		ParentID:  parentID,
 	})
 }
 
+// dispatchStreamCompleted dispatches the end of a stream: StreamFailed when
+// the handler returned an error, StreamCompleted otherwise.
 func dispatchStreamCompleted(ctx context.Context, method string, start time.Time, err error, dispatcher grpcevents.EventDispatchFunc) {
 	if dispatcher == nil {
 		return
 	}
 
-	end := time.Now()
-	duration := end.Sub(start)
+	meta := eventmeta.Current(ctx)
+	duration := meta.At.Sub(start)
 	protocol := detectProtocol(ctx)
 
 	var userID, teamID uint
@@ -101,35 +100,24 @@ func dispatchStreamCompleted(ctx context.Context, method string, start time.Time
 		teamID = claims.GetTeamID()
 	}
 
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	if err != nil {
 		dispatchEvent(ctx, dispatcher, &grpcevents.StreamFailed{
+			EventMeta: meta,
 			Method:    method,
 			Protocol:  protocol,
-			StartTime: start,
-			EndTime:   end,
 			Duration:  duration,
-			Error:     err,
-			Context:   ctx,
+			Err:       err,
 			UserID:    userID,
 			TeamID:    teamID,
-			TraceID:   traceID,
-			SpanID:    spanID,
-			ParentID:  parentID,
 		})
-	} else {
-		dispatchEvent(ctx, dispatcher, &grpcevents.StreamCompleted{
-			Method:    method,
-			Protocol:  protocol,
-			StartTime: start,
-			EndTime:   end,
-			Duration:  duration,
-			Context:   ctx,
-			UserID:    userID,
-			TeamID:    teamID,
-			TraceID:   traceID,
-			SpanID:    spanID,
-			ParentID:  parentID,
-		})
+		return
 	}
+	dispatchEvent(ctx, dispatcher, &grpcevents.StreamCompleted{
+		EventMeta: meta,
+		Method:    method,
+		Protocol:  protocol,
+		Duration:  duration,
+		UserID:    userID,
+		TeamID:    teamID,
+	})
 }

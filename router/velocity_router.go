@@ -720,6 +720,60 @@ type requestMeta struct {
 	parentID  string
 }
 
+// eventMeta returns the envelope of an event of the request req, stamped at.
+func (m requestMeta) eventMeta(req *http.Request, at time.Time) contract.EventMeta {
+	return contract.EventMeta{Context: req.Context(), TraceID: m.traceID, SpanID: m.spanID, ParentID: m.parentID, At: at}
+}
+
+// durationSince returns how long before end start was, or zero when start
+// is unknown (a request whose start the caller did not record).
+func durationSince(start, end time.Time) time.Duration {
+	if start.IsZero() {
+		return 0
+	}
+	return end.Sub(start)
+}
+
+// dispatchRequestStarted dispatches RequestStarted for req.
+func (r *VelocityRouterV2) dispatchRequestStarted(req *http.Request, meta requestMeta) {
+	r.dispatchInstanceEvent(req.Context(), &RequestStarted{
+		EventMeta:  meta.eventMeta(req, meta.startedAt),
+		Method:     req.Method,
+		Path:       req.URL.Path,
+		RemoteAddr: req.RemoteAddr,
+		UserAgent:  req.UserAgent(),
+		RequestID:  meta.id,
+	})
+}
+
+// dispatchRequestRouted dispatches RequestRouted for a request answered
+// without a matched route's params: a static file (route "[static]") or no
+// route at all.
+func (r *VelocityRouterV2) dispatchRequestRouted(req *http.Request, meta requestMeta, route string, matched bool) {
+	r.dispatchInstanceEvent(req.Context(), &RequestRouted{
+		EventMeta: meta.eventMeta(req, time.Now()),
+		RequestID: meta.id,
+		Route:     route,
+		Matched:   matched,
+	})
+}
+
+// dispatchRequestHandled dispatches RequestHandled with the status rw went
+// out with.
+func (r *VelocityRouterV2) dispatchRequestHandled(req *http.Request, rw *responseWriter, meta requestMeta, route string) {
+	now := time.Now()
+	r.dispatchInstanceEvent(req.Context(), &RequestHandled{
+		EventMeta:    meta.eventMeta(req, now),
+		RequestID:    meta.id,
+		Method:       req.Method,
+		Path:         req.URL.Path,
+		Route:        route,
+		StatusCode:   rw.Status(),
+		BytesWritten: rw.BytesWritten(),
+		Duration:     durationSince(meta.startedAt, now),
+	})
+}
+
 // ServeHTTP implements http.Handler interface.
 func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Lock-free fast path: once committed, skip the mutex entirely.
@@ -731,18 +785,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	rw := acquireResponseWriter(w)
 	defer releaseResponseWriter(rw)
 
-	r.dispatchInstanceEvent(req.Context(), &RequestStarted{
-		Context:    req.Context(),
-		Method:     req.Method,
-		Path:       req.URL.Path,
-		RemoteAddr: req.RemoteAddr, // raw RemoteAddr field; consumers needing the originating client should use clientip.Extract themselves.
-		UserAgent:  req.UserAgent(),
-		RequestID:  meta.id,
-		StartedAt:  meta.startedAt,
-		TraceID:    meta.traceID,
-		SpanID:     meta.spanID,
-		ParentID:   meta.parentID,
-	})
+	r.dispatchRequestStarted(req, meta)
 
 	// Static-first path (Static): if the probe says the FileServer will
 	// produce a response for this path, dispatch it through the global
@@ -775,7 +818,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// no dispatcher wired the map is never built (R3 laziness).
 	if r.eventDispatcher != nil {
 		r.dispatchInstanceEvent(req.Context(), &RequestRouted{
-			Context:   req.Context(),
+			EventMeta: meta.eventMeta(req, time.Now()),
 			RequestID: meta.id,
 			Route:     result.Path,
 			RouteName: result.Name,
@@ -859,12 +902,7 @@ func clientShapedOpenError(err error) bool {
 // handleUnmatched structure: Context acquired/released exactly once,
 // RequestRouted/RequestHandled fire exactly once with Route "[static]".
 func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request, meta requestMeta) {
-	r.dispatchInstanceEvent(req.Context(), &RequestRouted{
-		Context:   req.Context(),
-		RequestID: meta.id,
-		Route:     "[static]",
-		Matched:   true,
-	})
+	r.dispatchRequestRouted(req, meta, "[static]", true)
 
 	// Attach services so middleware that pulls from ServicesFromRequest
 	// sees the configured container, matching the matched-route path.
@@ -891,19 +929,7 @@ func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request,
 		if abort == nil {
 			abort = r.finalize(ctx, rw, req, meta)
 		}
-		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
-			Context:      req.Context(),
-			RequestID:    meta.id,
-			Method:       req.Method,
-			Path:         req.URL.Path,
-			Route:        "[static]",
-			StatusCode:   rw.Status(),
-			BytesWritten: rw.BytesWritten(),
-			Duration:     time.Since(meta.startedAt),
-			TraceID:      meta.traceID,
-			SpanID:       meta.spanID,
-			ParentID:     meta.parentID,
-		})
+		r.dispatchRequestHandled(req, rw, meta, "[static]")
 		ctx.reset()
 		r.ctxPool.Put(ctx)
 		if abort != nil {
@@ -969,11 +995,7 @@ func (r *VelocityRouterV2) matchRoute(req *http.Request) *MatchResult {
 // final status. A Context is acquired from the pool exactly once and
 // released exactly once, matching the invokeHandler pairing.
 func (r *VelocityRouterV2) handleUnmatched(rw *responseWriter, req *http.Request, meta requestMeta) {
-	r.dispatchInstanceEvent(req.Context(), &RequestRouted{
-		Context:   req.Context(),
-		RequestID: meta.id,
-		Matched:   false,
-	})
+	r.dispatchRequestRouted(req, meta, "", false)
 
 	// Attach services to the request so middleware that pulls from
 	// ServicesFromRequest (or relies on ctx.services) sees the
@@ -1002,18 +1024,7 @@ func (r *VelocityRouterV2) handleUnmatched(rw *responseWriter, req *http.Request
 		if abort == nil {
 			abort = r.finalize(ctx, rw, req, meta)
 		}
-		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
-			Context:      req.Context(),
-			RequestID:    meta.id,
-			Method:       req.Method,
-			Path:         req.URL.Path,
-			StatusCode:   rw.Status(),
-			BytesWritten: rw.BytesWritten(),
-			Duration:     time.Since(meta.startedAt),
-			TraceID:      meta.traceID,
-			SpanID:       meta.spanID,
-			ParentID:     meta.parentID,
-		})
+		r.dispatchRequestHandled(req, rw, meta, "")
 		ctx.reset()
 		r.ctxPool.Put(ctx)
 		if abort != nil {
@@ -1160,19 +1171,7 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 		if abort == nil {
 			abort = r.finalize(ctx, rw, req, meta)
 		}
-		r.dispatchInstanceEvent(req.Context(), &RequestHandled{
-			Context:      req.Context(),
-			RequestID:    meta.id,
-			Method:       req.Method,
-			Path:         req.URL.Path,
-			Route:        result.Path,
-			StatusCode:   rw.Status(),
-			BytesWritten: rw.BytesWritten(),
-			Duration:     time.Since(meta.startedAt),
-			TraceID:      meta.traceID,
-			SpanID:       meta.spanID,
-			ParentID:     meta.parentID,
-		})
+		r.dispatchRequestHandled(req, rw, meta, result.Path)
 		ctx.reset()
 		r.ctxPool.Put(ctx)
 		if abort != nil {
@@ -1319,17 +1318,16 @@ func (r *VelocityRouterV2) dispatchRequestFailed(req *http.Request, meta request
 	if !failure.fire || r.eventDispatcher == nil {
 		return
 	}
+	now := time.Now()
 	r.dispatchInstanceEvent(req.Context(), &RequestFailed{
-		Context:   req.Context(),
+		EventMeta: meta.eventMeta(req, now),
 		RequestID: meta.id,
 		Method:    req.Method,
 		Path:      req.URL.Path,
-		Error:     failure.err,
+		Err:       failure.err,
 		Stack:     failure.stack,
 		Recovered: failure.recovered,
-		TraceID:   meta.traceID,
-		SpanID:    meta.spanID,
-		ParentID:  meta.parentID,
+		Duration:  durationSince(meta.startedAt, now),
 	})
 }
 

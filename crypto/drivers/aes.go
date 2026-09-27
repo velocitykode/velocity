@@ -68,6 +68,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/hkdf"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // cryptoDebug controls whether the driver emits per-failure debug lines via
@@ -394,17 +396,19 @@ func (d *AESDriver) noteLegacyIfV0(version int) {
 	// Dispatch every time so operators can count/alert on the stream.
 	// The once-per-instance log is about noise, not signal.
 	d.dispatchEvent(&LegacyDecryptEvent{
-		Cipher: d.cipher,
-		At:     time.Now().UTC(),
+		EventMeta: contract.EventMeta{Context: context.Background(), At: time.Now().UTC()},
+		Cipher:    d.cipher,
 	})
 }
 
 // LegacyDecryptEvent is dispatched each time a v0 payload is decrypted.
 // Operators can count these to gauge how much pre-versioned ciphertext
-// remains before upgrading to v2.0 (which drops v0 support).
+// remains before upgrading to v2.0 (which drops v0 support). No decrypt
+// entry point takes a context, so the envelope carries
+// context.Background, no trace ids, and At in UTC.
 type LegacyDecryptEvent struct {
-	Cipher string    // e.g. "AES-256-CBC"
-	At     time.Time // when the decrypt happened (UTC)
+	contract.EventMeta
+	Cipher string // e.g. "AES-256-CBC"
 }
 
 // Name returns the event name.

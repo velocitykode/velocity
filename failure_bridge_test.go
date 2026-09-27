@@ -49,17 +49,17 @@ func TestFailureBridge_BackgroundFailuresReachReporters(t *testing.T) {
 
 	// Background failures: bridged.
 	if err := app.Services.Events.Dispatch(context.Background(), &queue.JobFailed{
-		Context: context.Background(),
-		JobType: "SendEmail",
-		Queue:   "default",
-		Error:   "smtp exploded",
+		EventMeta: contract.EventMeta{Context: context.Background()},
+		JobType:   "SendEmail",
+		Queue:     "default",
+		Err:       errors.New("smtp exploded"),
 	}); err != nil {
 		t.Fatalf("Dispatch JobFailed: %v", err)
 	}
 	if err := app.Services.Events.Dispatch(context.Background(), &scheduler.ScheduledTaskFailed{
-		Context:  context.Background(),
-		TaskName: "nightly-report",
-		Error:    "task exploded",
+		EventMeta: contract.EventMeta{Context: context.Background()},
+		TaskName:  "nightly-report",
+		Err:       errors.New("task exploded"),
 	}); err != nil {
 		t.Fatalf("Dispatch ScheduledTaskFailed: %v", err)
 	}
@@ -82,10 +82,10 @@ func TestFailureBridge_BackgroundFailuresReachReporters(t *testing.T) {
 	// connects to the error handler; bridging the event too would
 	// double-report.
 	if err := app.Services.Events.Dispatch(context.Background(), &router.RequestFailed{
-		Context: context.Background(),
-		Method:  "GET",
-		Path:    "/x",
-		Error:   errors.New("handler exploded"),
+		EventMeta: contract.EventMeta{Context: context.Background()},
+		Method:    "GET",
+		Path:      "/x",
+		Err:       errors.New("handler exploded"),
 	}); err != nil {
 		t.Fatalf("Dispatch RequestFailed: %v", err)
 	}

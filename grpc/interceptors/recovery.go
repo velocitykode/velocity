@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"runtime/debug"
-	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
@@ -201,16 +201,11 @@ func handlePanic(ctx context.Context, p interface{}, method string, cfg *Recover
 	}
 
 	if cfg.EventDispatcher != nil {
-		traceID, spanID, parentID := trace.GetTraceContext(ctx)
 		dispatchEvent(ctx, cfg.EventDispatcher, &grpcevents.PanicRecovered{
+			EventMeta:  eventmeta.Current(ctx),
 			Method:     method,
 			Panic:      p,
 			StackTrace: stack,
-			Time:       time.Now(),
-			Context:    ctx,
-			TraceID:    traceID,
-			SpanID:     spanID,
-			ParentID:   parentID,
 		})
 	}
 

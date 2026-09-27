@@ -413,8 +413,8 @@ func TestManagerEventDispatchingOnFailure(t *testing.T) {
 	if failed.Channel != "test" {
 		t.Errorf("expected channel 'test', got %s", failed.Channel)
 	}
-	if failed.Error != "delivery failed" {
-		t.Errorf("expected error 'delivery failed', got %s", failed.Error)
+	if failed.Err == nil || failed.Err.Error() != "delivery failed" {
+		t.Errorf("expected error 'delivery failed', got %v", failed.Err)
 	}
 }
 

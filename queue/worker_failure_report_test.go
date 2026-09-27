@@ -193,9 +193,6 @@ func TestWorker_JobFailedCarriesFailureMarkedWhenHookReported(t *testing.T) {
 				t.Errorf("Failed hook ran %d times, want 1", got)
 			}
 
-			if event.Error != errSelfReportedBoom.Error() {
-				t.Errorf("Error = %q, want %q", event.Error, errSelfReportedBoom.Error())
-			}
 			if !errors.Is(event.Err, errSelfReportedBoom) {
 				t.Errorf("Err = %v, want the job's own error", event.Err)
 			}
@@ -246,29 +243,26 @@ func newStartedMemoryDriver(t *testing.T) *MemoryDriver {
 
 // TestJobFailed_FailureError asserts FailureError returns Err itself,
 // marked reported or not, so the job error's type reaches the rules and
-// reporters written for jobs; a new error with the Error text for an event
-// without Err (one decoded from JSON); that Err never reaches the event's
-// JSON form; and that FailureSource names a job.
+// reporters written for jobs; that FailureSource names a job; and that the
+// event's JSON form carries Err as its text and decodes back to an event
+// whose FailureError has that text.
 func TestJobFailed_FailureError(t *testing.T) {
 	cause := contract.NewHTTPError(404)
 	marked := contract.MarkReported(cause)
-	if got := (&JobFailed{Error: cause.Error(), Err: marked}).FailureError(); got != marked {
+	if got := (&JobFailed{Err: marked}).FailureError(); got != marked {
 		t.Errorf("FailureError() with a marked Err = %v, want Err itself", got)
 	}
-	if got := (&JobFailed{Error: cause.Error(), Err: cause}).FailureError(); got != error(cause) {
+	if got := (&JobFailed{Err: cause}).FailureError(); got != error(cause) {
 		t.Errorf("FailureError() with an unmarked Err = %#v, want Err itself", got)
 	}
 	if got := (&JobFailed{}).FailureSource(); got != contract.ErrorSourceJob {
 		t.Errorf("FailureSource() = %v, want ErrorSourceJob", got)
 	}
-	if got := (&JobFailed{Error: "smtp exploded"}).FailureError(); got == nil || got.Error() != "smtp exploded" {
-		t.Errorf("FailureError() without Err = %v, want the Error text", got)
-	}
 	if got := (&JobFailed{}).FailureError(); got != nil {
 		t.Errorf("FailureError() of an empty event = %v, want nil", got)
 	}
 
-	data, err := json.Marshal(&JobFailed{JobType: "SendEmail", Error: "smtp exploded", Err: errors.New("smtp exploded")})
+	data, err := json.Marshal(&JobFailed{JobType: "SendEmail", Err: errors.New("smtp exploded")})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -276,11 +270,15 @@ func TestJobFailed_FailureError(t *testing.T) {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if _, ok := fields["Err"]; ok {
-		t.Errorf("JSON carries Err: %s", data)
+	if fields["Err"] != "smtp exploded" {
+		t.Errorf("JSON Err = %v, want %q (%s)", fields["Err"], "smtp exploded", data)
 	}
-	if fields["Error"] != "smtp exploded" {
-		t.Errorf("JSON Error = %v, want %q (%s)", fields["Error"], "smtp exploded", data)
+	var decoded JobFailed
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode the JSON form: %v", err)
+	}
+	if got := decoded.FailureError(); got == nil || got.Error() != "smtp exploded" {
+		t.Errorf("FailureError() of the decoded event = %v, want the Err text", got)
 	}
 }
 

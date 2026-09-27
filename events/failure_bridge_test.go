@@ -37,7 +37,7 @@ func TestDispatch_FailureEventBridge(t *testing.T) {
 	rec := &bridgeRecorder{}
 	d.SetFailureReporter(rec.fn())
 
-	ev := &AsyncFailed{Context: context.Background(), EventName: "x", Error: "boom"}
+	ev := &AsyncFailed{EventMeta: contract.EventMeta{Context: context.Background()}, EventName: "x", Err: errors.New("boom")}
 	if err := d.Dispatch(context.Background(), ev); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestDispatch_NilFailureErrorNotBridged(t *testing.T) {
 	d.SetFailureReporter(rec.fn())
 
 	// Error empty -> FailureError() nil -> nothing to report.
-	if err := d.Dispatch(context.Background(), &AsyncFailed{Error: ""}); err != nil {
+	if err := d.Dispatch(context.Background(), &AsyncFailed{}); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if rec.count() != 0 {
@@ -82,7 +82,7 @@ func TestDispatch_NilFailureErrorNotBridged(t *testing.T) {
 
 func TestDispatch_NoReporterIsNoop(t *testing.T) {
 	d := NewDispatcher()
-	if err := d.Dispatch(context.Background(), &AsyncFailed{Error: "boom"}); err != nil {
+	if err := d.Dispatch(context.Background(), &AsyncFailed{Err: errors.New("boom")}); err != nil {
 		t.Fatalf("Dispatch without reporter: %v", err)
 	}
 }
@@ -98,12 +98,12 @@ func TestDispatch_ReporterReentrancyGuard(t *testing.T) {
 		}
 		// A reporter that dispatches another failure event with the
 		// bridged context must reach listeners but never re-report.
-		if derr := d.Dispatch(ctx, &AsyncFailed{Error: "nested"}); derr != nil {
+		if derr := d.Dispatch(ctx, &AsyncFailed{Err: errors.New("nested")}); derr != nil {
 			t.Fatalf("nested Dispatch: %v", derr)
 		}
 	})
 
-	if err := d.Dispatch(context.Background(), &AsyncFailed{Error: "boom"}); err != nil {
+	if err := d.Dispatch(context.Background(), &AsyncFailed{Err: errors.New("boom")}); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if calls != 1 {
@@ -128,7 +128,7 @@ func TestDispatch_FailureBridgeRunsBeforeListeners(t *testing.T) {
 		return nil
 	}))
 
-	if err := d.Dispatch(context.Background(), &AsyncFailed{Error: "boom"}); err != nil {
+	if err := d.Dispatch(context.Background(), &AsyncFailed{Err: errors.New("boom")}); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	mu.Lock()
@@ -164,7 +164,7 @@ func TestDispatchNow_FailureEventBridge(t *testing.T) {
 	rec := &bridgeRecorder{}
 	d.SetFailureReporter(rec.fn())
 
-	if err := d.DispatchNow(context.Background(), &AsyncFailed{Error: "boom"}); err != nil {
+	if err := d.DispatchNow(context.Background(), &AsyncFailed{Err: errors.New("boom")}); err != nil {
 		t.Fatalf("DispatchNow: %v", err)
 	}
 	if rec.count() != 1 {
@@ -179,7 +179,7 @@ func TestDispatchAsync_NoQueue_ReportsOnceSynchronously(t *testing.T) {
 
 	// No queue configured: falls back to a goroutine running DispatchNow.
 	// The report must happen synchronously at the point of dispatch...
-	if err := d.DispatchAsync(context.Background(), &AsyncFailed{Error: "boom"}); err != nil {
+	if err := d.DispatchAsync(context.Background(), &AsyncFailed{Err: errors.New("boom")}); err != nil {
 		t.Fatalf("DispatchAsync: %v", err)
 	}
 	if rec.count() != 1 {
@@ -201,7 +201,7 @@ func TestDispatchAfter_NoQueue_ReportsNowNotAfterDelay(t *testing.T) {
 
 	// Long delay: a report observed immediately proves it happened at the
 	// point of dispatch, not from the timer callback.
-	if err := d.DispatchAfter(context.Background(), &AsyncFailed{Error: "boom"}, time.Hour); err != nil {
+	if err := d.DispatchAfter(context.Background(), &AsyncFailed{Err: errors.New("boom")}, time.Hour); err != nil {
 		t.Fatalf("DispatchAfter: %v", err)
 	}
 	if rec.count() != 1 {
@@ -214,7 +214,7 @@ func TestDispatchAfter_NoQueue_TimerFallbackDoesNotDoubleReport(t *testing.T) {
 	rec := &bridgeRecorder{}
 	d.SetFailureReporter(rec.fn())
 
-	if err := d.DispatchAfter(context.Background(), &AsyncFailed{Error: "boom"}, time.Millisecond); err != nil {
+	if err := d.DispatchAfter(context.Background(), &AsyncFailed{Err: errors.New("boom")}, time.Millisecond); err != nil {
 		t.Fatalf("DispatchAfter: %v", err)
 	}
 	time.Sleep(300 * time.Millisecond)
@@ -228,7 +228,7 @@ func TestUntil_FailureEventBridge(t *testing.T) {
 	rec := &bridgeRecorder{}
 	d.SetFailureReporter(rec.fn())
 
-	if _, err := d.Until(context.Background(), &AsyncFailed{Error: "boom"}); err != nil {
+	if _, err := d.Until(context.Background(), &AsyncFailed{Err: errors.New("boom")}); err != nil {
 		t.Fatalf("Until: %v", err)
 	}
 	if rec.count() != 1 {
@@ -241,7 +241,7 @@ func TestQueueIntegratedDispatch_FailureEventBridge(t *testing.T) {
 	rec := &bridgeRecorder{}
 	d.SetFailureReporter(rec.fn())
 
-	if err := d.Dispatch(context.Background(), &AsyncFailed{Error: "boom"}); err != nil {
+	if err := d.Dispatch(context.Background(), &AsyncFailed{Err: errors.New("boom")}); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if rec.count() != 1 {
@@ -260,7 +260,7 @@ func TestDispatchAsync_WithQueue_ReportsOnce(t *testing.T) {
 	// Need a queued listener so the queue path is exercised; the report
 	// must still happen exactly once at dispatch, independent of listeners.
 	d.Listen("events.listener.failed", listenerFn(func(_ context.Context, _ interface{}) error { return nil }))
-	if err := d.DispatchAsync(context.Background(), &AsyncFailed{Error: "boom"}); err != nil {
+	if err := d.DispatchAsync(context.Background(), &AsyncFailed{Err: errors.New("boom")}); err != nil {
 		t.Fatalf("DispatchAsync: %v", err)
 	}
 	if rec.count() != 1 {
@@ -289,12 +289,12 @@ func TestReporter_FreshContextRedispatch_NoRecursion(t *testing.T) {
 		// Hostile reporter: re-dispatches a brand-new failure event with a
 		// brand-new context, deliberately discarding the marked ctx. The
 		// per-goroutine guard must suppress the report; listeners still run.
-		if err := d.Dispatch(context.Background(), &AsyncFailed{Error: "nested"}); err != nil {
+		if err := d.Dispatch(context.Background(), &AsyncFailed{Err: errors.New("nested")}); err != nil {
 			t.Fatalf("nested Dispatch: %v", err)
 		}
 	})
 
-	if err := d.Dispatch(context.Background(), &AsyncFailed{Error: "boom"}); err != nil {
+	if err := d.Dispatch(context.Background(), &AsyncFailed{Err: errors.New("boom")}); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if calls != 1 {
@@ -311,12 +311,12 @@ func TestReporter_FreshContextDispatchNow_NoRecursion(t *testing.T) {
 		if calls > 3 {
 			t.Fatal("reporter recursed via DispatchNow with fresh context")
 		}
-		if err := d.DispatchNow(context.Background(), &AsyncFailed{Error: "nested"}); err != nil {
+		if err := d.DispatchNow(context.Background(), &AsyncFailed{Err: errors.New("nested")}); err != nil {
 			t.Fatalf("nested DispatchNow: %v", err)
 		}
 	})
 
-	if err := d.DispatchNow(context.Background(), &AsyncFailed{Error: "boom"}); err != nil {
+	if err := d.DispatchNow(context.Background(), &AsyncFailed{Err: errors.New("boom")}); err != nil {
 		t.Fatalf("DispatchNow: %v", err)
 	}
 	if calls != 1 {
@@ -341,7 +341,7 @@ func TestListener_DistinctFailureEventWithReceivedCtx_IsReported(t *testing.T) {
 		return d.Dispatch(ctx, nested)
 	}))
 
-	outer := &AsyncFailed{Error: "boom"}
+	outer := &AsyncFailed{Err: errors.New("boom")}
 	if err := d.Dispatch(context.Background(), outer); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestListener_SameFailureEventWithReceivedCtx_NotReReported(t *testing.T) {
 	rec := &bridgeRecorder{}
 	d.SetFailureReporter(rec.fn())
 
-	outer := &AsyncFailed{Error: "boom"}
+	outer := &AsyncFailed{Err: errors.New("boom")}
 	var redispatched bool
 	d.Listen("events.listener.failed", listenerFn(func(ctx context.Context, ev interface{}) error {
 		if redispatched {

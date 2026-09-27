@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"github.com/velocitykode/velocity/contract"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -109,8 +110,8 @@ func TestDispatchJobQueued(t *testing.T) {
 		if captured.Delayed {
 			t.Error("Delayed should be false for immediate job")
 		}
-		if captured.DelayMs != 0 {
-			t.Errorf("DelayMs = %d, want 0", captured.DelayMs)
+		if captured.Delay != 0*time.Millisecond {
+			t.Errorf("Delay = %v, want 0ms", captured.Delay)
 		}
 	})
 
@@ -132,8 +133,8 @@ func TestDispatchJobQueued(t *testing.T) {
 		if !captured.Delayed {
 			t.Error("Delayed should be true for delayed job")
 		}
-		if captured.DelayMs != 5000 {
-			t.Errorf("DelayMs = %d, want 5000", captured.DelayMs)
+		if captured.Delay != 5000*time.Millisecond {
+			t.Errorf("Delay = %v, want 5000ms", captured.Delay)
 		}
 	})
 
@@ -232,8 +233,8 @@ func TestDispatchJobProcessed(t *testing.T) {
 		if captured.Queue != "default" {
 			t.Errorf("Queue = %q, want %q", captured.Queue, "default")
 		}
-		if captured.DurationMs != 150 {
-			t.Errorf("DurationMs = %d, want 150", captured.DurationMs)
+		if captured.Duration != 150*time.Millisecond {
+			t.Errorf("Duration = %v, want 150ms", captured.Duration)
 		}
 	})
 
@@ -251,8 +252,8 @@ func TestDispatchJobProcessed(t *testing.T) {
 		if captured.SpanID != "span-uvw" {
 			t.Errorf("SpanID = %q, want %q", captured.SpanID, "span-uvw")
 		}
-		if captured.DurationMs != 2000 {
-			t.Errorf("DurationMs = %d, want 2000", captured.DurationMs)
+		if captured.Duration != 2000*time.Millisecond {
+			t.Errorf("Duration = %v, want 2000ms", captured.Duration)
 		}
 	})
 }
@@ -281,11 +282,11 @@ func TestDispatchJobFailed(t *testing.T) {
 		if captured.Queue != "default" {
 			t.Errorf("Queue = %q, want %q", captured.Queue, "default")
 		}
-		if captured.Error != "connection refused" {
-			t.Errorf("Error = %q, want %q", captured.Error, "connection refused")
+		if captured.Err == nil || captured.Err.Error() != "connection refused" {
+			t.Errorf("Err = %v, want %q", captured.Err, "connection refused")
 		}
-		if captured.DurationMs != 50 {
-			t.Errorf("DurationMs = %d, want 50", captured.DurationMs)
+		if captured.Duration != 50*time.Millisecond {
+			t.Errorf("Duration = %v, want 50ms", captured.Duration)
 		}
 	})
 
@@ -297,8 +298,8 @@ func TestDispatchJobFailed(t *testing.T) {
 		if captured == nil {
 			t.Fatal("event was not dispatched")
 		}
-		if captured.Error != "" {
-			t.Errorf("Error = %q, want empty string", captured.Error)
+		if captured.Err != nil {
+			t.Errorf("Err = %v, want nil", captured.Err)
 		}
 	})
 
@@ -396,8 +397,8 @@ func TestEventDispatchingIntegration(t *testing.T) {
 		if !queued.Delayed {
 			t.Error("Delayed should be true")
 		}
-		if queued.DelayMs != 2000 {
-			t.Errorf("DelayMs = %d, want 2000", queued.DelayMs)
+		if queued.Delay != 2000*time.Millisecond {
+			t.Errorf("Delay = %v, want 2000ms", queued.Delay)
 		}
 	})
 }
@@ -479,8 +480,8 @@ func TestWorkerEventDispatching(t *testing.T) {
 			t.Errorf("expected 0 failed events, got %d", len(failedEvents))
 		}
 
-		if len(processedEvents) > 0 && processedEvents[0].DurationMs < 10 {
-			t.Errorf("DurationMs should be at least 10ms, got %d", processedEvents[0].DurationMs)
+		if len(processedEvents) > 0 && processedEvents[0].Duration < 10*time.Millisecond {
+			t.Errorf("Duration should be at least 10ms, got %v", processedEvents[0].Duration)
 		}
 	})
 
@@ -537,22 +538,19 @@ func TestWorkerEventDispatching(t *testing.T) {
 			t.Errorf("expected 1 failed event, got %d", len(failedEvents))
 		}
 
-		if len(failedEvents) > 0 && failedEvents[0].Error != "intentional failure" {
-			t.Errorf("Error = %q, want %q", failedEvents[0].Error, "intentional failure")
+		if len(failedEvents) > 0 && (failedEvents[0].Err == nil || failedEvents[0].Err.Error() != "intentional failure") {
+			t.Errorf("Err = %v, want %q", failedEvents[0].Err, "intentional failure")
 		}
 	})
 }
 
 func TestJobQueuedEventFields(t *testing.T) {
 	e := &JobQueued{
-		Context:  context.Background(),
-		JobType:  "*queue.EmailJob",
-		Queue:    "emails",
-		Delayed:  true,
-		DelayMs:  5000,
-		TraceID:  "trace-123",
-		SpanID:   "span-456",
-		ParentID: "parent-789",
+		EventMeta: contract.EventMeta{Context: context.Background(), TraceID: "trace-123", SpanID: "span-456", ParentID: "parent-789"},
+		JobType:   "*queue.EmailJob",
+		Queue:     "emails",
+		Delayed:   true,
+		Delay:     5000 * time.Millisecond,
 	}
 
 	if e.Name() != "queue.job.queued" {
@@ -567,8 +565,8 @@ func TestJobQueuedEventFields(t *testing.T) {
 	if !e.Delayed {
 		t.Error("Delayed should be true")
 	}
-	if e.DelayMs != 5000 {
-		t.Errorf("DelayMs = %d, want 5000", e.DelayMs)
+	if e.Delay != 5000*time.Millisecond {
+		t.Errorf("Delay = %v, want 5000ms", e.Delay)
 	}
 	if e.TraceID != "trace-123" {
 		t.Errorf("TraceID = %q, want %q", e.TraceID, "trace-123")
@@ -583,12 +581,9 @@ func TestJobQueuedEventFields(t *testing.T) {
 
 func TestJobProcessingEventFields(t *testing.T) {
 	e := &JobProcessing{
-		Context:  context.Background(),
-		JobType:  "*queue.ReportJob",
-		Queue:    "reports",
-		TraceID:  "trace-abc",
-		SpanID:   "span-def",
-		ParentID: "parent-ghi",
+		EventMeta: contract.EventMeta{Context: context.Background(), TraceID: "trace-abc", SpanID: "span-def", ParentID: "parent-ghi"},
+		JobType:   "*queue.ReportJob",
+		Queue:     "reports",
 	}
 
 	if e.Name() != "queue.job.started" {
@@ -604,58 +599,49 @@ func TestJobProcessingEventFields(t *testing.T) {
 
 func TestJobProcessedEventFields(t *testing.T) {
 	e := &JobProcessed{
-		Context:    context.Background(),
-		JobType:    "*queue.NotificationJob",
-		Queue:      "notifications",
-		DurationMs: 1500,
-		TraceID:    "trace-xyz",
-		SpanID:     "span-uvw",
-		ParentID:   "",
+		EventMeta: contract.EventMeta{Context: context.Background(), TraceID: "trace-xyz", SpanID: "span-uvw", ParentID: ""},
+		JobType:   "*queue.NotificationJob",
+		Queue:     "notifications",
+		Duration:  1500 * time.Millisecond,
 	}
 
 	if e.Name() != "queue.job.completed" {
 		t.Errorf("Name() = %q, want %q", e.Name(), "queue.job.completed")
 	}
-	if e.DurationMs != 1500 {
-		t.Errorf("DurationMs = %d, want 1500", e.DurationMs)
+	if e.Duration != 1500*time.Millisecond {
+		t.Errorf("Duration = %v, want 1500ms", e.Duration)
 	}
 }
 
 func TestJobFailedEventFields(t *testing.T) {
 	e := &JobFailed{
-		Context:    context.Background(),
-		JobType:    "*queue.PaymentJob",
-		Queue:      "payments",
-		Error:      "payment gateway timeout",
-		DurationMs: 30000,
-		TraceID:    "trace-fail",
-		SpanID:     "span-fail",
-		ParentID:   "parent-fail",
+		EventMeta: contract.EventMeta{Context: context.Background(), TraceID: "trace-fail", SpanID: "span-fail", ParentID: "parent-fail"},
+		JobType:   "*queue.PaymentJob",
+		Queue:     "payments",
+		Err:       errors.New("payment gateway timeout"),
+		Duration:  30000 * time.Millisecond,
 	}
 
 	if e.Name() != "queue.job.failed" {
 		t.Errorf("Name() = %q, want %q", e.Name(), "queue.job.failed")
 	}
-	if e.Error != "payment gateway timeout" {
-		t.Errorf("Error = %q, want %q", e.Error, "payment gateway timeout")
+	if e.Err == nil || e.Err.Error() != "payment gateway timeout" {
+		t.Errorf("Err = %v, want %q", e.Err, "payment gateway timeout")
 	}
-	if e.DurationMs != 30000 {
-		t.Errorf("DurationMs = %d, want 30000", e.DurationMs)
+	if e.Duration != 30000*time.Millisecond {
+		t.Errorf("Duration = %v, want 30000ms", e.Duration)
 	}
 }
 
 func TestJobRetryingEventName(t *testing.T) {
 	e := &JobRetrying{
-		Context:     context.Background(),
+		EventMeta:   contract.EventMeta{Context: context.Background(), TraceID: "trace-retry", SpanID: "span-retry", ParentID: "parent-retry"},
 		JobType:     "*queue.TestJob",
 		Queue:       "default",
 		Attempt:     2,
 		MaxAttempts: 5,
-		Error:       "connection refused",
-		BackoffMs:   2000,
-		TraceID:     "trace-retry",
-		SpanID:      "span-retry",
-		ParentID:    "parent-retry",
+		Err:         errors.New("connection refused"),
+		Backoff:     2000 * time.Millisecond,
 	}
 
 	if e.Name() != "queue.job.retried" {
@@ -667,11 +653,11 @@ func TestJobRetryingEventName(t *testing.T) {
 	if e.MaxAttempts != 5 {
 		t.Errorf("MaxAttempts = %d, want 5", e.MaxAttempts)
 	}
-	if e.Error != "connection refused" {
-		t.Errorf("Error = %q, want %q", e.Error, "connection refused")
+	if e.Err == nil || e.Err.Error() != "connection refused" {
+		t.Errorf("Err = %v, want %q", e.Err, "connection refused")
 	}
-	if e.BackoffMs != 2000 {
-		t.Errorf("BackoffMs = %d, want 2000", e.BackoffMs)
+	if e.Backoff != 2000*time.Millisecond {
+		t.Errorf("Backoff = %v, want 2000ms", e.Backoff)
 	}
 }
 
@@ -698,11 +684,11 @@ func TestDispatchJobRetrying(t *testing.T) {
 		if captured.MaxAttempts != 5 {
 			t.Errorf("MaxAttempts = %d, want 5", captured.MaxAttempts)
 		}
-		if captured.Error != "timeout" {
-			t.Errorf("Error = %q, want %q", captured.Error, "timeout")
+		if captured.Err == nil || captured.Err.Error() != "timeout" {
+			t.Errorf("Err = %v, want %q", captured.Err, "timeout")
 		}
-		if captured.BackoffMs != 4000 {
-			t.Errorf("BackoffMs = %d, want 4000", captured.BackoffMs)
+		if captured.Backoff != 4000*time.Millisecond {
+			t.Errorf("Backoff = %v, want 4000ms", captured.Backoff)
 		}
 	})
 
@@ -717,8 +703,8 @@ func TestDispatchJobRetrying(t *testing.T) {
 		if captured == nil {
 			t.Fatal("event was not dispatched")
 		}
-		if captured.Error != "" {
-			t.Errorf("Error = %q, want empty", captured.Error)
+		if captured.Err != nil {
+			t.Errorf("Err = %v, want nil", captured.Err)
 		}
 	})
 }

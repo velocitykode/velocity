@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -19,11 +20,8 @@ var (
 
 // ScheduledTaskStarting is dispatched when a scheduled task begins
 type ScheduledTaskStarting struct {
-	Context  context.Context
+	contract.EventMeta
 	TaskName string
-	TraceID  string
-	SpanID   string
-	ParentID string
 }
 
 // Name returns the event name
@@ -33,12 +31,9 @@ func (e *ScheduledTaskStarting) Name() string {
 
 // ScheduledTaskFinished is dispatched when a scheduled task completes successfully
 type ScheduledTaskFinished struct {
-	Context    context.Context
-	TaskName   string
-	DurationMs int64
-	TraceID    string
-	SpanID     string
-	ParentID   string
+	contract.EventMeta
+	TaskName string
+	Duration time.Duration
 }
 
 // Name returns the event name
@@ -48,17 +43,10 @@ func (e *ScheduledTaskFinished) Name() string {
 
 // ScheduledTaskFailed is dispatched when a scheduled task fails
 type ScheduledTaskFailed struct {
-	Context    context.Context
-	TaskName   string
-	Error      string
-	DurationMs int64
-	TraceID    string
-	SpanID     string
-	ParentID   string
-
-	// Err is the failure itself, where Error is its text: the error the
-	// task returned. It is not serialized: the JSON form keeps Error alone.
-	Err error `json:"-"`
+	contract.EventMeta
+	TaskName string
+	Err      error
+	Duration time.Duration
 }
 
 // Name returns the event name
@@ -66,19 +54,37 @@ func (e *ScheduledTaskFailed) Name() string {
 	return "scheduler.task.failed"
 }
 
+// MarshalJSON encodes the event with Err as its text.
+func (e ScheduledTaskFailed) MarshalJSON() ([]byte, error) {
+	type fields ScheduledTaskFailed
+	return json.Marshal(struct {
+		fields
+		Err string `json:",omitempty"`
+	}{fields(e), errorText(e.Err)})
+}
+
+// UnmarshalJSON decodes the event's JSON form: Err becomes an error with
+// the encoded text.
+func (e *ScheduledTaskFailed) UnmarshalJSON(data []byte) error {
+	type fields ScheduledTaskFailed
+	v := struct {
+		*fields
+		Err string `json:",omitempty"`
+	}{fields: (*fields)(e)}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	e.Err = textError(v.Err)
+	return nil
+}
+
 // FailureError implements contract.FailureEvent: a failed scheduled task
 // has no caller observing the error, so the dispatcher bridges it to the
-// error Reporter chain. It returns Err, the task's own error with its
-// type; an event without Err (one decoded from its JSON form) returns a
-// new error with the Error text, or nil when there is none.
+// error Reporter chain. It returns Err, the task's own error with its type
+// (for an event decoded from its JSON form, an error with its text), or
+// nil when there is none.
 func (e *ScheduledTaskFailed) FailureError() error {
-	if e.Err != nil {
-		return e.Err
-	}
-	if e.Error == "" {
-		return nil
-	}
-	return errors.New(e.Error)
+	return e.Err
 }
 
 // FailureSource implements contract.FailureEvent: the failure is a
@@ -92,13 +98,9 @@ func dispatchScheduledTaskStarting(dispatch func(context.Context, interface{}), 
 	if dispatch == nil {
 		return
 	}
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	dispatch(ctx, &ScheduledTaskStarting{
-		Context:  ctx,
-		TaskName: name,
-		TraceID:  traceID,
-		SpanID:   spanID,
-		ParentID: parentID,
+		EventMeta: runEventMeta(ctx),
+		TaskName:  name,
 	})
 }
 
@@ -107,14 +109,10 @@ func dispatchScheduledTaskFinished(dispatch func(context.Context, interface{}), 
 	if dispatch == nil {
 		return
 	}
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	dispatch(ctx, &ScheduledTaskFinished{
-		Context:    ctx,
-		TaskName:   name,
-		DurationMs: duration.Milliseconds(),
-		TraceID:    traceID,
-		SpanID:     spanID,
-		ParentID:   parentID,
+		EventMeta: runEventMeta(ctx),
+		TaskName:  name,
+		Duration:  duration,
 	})
 }
 
@@ -123,22 +121,40 @@ func dispatchScheduledTaskFailed(dispatch func(context.Context, interface{}), ct
 	if dispatch == nil {
 		return
 	}
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	errMsg := ""
-	if err != nil {
-		errMsg = err.Error()
-	}
 	dispatch(ctx, &ScheduledTaskFailed{
-		Context:    ctx,
-		TaskName:   name,
-		Error:      errMsg,
-		Err:        err,
-		DurationMs: duration.Milliseconds(),
-		TraceID:    traceID,
-		SpanID:     spanID,
-		ParentID:   parentID,
+		EventMeta: runEventMeta(ctx),
+		TaskName:  name,
+		Err:       err,
+		Duration:  duration,
 	})
 }
 
 // Conformance: ScheduledTaskFailed participates in the failure-report bridge.
 var _ contract.FailureEvent = (*ScheduledTaskFailed)(nil)
+
+// runEventMeta returns the envelope of an event about a scheduled run under
+// ctx's span, stamped now. The scheduler is in the router's dependency
+// graph, so it builds the envelope from contract and trace itself.
+func runEventMeta(ctx context.Context) contract.EventMeta {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	traceID, spanID, parentID := trace.GetTraceContext(ctx)
+	return contract.EventMeta{Context: ctx, TraceID: traceID, SpanID: spanID, ParentID: parentID, At: time.Now()}
+}
+
+// errorText returns err's text, or "" for a nil error.
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// textError returns an error with text, or nil for "".
+func textError(text string) error {
+	if text == "" {
+		return nil
+	}
+	return errors.New(text)
+}

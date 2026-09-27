@@ -181,7 +181,7 @@ func TestBoundary_ReturnedWrittenMarkerStillEndsTheRequest(t *testing.T) {
 			}
 			if tt.wantFailed == 1 {
 				var pe *PanicError
-				if !failed[0].Recovered || !errors.As(failed[0].Error, &pe) || contract.IsResponseWritten(failed[0].Error) {
+				if !failed[0].Recovered || !errors.As(failed[0].Err, &pe) || contract.IsResponseWritten(failed[0].Err) {
 					t.Errorf("RequestFailed = %+v, want the recovered panic without the handled marker", failed[0])
 				}
 			}
@@ -333,8 +333,8 @@ func TestFinalize_PanickingHookIsARecoveredPanic(t *testing.T) {
 				t.Fatalf("RequestFailed dispatched %d times, want 1", len(failed))
 			}
 			var pe *PanicError
-			if !failed[0].Recovered || !errors.As(failed[0].Error, &pe) {
-				t.Errorf("RequestFailed Recovered = %v, Error = %T; want true and a *PanicError", failed[0].Recovered, failed[0].Error)
+			if !failed[0].Recovered || !errors.As(failed[0].Err, &pe) {
+				t.Errorf("RequestFailed Recovered = %v, Err = %T; want true and a *PanicError", failed[0].Recovered, failed[0].Err)
 			}
 			if !strings.Contains(failed[0].Stack, "panic_marker_test.go") {
 				t.Errorf("RequestFailed stack does not hold the panicking frame:\n%s", failed[0].Stack)

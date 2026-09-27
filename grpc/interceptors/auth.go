@@ -3,7 +3,6 @@ package interceptors
 import (
 	"context"
 	"strings"
-	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -11,7 +10,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/velocitykode/velocity/grpc/grpcevents"
-	"github.com/velocitykode/velocity/trace"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
 // Claims represents authenticated user claims.
@@ -225,16 +224,11 @@ func dispatchAuthFailed(ctx context.Context, method, token string, err error, cf
 	if cfg.EventDispatcher == nil {
 		return
 	}
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	dispatchEvent(ctx, cfg.EventDispatcher, &grpcevents.AuthFailed{
-		Method:   method,
-		Token:    maskToken(token),
-		Reason:   err.Error(),
-		Time:     time.Now(),
-		Context:  ctx,
-		TraceID:  traceID,
-		SpanID:   spanID,
-		ParentID: parentID,
+		EventMeta: eventmeta.Current(ctx),
+		Method:    method,
+		Token:     maskToken(token),
+		Err:       err,
 	})
 }
 

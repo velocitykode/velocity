@@ -134,8 +134,8 @@ func TestServer_LifecycleEvents(t *testing.T) {
 	if started.Port != s.Port() {
 		t.Errorf("ServerStarted.Port: got %q want %q", started.Port, s.Port())
 	}
-	if started.StartTime.IsZero() {
-		t.Error("ServerStarted.StartTime is zero")
+	if started.At.IsZero() {
+		t.Error("ServerStarted.At is zero")
 	}
 	stopped, ok := events[1].(*ServerStopped)
 	if !ok {
@@ -144,7 +144,7 @@ func TestServer_LifecycleEvents(t *testing.T) {
 	if stopped.Duration <= 0 {
 		t.Errorf("ServerStopped.Duration: got %v, want > 0", stopped.Duration)
 	}
-	if stopped.StopTime.IsZero() {
-		t.Error("ServerStopped.StopTime is zero")
+	if stopped.At.IsZero() {
+		t.Error("ServerStopped.At is zero")
 	}
 }

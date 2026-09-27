@@ -120,6 +120,7 @@ func Timebox(floor time.Duration, inner func()) {
 // invoked, so a cost-bump silently left every legacy hash at the lower
 // cost forever.
 type PasswordNeedsRehashEvent struct {
+	contract.EventMeta
 	UserID     interface{}
 	SchemeName string
 }

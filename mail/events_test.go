@@ -3,6 +3,7 @@ package mail
 import (
 	"context"
 	"errors"
+	"github.com/velocitykode/velocity/contract"
 	"testing"
 	"time"
 
@@ -97,8 +98,8 @@ func TestDispatchMailSent(t *testing.T) {
 		if captured.Channel != "smtp" {
 			t.Errorf("Channel = %q, want %q", captured.Channel, "smtp")
 		}
-		if captured.DurationMs != 150 {
-			t.Errorf("DurationMs = %d, want 150", captured.DurationMs)
+		if captured.Duration != 150*time.Millisecond {
+			t.Errorf("Duration = %v, want 150", captured.Duration)
 		}
 	})
 
@@ -148,11 +149,11 @@ func TestDispatchMailFailed(t *testing.T) {
 		if captured.Subject != "Important" {
 			t.Errorf("Subject = %q, want %q", captured.Subject, "Important")
 		}
-		if captured.Error != "SMTP connection failed" {
-			t.Errorf("Error = %q, want %q", captured.Error, "SMTP connection failed")
+		if captured.Err == nil || captured.Err.Error() != "SMTP connection failed" {
+			t.Errorf("Err = %v, want %q", captured.Err, "SMTP connection failed")
 		}
-		if captured.DurationMs != 5000 {
-			t.Errorf("DurationMs = %d, want 5000", captured.DurationMs)
+		if captured.Duration != 5000*time.Millisecond {
+			t.Errorf("Duration = %v, want 5000", captured.Duration)
 		}
 	})
 
@@ -164,8 +165,8 @@ func TestDispatchMailFailed(t *testing.T) {
 		if captured == nil {
 			t.Fatal("event was not dispatched")
 		}
-		if captured.Error != "" {
-			t.Errorf("Error = %q, want empty string", captured.Error)
+		if captured.Err != nil {
+			t.Errorf("Err = %v, want nil", captured.Err)
 		}
 	})
 
@@ -197,14 +198,11 @@ func TestDispatchMailFailed(t *testing.T) {
 
 func TestMailSentEventFields(t *testing.T) {
 	e := &MailSent{
-		Context:    context.Background(),
-		To:         []string{"a@example.com", "b@example.com"},
-		Subject:    "Newsletter",
-		Channel:    "mailgun",
-		DurationMs: 250,
-		TraceID:    "trace-xyz",
-		SpanID:     "span-abc",
-		ParentID:   "parent-def",
+		EventMeta: contract.EventMeta{Context: context.Background(), TraceID: "trace-xyz", SpanID: "span-abc", ParentID: "parent-def"},
+		To:        []string{"a@example.com", "b@example.com"},
+		Subject:   "Newsletter",
+		Channel:   "mailgun",
+		Duration:  250 * time.Millisecond,
 	}
 
 	if e.Name() != "mail.completed" {
@@ -220,21 +218,18 @@ func TestMailSentEventFields(t *testing.T) {
 
 func TestMailFailedEventFields(t *testing.T) {
 	e := &MailFailed{
-		Context:    context.Background(),
-		To:         []string{"user@example.com"},
-		Subject:    "Password Reset",
-		Channel:    "smtp",
-		Error:      "authentication failed",
-		DurationMs: 1000,
-		TraceID:    "trace-err",
-		SpanID:     "span-err",
-		ParentID:   "",
+		EventMeta: contract.EventMeta{Context: context.Background(), TraceID: "trace-err", SpanID: "span-err", ParentID: ""},
+		To:        []string{"user@example.com"},
+		Subject:   "Password Reset",
+		Channel:   "smtp",
+		Err:       errors.New("authentication failed"),
+		Duration:  1000 * time.Millisecond,
 	}
 
 	if e.Name() != "mail.failed" {
 		t.Errorf("Name() = %q, want %q", e.Name(), "mail.failed")
 	}
-	if e.Error != "authentication failed" {
-		t.Errorf("Error = %q, want %q", e.Error, "authentication failed")
+	if e.Err == nil || e.Err.Error() != "authentication failed" {
+		t.Errorf("Err = %v, want %q", e.Err, "authentication failed")
 	}
 }

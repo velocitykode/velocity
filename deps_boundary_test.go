@@ -67,3 +67,22 @@ func TestRouterAndProblemImportedTogetherOnlyAtTheBoundary(t *testing.T) {
 		}
 	}
 }
+
+// TestEventEnvelopeHelperOutsideRouterGraph pins that the router's
+// dependency graph does not grow with the event envelope: the router and
+// the packages it depends on (scheduler among them) build contract.EventMeta
+// themselves from contract and trace, never through internal/eventmeta.
+func TestEventEnvelopeHelperOutsideRouterGraph(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go tool not on PATH")
+	}
+	out, err := exec.Command("go", "list", "-deps", "./router").Output()
+	if err != nil {
+		t.Fatalf("go list -deps ./router: %v", err)
+	}
+	for _, dep := range strings.Fields(string(out)) {
+		if dep == "github.com/velocitykode/velocity/internal/eventmeta" {
+			t.Errorf("./router links %s; build the envelope from contract and trace in the router's dependencies", dep)
+		}
+	}
+}

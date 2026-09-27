@@ -2,21 +2,20 @@ package mail
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
-	"github.com/velocitykode/velocity/trace"
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
 // MailSent is dispatched after an email is sent successfully
 type MailSent struct {
-	Context    context.Context
-	To         []string
-	Subject    string
-	Channel    string
-	DurationMs int64
-	TraceID    string
-	SpanID     string
-	ParentID   string
+	contract.EventMeta
+	To       []string
+	Subject  string
+	Channel  string
+	Duration time.Duration
 }
 
 // Name returns the event name
@@ -26,15 +25,12 @@ func (e *MailSent) Name() string {
 
 // MailFailed is dispatched when an email fails to send
 type MailFailed struct {
-	Context    context.Context
-	To         []string
-	Subject    string
-	Channel    string
-	Error      string
-	DurationMs int64
-	TraceID    string
-	SpanID     string
-	ParentID   string
+	contract.EventMeta
+	To       []string
+	Subject  string
+	Channel  string
+	Err      error
+	Duration time.Duration
 }
 
 // Name returns the event name
@@ -42,21 +38,41 @@ func (e *MailFailed) Name() string {
 	return "mail.failed"
 }
 
+// MarshalJSON encodes the event with Err as its text.
+func (e MailFailed) MarshalJSON() ([]byte, error) {
+	type fields MailFailed
+	return json.Marshal(struct {
+		fields
+		Err string `json:",omitempty"`
+	}{fields(e), eventmeta.ErrorText(e.Err)})
+}
+
+// UnmarshalJSON decodes the event's JSON form: Err becomes an error with
+// the encoded text.
+func (e *MailFailed) UnmarshalJSON(data []byte) error {
+	type fields MailFailed
+	v := struct {
+		*fields
+		Err string `json:",omitempty"`
+	}{fields: (*fields)(e)}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	e.Err = eventmeta.TextError(v.Err)
+	return nil
+}
+
 // dispatchMailSent dispatches a MailSent event
 func dispatchMailSent(dispatch func(context.Context, interface{}), ctx context.Context, to []string, subject, channel string, duration time.Duration) {
 	if dispatch == nil {
 		return
 	}
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	dispatch(ctx, &MailSent{
-		Context:    ctx,
-		To:         to,
-		Subject:    subject,
-		Channel:    channel,
-		DurationMs: duration.Milliseconds(),
-		TraceID:    traceID,
-		SpanID:     spanID,
-		ParentID:   parentID,
+		EventMeta: eventmeta.Current(ctx),
+		To:        to,
+		Subject:   subject,
+		Channel:   channel,
+		Duration:  duration,
 	})
 }
 
@@ -65,20 +81,12 @@ func dispatchMailFailed(dispatch func(context.Context, interface{}), ctx context
 	if dispatch == nil {
 		return
 	}
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	errMsg := ""
-	if err != nil {
-		errMsg = err.Error()
-	}
 	dispatch(ctx, &MailFailed{
-		Context:    ctx,
-		To:         to,
-		Subject:    subject,
-		Channel:    channel,
-		Error:      errMsg,
-		DurationMs: duration.Milliseconds(),
-		TraceID:    traceID,
-		SpanID:     spanID,
-		ParentID:   parentID,
+		EventMeta: eventmeta.Current(ctx),
+		To:        to,
+		Subject:   subject,
+		Channel:   channel,
+		Err:       err,
+		Duration:  duration,
 	})
 }

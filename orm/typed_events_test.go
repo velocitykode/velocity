@@ -42,7 +42,7 @@ func TestManager_SetEventDispatcher_ReceivesEvent(t *testing.T) {
 	})
 
 	m.dispatchEvent(context.Background(), &QueryExecuted{
-		Context:    context.Background(),
+		EventMeta:  contract.EventMeta{Context: context.Background()},
 		SQL:        "SELECT 1",
 		Connection: "sqlite",
 	})

@@ -2,23 +2,20 @@ package queue
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
-	"github.com/velocitykode/velocity/trace"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
 // JobQueued is dispatched when a job is pushed to the queue
 type JobQueued struct {
-	Context  context.Context
-	JobType  string
-	Queue    string
-	Delayed  bool
-	DelayMs  int64
-	TraceID  string
-	SpanID   string
-	ParentID string
+	contract.EventMeta
+	JobType string
+	Queue   string
+	Delayed bool
+	Delay   time.Duration
 }
 
 // Name returns the event name
@@ -28,12 +25,9 @@ func (e *JobQueued) Name() string {
 
 // JobProcessing is dispatched when a worker starts processing a job
 type JobProcessing struct {
-	Context  context.Context
-	JobType  string
-	Queue    string
-	TraceID  string
-	SpanID   string
-	ParentID string
+	contract.EventMeta
+	JobType string
+	Queue   string
 }
 
 // Name returns the event name
@@ -43,13 +37,10 @@ func (e *JobProcessing) Name() string {
 
 // JobProcessed is dispatched when a job completes successfully
 type JobProcessed struct {
-	Context    context.Context
-	JobType    string
-	Queue      string
-	DurationMs int64
-	TraceID    string
-	SpanID     string
-	ParentID   string
+	contract.EventMeta
+	JobType  string
+	Queue    string
+	Duration time.Duration
 }
 
 // Name returns the event name
@@ -59,26 +50,45 @@ func (e *JobProcessed) Name() string {
 
 // JobFailed is dispatched when a job fails
 type JobFailed struct {
-	Context    context.Context
-	JobType    string
-	Queue      string
-	Error      string
-	DurationMs int64
-	TraceID    string
-	SpanID     string
-	ParentID   string
+	contract.EventMeta
+	JobType  string
+	Queue    string
+	Duration time.Duration
 
-	// Err is the failure itself, where Error is its text: the error the job
-	// returned (or the worker's timeout error), set by the worker and
-	// marked reported (contract.MarkReported) when the job's own Failed hook
-	// already reported it (see FailureSelfReporter).
-	// It is not serialized: the JSON form keeps Error alone.
-	Err error `json:"-"`
+	// Err is the failure itself: the error the job returned (or the
+	// worker's timeout error), set by the worker and marked reported
+	// (contract.MarkReported) when the job's own Failed hook already
+	// reported it (see FailureSelfReporter). Its JSON form is its text.
+	Err error
 }
 
 // Name returns the event name
 func (e *JobFailed) Name() string {
 	return "queue.job.failed"
+}
+
+// MarshalJSON encodes the event with Err as its text.
+func (e JobFailed) MarshalJSON() ([]byte, error) {
+	type fields JobFailed
+	return json.Marshal(struct {
+		fields
+		Err string `json:",omitempty"`
+	}{fields(e), eventmeta.ErrorText(e.Err)})
+}
+
+// UnmarshalJSON decodes the event's JSON form: Err becomes an error with
+// the encoded text.
+func (e *JobFailed) UnmarshalJSON(data []byte) error {
+	type fields JobFailed
+	v := struct {
+		*fields
+		Err string `json:",omitempty"`
+	}{fields: (*fields)(e)}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	e.Err = eventmeta.TextError(v.Err)
+	return nil
 }
 
 // FailureError implements contract.FailureEvent: a permanently failed job
@@ -88,17 +98,11 @@ func (e *JobFailed) Name() string {
 // the rules the error handler keys on error types for requests do not
 // apply to it (see FailureSource). When Err carries the report-once marker
 // (the job's Failed hook already reported the failure) the bridge's report
-// gate skips it and the failure is reported once. An event without Err
-// (one decoded from its JSON form) returns a new error with the Error
-// text, or nil when there is none.
+// gate skips it and the failure is reported once. An event decoded from
+// its JSON form carries an error with Err's text; one without Err returns
+// nil.
 func (e *JobFailed) FailureError() error {
-	if e.Err != nil {
-		return e.Err
-	}
-	if e.Error == "" {
-		return nil
-	}
-	return errors.New(e.Error)
+	return e.Err
 }
 
 // FailureSource implements contract.FailureEvent: the failure is a job's.
@@ -108,16 +112,13 @@ func (e *JobFailed) FailureSource() contract.ErrorSource {
 
 // JobRetrying is dispatched when a failed job is being retried
 type JobRetrying struct {
-	Context     context.Context
+	contract.EventMeta
 	JobType     string
 	Queue       string
 	Attempt     int
 	MaxAttempts int
-	Error       string
-	BackoffMs   int64
-	TraceID     string
-	SpanID      string
-	ParentID    string
+	Err         error
+	Backoff     time.Duration
 }
 
 // Name returns the event name
@@ -125,21 +126,41 @@ func (e *JobRetrying) Name() string {
 	return "queue.job.retried"
 }
 
+// MarshalJSON encodes the event with Err as its text.
+func (e JobRetrying) MarshalJSON() ([]byte, error) {
+	type fields JobRetrying
+	return json.Marshal(struct {
+		fields
+		Err string `json:",omitempty"`
+	}{fields(e), eventmeta.ErrorText(e.Err)})
+}
+
+// UnmarshalJSON decodes the event's JSON form: Err becomes an error with
+// the encoded text.
+func (e *JobRetrying) UnmarshalJSON(data []byte) error {
+	type fields JobRetrying
+	v := struct {
+		*fields
+		Err string `json:",omitempty"`
+	}{fields: (*fields)(e)}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	e.Err = eventmeta.TextError(v.Err)
+	return nil
+}
+
 // dispatchJobQueued dispatches a JobQueued event
 func dispatchJobQueued(dispatch func(context.Context, interface{}), ctx context.Context, jobType, queue string, delayed bool, delay time.Duration) {
 	if dispatch == nil {
 		return
 	}
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	dispatch(ctx, &JobQueued{
-		Context:  ctx,
-		JobType:  jobType,
-		Queue:    queue,
-		Delayed:  delayed,
-		DelayMs:  delay.Milliseconds(),
-		TraceID:  traceID,
-		SpanID:   spanID,
-		ParentID: parentID,
+		EventMeta: eventmeta.Current(ctx),
+		JobType:   jobType,
+		Queue:     queue,
+		Delayed:   delayed,
+		Delay:     delay,
 	})
 }
 
@@ -148,14 +169,10 @@ func dispatchJobProcessing(dispatch func(context.Context, interface{}), ctx cont
 	if dispatch == nil {
 		return
 	}
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	dispatch(ctx, &JobProcessing{
-		Context:  ctx,
-		JobType:  jobType,
-		Queue:    queue,
-		TraceID:  traceID,
-		SpanID:   spanID,
-		ParentID: parentID,
+		EventMeta: eventmeta.Current(ctx),
+		JobType:   jobType,
+		Queue:     queue,
 	})
 }
 
@@ -164,15 +181,11 @@ func dispatchJobProcessed(dispatch func(context.Context, interface{}), ctx conte
 	if dispatch == nil {
 		return
 	}
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
 	dispatch(ctx, &JobProcessed{
-		Context:    ctx,
-		JobType:    jobType,
-		Queue:      queue,
-		DurationMs: duration.Milliseconds(),
-		TraceID:    traceID,
-		SpanID:     spanID,
-		ParentID:   parentID,
+		EventMeta: eventmeta.Current(ctx),
+		JobType:   jobType,
+		Queue:     queue,
+		Duration:  duration,
 	})
 }
 
@@ -181,21 +194,12 @@ func dispatchJobFailed(dispatch func(context.Context, interface{}), ctx context.
 	if dispatch == nil {
 		return
 	}
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	errMsg := ""
-	if err != nil {
-		errMsg = err.Error()
-	}
 	dispatch(ctx, &JobFailed{
-		Context:    ctx,
-		JobType:    jobType,
-		Queue:      queue,
-		Error:      errMsg,
-		Err:        err,
-		DurationMs: duration.Milliseconds(),
-		TraceID:    traceID,
-		SpanID:     spanID,
-		ParentID:   parentID,
+		EventMeta: eventmeta.Current(ctx),
+		JobType:   jobType,
+		Queue:     queue,
+		Err:       err,
+		Duration:  duration,
 	})
 }
 
@@ -204,22 +208,14 @@ func dispatchJobRetrying(dispatch func(context.Context, interface{}), ctx contex
 	if dispatch == nil {
 		return
 	}
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
-	errMsg := ""
-	if err != nil {
-		errMsg = err.Error()
-	}
 	dispatch(ctx, &JobRetrying{
-		Context:     ctx,
+		EventMeta:   eventmeta.Current(ctx),
 		JobType:     jobType,
 		Queue:       queue,
 		Attempt:     attempt,
 		MaxAttempts: maxAttempts,
-		Error:       errMsg,
-		BackoffMs:   backoff.Milliseconds(),
-		TraceID:     traceID,
-		SpanID:      spanID,
-		ParentID:    parentID,
+		Err:         err,
+		Backoff:     backoff,
 	})
 }
 

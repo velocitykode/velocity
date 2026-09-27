@@ -4,9 +4,13 @@ package grpcevents
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"google.golang.org/grpc/codes"
+
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
 // Protocol indicates how the request was received
@@ -24,16 +28,13 @@ const (
 // matching the dispatcher signature used across the framework.
 type EventDispatchFunc func(ctx context.Context, event any) error
 
-// RequestStarted is dispatched when a gRPC request begins
+// RequestStarted is dispatched when a gRPC request begins. Its At is when
+// the call arrived.
 type RequestStarted struct {
-	Method    string
-	Protocol  Protocol // "grpc" or "http"
-	StartTime time.Time
-	Context   context.Context
-	Metadata  map[string][]string
-	TraceID   string // APM trace ID
-	SpanID    string // APM span ID
-	ParentID  string // Parent span ID for correlation
+	contract.EventMeta
+	Method   string
+	Protocol Protocol // "grpc" or "http"
+	Metadata map[string][]string
 }
 
 // Name returns the event name
@@ -41,20 +42,17 @@ func (e *RequestStarted) Name() string {
 	return "grpc.request.started"
 }
 
-// RequestCompleted is dispatched when a gRPC request completes successfully
+// RequestCompleted is dispatched when a gRPC request completes
+// successfully. Its At is when the call ended and Duration how long it
+// took.
 type RequestCompleted struct {
+	contract.EventMeta
 	Method     string
 	Protocol   Protocol // "grpc" or "http"
-	StartTime  time.Time
-	EndTime    time.Time
 	Duration   time.Duration
 	StatusCode codes.Code
-	Context    context.Context
 	UserID     uint
 	TeamID     uint
-	TraceID    string // APM trace ID
-	SpanID     string // APM span ID
-	ParentID   string // Parent span ID for correlation
 }
 
 // Name returns the event name
@@ -62,21 +60,17 @@ func (e *RequestCompleted) Name() string {
 	return "grpc.request.completed"
 }
 
-// RequestFailed is dispatched when a gRPC request fails
+// RequestFailed is dispatched when a gRPC request fails. Its At is when the
+// call ended and Duration how long it took.
 type RequestFailed struct {
+	contract.EventMeta
 	Method     string
 	Protocol   Protocol // "grpc" or "http"
-	StartTime  time.Time
-	EndTime    time.Time
 	Duration   time.Duration
 	StatusCode codes.Code
-	Error      error
-	Context    context.Context
+	Err        error
 	UserID     uint
 	TeamID     uint
-	TraceID    string // APM trace ID
-	SpanID     string // APM span ID
-	ParentID   string // Parent span ID for correlation
 }
 
 // Name returns the event name
@@ -84,16 +78,37 @@ func (e *RequestFailed) Name() string {
 	return "grpc.request.failed"
 }
 
-// StreamStarted is dispatched when a gRPC stream begins
+// MarshalJSON encodes the event with Err as its text.
+func (e RequestFailed) MarshalJSON() ([]byte, error) {
+	type fields RequestFailed
+	return json.Marshal(struct {
+		fields
+		Err string `json:",omitempty"`
+	}{fields(e), eventmeta.ErrorText(e.Err)})
+}
+
+// UnmarshalJSON decodes the event's JSON form: Err becomes an error with
+// the encoded text.
+func (e *RequestFailed) UnmarshalJSON(data []byte) error {
+	type fields RequestFailed
+	v := struct {
+		*fields
+		Err string `json:",omitempty"`
+	}{fields: (*fields)(e)}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	e.Err = eventmeta.TextError(v.Err)
+	return nil
+}
+
+// StreamStarted is dispatched when a gRPC stream begins. Its At is when the
+// stream opened.
 type StreamStarted struct {
-	Method    string
-	Protocol  Protocol // "grpc" or "http"
-	StartTime time.Time
-	Context   context.Context
-	Metadata  map[string][]string
-	TraceID   string // APM trace ID
-	SpanID    string // APM span ID
-	ParentID  string // Parent span ID for correlation
+	contract.EventMeta
+	Method   string
+	Protocol Protocol // "grpc" or "http"
+	Metadata map[string][]string
 }
 
 // Name returns the event name
@@ -101,21 +116,17 @@ func (e *StreamStarted) Name() string {
 	return "grpc.stream.started"
 }
 
-// StreamCompleted is dispatched when a gRPC stream completes
+// StreamCompleted is dispatched when a gRPC stream completes. Its At is
+// when the stream ended and Duration how long it was open.
 type StreamCompleted struct {
+	contract.EventMeta
 	Method       string
 	Protocol     Protocol // "grpc" or "http"
-	StartTime    time.Time
-	EndTime      time.Time
 	Duration     time.Duration
 	MessagesSent int
 	MessagesRecv int
-	Context      context.Context
 	UserID       uint
 	TeamID       uint
-	TraceID      string // APM trace ID
-	SpanID       string // APM span ID
-	ParentID     string // Parent span ID for correlation
 }
 
 // Name returns the event name
@@ -123,22 +134,18 @@ func (e *StreamCompleted) Name() string {
 	return "grpc.stream.completed"
 }
 
-// StreamFailed is dispatched when a gRPC stream fails
+// StreamFailed is dispatched when a gRPC stream fails. Its At is when the
+// stream ended and Duration how long it was open.
 type StreamFailed struct {
+	contract.EventMeta
 	Method       string
 	Protocol     Protocol // "grpc" or "http"
-	StartTime    time.Time
-	EndTime      time.Time
 	Duration     time.Duration
-	Error        error
+	Err          error
 	MessagesSent int
 	MessagesRecv int
-	Context      context.Context
 	UserID       uint
 	TeamID       uint
-	TraceID      string // APM trace ID
-	SpanID       string // APM span ID
-	ParentID     string // Parent span ID for correlation
 }
 
 // Name returns the event name
@@ -146,10 +153,35 @@ func (e *StreamFailed) Name() string {
 	return "grpc.stream.failed"
 }
 
-// ServerStarted is dispatched when the gRPC server starts
+// MarshalJSON encodes the event with Err as its text.
+func (e StreamFailed) MarshalJSON() ([]byte, error) {
+	type fields StreamFailed
+	return json.Marshal(struct {
+		fields
+		Err string `json:",omitempty"`
+	}{fields(e), eventmeta.ErrorText(e.Err)})
+}
+
+// UnmarshalJSON decodes the event's JSON form: Err becomes an error with
+// the encoded text.
+func (e *StreamFailed) UnmarshalJSON(data []byte) error {
+	type fields StreamFailed
+	v := struct {
+		*fields
+		Err string `json:",omitempty"`
+	}{fields: (*fields)(e)}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	e.Err = eventmeta.TextError(v.Err)
+	return nil
+}
+
+// ServerStarted is dispatched when the gRPC server starts. Its At is when
+// it started.
 type ServerStarted struct {
-	Port      string
-	StartTime time.Time
+	contract.EventMeta
+	Port string
 }
 
 // Name returns the event name
@@ -157,10 +189,11 @@ func (e *ServerStarted) Name() string {
 	return "grpc.server.started"
 }
 
-// ServerStopped is dispatched when the gRPC server stops
+// ServerStopped is dispatched when the gRPC server stops. Its At is when it
+// stopped and Duration how long it had been up.
 type ServerStopped struct {
+	contract.EventMeta
 	Port     string
-	StopTime time.Time
 	Duration time.Duration // Total server uptime
 }
 
@@ -169,11 +202,12 @@ func (e *ServerStopped) Name() string {
 	return "grpc.server.stopped"
 }
 
-// GatewayStarted is dispatched when the HTTP gateway starts
+// GatewayStarted is dispatched when the HTTP gateway starts. Its At is when
+// it started.
 type GatewayStarted struct {
+	contract.EventMeta
 	Port         string
 	GRPCEndpoint string
-	StartTime    time.Time
 }
 
 // Name returns the event name
@@ -181,10 +215,11 @@ func (e *GatewayStarted) Name() string {
 	return "grpc.gateway.started"
 }
 
-// GatewayStopped is dispatched when the HTTP gateway stops
+// GatewayStopped is dispatched when the HTTP gateway stops. Its At is when
+// it stopped and Duration how long it had been up.
 type GatewayStopped struct {
+	contract.EventMeta
 	Port     string
-	StopTime time.Time
 	Duration time.Duration
 }
 
@@ -195,14 +230,10 @@ func (e *GatewayStopped) Name() string {
 
 // PanicRecovered is dispatched when a panic is recovered in a gRPC handler
 type PanicRecovered struct {
+	contract.EventMeta
 	Method     string
 	Panic      interface{}
 	StackTrace string
-	Time       time.Time
-	Context    context.Context
-	TraceID    string // APM trace ID
-	SpanID     string // APM span ID
-	ParentID   string // Parent span ID for correlation
 }
 
 // Name returns the event name
@@ -210,19 +241,40 @@ func (e *PanicRecovered) Name() string {
 	return "grpc.panic.recovered"
 }
 
-// AuthFailed is dispatched when authentication fails
+// AuthFailed is dispatched when authentication fails. Err is the failure
+// the authenticator returned.
 type AuthFailed struct {
-	Method   string
-	Token    string // Masked token (first/last few chars)
-	Reason   string
-	Time     time.Time
-	Context  context.Context
-	TraceID  string // APM trace ID
-	SpanID   string // APM span ID
-	ParentID string // Parent span ID for correlation
+	contract.EventMeta
+	Method string
+	Token  string // Masked token (first/last few chars)
+	Err    error
 }
 
 // Name returns the event name
 func (e *AuthFailed) Name() string {
 	return "grpc.auth.failed"
+}
+
+// MarshalJSON encodes the event with Err as its text.
+func (e AuthFailed) MarshalJSON() ([]byte, error) {
+	type fields AuthFailed
+	return json.Marshal(struct {
+		fields
+		Err string `json:",omitempty"`
+	}{fields(e), eventmeta.ErrorText(e.Err)})
+}
+
+// UnmarshalJSON decodes the event's JSON form: Err becomes an error with
+// the encoded text.
+func (e *AuthFailed) UnmarshalJSON(data []byte) error {
+	type fields AuthFailed
+	v := struct {
+		*fields
+		Err string `json:",omitempty"`
+	}{fields: (*fields)(e)}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	e.Err = eventmeta.TextError(v.Err)
+	return nil
 }

@@ -85,8 +85,8 @@ func TestHTTPGateway_Dispatch_ServerError_FallsBack(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(got))
 	}
-	if got[0].Error != "render blew up" {
-		t.Errorf("error passthrough: got %q", got[0].Error)
+	if got[0].Err == nil || got[0].Err.Error() != "render blew up" {
+		t.Errorf("error passthrough: got %v", got[0].Err)
 	}
 	if got[0].Type != SSRErrorRender {
 		t.Errorf("expected type render, got %q", got[0].Type)
@@ -489,8 +489,8 @@ func TestHTTPGateway_Dispatch_OversizedResponse_RefusedNotTruncated(t *testing.T
 	if len(got) != 1 {
 		t.Fatalf("expected 1 SSRRenderFailed event, got %d", len(got))
 	}
-	if got[0].Error != ErrSSRResponseTooLarge.Error() {
-		t.Errorf("expected ErrSSRResponseTooLarge event, got %q", got[0].Error)
+	if !errors.Is(got[0].Err, ErrSSRResponseTooLarge) {
+		t.Errorf("expected ErrSSRResponseTooLarge event, got %v", got[0].Err)
 	}
 	if got[0].Type != SSRErrorConnection {
 		t.Errorf("expected connection error type, got %q", got[0].Type)

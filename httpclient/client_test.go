@@ -139,7 +139,7 @@ func TestClientDo(t *testing.T) {
 		if failedEvents[0].Method != "GET" {
 			t.Errorf("Method = %q, want %q", failedEvents[0].Method, "GET")
 		}
-		if failedEvents[0].Error == "" {
+		if failedEvents[0].Err == nil {
 			t.Error("Error should not be empty")
 		}
 		if len(sentEvents) != 0 {

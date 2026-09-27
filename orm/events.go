@@ -2,11 +2,14 @@ package orm
 
 import (
 	"context"
+	"encoding/json"
 	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/orm/drivers"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -28,8 +31,8 @@ import (
 // Statements count is still exact, because the counter advances when the
 // statement is recorded rather than when it is delivered.
 type QueryExecuted struct {
-	Context context.Context
-	SQL     string
+	contract.EventMeta
+	SQL string
 	// Bindings are the bound parameters as the database driver received
 	// them, after database/sql's conversion: an int arrives as int64, and a
 	// driver.Valuer has already been resolved to its underlying value.
@@ -44,9 +47,6 @@ type QueryExecuted struct {
 	Connection   string // Database connection/driver name
 	File         string // Caller file
 	Line         int    // Caller line
-	TraceID      string // APM trace ID
-	SpanID       string // The statement's own span
-	ParentID     string // The span the statement ran under (the tx span inside a transaction)
 }
 
 // Name returns the canonical event name.
@@ -63,19 +63,19 @@ func (e *QueryExecuted) Name() string {
 // produce this event: driver.ErrSkip means one execution path declined in
 // favour of another that reports its own outcome, and driver.ErrBadConn means
 // the statement is being retried on a fresh connection.
+//
+// Both events' SpanID is the statement's own span and ParentID the span it
+// ran under (the transaction's span inside a transaction).
 type QueryFailed struct {
-	Context    context.Context
+	contract.EventMeta
 	Connection string
 	Query      string // parameterized form only, never bound values
-	Error      string
-	At         time.Time
+	// Err is the error the driver returned.
+	Err error
 	// Duration is the wall time spent before the failure surfaced.
 	Duration time.Duration
 	File     string // Caller file
 	Line     int    // Caller line
-	TraceID  string // APM trace ID
-	SpanID   string // The statement's own span
-	ParentID string // The span the statement ran under (the tx span inside a transaction)
 }
 
 // Name returns the canonical event name.
@@ -83,15 +83,41 @@ func (e *QueryFailed) Name() string {
 	return "orm.query.failed"
 }
 
+// MarshalJSON encodes the event with Err as its text.
+func (e QueryFailed) MarshalJSON() ([]byte, error) {
+	type fields QueryFailed
+	return json.Marshal(struct {
+		fields
+		Err string `json:",omitempty"`
+	}{fields(e), eventmeta.ErrorText(e.Err)})
+}
+
+// UnmarshalJSON decodes the event's JSON form: Err becomes an error with
+// the encoded text.
+func (e *QueryFailed) UnmarshalJSON(data []byte) error {
+	type fields QueryFailed
+	v := struct {
+		*fields
+		Err string `json:",omitempty"`
+	}{fields: (*fields)(e)}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	e.Err = eventmeta.TextError(v.Err)
+	return nil
+}
+
 // TxRecover is dispatched when the Manager.Transaction helper recovers from
-// a rollback failure. The event always names the recovery cause ("panic" or
-// "error") and includes both the rollback error and the originating
-// panic/error so observability pipelines can correlate the failure chain.
+// a rollback failure, and when a transaction callback panics. The event
+// always names the recovery cause ("panic", "error" or "callback_panic")
+// and includes both the rollback error and the originating panic/error so
+// observability pipelines can correlate the failure chain.
 type TxRecover struct {
-	Cause       string // "panic" or "error"
-	PanicValue  string // set when Cause == "panic"
-	OriginalErr string // set when Cause == "error"
-	RollbackErr string // the rollback failure message
+	contract.EventMeta
+	Cause       string // "panic", "error" or "callback_panic"
+	PanicValue  string // set when Cause is "panic" or "callback_panic"
+	OriginalErr error  // set when Cause == "error"
+	RollbackErr error  // the rollback failure; nil for "callback_panic"
 }
 
 // Name returns the canonical event name.
@@ -99,25 +125,76 @@ func (e *TxRecover) Name() string {
 	return "orm.transaction.recovered"
 }
 
+// MarshalJSON encodes the event with OriginalErr and RollbackErr as their
+// text.
+func (e TxRecover) MarshalJSON() ([]byte, error) {
+	type fields TxRecover
+	return json.Marshal(struct {
+		fields
+		OriginalErr string `json:",omitempty"`
+		RollbackErr string `json:",omitempty"`
+	}{fields(e), eventmeta.ErrorText(e.OriginalErr), eventmeta.ErrorText(e.RollbackErr)})
+}
+
+// UnmarshalJSON decodes the event's JSON form: OriginalErr and RollbackErr
+// become errors with the encoded text.
+func (e *TxRecover) UnmarshalJSON(data []byte) error {
+	type fields TxRecover
+	v := struct {
+		*fields
+		OriginalErr string `json:",omitempty"`
+		RollbackErr string `json:",omitempty"`
+	}{fields: (*fields)(e)}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	e.OriginalErr = eventmeta.TextError(v.OriginalErr)
+	e.RollbackErr = eventmeta.TextError(v.RollbackErr)
+	return nil
+}
+
 // TransactionExecuted is dispatched at the end of a Manager.Transaction body,
 // on commit or rollback. It groups a tx into a single APM node by giving the
 // exporter the tx span itself plus a count of statements that ran under it.
-// Error is empty on commit and populated on rollback (closure error, panic,
-// or commit failure).
+// Err is nil on commit and set on rollback (the closure's error, the panic,
+// or the commit failure). SpanID is the transaction's span, which the
+// statements under it report as their ParentID, and ParentID the span that
+// opened it.
 type TransactionExecuted struct {
-	Context    context.Context
+	contract.EventMeta
 	Connection string        // Database driver name
 	Duration   time.Duration // Wall time from BeginTx success to Commit / Rollback resolution
 	Statements int           // Number of QueryExecuted events emitted under this tx span
-	Error      string        // Empty on commit, populated on rollback / panic / commit failure
-	TraceID    string        // APM trace ID
-	SpanID     string        // The tx span ID; per-statement events under this tx report it as ParentID
-	ParentID   string        // The span that opened this tx (caller's prior span)
+	Err        error         // nil on commit, set on rollback / panic / commit failure
 }
 
 // Name returns the canonical event name.
 func (e *TransactionExecuted) Name() string {
 	return "orm.transaction.completed"
+}
+
+// MarshalJSON encodes the event with Err as its text.
+func (e TransactionExecuted) MarshalJSON() ([]byte, error) {
+	type fields TransactionExecuted
+	return json.Marshal(struct {
+		fields
+		Err string `json:",omitempty"`
+	}{fields(e), eventmeta.ErrorText(e.Err)})
+}
+
+// UnmarshalJSON decodes the event's JSON form: Err becomes an error with
+// the encoded text.
+func (e *TransactionExecuted) UnmarshalJSON(data []byte) error {
+	type fields TransactionExecuted
+	v := struct {
+		*fields
+		Err string `json:",omitempty"`
+	}{fields: (*fields)(e)}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	e.Err = eventmeta.TextError(v.Err)
+	return nil
 }
 
 // txStatementCounterKey scopes a per-tx atomic counter onto the ctx that the
@@ -274,19 +351,16 @@ func (o managerObserver) ObserveStatement(ev drivers.StatementEvent) {
 	// when ctx carries no trace).
 	traceID, spanID, parentID := trace.ChildSpanIDs(ctx)
 
+	meta := contract.EventMeta{Context: ctx, TraceID: traceID, SpanID: spanID, ParentID: parentID, At: time.Now()}
 	if ev.Err != nil {
 		p.enqueue(ctx, &QueryFailed{
-			Context:    ctx,
+			EventMeta:  meta,
 			Connection: ev.Connection,
 			Query:      ev.SQL,
-			Error:      ev.Err.Error(),
-			At:         time.Now(),
+			Err:        ev.Err,
 			Duration:   ev.Duration,
 			File:       file,
 			Line:       line,
-			TraceID:    traceID,
-			SpanID:     spanID,
-			ParentID:   parentID,
 		})
 		return
 	}
@@ -298,7 +372,7 @@ func (o managerObserver) ObserveStatement(ev drivers.StatementEvent) {
 		c.Add(1)
 	}
 	p.enqueue(ctx, &QueryExecuted{
-		Context:      ctx,
+		EventMeta:    meta,
 		SQL:          ev.SQL,
 		Bindings:     ev.Args,
 		Duration:     ev.Duration,
@@ -306,8 +380,5 @@ func (o managerObserver) ObserveStatement(ev drivers.StatementEvent) {
 		Connection:   ev.Connection,
 		File:         file,
 		Line:         line,
-		TraceID:      traceID,
-		SpanID:       spanID,
-		ParentID:     parentID,
 	})
 }

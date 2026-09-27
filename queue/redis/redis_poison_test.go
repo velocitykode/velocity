@@ -128,8 +128,8 @@ func TestRedisDriver_PopCtxWithTrace_MalformedJSONQuarantined(t *testing.T) {
 	if failedEvents[0].Queue != queueName {
 		t.Errorf("JobFailed.Queue = %q, want %q", failedEvents[0].Queue, queueName)
 	}
-	if !strings.Contains(failedEvents[0].Error, "failed to unmarshal payload") {
-		t.Errorf("JobFailed.Error did not include unmarshal cause: %q", failedEvents[0].Error)
+	if err := failedEvents[0].Err; err == nil || !strings.Contains(err.Error(), "failed to unmarshal payload") {
+		t.Errorf("JobFailed.Err did not include unmarshal cause: %v", err)
 	}
 }
 

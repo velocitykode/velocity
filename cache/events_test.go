@@ -464,7 +464,7 @@ func TestDispatchCacheOperationFailedRememberWrite(t *testing.T) {
 					cf.Op == "put" &&
 					cf.Key == tc.key &&
 					cf.Store == "lockwin" &&
-					cf.Error == wantErr.Error()
+					errors.Is(cf.Err, wantErr)
 			})
 			if event == nil {
 				t.Fatalf("CacheOperationFailed not dispatched on write failure (key=%q)", tc.key)
@@ -509,7 +509,7 @@ func TestDispatchCacheOperationFailed(t *testing.T) {
 					cf.Op == tc.op &&
 					cf.Key == tc.key &&
 					cf.Store == "failing" &&
-					cf.Error == wantErr.Error()
+					errors.Is(cf.Err, wantErr)
 			}
 			if got := collector.countEvents(matches); got != 1 {
 				t.Fatalf("CacheOperationFailed dispatched %d times, want exactly 1 (op=%s key=%q)", got, tc.op, tc.key)

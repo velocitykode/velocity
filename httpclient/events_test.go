@@ -3,6 +3,7 @@ package httpclient
 import (
 	"context"
 	"errors"
+	"github.com/velocitykode/velocity/contract"
 	"testing"
 	"time"
 
@@ -95,8 +96,8 @@ func TestDispatchRequestSent(t *testing.T) {
 		if captured.StatusCode != 200 {
 			t.Errorf("StatusCode = %d, want 200", captured.StatusCode)
 		}
-		if captured.DurationMs != 150 {
-			t.Errorf("DurationMs = %d, want 150", captured.DurationMs)
+		if captured.Duration != 150*time.Millisecond {
+			t.Errorf("Duration = %v, want 150", captured.Duration)
 		}
 		if captured.RequestSize != 0 {
 			t.Errorf("RequestSize = %d, want 0", captured.RequestSize)
@@ -152,11 +153,11 @@ func TestDispatchRequestFailed(t *testing.T) {
 		if captured.URL != "https://api.example.com/users" {
 			t.Errorf("URL = %q, want %q", captured.URL, "https://api.example.com/users")
 		}
-		if captured.Error != "connection refused" {
-			t.Errorf("Error = %q, want %q", captured.Error, "connection refused")
+		if captured.Err == nil || captured.Err.Error() != "connection refused" {
+			t.Errorf("Err = %v, want %q", captured.Err, "connection refused")
 		}
-		if captured.DurationMs != 5000 {
-			t.Errorf("DurationMs = %d, want 5000", captured.DurationMs)
+		if captured.Duration != 5000*time.Millisecond {
+			t.Errorf("Duration = %v, want 5000", captured.Duration)
 		}
 	})
 
@@ -168,8 +169,8 @@ func TestDispatchRequestFailed(t *testing.T) {
 		if captured == nil {
 			t.Fatal("event was not dispatched")
 		}
-		if captured.Error != "" {
-			t.Errorf("Error = %q, want empty string", captured.Error)
+		if captured.Err != nil {
+			t.Errorf("Err = %v, want nil", captured.Err)
 		}
 	})
 
@@ -196,16 +197,13 @@ func TestDispatchRequestFailed(t *testing.T) {
 
 func TestRequestSentEventFields(t *testing.T) {
 	e := &RequestSent{
-		Context:      context.Background(),
+		EventMeta:    contract.EventMeta{Context: context.Background(), TraceID: "trace-xyz", SpanID: "span-abc", ParentID: "parent-def"},
 		Method:       "PUT",
 		URL:          "https://api.example.com/resource/123",
 		StatusCode:   204,
-		DurationMs:   75,
+		Duration:     75 * time.Millisecond,
 		RequestSize:  2048,
 		ResponseSize: 0,
-		TraceID:      "trace-xyz",
-		SpanID:       "span-abc",
-		ParentID:     "parent-def",
 	}
 
 	if e.Name() != "httpclient.request.completed" {
@@ -224,23 +222,20 @@ func TestRequestSentEventFields(t *testing.T) {
 
 func TestRequestFailedEventFields(t *testing.T) {
 	e := &RequestFailed{
-		Context:    context.Background(),
-		Method:     "DELETE",
-		URL:        "https://api.example.com/resource/456",
-		Error:      "server unavailable",
-		DurationMs: 10000,
-		TraceID:    "trace-err",
-		SpanID:     "span-err",
-		ParentID:   "",
+		EventMeta: contract.EventMeta{Context: context.Background(), TraceID: "trace-err", SpanID: "span-err", ParentID: ""},
+		Method:    "DELETE",
+		URL:       "https://api.example.com/resource/456",
+		Err:       errors.New("server unavailable"),
+		Duration:  10000 * time.Millisecond,
 	}
 
 	if e.Name() != "httpclient.request.failed" {
 		t.Errorf("Name() = %q, want %q", e.Name(), "httpclient.request.failed")
 	}
-	if e.Error != "server unavailable" {
-		t.Errorf("Error = %q, want %q", e.Error, "server unavailable")
+	if e.Err == nil || e.Err.Error() != "server unavailable" {
+		t.Errorf("Err = %v, want %q", e.Err, "server unavailable")
 	}
-	if e.DurationMs != 10000 {
-		t.Errorf("DurationMs = %d, want 10000", e.DurationMs)
+	if e.Duration != 10000*time.Millisecond {
+		t.Errorf("Duration = %v, want 10000", e.Duration)
 	}
 }

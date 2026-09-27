@@ -529,8 +529,8 @@ func TestErrorHandlerMiddleware_HandledPathThroughRouter(t *testing.T) {
 			if len(failed) != 1 {
 				t.Fatalf("RequestFailed fired %d times, want 1", len(failed))
 			}
-			if failed[0].Error != cause {
-				t.Errorf("RequestFailed.Error = %v, want the cause %v", failed[0].Error, cause)
+			if failed[0].Err != cause {
+				t.Errorf("RequestFailed.Err = %v, want the cause %v", failed[0].Err, cause)
 			}
 			if tt.seam && len(seam.get()) != 1 {
 				t.Errorf("seam calls = %d, want 1", len(seam.get()))
@@ -635,7 +635,7 @@ func TestRequestFailed_Policy(t *testing.T) {
 			if tt.wantRecovered && !strings.Contains(ev.Stack, "goroutine") {
 				t.Errorf("recovered event must carry the stack, got %q", ev.Stack)
 			}
-			if errors.Is(ev.Error, contract.ErrResponseWritten) {
+			if errors.Is(ev.Err, contract.ErrResponseWritten) {
 				t.Error("RequestFailed must carry the cause, not the Handled wrapper")
 			}
 		})

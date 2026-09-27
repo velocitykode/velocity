@@ -79,8 +79,8 @@ func TestTransaction_StatementsParentUnderTxSpan(t *testing.T) {
 	if txEvent == nil {
 		t.Fatal("TransactionExecuted event not dispatched")
 	}
-	if txEvent.Error != "" {
-		t.Errorf("TransactionExecuted Error: got %q want empty", txEvent.Error)
+	if txEvent.Err != nil {
+		t.Errorf("TransactionExecuted Err: got %v want nil", txEvent.Err)
 	}
 	if txEvent.SpanID == "" {
 		t.Fatal("TransactionExecuted SpanID empty")
@@ -141,11 +141,8 @@ func TestTransaction_RollbackEmitsTransactionExecutedWithError(t *testing.T) {
 	if txEvent == nil {
 		t.Fatal("TransactionExecuted event not dispatched on rollback")
 	}
-	if txEvent.Error == "" {
-		t.Error("TransactionExecuted Error empty on rollback; want closure error message")
-	}
-	if txEvent.Error != sentinel.Error() {
-		t.Errorf("TransactionExecuted Error: got %q want %q", txEvent.Error, sentinel.Error())
+	if !errors.Is(txEvent.Err, sentinel) {
+		t.Errorf("TransactionExecuted Err: got %v want the closure's error %v", txEvent.Err, sentinel)
 	}
 }
 

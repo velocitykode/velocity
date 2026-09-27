@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"github.com/velocitykode/velocity/contract"
 	"testing"
 	"time"
 
@@ -135,8 +136,8 @@ func TestDispatchScheduledTaskFinished(t *testing.T) {
 		if captured.TaskName != "backup-database" {
 			t.Errorf("Name = %q, want %q", captured.TaskName, "backup-database")
 		}
-		if captured.DurationMs != 5000 {
-			t.Errorf("DurationMs = %d, want 5000", captured.DurationMs)
+		if captured.Duration != 5000*time.Millisecond {
+			t.Errorf("Duration = %v, want 5000", captured.Duration)
 		}
 	})
 
@@ -178,11 +179,11 @@ func TestDispatchScheduledTaskFailed(t *testing.T) {
 		if captured.TaskName != "cleanup" {
 			t.Errorf("Name = %q, want %q", captured.TaskName, "cleanup")
 		}
-		if captured.Error != "disk full" {
-			t.Errorf("Error = %q, want %q", captured.Error, "disk full")
+		if captured.Err == nil || captured.Err.Error() != "disk full" {
+			t.Errorf("Err = %v, want %q", captured.Err, "disk full")
 		}
-		if captured.DurationMs != 10000 {
-			t.Errorf("DurationMs = %d, want 10000", captured.DurationMs)
+		if captured.Duration != 10000*time.Millisecond {
+			t.Errorf("Duration = %v, want 10000", captured.Duration)
 		}
 	})
 
@@ -194,8 +195,8 @@ func TestDispatchScheduledTaskFailed(t *testing.T) {
 		if captured == nil {
 			t.Fatal("event was not dispatched")
 		}
-		if captured.Error != "" {
-			t.Errorf("Error = %q, want empty string", captured.Error)
+		if captured.Err != nil {
+			t.Errorf("Err = %v, want nil", captured.Err)
 		}
 	})
 
@@ -224,11 +225,8 @@ func TestDispatchScheduledTaskFailed(t *testing.T) {
 
 func TestScheduledTaskStartingEventFields(t *testing.T) {
 	e := &ScheduledTaskStarting{
-		Context:  context.Background(),
-		TaskName: "daily-backup",
-		TraceID:  "trace-123",
-		SpanID:   "span-456",
-		ParentID: "parent-789",
+		EventMeta: contract.EventMeta{Context: context.Background(), TraceID: "trace-123", SpanID: "span-456", ParentID: "parent-789"},
+		TaskName:  "daily-backup",
 	}
 
 	if e.Name() != "scheduler.task.started" {
@@ -241,37 +239,31 @@ func TestScheduledTaskStartingEventFields(t *testing.T) {
 
 func TestScheduledTaskFinishedEventFields(t *testing.T) {
 	e := &ScheduledTaskFinished{
-		Context:    context.Background(),
-		TaskName:   "hourly-sync",
-		DurationMs: 1500,
-		TraceID:    "trace-xyz",
-		SpanID:     "span-abc",
-		ParentID:   "",
+		EventMeta: contract.EventMeta{Context: context.Background(), TraceID: "trace-xyz", SpanID: "span-abc", ParentID: ""},
+		TaskName:  "hourly-sync",
+		Duration:  1500 * time.Millisecond,
 	}
 
 	if e.Name() != "scheduler.task.completed" {
 		t.Errorf("Name() = %q, want %q", e.Name(), "scheduler.task.completed")
 	}
-	if e.DurationMs != 1500 {
-		t.Errorf("DurationMs = %d, want 1500", e.DurationMs)
+	if e.Duration != 1500*time.Millisecond {
+		t.Errorf("Duration = %v, want 1500", e.Duration)
 	}
 }
 
 func TestScheduledTaskFailedEventFields(t *testing.T) {
 	e := &ScheduledTaskFailed{
-		Context:    context.Background(),
-		TaskName:   "monthly-report",
-		Error:      "template error",
-		DurationMs: 30000,
-		TraceID:    "trace-err",
-		SpanID:     "span-err",
-		ParentID:   "parent-err",
+		EventMeta: contract.EventMeta{Context: context.Background(), TraceID: "trace-err", SpanID: "span-err", ParentID: "parent-err"},
+		TaskName:  "monthly-report",
+		Err:       errors.New("template error"),
+		Duration:  30000 * time.Millisecond,
 	}
 
 	if e.Name() != "scheduler.task.failed" {
 		t.Errorf("Name() = %q, want %q", e.Name(), "scheduler.task.failed")
 	}
-	if e.Error != "template error" {
-		t.Errorf("Error = %q, want %q", e.Error, "template error")
+	if e.Err == nil || e.Err.Error() != "template error" {
+		t.Errorf("Err = %v, want %q", e.Err, "template error")
 	}
 }

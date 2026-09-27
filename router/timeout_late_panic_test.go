@@ -65,8 +65,8 @@ func (o *latePanicObserver) dispatch(_ context.Context, event interface{}) error
 		return nil
 	}
 	s := latePanicSignal{recovered: rf.Recovered}
-	if rf.Error != nil {
-		s.err = rf.Error.Error()
+	if rf.Err != nil {
+		s.err = rf.Err.Error()
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()

@@ -68,8 +68,8 @@ func TestAsyncFailed_DeliveredToItsListeners(t *testing.T) {
 		if got := trace.GetTraceID(failed.Context); got != "trace-async-failed" {
 			t.Errorf("Context trace id = %q, want the caller's", got)
 		}
-		if failed.Err == nil || failed.Error != failed.Err.Error() {
-			t.Errorf("Error = %q, want the text of Err %v", failed.Error, failed.Err)
+		if failed.Err == nil {
+			t.Error("Err is nil, want the listener's failure")
 		}
 		switch failed.ListenerName {
 		case fmt.Sprintf("%T", failingListener{}):
@@ -128,16 +128,13 @@ func TestAsyncFailed_FailingFailureListenerReportedOnce(t *testing.T) {
 }
 
 // TestAsyncFailed_FailureError asserts FailureError returns the failure
-// with its type, falls back to the Error text for an event decoded from
-// JSON, and that Err never reaches the JSON form; and FailureSource names
-// a listener.
+// with its type, that the JSON form carries Err as its text and decodes back
+// to an event whose FailureError has that text, and that FailureSource
+// names a listener.
 func TestAsyncFailed_FailureError(t *testing.T) {
 	cause := contract.NewHTTPError(404, "gone")
-	if got := (&AsyncFailed{Error: cause.Error(), Err: cause}).FailureError(); got != error(cause) {
+	if got := (&AsyncFailed{Err: cause}).FailureError(); got != error(cause) {
 		t.Errorf("FailureError() = %#v, want Err itself", got)
-	}
-	if got := (&AsyncFailed{Error: "listener broke"}).FailureError(); got == nil || got.Error() != "listener broke" {
-		t.Errorf("FailureError() without Err = %v, want the Error text", got)
 	}
 	if got := (&AsyncFailed{}).FailureError(); got != nil {
 		t.Errorf("FailureError() of an empty event = %v, want nil", got)
@@ -145,11 +142,18 @@ func TestAsyncFailed_FailureError(t *testing.T) {
 	if got := (&AsyncFailed{}).FailureSource(); got != contract.ErrorSourceListener {
 		t.Errorf("FailureSource() = %v, want ErrorSourceListener", got)
 	}
-	data, err := json.Marshal(&AsyncFailed{EventName: "evt", Error: "listener broke", Err: errors.New("listener broke")})
+	data, err := json.Marshal(&AsyncFailed{EventName: "evt", Err: errors.New("listener broke")})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if strings.Contains(string(data), `"Err"`) {
-		t.Errorf("JSON form carries Err: %s", data)
+	if !strings.Contains(string(data), `"Err":"listener broke"`) {
+		t.Errorf("JSON form does not carry Err's text: %s", data)
+	}
+	var decoded AsyncFailed
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode the JSON form: %v", err)
+	}
+	if got := decoded.FailureError(); got == nil || got.Error() != "listener broke" {
+		t.Errorf("FailureError() of the decoded event = %v, want the Err text", got)
 	}
 }

@@ -2,19 +2,22 @@ package cache
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
-	"github.com/velocitykode/velocity/trace"
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 )
+
+// Each cache event records its operation as a span of its own under the
+// caller's span (a root span when ctx carries no trace): SpanID is the
+// operation's span and ParentID the caller's, per trace.ChildSpanIDs.
 
 // CacheHit is dispatched when a cache lookup finds the key
 type CacheHit struct {
-	Context  context.Context
-	Key      string
-	Store    string
-	TraceID  string // APM trace ID
-	SpanID   string // APM span ID
-	ParentID string // Parent span ID for correlation
+	contract.EventMeta
+	Key   string
+	Store string
 }
 
 // Name returns the event name
@@ -24,12 +27,9 @@ func (e *CacheHit) Name() string {
 
 // CacheMiss is dispatched when a cache lookup does not find the key
 type CacheMiss struct {
-	Context  context.Context
-	Key      string
-	Store    string
-	TraceID  string // APM trace ID
-	SpanID   string // APM span ID
-	ParentID string // Parent span ID for correlation
+	contract.EventMeta
+	Key   string
+	Store string
 }
 
 // Name returns the event name
@@ -39,13 +39,10 @@ func (e *CacheMiss) Name() string {
 
 // CacheWritten is dispatched when a value is written to the cache
 type CacheWritten struct {
-	Context  context.Context
-	Key      string
-	Store    string
-	TTL      time.Duration // 0 means forever
-	TraceID  string        // APM trace ID
-	SpanID   string        // APM span ID
-	ParentID string        // Parent span ID for correlation
+	contract.EventMeta
+	Key   string
+	Store string
+	TTL   time.Duration // 0 means forever
 }
 
 // Name returns the event name
@@ -55,12 +52,9 @@ func (e *CacheWritten) Name() string {
 
 // CacheForgotten is dispatched when a key is removed from the cache
 type CacheForgotten struct {
-	Context  context.Context
-	Key      string
-	Store    string
-	TraceID  string // APM trace ID
-	SpanID   string // APM span ID
-	ParentID string // Parent span ID for correlation
+	contract.EventMeta
+	Key   string
+	Store string
 }
 
 // Name returns the event name
@@ -70,15 +64,11 @@ func (e *CacheForgotten) Name() string {
 
 // CacheOperationFailed is dispatched when a cache operation fails
 type CacheOperationFailed struct {
-	Context  context.Context
-	Store    string
-	Op       string // "put", "put_many", "add", "forget", "flush", "increment", "decrement"
-	Key      string
-	Error    string
-	At       time.Time
-	TraceID  string // APM trace ID
-	SpanID   string // APM span ID
-	ParentID string // Parent span ID for correlation
+	contract.EventMeta
+	Store string
+	Op    string // "put", "put_many", "add", "forget", "flush", "increment", "decrement"
+	Key   string
+	Err   error
 }
 
 // Name returns the event name
@@ -86,77 +76,59 @@ func (e *CacheOperationFailed) Name() string {
 	return "cache.operation.failed"
 }
 
-// Each cache operation event is its own span under the caller's span (a
-// root span when ctx carries no trace): SpanID is the operation's span and
-// ParentID the caller's, per trace.ChildSpanIDs.
+// MarshalJSON encodes the event with Err as its text.
+func (e CacheOperationFailed) MarshalJSON() ([]byte, error) {
+	type fields CacheOperationFailed
+	return json.Marshal(struct {
+		fields
+		Err string `json:",omitempty"`
+	}{fields(e), eventmeta.ErrorText(e.Err)})
+}
+
+// UnmarshalJSON decodes the event's JSON form: Err becomes an error with
+// the encoded text.
+func (e *CacheOperationFailed) UnmarshalJSON(data []byte) error {
+	type fields CacheOperationFailed
+	v := struct {
+		*fields
+		Err string `json:",omitempty"`
+	}{fields: (*fields)(e)}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	e.Err = eventmeta.TextError(v.Err)
+	return nil
+}
 
 // dispatchCacheHit dispatches a CacheHit event
 func (m *Manager) dispatchCacheHit(ctx context.Context, key, store string) {
-	traceID, spanID, parentID := trace.ChildSpanIDs(ctx)
-	m.dispatchEvent(ctx, &CacheHit{
-		Context:  ctx,
-		Key:      key,
-		Store:    store,
-		TraceID:  traceID,
-		SpanID:   spanID,
-		ParentID: parentID,
-	})
+	m.dispatchEvent(ctx, &CacheHit{EventMeta: eventmeta.Child(ctx), Key: key, Store: store})
 }
 
 // dispatchCacheMiss dispatches a CacheMiss event
 func (m *Manager) dispatchCacheMiss(ctx context.Context, key, store string) {
-	traceID, spanID, parentID := trace.ChildSpanIDs(ctx)
-	m.dispatchEvent(ctx, &CacheMiss{
-		Context:  ctx,
-		Key:      key,
-		Store:    store,
-		TraceID:  traceID,
-		SpanID:   spanID,
-		ParentID: parentID,
-	})
+	m.dispatchEvent(ctx, &CacheMiss{EventMeta: eventmeta.Child(ctx), Key: key, Store: store})
 }
 
 // dispatchCacheWritten dispatches a CacheWritten event
 func (m *Manager) dispatchCacheWritten(ctx context.Context, key, store string, ttl time.Duration) {
-	traceID, spanID, parentID := trace.ChildSpanIDs(ctx)
-	m.dispatchEvent(ctx, &CacheWritten{
-		Context:  ctx,
-		Key:      key,
-		Store:    store,
-		TTL:      ttl,
-		TraceID:  traceID,
-		SpanID:   spanID,
-		ParentID: parentID,
-	})
+	m.dispatchEvent(ctx, &CacheWritten{EventMeta: eventmeta.Child(ctx), Key: key, Store: store, TTL: ttl})
 }
 
 // dispatchCacheForgotten dispatches a CacheForgotten event
 func (m *Manager) dispatchCacheForgotten(ctx context.Context, key, store string) {
-	traceID, spanID, parentID := trace.ChildSpanIDs(ctx)
-	m.dispatchEvent(ctx, &CacheForgotten{
-		Context:  ctx,
-		Key:      key,
-		Store:    store,
-		TraceID:  traceID,
-		SpanID:   spanID,
-		ParentID: parentID,
-	})
+	m.dispatchEvent(ctx, &CacheForgotten{EventMeta: eventmeta.Child(ctx), Key: key, Store: store})
 }
 
 // dispatchCacheOperationFailed dispatches a CacheOperationFailed event for a
 // failed store operation. op is one of the lowercase verbs documented on
 // CacheOperationFailed; key is empty for keyless operations (flush).
 func (m *Manager) dispatchCacheOperationFailed(ctx context.Context, store, op, key string, opErr error) {
-	traceID, spanID, parentID := trace.ChildSpanIDs(ctx)
 	m.dispatchEvent(ctx, &CacheOperationFailed{
-		Context:  ctx,
-		Store:    store,
-		Op:       op,
-		Key:      key,
-		Error:    opErr.Error(),
-		At:       time.Now(),
-		TraceID:  traceID,
-		SpanID:   spanID,
-		ParentID: parentID,
+		EventMeta: eventmeta.Child(ctx),
+		Store:     store,
+		Op:        op,
+		Key:       key,
+		Err:       opErr,
 	})
 }

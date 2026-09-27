@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf/stores"
@@ -668,22 +667,12 @@ func (c *CSRF) getSessionID(r *http.Request) (string, error) {
 	id, err := c.config.SessionIDResolver(r)
 	if err != nil {
 		if errors.Is(err, ErrNoSession) {
-			c.dispatchEvent(r.Context(), &SessionMissing{
-				Context: r.Context(),
-				Path:    r.URL.Path,
-				Method:  r.Method,
-				At:      time.Now(),
-			})
+			c.dispatchSessionMissing(r)
 		}
 		return "", err
 	}
 	if id == "" {
-		c.dispatchEvent(r.Context(), &SessionMissing{
-			Context: r.Context(),
-			Path:    r.URL.Path,
-			Method:  r.Method,
-			At:      time.Now(),
-		})
+		c.dispatchSessionMissing(r)
 		return "", ErrNoSession
 	}
 	return id, nil
