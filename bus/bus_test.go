@@ -57,18 +57,21 @@ func (m *mockQueuePusher) PushCtx(_ context.Context, job contract.QueueJob, queu
 type mockLogger struct {
 	mu       sync.Mutex
 	messages []string
+	levels   []string
 }
 
-func (l *mockLogger) Info(msg string, kvs ...any) {
+func (l *mockLogger) add(level, msg string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.messages = append(l.messages, msg)
+	l.levels = append(l.levels, level)
 }
 
-func (*mockLogger) Debug(string, ...any) {}
-func (*mockLogger) Warn(string, ...any)  {}
-func (*mockLogger) Error(string, ...any) {}
-func (*mockLogger) Fatal(string, ...any) {}
+func (l *mockLogger) Info(msg string, kvs ...any)  { l.add("info", msg) }
+func (l *mockLogger) Error(msg string, kvs ...any) { l.add("error", msg) }
+func (*mockLogger) Debug(string, ...any)           {}
+func (*mockLogger) Warn(string, ...any)            {}
+func (*mockLogger) Fatal(string, ...any)           {}
 
 func (l *mockLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
@@ -720,6 +723,9 @@ func TestLoggingMiddleware_Error(t *testing.T) {
 	}
 	if logger.messages[1] != "Command failed" {
 		t.Fatalf("messages[1] = %q, want 'Command failed'", logger.messages[1])
+	}
+	if logger.levels[1] != "error" {
+		t.Fatalf("Command failed logged at %s, want error", logger.levels[1])
 	}
 }
 
