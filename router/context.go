@@ -2144,16 +2144,15 @@ func (c *Context) flashBag() contract.FlashBag {
 	return c.services.FlashBag(c.Request)
 }
 
-// warnFlash logs a dropped flash at warn level when a logger is wired.
+// warnFlash logs a dropped flash at warn level through requestLogger: the
+// serving router's or the services' logger, else the framework's
+// standalone fallback logger, bound to the request's fields.
 func (c *Context) warnFlash(msg, key string, err error) {
-	if c.services == nil || c.services.Log == nil {
-		return
-	}
 	if err != nil {
-		c.services.Log.Warn(msg, "key", key, "error", err)
+		requestLogger(c).Warn(msg, "key", key, "error", err)
 		return
 	}
-	c.services.Log.Warn(msg, "key", key)
+	requestLogger(c).Warn(msg, "key", key)
 }
 
 // Members of the error bag envelope flashErrorsPayload builds for a value

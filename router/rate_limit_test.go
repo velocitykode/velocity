@@ -1,20 +1,18 @@
 package router
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 )
 
 // Helper to create a test context
@@ -1461,15 +1459,9 @@ func TestRouterThrottleByIP_UnionsPerMiddlewareTrust(t *testing.T) {
 // one-shot warning. The warning fires at most once per middleware
 // instance to avoid log flooding.
 func TestRateLimitByIP_WarnsOnPrivatePeerWithNoTrust(t *testing.T) {
-	var buf bytes.Buffer
-	origOut := log.Writer()
-	origFlags := log.Flags()
-	log.SetOutput(&buf)
-	log.SetFlags(0)
-	defer func() {
-		log.SetOutput(origOut)
-		log.SetFlags(origFlags)
-	}()
+	// The Context has no router and no services: the warning goes
+	// through the fallback logger.
+	out := fallbacklogtest.Capture(t)
 
 	middleware := RateLimitByIP(10, time.Minute)
 	handler := throughBoundary(middleware(successHandler))
@@ -1486,24 +1478,24 @@ func TestRateLimitByIP_WarnsOnPrivatePeerWithNoTrust(t *testing.T) {
 		}
 	}
 
+	const advisory = "velocity/router: rate limit by IP sees a private or loopback peer"
+
 	// First RFC1918 peer: warning expected.
 	_ = handler(makeReq("10.0.0.1:443"))
-	if !strings.Contains(buf.String(), "RFC1918/loopback") {
-		t.Errorf("expected warning on first private peer, got log: %q", buf.String())
+	if got := out.Count("WARN", advisory); got != 1 {
+		t.Errorf("expected one warning on first private peer, got %d: %q", got, out.String())
 	}
 
 	// Second RFC1918 peer: warning must NOT repeat.
-	buf.Reset()
 	_ = handler(makeReq("192.168.1.5:443"))
-	if buf.Len() != 0 {
-		t.Errorf("warning fired again, log: %q", buf.String())
+	if got := len(out.Lines()); got != 1 {
+		t.Errorf("warning fired again, log: %q", out.String())
 	}
 
 	// Public peer on a different middleware instance: no warning.
-	buf.Reset()
 	mw2 := RateLimitByIP(10, time.Minute)(successHandler)
 	_ = mw2(makeReq("203.0.113.9:443"))
-	if buf.Len() != 0 {
-		t.Errorf("public peer should not warn, log: %q", buf.String())
+	if got := len(out.Lines()); got != 1 {
+		t.Errorf("public peer should not warn, log: %q", out.String())
 	}
 }

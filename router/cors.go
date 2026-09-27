@@ -1,10 +1,10 @@
 package router
 
 import (
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -64,6 +64,9 @@ func InsecureAllowAllCORS() CORSConfig {
 // middleware echoes back the request origin instead. This effectively allows any
 // site to make credentialed requests to your API. Only use this combination if
 // you fully understand the security implications. Prefer listing explicit origins.
+// The middleware warns about it once, on the first request it sees, through
+// the logger of the router serving that request (the app logger in an app,
+// the framework's standalone fallback logger for a router without one).
 func CORS(config CORSConfig) MiddlewareFunc {
 	allowAll := false
 	for _, o := range config.AllowedOrigins {
@@ -73,11 +76,11 @@ func CORS(config CORSConfig) MiddlewareFunc {
 		}
 	}
 
-	if allowAll && config.AllowCredentials {
-		log.Println("velocity/cors: WARNING: AllowedOrigins [\"*\"] with AllowCredentials is dangerous — " +
-			"the request origin will be echoed back, allowing any site to make credentialed requests. " +
-			"Use explicit origins instead.")
-	}
+	// The middleware has no logger when it is built, so the warning for
+	// every origin with credentials waits for the first request, where the
+	// serving router's logger is known. One warning per middleware.
+	warnWildcard := allowAll && config.AllowCredentials
+	var wildcardWarned atomic.Bool
 
 	methods := strings.Join(config.AllowedMethods, ", ")
 	headers := strings.Join(config.AllowedHeaders, ", ")
@@ -86,6 +89,9 @@ func CORS(config CORSConfig) MiddlewareFunc {
 
 	return func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
+			if warnWildcard && !wildcardWarned.Load() && wildcardWarned.CompareAndSwap(false, true) {
+				requestLogger(c).Warn("velocity/router: CORS allows every origin with credentials; the request origin is echoed back, so any site can make credentialed requests. List explicit origins instead")
+			}
 			origin := c.Request.Header.Get("Origin")
 			if origin == "" {
 				return next(c)

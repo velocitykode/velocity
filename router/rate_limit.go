@@ -2,7 +2,6 @@ package router
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -500,7 +499,7 @@ func maybeWarnPrivatePeerUntrusted(c *Context, merged []*net.IPNet, resolvedIP s
 		return
 	}
 	if warned.CompareAndSwap(false, true) {
-		log.Printf("velocity/router: RateLimitByIP observed RFC1918/loopback peer %q with no trusted proxies configured; if this server is behind a load balancer all clients share one bucket. Configure Router.TrustedProxies or use Router.ThrottleByIP.", resolvedIP)
+		requestLogger(c).Warn("velocity/router: rate limit by IP sees a private or loopback peer and no trusted proxies; behind a load balancer every client shares one bucket. Configure Router.TrustedProxies or use Router.ThrottleByIP", "ip", resolvedIP)
 	}
 }
 
@@ -688,7 +687,7 @@ func NewRateLimitGroup(limiters ...MiddlewareFunc) MiddlewareFunc {
 //	        return c.Path() == "/health"
 //	    }),
 //	    WithOnLimitReached(func(c *Context) {
-//	        log.Printf("Rate limit exceeded for %s", c.IP())
+//	        c.Log().Warn("rate limit exceeded", "ip", c.IP())
 //	    }),
 //	    WithMessage("Too many requests, please slow down"),
 //	    WithCleanupInterval(5*time.Minute),

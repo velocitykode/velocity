@@ -1,9 +1,7 @@
 package router
 
 import (
-	"bytes"
 	"fmt"
-	"log"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +10,7 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 )
 
 // --- QueryFloat64 parse-error handling ---
@@ -117,10 +116,10 @@ func TestWrap_HTTPError5xx_GenericBody(t *testing.T) {
 // must warn like top-level registration does. The routes still never
 // serve (frozen tree); the warning makes that loud instead of silent.
 func TestGroupRegistrationAfterFreeze_WarnsAndDoesNotServe(t *testing.T) {
-	var buf bytes.Buffer
-	prev := log.Writer()
-	log.SetOutput(&buf)
-	defer log.SetOutput(prev)
+	// The router has no logger: the warning goes through the fallback.
+	out := fallbacklogtest.Capture(t)
+	mark := 0
+	since := func() string { return strings.Join(out.Lines()[mark:], "\n") }
 
 	r := NewV2()
 	g := r.Group("/api")
@@ -134,10 +133,10 @@ func TestGroupRegistrationAfterFreeze_WarnsAndDoesNotServe(t *testing.T) {
 	}
 
 	t.Run("route", func(t *testing.T) {
-		buf.Reset()
+		mark = len(out.Lines())
 		g.Get("/late", func(c *Context) error { return c.String(http.StatusOK, "late") })
-		if !strings.Contains(buf.String(), "after server start") {
-			t.Errorf("expected post-freeze warning, log: %q", buf.String())
+		if !strings.Contains(since(), "WARN velocity/router:") || !strings.Contains(since(), "after server start") {
+			t.Errorf("expected post-freeze warning, log: %q", since())
 		}
 
 		w := httptest.NewRecorder()
@@ -148,26 +147,26 @@ func TestGroupRegistrationAfterFreeze_WarnsAndDoesNotServe(t *testing.T) {
 	})
 
 	t.Run("group", func(t *testing.T) {
-		buf.Reset()
+		mark = len(out.Lines())
 		g.Group("/sub")
-		if !strings.Contains(buf.String(), "after server start") {
-			t.Errorf("expected post-freeze warning, log: %q", buf.String())
+		if !strings.Contains(since(), "WARN velocity/router:") || !strings.Contains(since(), "after server start") {
+			t.Errorf("expected post-freeze warning, log: %q", since())
 		}
 	})
 
 	t.Run("middleware", func(t *testing.T) {
-		buf.Reset()
+		mark = len(out.Lines())
 		g.Use(func(next HandlerFunc) HandlerFunc { return next })
-		if !strings.Contains(buf.String(), "after server start") {
-			t.Errorf("expected post-freeze warning, log: %q", buf.String())
+		if !strings.Contains(since(), "WARN velocity/router:") || !strings.Contains(since(), "after server start") {
+			t.Errorf("expected post-freeze warning, log: %q", since())
 		}
 	})
 
 	t.Run("resource", func(t *testing.T) {
-		buf.Reset()
+		mark = len(out.Lines())
 		g.Resource("/things", NewTestUserController())
-		if !strings.Contains(buf.String(), "after server start") {
-			t.Errorf("expected post-freeze warning, log: %q", buf.String())
+		if !strings.Contains(since(), "WARN velocity/router:") || !strings.Contains(since(), "after server start") {
+			t.Errorf("expected post-freeze warning, log: %q", since())
 		}
 	})
 }

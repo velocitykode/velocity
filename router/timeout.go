@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -372,11 +371,12 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 // The panic is reported through the router serving the request (see
 // VelocityRouterV2.reportLate). A request no router dispatched (a Context
 // built by NewContext or Wrap) has no boundary: it goes to the services'
-// error handler when one is wired, and to the standard logger otherwise.
+// error handler when one is wired, and otherwise is written at error level
+// to the services' logger, or the framework's standalone fallback logger.
 // The request context was cancelled when the middleware answered, so the
 // report carries its values without the cancellation. It may run at the
 // top of the goroutine, where a panic would end the process, so a failure
-// while reporting is logged and swallowed.
+// while reporting is logged (see requestLogger) and swallowed.
 func reportLatePanic(c *Context, err error) {
 	if err == nil {
 		return
@@ -387,7 +387,7 @@ func reportLatePanic(c *Context, err error) {
 	}
 	defer func() {
 		if p := recover(); p != nil {
-			log.Printf("velocity/router: reporting a timeout handler panic after the timeout failed: %v (the panic: %v)", p, err)
+			requestLogger(c).Error("velocity/router: reporting a timeout handler panic after the timeout failed", "panic", fmt.Sprint(p), "error", err)
 		}
 	}()
 	if c.Request != nil {
@@ -408,7 +408,7 @@ func reportLatePanic(c *Context, err error) {
 		c.services.Errors.Report(err, ec)
 		return
 	}
-	log.Printf("velocity/router: timeout handler panic after the timeout: %v\n%s", err, stack)
+	requestLogger(c).Error("velocity/router: timeout handler panicked after the timeout answered", "error", err, "stack", stack)
 }
 
 // handlerAbort carries a Timeout handler goroutine's http.ErrAbortHandler
