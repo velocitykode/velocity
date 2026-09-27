@@ -1,11 +1,9 @@
 package queue
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 )
@@ -102,34 +100,6 @@ func TestNormalizeJobType(t *testing.T) {
 		if got := normalizeJobType(in); got != want {
 			t.Errorf("normalizeJobType(%q) = %q, want %q", in, got, want)
 		}
-	}
-}
-
-func TestNewWorker_StderrFallbackEmitsOnNoLogger(t *testing.T) {
-	orig := stderrFallbackWriter()
-	var buf bytes.Buffer
-	stderrFallback.Store(stderrWriter{Writer: &buf})
-	defer stderrFallback.Store(stderrWriter{Writer: orig})
-
-	w := NewWorker(NewMemoryDriver(), "fallback-test", func(Job) error { return nil })
-	if _, ok := w.logger.(stderrLogger); !ok {
-		t.Fatalf("expected stderrLogger fallback, got %T", w.logger)
-	}
-
-	got := buf.String()
-	if !strings.Contains(got, "constructed without WithWorkerLogger") {
-		t.Errorf("missing construction warning, got: %q", got)
-	}
-	if !strings.Contains(got, "queue=fallback-test") {
-		t.Errorf("warning missing queue name, got: %q", got)
-	}
-
-	// stderrLogger.Error must reach the same writer so worker errors are visible.
-	buf.Reset()
-	w.logger.Error("boom", "id", 1, "err", "deserialize failed")
-	out := buf.String()
-	if !strings.Contains(out, "ERROR") || !strings.Contains(out, "boom") || !strings.Contains(out, "id=1") {
-		t.Errorf("stderrLogger.Error format unexpected: %q", out)
 	}
 }
 
@@ -434,21 +404,5 @@ func TestSerializeJob_NormalizesPayloadType(t *testing.T) {
 	if payload.Type != "registryRoundTripJob" {
 		t.Fatalf("SerializeJob did not normalize Type: got %q want %q",
 			payload.Type, "registryRoundTripJob")
-	}
-}
-
-func TestNewWorker_ExplicitLoggerSuppressesFallbackWarning(t *testing.T) {
-	orig := stderrFallbackWriter()
-	var buf bytes.Buffer
-	stderrFallback.Store(stderrWriter{Writer: &buf})
-	defer stderrFallback.Store(stderrWriter{Writer: orig})
-
-	NewWorker(NewMemoryDriver(), "quiet-test",
-		func(Job) error { return nil },
-		WithWorkerLogger(nullLogger{}),
-	)
-
-	if buf.Len() != 0 {
-		t.Errorf("expected no fallback warning when logger supplied, got: %q", buf.String())
 	}
 }

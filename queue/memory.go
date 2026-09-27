@@ -11,6 +11,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -111,20 +112,23 @@ var (
 type memLoggerHolder struct{ contract.Logger }
 
 // SetLogger installs a logger for operational events (shutdown-time
-// panic recovery). Nil disables logging. Safe to call concurrently.
+// panic recovery, the non-Identifiable job advisory). Nil restores the
+// default, the framework's standalone fallback logger, which writes
+// warnings and errors to standard error. Safe to call concurrently.
 func (m *MemoryDriver) SetLogger(l contract.Logger) {
 	m.logger.Store(memLoggerHolder{Logger: l})
 }
 
 var _ contract.LoggerAware = (*MemoryDriver)(nil)
 
-// log returns the installed logger, or nil when SetLogger has not been called.
+// log returns the installed logger, or the framework's standalone fallback
+// logger when none is installed.
 func (m *MemoryDriver) log() contract.Logger {
 	v := m.logger.Load()
 	if v == nil {
-		return nil
+		return fallbacklog.Logger{}
 	}
-	return v.(memLoggerHolder).Logger
+	return fallbacklog.Resolve(v.(memLoggerHolder).Logger)
 }
 
 type delayedJob struct {
@@ -223,11 +227,9 @@ func (m *MemoryDriver) warnIfNonIdentifiable(job Job) {
 	if _, loaded := m.nonIdentifiableWarned.LoadOrStore(typ, struct{}{}); loaded {
 		return
 	}
-	if logger := m.log(); logger != nil {
-		logger.Warn("velocity/queue: job type does not implement Identifiable; MaxAttempts cannot be enforced reliably across process restarts. Implement queue.Identifiable.JobID() to fix.",
-			"type", typ,
-		)
-	}
+	m.log().Warn("velocity/queue: job type does not implement Identifiable; MaxAttempts cannot be enforced reliably across process restarts. Implement queue.Identifiable.JobID() to fix.",
+		"type", typ,
+	)
 }
 
 // PushCtx adds a job to the queue. Honours ctx cancellation before the
@@ -678,9 +680,7 @@ func (m *MemoryDriver) Shutdown(ctx context.Context) error {
 	go func() { //safe-goroutine: close(done) on panic for shutdown, see comment above
 		defer func() {
 			if r := recover(); r != nil {
-				if logger := m.log(); logger != nil {
-					logger.Error("velocity/queue: memory driver shutdown panic recovered", "error", panicerr.FromRecovered(r))
-				}
+				m.log().Error("velocity/queue: memory driver shutdown panic recovered", "error", panicerr.FromRecovered(r))
 			}
 			close(done)
 		}()

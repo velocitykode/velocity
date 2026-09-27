@@ -8,13 +8,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/websocket"
 )
 
@@ -114,21 +114,23 @@ type WebSocketDriver struct {
 type loggerHolder struct{ contract.Logger }
 
 // SetLogger installs a logger for operational events (e.g. dropped broadcast
-// messages when no onDrop callback is configured). Nil disables logging.
-// Safe to call concurrently.
+// messages when no onDrop callback is configured). Unset or nil, they go
+// through the framework's standalone fallback logger, which writes warnings
+// and errors to standard error. Safe to call concurrently.
 func (d *WebSocketDriver) SetLogger(l contract.Logger) {
 	d.logger.Store(loggerHolder{Logger: l})
 }
 
 var _ contract.LoggerAware = (*WebSocketDriver)(nil)
 
-// log returns the installed logger, or nil when SetLogger has not been called.
+// log returns the installed logger, or the fallback logger when none is
+// installed.
 func (d *WebSocketDriver) log() contract.Logger {
 	v := d.logger.Load()
 	if v == nil {
-		return nil
+		return fallbacklog.Logger{}
 	}
-	return v.(loggerHolder).Logger
+	return fallbacklog.Resolve(v.(loggerHolder).Logger)
 }
 
 // DefaultMaxChannelsPerClient is the per-client channel subscription cap
@@ -383,10 +385,8 @@ func (d *WebSocketDriver) sendOrDrop(client *websocket.Client, channel, event st
 			// Count the dropped message and clear the stale pointer.
 			d.recordDrop(client.ID, channel, event)
 			d.purgeClient(client.ID)
-			if logger := d.log(); logger != nil {
-				logger.Warn("velocity/broadcast: recovered from send-on-closed-channel; purged client",
-					"client_id", client.ID, "channel", channel, "event", event, "panic", fmt.Sprintf("%v", r))
-			}
+			d.log().Warn("velocity/broadcast: recovered from send-on-closed-channel; purged client",
+				"client_id", client.ID, "channel", channel, "event", event, "panic", fmt.Sprintf("%v", r))
 		}
 	}()
 
@@ -453,9 +453,7 @@ func (d *WebSocketDriver) recordDrop(clientID, channel, event string) {
 		d.onDrop(clientID, channel, event)
 		return
 	}
-	if logger := d.log(); logger != nil {
-		logger.Warn("velocity/broadcast: dropped message", "client_id", clientID, "channel", channel, "event", event)
-	}
+	d.log().Warn("velocity/broadcast: dropped message", "client_id", clientID, "channel", channel, "event", event)
 }
 
 // DroppedCount returns the total number of messages dropped due to full send
@@ -895,17 +893,13 @@ func (d *WebSocketDriver) SetAuthorizer(fn ChannelAuthorizer) {
 // raw *websocket.Client, so without the HMAC token from
 // BroadcastManager.SetAuthSecret there is no cryptographic binding between
 // the HTTP-authenticated user and the socket - a permissive authorizer admits
-// any connection. Logs via the installed driver logger, falling back to
-// slog.Default so the warning is not silently lost when SetLogger was never
-// called.
+// any connection. Logs via the installed driver logger, or the framework's
+// standalone fallback logger when SetLogger was never called, so the
+// warning is never silently lost.
 func (d *WebSocketDriver) warnAuthorizerWithoutVerifier() {
 	d.tokenWarnOnce.Do(func() {
 		const msg = "velocity/broadcast: private/presence channels are gated only by the channel authorizer; no auth-token verifier is installed, so subscribes are not cryptographically bound to authenticated users (call BroadcastManager.SetAuthSecret to enable token verification)"
-		if logger := d.log(); logger != nil {
-			logger.Warn(msg)
-			return
-		}
-		slog.Default().Warn(msg)
+		d.log().Warn(msg)
 	})
 }
 

@@ -1,10 +1,8 @@
 package problem
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	stdlog "log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -23,22 +21,6 @@ func TestNewHandler_Defaults(t *testing.T) {
 	h.Report(errors.New("default reporter"), nil)
 	if !logger.has("error", "default reporter") {
 		t.Errorf("default LogReporter did not log through the handler logger: %v", logger.all())
-	}
-}
-
-func TestNewHandler_StderrLoggerFallback(t *testing.T) {
-	h := NewHandler(WithReporters())
-	if _, ok := h.logger.(stderrLogger); !ok {
-		t.Fatalf("logger = %T, want the stderr fallback", h.logger)
-	}
-	var buf bytes.Buffer
-	l := stderrLogger{l: stdlog.New(&buf, "", 0)}
-	for _, fn := range []func(string, ...any){l.Debug, l.Info, l.Warn, l.Error, l.Fatal} {
-		fn("line", "k", "v")
-	}
-	want := "[DEBUG] line k v\n[INFO] line k v\n[WARN] line k v\n[ERROR] line k v\n[ERROR] line k v\n"
-	if buf.String() != want {
-		t.Errorf("stderr logger output = %q, want %q", buf.String(), want)
 	}
 }
 

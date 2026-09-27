@@ -1,16 +1,15 @@
 package problem
 
 import (
-	stdlog "log"
 	"net"
 	"net/http"
-	"os"
 	"reflect"
 	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
 // Verify *Handler implements contract.ErrorHandler at compile time.
@@ -81,9 +80,7 @@ func NewHandler(opts ...Option) *Handler {
 	for _, opt := range opts {
 		opt(h)
 	}
-	if h.logger == nil {
-		h.logger = stderrLogger{l: stdlog.New(os.Stderr, "", stdlog.LstdFlags)}
-	}
+	h.logger = fallbacklog.Resolve(h.logger)
 	if h.reporters == nil {
 		h.reporters = []Reporter{NewLogReporter(WithLogger(h.logger))}
 	}
@@ -104,6 +101,8 @@ const debugForcedOffWarning = "APP_DEBUG=true is ignored in production: debug re
 
 // WithHandlerLogger sets the logger for the handler's own messages (debug
 // notices, renderer and reporter failures) and for the default LogReporter.
+// Without it, or with nil, both write through the framework's standalone
+// fallback logger, which writes warnings and errors to standard error.
 func WithHandlerLogger(l contract.Logger) Option {
 	return func(h *Handler) { h.logger = l }
 }
@@ -399,25 +398,4 @@ func ruleKey(key any) any {
 		return nil
 	}
 	return key
-}
-
-// stderrLogger is the handler logger used when none is configured: it writes
-// to the process's standard error.
-type stderrLogger struct {
-	l *stdlog.Logger
-}
-
-func (s stderrLogger) Debug(msg string, kvs ...any) { s.write("DEBUG", msg, kvs) }
-func (s stderrLogger) Info(msg string, kvs ...any)  { s.write("INFO", msg, kvs) }
-func (s stderrLogger) Warn(msg string, kvs ...any)  { s.write("WARN", msg, kvs) }
-func (s stderrLogger) Error(msg string, kvs ...any) { s.write("ERROR", msg, kvs) }
-
-// Fatal logs at error level; library code never exits the process.
-func (s stderrLogger) Fatal(msg string, kvs ...any) { s.write("ERROR", msg, kvs) }
-
-func (s stderrLogger) write(level, msg string, kvs []any) {
-	args := make([]any, 0, len(kvs)+2)
-	args = append(args, "["+level+"]", msg)
-	args = append(args, kvs...)
-	s.l.Println(args...)
 }

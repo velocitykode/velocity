@@ -11,12 +11,15 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/trace"
 )
 
 // RecoveryConfig configures the recovery interceptor
 type RecoveryConfig struct {
-	// Logger is the logger to use. Defaults to the global logger.
+	// Logger receives one error line per recovered panic. Nil means the
+	// framework's standalone fallback logger, which writes it to standard
+	// error.
 	Logger contract.Logger
 
 	// EnableStackTrace enables logging of stack traces on panic
@@ -34,7 +37,8 @@ type RecoveryConfig struct {
 // RecoveryOption configures recovery behavior
 type RecoveryOption func(*RecoveryConfig)
 
-// WithRecoveryLogger sets a custom logger for recovery
+// WithRecoveryLogger sets the logger recovered panics go to (see
+// RecoveryConfig.Logger for the nil default).
 func WithRecoveryLogger(logger contract.Logger) RecoveryOption {
 	return func(c *RecoveryConfig) {
 		c.Logger = logger
@@ -119,19 +123,14 @@ func handlePanic(ctx context.Context, p interface{}, method string, cfg *Recover
 		stack = string(debug.Stack())
 	}
 
-	// Log if logger is available
-	if logger := cfg.Logger; logger != nil {
-		fields := []interface{}{
-			"method", method,
-			"panic", p,
-		}
-
-		if stack != "" {
-			fields = append(fields, "stack", stack)
-		}
-
-		logger.Error("gRPC panic recovered", fields...)
+	fields := []interface{}{
+		"method", method,
+		"panic", p,
 	}
+	if stack != "" {
+		fields = append(fields, "stack", stack)
+	}
+	fallbacklog.Resolve(cfg.Logger).Error("gRPC panic recovered", fields...)
 
 	if cfg.EventDispatcher != nil {
 		traceID, spanID, parentID := trace.GetTraceContext(ctx)

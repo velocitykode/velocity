@@ -16,8 +16,8 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/grpc/interceptors"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
-	"github.com/velocitykode/velocity/log"
 )
 
 var (
@@ -124,10 +124,9 @@ func NewServer(opts ...ServerOption) *Server {
 		opt(s)
 	}
 
-	// Default to console logger if none provided
-	if s.logger == nil {
-		s.logger, _ = log.NewLogger(log.LogConfig{Driver: "console"})
-	}
+	// Without a logger (or with a nil one) the server writes through the
+	// framework's standalone fallback logger.
+	s.logger = fallbacklog.Resolve(s.logger)
 
 	// Surface any env-parsing diagnostics now that a logger exists, so a
 	// non-positive / unparseable / oversize GRPC_MAX_*_SIZE is never silently
@@ -253,7 +252,10 @@ func WithoutDefaultRecovery() ServerOption {
 	}
 }
 
-// WithLogger sets the logger for the gRPC server
+// WithLogger sets the logger for the gRPC server and its default recovery
+// interceptor. Without it, or with nil, the server writes through the
+// framework's standalone fallback logger, which writes warnings and errors
+// to standard error.
 func WithLogger(logger contract.Logger) ServerOption {
 	return func(s *Server) {
 		s.logger = logger
@@ -354,7 +356,7 @@ func (s *Server) Build() error {
 	}
 
 	if s.logger == nil {
-		return fmt.Errorf("velocity/grpc: logger is required. Use WithLogger(...) or accept the default console logger")
+		return fmt.Errorf("velocity/grpc: logger is required. Build the server with NewServer, which defaults to the standalone fallback logger, or use WithLogger(...)")
 	}
 
 	// Enforce the production TLS guard before we start binding sockets so the

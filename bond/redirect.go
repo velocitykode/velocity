@@ -4,20 +4,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync/atomic"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 )
-
-// hostFallbackWarned is a process-wide latch that fires the
-// "no RedirectAllowlist configured, falling back to r.Host" warning
-// exactly once across all *Bond instances. The fallback is a security
-// gap (r.Host is operator-spoofable via a misconfigured fronting proxy
-// that forwards X-Forwarded-Host without sanitisation), so operators
-// should see it surfaced, but repeating it on every redirect would
-// flood logs without adding signal.
-var hostFallbackWarned atomic.Bool
 
 // Redirect performs an SPA-compatible redirect
 // Uses 303 See Other for POST-Redirect-GET pattern
@@ -116,10 +106,10 @@ func (b *Bond) Back(w http.ResponseWriter, r *http.Request) {
 //     list through here automatically.
 //  2. When the contract is missing or empty, fall back to r.Host so
 //     unit tests and stand-alone *Bond usage keep working. Emit a
-//     process-wide one-time warning so operators see that no allowlist
-//     is enforced. r.Host is operator-spoofable when X-Forwarded-Host
-//     is forwarded blindly by a fronting proxy, and that is exactly the
-//     scenario the allowlist exists to defeat.
+//     one-time warning per Bond, through its logger, so operators see
+//     that no allowlist is enforced. r.Host is operator-spoofable when
+//     X-Forwarded-Host is forwarded blindly by a fronting proxy, and
+//     that is exactly the scenario the allowlist exists to defeat.
 //
 // The returned slice is owned by the caller; sanitizeRedirectURL must
 // not mutate it.
@@ -127,17 +117,12 @@ func (b *Bond) allowedHostsFor(r *http.Request) []string {
 	if hosts := redirectAllowlistFromRequest(r); len(hosts) > 0 {
 		return hosts
 	}
-	if hostFallbackWarned.CompareAndSwap(false, true) {
-		b.mu.RLock()
-		logger := b.logger
-		b.mu.RUnlock()
-		if logger != nil {
-			logger.Warn(
-				"velocity/bond: no RedirectAllowlist configured; falling back to r.Host for same-origin redirect checks. " +
-					"A misconfigured fronting proxy that copies X-Forwarded-Host into r.Host can bypass open-redirect protection. " +
-					"Set Router.RedirectAllowedHosts to your canonical hostnames.",
-			)
-		}
+	if b.hostFallbackWarned.CompareAndSwap(false, true) {
+		b.log().Warn(
+			"velocity/bond: no RedirectAllowlist configured; falling back to r.Host for same-origin redirect checks. " +
+				"A misconfigured fronting proxy that copies X-Forwarded-Host into r.Host can bypass open-redirect protection. " +
+				"Set Router.RedirectAllowedHosts to your canonical hostnames.",
+		)
 	}
 	if r.Host == "" {
 		return nil

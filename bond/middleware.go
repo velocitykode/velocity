@@ -102,15 +102,10 @@ func (b *Bond) serveBuffered(w http.ResponseWriter, r *http.Request, next http.H
 	// pipe) so we surface it as a warning only; the response is
 	// already committed, nothing useful to do except log.
 	if err := bw.flush(w); err != nil {
-		b.mu.RLock()
-		logger := b.logger
-		b.mu.RUnlock()
-		if logger != nil {
-			logger.Warn("velocity/bond: flush buffered response failed",
-				"err", err,
-				"path", r.URL.Path,
-			)
-		}
+		b.log().Warn("velocity/bond: flush buffered response failed",
+			"err", err,
+			"path", r.URL.Path,
+		)
 	}
 }
 

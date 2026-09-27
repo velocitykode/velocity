@@ -11,6 +11,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"golang.org/x/crypto/hkdf"
 )
 
@@ -28,12 +29,19 @@ var (
 )
 
 // SetSigningLogger installs a package-level logger used by
-// ConfigureSigning to report signing-key diagnostics. Nil disables
-// logging. Safe to call concurrently.
+// ConfigureSigning to report signing-key diagnostics. Nil restores the
+// default, the framework's standalone fallback logger, which writes
+// warnings and errors to standard error. Safe to call concurrently.
 func SetSigningLogger(l contract.Logger) {
 	signingMu.Lock()
 	defer signingMu.Unlock()
 	signingLogger = l
+}
+
+// signingLog returns the signing logger, or the fallback logger when none
+// is installed. The caller holds signingMu.
+func signingLog() contract.Logger {
+	return fallbacklog.Resolve(signingLogger)
 }
 
 // SigningOptions tunes how ConfigureSigningWith reacts when no signing
@@ -94,18 +102,14 @@ func ConfigureSigningWith(rawSigningKey, appKey string, opts SigningOptions) err
 			// without signing. The warning is the only signal that the
 			// fleet is running unsigned, so it stays even when a
 			// logger is wired.
-			if signingLogger != nil {
-				signingLogger.Warn("velocity/queue: QUEUE_ACCEPT_UNSIGNED=true; payload signing disabled. Set QUEUE_SIGNING_KEY or APP_KEY to enable HMAC verification.")
-			}
+			signingLog().Warn("velocity/queue: QUEUE_ACCEPT_UNSIGNED=true; payload signing disabled. Set QUEUE_SIGNING_KEY or APP_KEY to enable HMAC verification.")
 			signingKey = nil
 			signingEnabled = false
 			return nil
 		case opts.AllowUnsignedInDev:
 			// Dev/test profile: unsigned payloads are tolerated so
 			// unit tests and local-dev runs do not require a key.
-			if signingLogger != nil {
-				signingLogger.Warn("velocity/queue: no signing key found (QUEUE_SIGNING_KEY or APP_KEY); payload signing disabled in dev/test environment")
-			}
+			signingLog().Warn("velocity/queue: no signing key found (QUEUE_SIGNING_KEY or APP_KEY); payload signing disabled in dev/test environment")
 			signingKey = nil
 			signingEnabled = false
 			return nil
@@ -120,9 +124,7 @@ func ConfigureSigningWith(rawSigningKey, appKey string, opts SigningOptions) err
 	}
 
 	if useAppKey {
-		if signingLogger != nil {
-			signingLogger.Warn("velocity/queue: using APP_KEY for queue signing. Set a dedicated QUEUE_SIGNING_KEY for production environments")
-		}
+		signingLog().Warn("velocity/queue: using APP_KEY for queue signing. Set a dedicated QUEUE_SIGNING_KEY for production environments")
 		// Derive a queue-specific key from APP_KEY using HKDF to avoid
 		// using the same key material for different purposes.
 		r := hkdf.New(sha256.New, []byte(key), nil, []byte("queue-signing"))

@@ -11,12 +11,15 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/trace"
 )
 
 // LoggingConfig configures the logging interceptor
 type LoggingConfig struct {
-	// Logger is the logger to use. Defaults to the global logger.
+	// Logger receives one line per request. Nil means the framework's
+	// standalone fallback logger, which writes only the warn and error
+	// lines (failed and slow requests) to standard error.
 	Logger contract.Logger
 
 	// LogPayloads enables logging of request/response payloads
@@ -41,7 +44,8 @@ type LoggingConfig struct {
 // LoggingOption configures logging behavior
 type LoggingOption func(*LoggingConfig)
 
-// WithLoggingLogger sets a custom logger
+// WithLoggingLogger sets the logger request lines go to (see
+// LoggingConfig.Logger for the nil default).
 func WithLoggingLogger(logger contract.Logger) LoggingOption {
 	return func(c *LoggingConfig) {
 		c.Logger = logger
@@ -134,10 +138,7 @@ func isHealthCheck(method string) bool {
 }
 
 func logRequest(ctx context.Context, method string, start time.Time, err error, cfg *LoggingConfig) {
-	logger := cfg.Logger
-	if logger == nil {
-		return // No logger configured, skip logging
-	}
+	logger := fallbacklog.Resolve(cfg.Logger)
 
 	duration := time.Since(start)
 

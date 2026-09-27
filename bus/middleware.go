@@ -4,6 +4,7 @@ import (
 	"reflect"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/pipeline"
 )
 
@@ -14,8 +15,10 @@ func Middleware(fn func(cmd Command, next func(Command) error) error) pipeline.S
 
 // LoggingMiddleware returns middleware that logs command dispatch through
 // logger at info level: one line when a command is dispatched and one when
-// it completes or fails.
+// it completes or fails. A nil logger means the framework's standalone
+// fallback logger, which drops info lines.
 func LoggingMiddleware(logger contract.Logger) pipeline.Stage[Command] {
+	logger = fallbacklog.Resolve(logger)
 	return Middleware(func(cmd Command, next func(Command) error) error {
 		logger.Info("Dispatching command", "type", formatType(cmd))
 		err := next(cmd)

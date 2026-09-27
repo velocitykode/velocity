@@ -8,6 +8,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
 const minSecureBcryptCost = 10
@@ -64,8 +65,10 @@ func clampBcryptCost(cost int) (int, bool) {
 // SetCost is called with a value below the secure minimum. If the hasher
 // was constructed with a sub-minimum cost, a one-shot warning is emitted
 // now (and the pending flag cleared) so the event is surfaced through the
-// framework logger rather than being lost before wiring completed. Nil
-// disables logging.
+// framework logger rather than being lost before wiring completed (a
+// hasher that never gets a logger keeps that construction warning pending,
+// so it is not written twice). With nil, SetCost warnings go through the
+// framework's standalone fallback logger.
 func (h *BcryptHasher) SetLogger(l contract.Logger) {
 	h.mu.Lock()
 	h.logger = l
@@ -144,8 +147,8 @@ func (h *BcryptHasher) SetCost(cost int) {
 	logger := h.logger
 	h.mu.Unlock()
 
-	if belowMin && logger != nil {
-		logger.Warn("auth: bcrypt cost below secure minimum, clamped", "requested", cost, "minimum", minSecureBcryptCost, "using", effective)
+	if belowMin {
+		fallbacklog.Resolve(logger).Warn("auth: bcrypt cost below secure minimum, clamped", "requested", cost, "minimum", minSecureBcryptCost, "using", effective)
 	}
 }
 

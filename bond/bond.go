@@ -11,9 +11,11 @@ import (
 	"html/template"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
 // Errors
@@ -98,6 +100,12 @@ type Bond struct {
 	// errorComponent is the component rendered as the error page, or ""
 	// when none is configured (see SetErrorComponent).
 	errorComponent string
+
+	// hostFallbackWarned latches the "no RedirectAllowlist configured"
+	// warning (see allowedHostsFor) so it is written once per Bond: the
+	// fallback is a security gap operators should see, but repeating it
+	// on every redirect would flood the log without adding signal.
+	hostFallbackWarned atomic.Bool
 }
 
 // SetEncryptor sets the encryptor used for history state encryption.
@@ -110,13 +118,24 @@ func (b *Bond) SetEncryptor(enc interface {
 	b.encryptor = enc
 }
 
-// SetLogger wires a logger for operational warnings. When unset, Bond
-// silently swallows non-fatal errors like response-buffer flush
-// failures (which almost always indicate a closed client connection).
+// SetLogger wires a logger for operational warnings: the one-time
+// redirect-allowlist fallback warning and response-buffer flush failures
+// (which almost always indicate a closed client connection). Unset or
+// nil, Bond writes them through the framework's standalone fallback
+// logger, which writes warnings and errors to standard error. Safe to call
+// while the Bond serves requests.
 func (b *Bond) SetLogger(l contract.Logger) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.logger = l
+}
+
+// log returns the installed logger, or the fallback logger when none is
+// installed.
+func (b *Bond) log() contract.Logger {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return fallbacklog.Resolve(b.logger)
 }
 
 var _ contract.LoggerAware = (*Bond)(nil)

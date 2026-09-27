@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/maintpath"
 	"github.com/velocitykode/velocity/router"
 )
@@ -61,7 +61,8 @@ var maintenancePathLogOnce sync.Once
 // the resolved path is logged at WARN so operators can verify which
 // directory the framework is watching; subsequent calls are silent.
 //
-// The line goes to logger, or to slog.Default() when logger is nil.
+// The line goes to logger, or to the framework's standalone fallback
+// logger when logger is nil.
 //
 // Returns ("", err) when VELOCITY_MAINTENANCE_ROOT is set but fails
 // validation. Callers treat that as "no marker file present" so an
@@ -74,10 +75,7 @@ func maintenanceMarkerPath(logger contract.Logger) (string, error) {
 		if err != nil {
 			msg, kvs = "maintenance marker path resolution failed", []any{"error", err.Error(), "source", source}
 		}
-		if logger == nil {
-			logger = slogLogger{l: slog.Default()}
-		}
-		logger.Warn(msg, kvs...)
+		fallbacklog.Resolve(logger).Warn(msg, kvs...)
 	})
 	return p, err
 }
@@ -145,8 +143,8 @@ type maintenanceConfig struct {
 	// perform no environment reads.
 	salt []byte
 	// logger receives the one-time marker-path resolution warning: the
-	// logger WithMaintenanceLogger set, otherwise slog.Default() as it stood
-	// when the middleware was built.
+	// logger WithMaintenanceLogger set, otherwise nil, which writes through
+	// the framework's standalone fallback logger.
 	logger contract.Logger
 }
 
@@ -167,12 +165,12 @@ func WithMaintenanceExcludePaths(paths ...string) MaintenanceOption {
 }
 
 // WithMaintenanceLogger sets the logger used for the one-time marker-path
-// resolution warning, written at warn level. Defaults to slog.Default().
-// Because that warning fires at most once per process (see
-// maintenancePathLogOnce), the logger supplied to the FIRST middleware
-// instance that resolves the path wins; loggers on any later instance are
-// not consulted for that line. A nil logger is ignored so the default
-// stands.
+// resolution warning, written at warn level. Without it, or with nil, the
+// warning goes through the framework's standalone fallback logger, which
+// writes it to standard error. Because that warning fires at most once per
+// process (see maintenancePathLogOnce), the logger supplied to the FIRST
+// middleware instance that resolves the path wins; loggers on any later
+// instance are not consulted for that line.
 func WithMaintenanceLogger(logger contract.Logger) MaintenanceOption {
 	return func(c *maintenanceConfig) {
 		if logger != nil {
@@ -187,7 +185,6 @@ func resolveMaintenanceConfig(opts ...MaintenanceOption) *maintenanceConfig {
 	cfg := &maintenanceConfig{
 		excludePaths: append([]string{}, defaultMaintenanceExcludePaths...),
 		salt:         maintenanceSalt(),
-		logger:       slogLogger{l: slog.Default()},
 	}
 	if raw, ok := os.LookupEnv("VELOCITY_MAINTENANCE_EXCLUDE_PATHS"); ok {
 		for _, p := range strings.Split(raw, ",") {

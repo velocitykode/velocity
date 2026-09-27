@@ -13,6 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -117,43 +118,38 @@ type broadcastJob struct {
 }
 
 // SetLogger installs a logger for operational events (connects, disconnects,
-// rate-limit violations, recovered panics). Nil disables logging. Safe to
-// call concurrently.
+// rate-limit violations, recovered panics). Unset or nil, they go through
+// the framework's standalone fallback logger, which writes warnings and
+// errors to standard error. Safe to call concurrently.
 func (s *Server) SetLogger(l contract.Logger) {
 	s.logger.Store(loggerHolder{Logger: l})
 }
 
 var _ contract.LoggerAware = (*Server)(nil)
 
-// log returns the installed logger, or nil when SetLogger has not been called
-// (or was called with nil).
+// log returns the installed logger, or the fallback logger when none is
+// installed (or it was set to nil).
 func (s *Server) log() contract.Logger {
 	v := s.logger.Load()
 	if v == nil {
-		return nil
+		return fallbacklog.Logger{}
 	}
-	return v.(loggerHolder).Logger
+	return fallbacklog.Resolve(v.(loggerHolder).Logger)
 }
 
-// logInfo emits an info-level event when a logger is configured.
+// logInfo emits an info-level event.
 func (s *Server) logInfo(msg string, kvs ...any) {
-	if l := s.log(); l != nil {
-		l.Info(msg, kvs...)
-	}
+	s.log().Info(msg, kvs...)
 }
 
-// logWarn emits a warn-level event when a logger is configured.
+// logWarn emits a warn-level event.
 func (s *Server) logWarn(msg string, kvs ...any) {
-	if l := s.log(); l != nil {
-		l.Warn(msg, kvs...)
-	}
+	s.log().Warn(msg, kvs...)
 }
 
-// logError emits an error-level event when a logger is configured.
+// logError emits an error-level event.
 func (s *Server) logError(msg string, kvs ...any) {
-	if l := s.log(); l != nil {
-		l.Error(msg, kvs...)
-	}
+	s.log().Error(msg, kvs...)
 }
 
 // New creates a new WebSocket server.

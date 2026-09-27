@@ -5,11 +5,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"log"
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
 // Broadcaster defines the main broadcasting interface
@@ -341,8 +341,9 @@ func (b *BroadcastManager) SetAuthorizer(fn Authorizer) {
 }
 
 // SetLogger installs an optional logger for one-time configuration warnings,
-// written at warn level. Passing nil restores the stdlib log fallback. It is
-// safe to call concurrently with the rest of the manager API.
+// written at warn level. Unset or nil, they go through the framework's
+// standalone fallback logger, which writes warnings and errors to standard
+// error. It is safe to call concurrently with the rest of the manager API.
 func (b *BroadcastManager) SetLogger(l contract.Logger) {
 	b.mu.Lock()
 	b.logger = l
@@ -353,7 +354,7 @@ var _ contract.LoggerAware = (*BroadcastManager)(nil)
 
 // warnAuthorizerWithoutSecret emits the authorizer-without-secret warning at
 // most once. The logger is read under b.mu so a concurrent SetLogger is
-// observed safely; the stdlib log package is the nil-safe fallback.
+// observed safely; the fallback logger stands in for a nil one.
 func (b *BroadcastManager) warnAuthorizerWithoutSecret() {
 	b.noSecretWarned.Do(func() {
 		const msg = "broadcast: custom authorizer installed without an auth secret; " +
@@ -362,11 +363,7 @@ func (b *BroadcastManager) warnAuthorizerWithoutSecret() {
 		b.mu.RLock()
 		logger := b.logger
 		b.mu.RUnlock()
-		if logger != nil {
-			logger.Warn(msg)
-			return
-		}
-		log.Print(msg)
+		fallbacklog.Resolve(logger).Warn(msg)
 	})
 }
 

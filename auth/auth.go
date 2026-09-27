@@ -14,6 +14,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
 // DefaultAttemptFloor is the wall-clock floor applied to scheme.Attempt
@@ -688,7 +689,9 @@ func (m *Manager) SetHasher(h Hasher) {
 
 // SetLogger installs a logger for auth operational events (authentication
 // required denials, authorization rejections, hasher configuration warnings).
-// Nil disables logging. Safe to call concurrently.
+// Nil restores the default, the framework's standalone fallback logger,
+// which writes warnings and errors to standard error. Safe to call
+// concurrently.
 //
 // Every registered scheme implementing contract.LoggerAware (the session
 // scheme's save, revival and teardown warnings) is notified immediately,
@@ -729,11 +732,10 @@ func (m *Manager) log() contract.Logger {
 	return v.(authLoggerHolder).Logger
 }
 
-// logWarn emits a warn event when a logger is configured.
+// logWarn emits a warn event through the installed logger, or the
+// framework's standalone fallback logger when none is installed.
 func (m *Manager) logWarn(msg string, kvs ...any) {
-	if l := m.log(); l != nil {
-		l.Warn(msg, kvs...)
-	}
+	fallbacklog.Resolve(m.log()).Warn(msg, kvs...)
 }
 
 // GetHasher returns the manager's hasher, falling back to a default bcrypt hasher.

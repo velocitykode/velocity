@@ -1,13 +1,11 @@
 package velocity
 
 import (
-	"bytes"
-	stdlog "log"
-	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -36,58 +34,31 @@ func TestWithMaintenanceLogger_ReceivesMarkerPathWarning(t *testing.T) {
 	}
 }
 
-// Without WithMaintenanceLogger the warning goes to slog.Default() as it
-// stood when the middleware was built.
-func TestPreventRequestsDuringMaintenance_WarnsThroughSlogDefaultAtConstruction(t *testing.T) {
-	useTempMaintRoot(t)
-	prev, prevOut, prevFlags := slog.Default(), stdlog.Writer(), stdlog.Flags()
-	t.Cleanup(func() {
-		slog.SetDefault(prev)
-		stdlog.SetOutput(prevOut)
-		stdlog.SetFlags(prevFlags)
-	})
+// Without WithMaintenanceLogger (or with a nil one) the warning goes
+// through the one framework fallback logger, and nothing through the
+// standard library log package or slog.Default.
+func TestPreventRequestsDuringMaintenance_WithoutLoggerWarnsThroughTheFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []MaintenanceOption
+	}{
+		{"no option", nil},
+		{"nil logger", []MaintenanceOption{WithMaintenanceLogger(nil)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			useTempMaintRoot(t)
+			fallback := fallbacklogtest.Capture(t)
+			stdlib := fallbacklogtest.CaptureStdlib(t)
 
-	var built, later bytes.Buffer
-	slog.SetDefault(slog.New(slog.NewTextHandler(&built, nil)))
-	mw := PreventRequestsDuringMaintenance()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&later, nil)))
+			runMaintenanceOnce(t, PreventRequestsDuringMaintenance(tc.opts...))
 
-	runMaintenanceOnce(t, mw)
-
-	if !strings.Contains(built.String(), "maintenance marker path resolved") {
-		t.Errorf("slog default at construction got %q, want the marker-path warning", built.String())
-	}
-	if later.Len() != 0 {
-		t.Errorf("slog default at request time got %q, want nothing", later.String())
-	}
-}
-
-// TestPreventRequestsDuringMaintenance_SlogDefaultKeepsWarnLevelAndSource
-// pins that the marker-path warning reaches the slog default captured at
-// construction exactly as a direct *slog.Logger Warn call from maintenance.go
-// would write it: warn level, the same attributes, and a source naming
-// maintenance.go rather than the adapter that carries the line.
-func TestPreventRequestsDuringMaintenance_SlogDefaultKeepsWarnLevelAndSource(t *testing.T) {
-	useTempMaintRoot(t)
-	prev, prevOut, prevFlags := slog.Default(), stdlog.Writer(), stdlog.Flags()
-	t.Cleanup(func() {
-		slog.SetDefault(prev)
-		stdlog.SetOutput(prevOut)
-		stdlog.SetFlags(prevFlags)
-	})
-
-	var out bytes.Buffer
-	slog.SetDefault(slog.New(slog.NewTextHandler(&out, &slog.HandlerOptions{AddSource: true})))
-	runMaintenanceOnce(t, PreventRequestsDuringMaintenance())
-
-	line := out.String()
-	for _, want := range []string{"level=WARN", `msg="maintenance marker path resolved"`, "path=", "source="} {
-		if !strings.Contains(line, want) {
-			t.Errorf("warning %q lacks %q", line, want)
-		}
-	}
-	if !strings.Contains(line, "/maintenance.go:") || strings.Contains(line, "slog_logger.go") {
-		t.Errorf("warning %q, want its source in maintenance.go", line)
+			if got := fallback.Count("WARN", "maintenance marker path resolved"); got != 1 {
+				t.Errorf("fallback lines = %d, want 1: %q", got, fallback.String())
+			}
+			if out := stdlib.String(); out != "" {
+				t.Errorf("stdlib log / slog.Default got %q, want nothing", out)
+			}
+		})
 	}
 }
 

@@ -6,14 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -23,9 +22,8 @@ import (
 // unreasonable number of goroutines on mis-typed configuration.
 const MaxWorkerConcurrency = 10_000
 
-// nullLogger is an explicit silent sink. It is only installed when a caller
-// explicitly opts in via WithWorkerLogger(nullLogger{}); the implicit fallback
-// in NewWorker uses stderrLogger so that worker errors are never invisible.
+// nullLogger is an explicit silent sink, for tests that opt into silence
+// with WithWorkerLogger(nullLogger{}).
 type nullLogger struct{}
 
 func (nullLogger) Debug(string, ...any) {}
@@ -33,61 +31,6 @@ func (nullLogger) Info(string, ...any)  {}
 func (nullLogger) Warn(string, ...any)  {}
 func (nullLogger) Error(string, ...any) {}
 func (nullLogger) Fatal(string, ...any) {}
-
-// stderrFallback holds the io.Writer used by stderrLogger and the
-// construction warning. It is wrapped in an atomic.Value so test code that
-// redirects output cannot race with concurrent writeStderr readers.
-var stderrFallback atomic.Value // holds stderrWriter
-
-type stderrWriter struct{ io.Writer }
-
-func init() {
-	stderrFallback.Store(stderrWriter{Writer: os.Stderr})
-}
-
-func stderrFallbackWriter() io.Writer {
-	return stderrFallback.Load().(stderrWriter).Writer
-}
-
-// stderrLogger is the implicit fallback installed by NewWorker when no
-// WithWorkerLogger option is supplied. It writes structured key/value lines
-// to stderrFallback so that operators always see worker errors even when no
-// framework logger has been wired. Library code printing to stderr on
-// catastrophic-silent-loss paths is preferable to dropping jobs in silence.
-type stderrLogger struct{}
-
-func (stderrLogger) Debug(msg string, kvs ...any) { writeStderr("DEBUG", msg, kvs) }
-func (stderrLogger) Info(msg string, kvs ...any)  { writeStderr("INFO", msg, kvs) }
-func (stderrLogger) Warn(msg string, kvs ...any)  { writeStderr("WARN", msg, kvs) }
-func (stderrLogger) Error(msg string, kvs ...any) { writeStderr("ERROR", msg, kvs) }
-
-// Fatal logs at error level; library code never exits the process.
-func (stderrLogger) Fatal(msg string, kvs ...any) { writeStderr("ERROR", msg, kvs) }
-
-// stderrWriteMu serializes writeStderr emission so concurrent pump goroutines
-// cannot interleave bytes within a single line. os.Stderr offers per-syscall
-// atomicity on POSIX but not line-atomicity, and a redirected *bytes.Buffer
-// offers neither. Errors are rare; the lock cost is negligible.
-var stderrWriteMu sync.Mutex
-
-func writeStderr(level, msg string, kvs []any) {
-	var b []byte
-	b = append(b, "velocity/queue ["...)
-	b = append(b, level...)
-	b = append(b, "] "...)
-	b = append(b, msg...)
-	for i := 0; i+1 < len(kvs); i += 2 {
-		b = append(b, ' ')
-		b = fmt.Appendf(b, "%v=%v", kvs[i], kvs[i+1])
-	}
-	if len(kvs)%2 == 1 {
-		b = fmt.Appendf(b, " %v=MISSING", kvs[len(kvs)-1])
-	}
-	b = append(b, '\n')
-	stderrWriteMu.Lock()
-	_, _ = stderrFallbackWriter().Write(b)
-	stderrWriteMu.Unlock()
-}
 
 // retryPushTimeout bounds how long the worker will wait when re-queueing
 // a failed job for retry. It is intentionally short so that a slow driver
@@ -219,10 +162,10 @@ func WithBackoff(strategy BackoffStrategy) Option {
 	}
 }
 
-// WithWorkerLogger sets the logger for the worker. When not set, NewWorker
-// installs stderrLogger as the implicit fallback and emits a per-construction
-// warning to stderr, so internal worker errors are never invisible. Pass
-// WithWorkerLogger(nullLogger{}) to opt into silence explicitly.
+// WithWorkerLogger sets the logger for the worker. When it is not set, or
+// set to nil, the worker writes through the framework's standalone fallback
+// logger, which writes warnings and errors to standard error, so internal
+// worker errors are never invisible.
 func WithWorkerLogger(l contract.Logger) Option {
 	return func(w *Worker) {
 		w.logger = l
@@ -251,14 +194,7 @@ func NewWorker(queue Driver, queueName string, handler func(Job) error, opts ...
 		w.backoff = ExponentialBackoff(time.Second, 5*time.Minute)
 	}
 
-	if w.logger == nil {
-		fmt.Fprintf(stderrFallbackWriter(),
-			"velocity/queue: NewWorker(queue=%s) constructed without WithWorkerLogger; "+
-				"falling back to stderr. Pass queue.WithWorkerLogger(s.Log) to route "+
-				"worker errors through the framework logger.\n",
-			queueName)
-		w.logger = stderrLogger{}
-	}
+	w.logger = fallbacklog.Resolve(w.logger)
 
 	return w
 }

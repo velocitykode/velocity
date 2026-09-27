@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
 // ErrorContext carries the facts about where and how an error happened.
@@ -31,8 +32,9 @@ type LogReporter struct {
 // LogReporterOption configures a LogReporter.
 type LogReporterOption func(*LogReporter)
 
-// NewLogReporter returns a LogReporter. Without WithLogger it reports
-// nothing.
+// NewLogReporter returns a LogReporter. Without WithLogger, or with a nil
+// logger, it reports through the framework's standalone fallback logger,
+// which writes warnings and errors to standard error.
 func NewLogReporter(opts ...LogReporterOption) *LogReporter {
 	r := &LogReporter{includeCtx: true}
 	for _, opt := range opts {
@@ -58,9 +60,10 @@ func WithoutContext() LogReporterOption {
 
 // Report logs err with its fields at ctx.Level.
 func (r *LogReporter) Report(err error, ctx *ErrorContext) {
-	if r.logger == nil || err == nil {
+	if err == nil {
 		return
 	}
+	logger := fallbacklog.Resolve(r.logger)
 	fields := r.buildFields(err, ctx)
 	level := contract.LogLevelUnset
 	if ctx != nil {
@@ -68,13 +71,13 @@ func (r *LogReporter) Report(err error, ctx *ErrorContext) {
 	}
 	switch level {
 	case contract.LogLevelDebug:
-		r.logger.Debug(err.Error(), fields...)
+		logger.Debug(err.Error(), fields...)
 	case contract.LogLevelInfo:
-		r.logger.Info(err.Error(), fields...)
+		logger.Info(err.Error(), fields...)
 	case contract.LogLevelWarn:
-		r.logger.Warn(err.Error(), fields...)
+		logger.Warn(err.Error(), fields...)
 	default:
-		r.logger.Error(err.Error(), fields...)
+		logger.Error(err.Error(), fields...)
 	}
 }
 

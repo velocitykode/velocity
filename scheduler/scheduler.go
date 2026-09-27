@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -149,18 +150,6 @@ func (s *Scheduler) dispatchEvent(ctx context.Context, event interface{}) {
 	fn(ctx, event)
 }
 
-// nullLogger is the silent default when SetLogger has not been called.
-// It is deliberately inert so the scheduler never emits log output
-// through stdlib log, all diagnostic logging flows through the
-// framework logger installed at boot.
-type nullLogger struct{}
-
-func (nullLogger) Info(string, ...any)  {}
-func (nullLogger) Warn(string, ...any)  {}
-func (nullLogger) Error(string, ...any) {}
-func (nullLogger) Debug(string, ...any) {}
-func (nullLogger) Fatal(string, ...any) {}
-
 // New creates a new scheduler instance
 func New() *Scheduler {
 	s := &Scheduler{
@@ -172,7 +161,7 @@ func New() *Scheduler {
 		overlapTTL:    24 * time.Hour,
 		shutdownGrace: 5 * time.Second,
 	}
-	s.logger.Store(schedLoggerHolder{Logger: nullLogger{}})
+	s.logger.Store(schedLoggerHolder{Logger: fallbacklog.Logger{}})
 	return s
 }
 
@@ -208,16 +197,15 @@ func (s *Scheduler) Locker() Locker {
 	return s.locker
 }
 
-// log returns the installed logger. Always non-nil after New().
+// log returns the installed logger, or the framework's standalone
+// fallback logger when none is installed (including a Scheduler not built
+// with New).
 func (s *Scheduler) log() contract.Logger {
 	v := s.logger.Load()
 	if v == nil {
-		return nullLogger{}
+		return fallbacklog.Logger{}
 	}
-	if l := v.(schedLoggerHolder).Logger; l != nil {
-		return l
-	}
-	return nullLogger{}
+	return fallbacklog.Resolve(v.(schedLoggerHolder).Logger)
 }
 
 // SetEnv sets the application environment (e.g. "production", "staging") used by
@@ -256,13 +244,10 @@ func (s *Scheduler) Timezone() *time.Location {
 
 // SetLogger sets the logger for scheduler diagnostics (start and stop,
 // recovered panics, lock-acquire failures, job runs). Nil restores the
-// silent default. Safe to call concurrently.
+// default, the framework's standalone fallback logger, which writes
+// warnings and errors to standard error. Safe to call concurrently.
 func (s *Scheduler) SetLogger(logger contract.Logger) {
-	if logger == nil {
-		s.logger.Store(schedLoggerHolder{Logger: nullLogger{}})
-	} else {
-		s.logger.Store(schedLoggerHolder{Logger: logger})
-	}
+	s.logger.Store(schedLoggerHolder{Logger: fallbacklog.Resolve(logger)})
 }
 
 var _ contract.LoggerAware = (*Scheduler)(nil)

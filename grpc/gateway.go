@@ -22,8 +22,8 @@ import (
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/interceptors"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
-	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -121,10 +121,9 @@ func NewGateway(opts ...GatewayOption) *Gateway {
 		opt(g)
 	}
 
-	// Default to a basic logger if none was provided
-	if g.logger == nil {
-		g.logger, _ = log.NewLogger(log.LogConfig{Driver: "console", Config: map[string]interface{}{"level": "info"}})
-	}
+	// Without a logger (or with a nil one) the gateway writes through the
+	// framework's standalone fallback logger.
+	g.logger = fallbacklog.Resolve(g.logger)
 
 	return g
 }
@@ -246,7 +245,9 @@ func GatewayWithMuxOption(opt runtime.ServeMuxOption) GatewayOption {
 	}
 }
 
-// GatewayWithLogger sets the logger for the HTTP gateway
+// GatewayWithLogger sets the logger for the HTTP gateway. Without it, or
+// with nil, the gateway writes through the framework's standalone fallback
+// logger, which writes warnings and errors to standard error.
 func GatewayWithLogger(logger contract.Logger) GatewayOption {
 	return func(g *Gateway) {
 		g.logger = logger

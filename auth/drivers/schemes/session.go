@@ -22,6 +22,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
@@ -827,7 +828,9 @@ func (g *SessionScheme) getTrustedProxies() []*net.IPNet {
 
 // SetLogger installs a logger used for the scheme's non-fatal warnings
 // (store errors, a session cookie too large to send, a refused revival,
-// a queued write that touched the response body). Nil disables logging.
+// a queued write that touched the response body). Unset or nil, they go
+// through the framework's standalone fallback logger, which writes
+// warnings and errors to standard error.
 //
 // Manager.SetLogger propagates to every registered scheme implementing
 // contract.LoggerAware, and Manager.RegisterScheme hands the manager's
@@ -904,15 +907,13 @@ func (g *SessionScheme) getCSRFTokenRotator() contract.CSRFTokenRotator {
 	return g.csrfRotator
 }
 
-// logWarn emits a warn event when a logger is configured. Safe to call
-// when no logger has been installed.
+// logWarn emits a warn event through the installed logger, or the
+// framework's standalone fallback logger when none has been installed.
 func (g *SessionScheme) logWarn(msg string, kvs ...any) {
 	g.mu.RLock()
 	l := g.logger
 	g.mu.RUnlock()
-	if l != nil {
-		l.Warn(msg, kvs...)
-	}
+	fallbacklog.Resolve(l).Warn(msg, kvs...)
 }
 
 // Check reports whether the request is authenticated. When a server-side

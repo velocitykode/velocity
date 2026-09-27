@@ -48,15 +48,6 @@ func (*captureLogger) Debug(string, ...any)   {}
 func (*captureLogger) Info(string, ...any)    {}
 func (*captureLogger) Fatal(string, ...any)   {}
 
-// resetHostFallbackLatch resets the process-wide warning latch so tests
-// that exercise the fallback path can each observe the warning. We must
-// not depend on test ordering or parallelism.
-func resetHostFallbackLatch(t *testing.T) {
-	t.Helper()
-	hostFallbackWarned.Store(false)
-	t.Cleanup(func() { hostFallbackWarned.Store(false) })
-}
-
 func requestWithAllowlist(t *testing.T, allowed []string, host string) *http.Request {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -74,7 +65,6 @@ func requestWithAllowlist(t *testing.T, allowed []string, host string) *http.Req
 // X-Forwarded-Host into r.Host) must NOT be treated as same-origin.
 // The allowlist is the single source of truth.
 func TestRedirect_SpoofedHostBlockedByAllowlist(t *testing.T) {
-	resetHostFallbackLatch(t)
 	b := setupBond(t)
 
 	// The deployment's real canonical host is trusted.example. r.Host
@@ -92,7 +82,6 @@ func TestRedirect_SpoofedHostBlockedByAllowlist(t *testing.T) {
 // passes through verbatim even though r.Host disagrees. Proves the
 // allowlist replaces (not augments) r.Host.
 func TestRedirect_AllowlistedHostPermitted(t *testing.T) {
-	resetHostFallbackLatch(t)
 	b := setupBond(t)
 
 	r := requestWithAllowlist(t, []string{"trusted.example"}, "irrelevant.example")
@@ -107,7 +96,6 @@ func TestRedirect_AllowlistedHostPermitted(t *testing.T) {
 // Back consults the same allowlist as Redirect. A Referer pointing at
 // a spoofed host must be rejected when an allowlist is configured.
 func TestBack_SpoofedRefererHostBlocked(t *testing.T) {
-	resetHostFallbackLatch(t)
 	b := setupBond(t)
 
 	r := requestWithAllowlist(t, []string{"trusted.example"}, "evil.example")
@@ -125,7 +113,6 @@ func TestBack_SpoofedRefererHostBlocked(t *testing.T) {
 // stand-alone *Bond usage (typical for tests and partial integrations)
 // keeps working. Same Host as the absolute target -> passthrough.
 func TestRedirect_FallbackToHostWhenNoAllowlist(t *testing.T) {
-	resetHostFallbackLatch(t)
 	b := setupBond(t)
 
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -142,7 +129,6 @@ func TestRedirect_FallbackToHostWhenNoAllowlist(t *testing.T) {
 // allowlist is empty so absolute URLs must be rejected. Guards against
 // "" matching "" if hostInAllowlist were not careful.
 func TestRedirect_FallbackWithEmptyHostRejectsCrossOrigin(t *testing.T) {
-	resetHostFallbackLatch(t)
 	b := setupBond(t)
 
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -156,10 +142,9 @@ func TestRedirect_FallbackWithEmptyHostRejectsCrossOrigin(t *testing.T) {
 }
 
 // The fallback path emits a one-time warning so operators see they have
-// no allowlist configured. The latch is process-wide so subsequent
-// fallback redirects in the same process MUST NOT re-warn.
+// no allowlist configured. The latch is per Bond so subsequent fallback
+// redirects through the same Bond MUST NOT re-warn.
 func TestRedirect_FallbackWarnsOnceAcrossRedirects(t *testing.T) {
-	resetHostFallbackLatch(t)
 
 	logger := &captureLogger{}
 	b := setupBond(t)
@@ -180,7 +165,6 @@ func TestRedirect_FallbackWarnsOnceAcrossRedirects(t *testing.T) {
 // When an allowlist is configured, the fallback warning must NOT fire
 // because the allowlist path supplants r.Host without any risk.
 func TestRedirect_AllowlistConfiguredDoesNotWarn(t *testing.T) {
-	resetHostFallbackLatch(t)
 
 	logger := &captureLogger{}
 	b := setupBond(t)

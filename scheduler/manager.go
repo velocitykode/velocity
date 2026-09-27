@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -35,7 +36,9 @@ func NewManager() *Manager {
 // SetLogger installs a logger for manager-level events (recovered panics
 // from individual schedulers running under RunAll, wait panics). The same
 // logger is also propagated to every Scheduler the Manager owns so child
-// schedulers log through the same pipeline. Nil disables logging.
+// schedulers log through the same pipeline. Nil restores the default, the
+// framework's standalone fallback logger, on the Manager and its
+// schedulers.
 func (m *Manager) SetLogger(l contract.Logger) {
 	m.logger.Store(mgrLoggerHolder{Logger: l})
 
@@ -62,11 +65,10 @@ func (m *Manager) log() contract.Logger {
 	return v.(mgrLoggerHolder).Logger
 }
 
-// logError emits an error event when a logger is configured.
+// logError emits an error event through the installed logger, or the
+// framework's standalone fallback logger when none is installed.
 func (m *Manager) logError(msg string, kvs ...any) {
-	if l := m.log(); l != nil {
-		l.Error(msg, kvs...)
-	}
+	fallbacklog.Resolve(m.log()).Error(msg, kvs...)
 }
 
 // Add adds a scheduler to the manager

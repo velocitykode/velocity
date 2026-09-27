@@ -3,13 +3,13 @@ package async
 import (
 	"context"
 	"fmt"
-	"log"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -25,39 +25,20 @@ func FromRecovered(r any) error { return panicerr.FromRecovered(r) }
 
 var (
 	loggerMu sync.RWMutex
-	logger   contract.Logger = &stdLogger{}
+	logger   contract.Logger = fallbacklog.Logger{}
 
 	panicHook atomic.Pointer[func(any)]
 )
 
-// stdLogger is the package logger until SetLogger replaces it: it writes
-// through the standard library log package.
-type stdLogger struct{}
-
-func (stdLogger) Debug(msg string, kvs ...any) { log.Print("[DEBUG] " + msg + fmtKVs(kvs)) }
-func (stdLogger) Info(msg string, kvs ...any)  { log.Print("[INFO] " + msg + fmtKVs(kvs)) }
-func (stdLogger) Warn(msg string, kvs ...any)  { log.Print("[WARN] " + msg + fmtKVs(kvs)) }
-func (stdLogger) Error(msg string, kvs ...any) { log.Print("[ERROR] " + msg + fmtKVs(kvs)) }
-
-// Fatal logs at error level; library code never exits the process.
-func (stdLogger) Fatal(msg string, kvs ...any) { log.Print("[ERROR] " + msg + fmtKVs(kvs)) }
-
-func fmtKVs(kvs []any) string {
-	if len(kvs) == 0 {
-		return ""
-	}
-	s := ""
-	for i := 0; i+1 < len(kvs); i += 2 {
-		s += fmt.Sprintf(" %v=%v", kvs[i], kvs[i+1])
-	}
-	return s
-}
-
-// SetLogger sets the package-level logger for panic recovery.
+// SetLogger sets the package-level logger recovered panics and GoCtx
+// cancellations are written to. velocity.New sets it to the app logger.
+// Nil restores the default, the framework's standalone fallback logger,
+// which writes warnings and errors to standard error. Safe for concurrent
+// use.
 func SetLogger(l contract.Logger) {
 	loggerMu.Lock()
 	defer loggerMu.Unlock()
-	logger = l
+	logger = fallbacklog.Resolve(l)
 }
 
 // GetLogger returns the current package-level logger. Safe for concurrent
