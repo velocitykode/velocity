@@ -13,6 +13,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // TaskScheduler is the interface satisfied by *Scheduler. It covers the
@@ -481,7 +482,7 @@ func (s *Scheduler) ValidateJobs() {
 		if schedErr != nil {
 			s.log().Error(
 				"velocity/scheduler: invalid schedule configuration; job will never fire",
-				"name", jobName,
+				"task_name", jobName,
 				"error", schedErr,
 			)
 		}
@@ -489,7 +490,7 @@ func (s *Scheduler) ValidateJobs() {
 	for name, count := range collisions {
 		s.log().Error(
 			"velocity/scheduler: WithoutOverlapping on job with default name; overlap guard keys on name, so unnamed closures will collide. Use Scheduler.Named(name, fn) or chain .Name(\"...\") to disambiguate.",
-			"name", name,
+			"task_name", name,
 			"count", count,
 		)
 	}
@@ -730,27 +731,31 @@ func (s *Scheduler) runDueJobs() {
 		// Not async.Go: must call release() on panic so the
 		// overlap-lock and runWg counter are freed even if the framing
 		// panics outside Job.runInternal's own recovery.
-		go func(j *Job, oneServerLock Lock, release func()) { //safe-goroutine: release() on panic frees overlap-lock + runWg, see comment above
+		go func(j *Job, jobName string, oneServerLock Lock, release func()) { //safe-goroutine: release() on panic frees overlap-lock + runWg, see comment above
+			// The run is a root span, started here so the run's lines
+			// and its events carry the same trace (see runInternal).
+			tctx := trace.StartSpan(context.Background(), trace.Parent{})
+			log := s.log().With(append([]any{"task_name", jobName}, trace.LogFields(tctx)...)...)
 			// Recover any panic from logger.Debug or other framing so
 			// the release path always runs. Note: Job.runInternal's
 			// inner panics are already recovered by Job.Run itself.
 			defer func() {
 				if r := recover(); r != nil {
-					s.log().Error("velocity/scheduler: run due jobs panic recovered", "name", j.name, "error", panicerr.FromRecovered(r))
+					log.Error("velocity/scheduler: run due jobs panic recovered", "error", panicerr.FromRecovered(r))
 					release()
 				}
 			}()
-			s.log().Debug("Running job", "name", j.name)
+			log.Debug("Running job")
 			// runInternal owns the release callback. For synchronous
 			// jobs it invokes release before returning. For
 			// RunInBackground commands that successfully started, it
 			// transfers ownership to a waiter goroutine that calls
 			// release after cmd.Wait (or after the runCtx-driven
 			// SIGTERM+SIGKILL grace period).
-			j.runInternal(runCtx, shutdownGrace, release)
+			j.runInternal(runCtx, tctx, shutdownGrace, release)
 			// oneServerLock retained until TTL expiry (see note above).
 			_ = oneServerLock
-		}(job, oneServerLock, release)
+		}(job, jobName, oneServerLock, release)
 	}
 
 	// Run after callbacks, these fire per tick, not per job, and must not
@@ -801,7 +806,7 @@ func logAcquireFailure(log contract.Logger, kind, jobName, key string, err error
 		log.Debug(
 			"Skipping job: distributed lock held",
 			"guard", kind,
-			"name", jobName,
+			"task_name", jobName,
 			"key", key,
 		)
 		return
@@ -809,7 +814,7 @@ func logAcquireFailure(log contract.Logger, kind, jobName, key string, err error
 	log.Warn(
 		"Skipping job: Locker.Acquire backend error",
 		"guard", kind,
-		"name", jobName,
+		"task_name", jobName,
 		"key", key,
 		"error", err,
 	)

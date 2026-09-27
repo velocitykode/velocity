@@ -289,7 +289,20 @@ type jobFailedError struct {
 func (e *jobFailedError) Error() string { return e.err.Error() }
 func (e *jobFailedError) Unwrap() error { return e.err }
 
-// processJob processes a single job
+// jobLogger returns the worker's logger bound to one job: its type under
+// job_type, the queue, its id under job_id when it has one, and the
+// request, trace and span ids of ctx, the context the job runs under
+// (trace.LogFields).
+func (w *Worker) jobLogger(ctx context.Context, job Job, jobType string) contract.Logger {
+	fields := []any{"job_type", jobType, "queue", w.queueName}
+	if id := jobIDOf(job); id != "" {
+		fields = append(fields, "job_id", id)
+	}
+	return w.logger.With(append(fields, trace.LogFields(ctx)...)...)
+}
+
+// processJob processes a single job. Every line it and the functions it
+// calls write for the job goes through the job's logger (jobLogger).
 func (w *Worker) processJob() error {
 	var (
 		job         Job
@@ -342,6 +355,7 @@ func (w *Worker) processJob() error {
 	// root span, never inheriting whatever trace the worker's own context
 	// carries.
 	jobCtx = trace.StartSpan(jobCtx, trace.Parent{TraceID: producerTC.TraceID, SpanID: producerTC.SpanID})
+	log := w.jobLogger(jobCtx, job, jobType)
 
 	// Dispatch queue.job.started event
 	dispatchJobProcessing(w.dispatchEvent, jobCtx, jobType, w.queueName)
@@ -363,7 +377,7 @@ func (w *Worker) processJob() error {
 			// lease. If the lease was lost, the new owner will run the
 			// same skip-and-ack path and decrement the counter once.
 			// (C-02: side effects only after a confirmed fenced ack.)
-			if owned := w.ackReservation(reservation); !owned {
+			if owned := w.ackReservation(log, reservation); !owned {
 				return nil
 			}
 			// (C-03: batch.recordSkip routes the pendingJobs decrement
@@ -410,9 +424,7 @@ func (w *Worker) processJob() error {
 			// failed, and not routed through Failed(); the leased row stays
 			// reserved and the next worker (after retryAfter) reclaims it.
 			if (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) && w.ctx.Err() != nil {
-				w.logger.Info("Job aborted by worker shutdown",
-					"type", jobType,
-					"queue", w.queueName,
+				log.Info("Job aborted by worker shutdown",
 					"duration_ms", duration.Milliseconds(),
 				)
 				return nil
@@ -426,10 +438,7 @@ func (w *Worker) processJob() error {
 			// reclaiming the job. Without this log, real bugs that race
 			// shutdown would vanish silently.
 			if w.ctx.Err() != nil {
-				w.logger.Warn("Job error swallowed during worker shutdown",
-					"type", jobType,
-					"queue", w.queueName,
-					"job_id", jobIDOf(job),
+				log.Warn("Job error swallowed during worker shutdown",
 					"error", err,
 					"duration_ms", duration.Milliseconds(),
 				)
@@ -444,7 +453,7 @@ func (w *Worker) processJob() error {
 		// will do that when it succeeds. Doing side effects before the
 		// fenced ack would double-count batches and double-emit events
 		// for every slow-handler / lease-loss combination.
-		owned := w.ackReservation(reservation)
+		owned := w.ackReservation(log, reservation)
 		// removeAttempts is local cache cleanup, safe to do regardless
 		// of ownership. The key is derived once here and skipped entirely
 		// (nil) when the reservation already carries the persisted attempt
@@ -473,16 +482,14 @@ func (w *Worker) processJob() error {
 		// WARN and accept the leak: a handler that ignores ctx is a bug,
 		// and blocking Stop() forever is worse for ops than leaking one
 		// goroutine.
-		w.drainHandler(done, job, jobType)
+		w.drainHandler(log, done)
 
 		if w.ctx.Err() != nil {
 			// Worker shutdown, not a real per-job timeout. Same reasoning
 			// as the err-branch above: do not call handleJobFailure, do
 			// not retry, do not mark Failed. Leave the row reserved; the
 			// next worker reclaims it via the retryAfter predicate.
-			w.logger.Info("Job aborted by worker shutdown",
-				"type", jobType,
-				"queue", w.queueName,
+			log.Info("Job aborted by worker shutdown",
 				"duration_ms", duration.Milliseconds(),
 			)
 			return nil
@@ -520,7 +527,7 @@ func (w *Worker) processJob() error {
 // jobCtx cancellation (e.g. when the handler completed just as the per-
 // job timeout fires) and so a slow driver cannot hold shutdown open
 // past its deadline.
-func (w *Worker) ackReservation(token ReservationToken) bool {
+func (w *Worker) ackReservation(log contract.Logger, token ReservationToken) bool {
 	if token.IsZero() {
 		// No lease to confirm: caller is the sole executor (memory /
 		// redis driver, or a job sourced outside the reservation path).
@@ -537,7 +544,7 @@ func (w *Worker) ackReservation(token ReservationToken) bool {
 	case err == nil:
 		return true
 	case errors.Is(err, ErrLeaseLost):
-		w.logger.Warn("Lease lost before ack; the new owner will record success",
+		log.Warn("Lease lost before ack; the new owner will record success",
 			"token", token.ID,
 		)
 		return false
@@ -547,7 +554,7 @@ func (w *Worker) ackReservation(token ReservationToken) bool {
 		// expires, and the new attempt will record success exactly
 		// once. Firing batch counters / JobProcessed here would
 		// double-count once the redelivery succeeds.
-		w.logger.Warn("Ack failed; lease will expire and row will redeliver",
+		log.Warn("Ack failed; lease will expire and row will redeliver",
 			"token", token.ID,
 			"error", err,
 		)
@@ -559,15 +566,12 @@ func (w *Worker) ackReservation(token ReservationToken) bool {
 // after jobCtx fired. Bounded by defaultHandlerKillCeiling so a misbehaving
 // handler that ignores ctx cannot hang Stop() forever; in that case we log
 // a warning and let the goroutine leak.
-func (w *Worker) drainHandler(done <-chan error, job Job, jobType string) {
+func (w *Worker) drainHandler(log contract.Logger, done <-chan error) {
 	select {
 	case <-done:
 		// handler returned cooperatively
 	case <-time.After(defaultHandlerKillCeiling):
-		w.logger.Warn("Handler goroutine did not return after ctx cancellation; leaking",
-			"type", jobType,
-			"queue", w.queueName,
-			"job_id", jobIDOf(job),
+		log.Warn("Handler goroutine did not return after ctx cancellation; leaking",
 			"kill_ceiling_ms", defaultHandlerKillCeiling.Milliseconds(),
 		)
 	}
@@ -614,6 +618,7 @@ func jobIDOf(job Job) string {
 // drivers without reservations (memory), the worker's sync.Map cache is
 // the only source available and remains in use.
 func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, err error, duration time.Duration, reservation ReservationToken) {
+	log := w.jobLogger(ctx, job, jobType)
 	maxAttempts := w.maxRetries
 	if ma, ok := job.(MaxAttempter); ok {
 		maxAttempts = ma.MaxAttempts()
@@ -631,7 +636,7 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 	// Check if the job opts out of retrying this specific error
 	if rd, ok := job.(RetryDecider); ok {
 		if !rd.ShouldRetry(err) {
-			w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts, key, reservation)
+			w.failJob(ctx, log, job, jobType, err, duration, attempt, maxAttempts, key, reservation)
 			return
 		}
 	}
@@ -674,21 +679,16 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 				// would write a duplicate failed_jobs row for a lease
 				// we no longer hold). Drop the retry; the new owner is
 				// in charge of side effects.
-				w.logger.Warn("Lease lost before retry release; another worker owns the row",
-					"type", jobType,
-					"queue", w.queueName,
-					"job_id", jobIDOf(job),
-				)
+				log.Warn("Lease lost before retry release; another worker owns the row")
 				return
 			}
-			w.logger.Error("Failed to re-queue job for retry", "error", requeueErr)
-			w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts, key, reservation)
+			log.Error("Failed to re-queue job for retry", "error", requeueErr)
+			w.failJob(ctx, log, job, jobType, err, duration, attempt, maxAttempts, key, reservation)
 			return
 		}
 		// Requeue confirmed (or no lease to lose): now safe to fire
 		// the retry-side log + event.
-		w.logger.Info("Retrying job",
-			"type", jobType,
+		log.Info("Retrying job",
 			"attempt", attempt,
 			"max_attempts", maxAttempts,
 			"backoff_ms", backoff.Milliseconds(),
@@ -698,7 +698,7 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 		return
 	}
 
-	w.failJob(ctx, job, jobType, err, duration, attempt, maxAttempts, key, reservation)
+	w.failJob(ctx, log, job, jobType, err, duration, attempt, maxAttempts, key, reservation)
 }
 
 // attemptNumber returns the authoritative attempt count for MaxAttempts
@@ -761,9 +761,10 @@ func (w *Worker) attemptKey(job Job, token ReservationToken) interface{} {
 // The failure is reported or logged exactly once: with an event dispatcher,
 // queue.job.failed carries it to the dispatcher's failure-report bridge; with
 // none, nothing would report it, so failJob logs the job's own error at
-// error level (job type, queue, job id, attempts), unless the job's Failed
+// error level through the job's logger (job_type, queue, job_id and the
+// job's trace, see jobLogger) with the attempts, unless the job's Failed
 // hook already reported it (FailureSelfReporter).
-func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error, duration time.Duration, attempt, maxAttempts int, key interface{}, reservation ReservationToken) {
+func (w *Worker) failJob(ctx context.Context, log contract.Logger, job Job, jobType string, err error, duration time.Duration, attempt, maxAttempts int, key interface{}, reservation ReservationToken) {
 	// Cleanup attempt cache regardless of ownership; this is pure
 	// per-worker state. key is the precomputed attempt-tracking key
 	// threaded from handleJobFailure (nil when the reservation already
@@ -784,10 +785,7 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 			// job's Failed hook panicked. Log it and run the side
 			// effects below as for a clean record, so the batch and the
 			// queue.job.failed event still see this failure.
-			w.logger.Error("Job Failed hook panicked after the failure was recorded",
-				"type", jobType,
-				"queue", w.queueName,
-				"job_id", jobIDOf(job),
+			log.Error("Job Failed hook panicked after the failure was recorded",
 				"error", failErr,
 			)
 		case errors.Is(failErr, ErrLeaseLost):
@@ -795,11 +793,7 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 			// responsible for it. Log and stop -- do NOT bump batch
 			// counters or fire JobFailed; the new owner will when its
 			// own attempt terminates.
-			w.logger.Warn("Lease lost before terminal cleanup; the new owner will record failure",
-				"type", jobType,
-				"queue", w.queueName,
-				"job_id", jobIDOf(job),
-			)
+			log.Warn("Lease lost before terminal cleanup; the new owner will record failure")
 			return
 		default:
 			// Transient or unknown backend failure. The row is still
@@ -808,10 +802,7 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 			// again. Running side effects here would double-count once
 			// the redelivery completes -- the symmetric trap to the
 			// ack path.
-			w.logger.Warn("FailReservedCtx errored; lease will expire and row will redeliver",
-				"type", jobType,
-				"queue", w.queueName,
-				"job_id", jobIDOf(job),
+			log.Warn("FailReservedCtx errored; lease will expire and row will redeliver",
 				"error", failErr,
 			)
 			return
@@ -825,14 +816,11 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 		switch failErr := w.queue.FailedCtx(cleanupCtx, job, err, w.queueName); {
 		case failErr == nil:
 		case errors.Is(failErr, ErrFailedHookPanicked):
-			w.logger.Error("Job Failed hook panicked after the failure was recorded",
-				"type", jobType,
-				"queue", w.queueName,
-				"job_id", jobIDOf(job),
+			log.Error("Job Failed hook panicked after the failure was recorded",
 				"error", failErr,
 			)
 		default:
-			w.logger.Error("Failed to mark job as failed", "error", failErr)
+			log.Error("Failed to mark job as failed", "error", failErr)
 		}
 	}
 
@@ -846,10 +834,7 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 	dispatch := w.currentEventDispatcher()
 	if dispatch == nil {
 		if !contract.IsReported(failure) {
-			w.logger.Error("Job failed",
-				"type", jobType,
-				"queue", w.queueName,
-				"job_id", jobIDOf(job),
+			log.Error("Job failed",
 				"attempts", attempt,
 				"error", err,
 			)

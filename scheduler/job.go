@@ -236,7 +236,7 @@ func (j *Job) ShouldRun() bool {
 // scheduler can drain locks and runWg accurately even when the job is a
 // RunInBackground command whose OS process outlives Job.Run.
 func (j *Job) Run() error {
-	return j.runInternal(context.Background(), 0, nil)
+	return j.runInternal(context.Background(), trace.StartSpan(context.Background(), trace.Parent{}), 0, nil)
 }
 
 // runInternal is the scheduler-facing entry point.
@@ -247,6 +247,9 @@ func (j *Job) Run() error {
 //	                shutting down. Synchronous job paths (closure /
 //	                non-background command) currently ignore ctx; the
 //	                callback itself decides whether to respect it.
+//	tctx          - the run's root span, started by the caller so the lines
+//	                it writes for the run carry the same trace as the
+//	                run's events.
 //	shutdownGrace - how long the RunInBackground waiter waits between
 //	                SIGTERM and SIGKILL when ctx is cancelled. Zero
 //	                means "no SIGTERM, just wait for cmd.Wait until
@@ -263,7 +266,7 @@ func (j *Job) Run() error {
 // goroutine. runInternal returns nil to the caller in that case so
 // the scheduler's dispatch goroutine exits promptly; the waiter holds
 // the WithoutOverlapping lock until the OS process exits.
-func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, release func()) error {
+func (j *Job) runInternal(ctx, tctx context.Context, shutdownGrace time.Duration, release func()) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -331,12 +334,11 @@ func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, rele
 		}
 	}()
 
-	// Each run is a root span: a run has no inbound carrier, so the
-	// continue-or-start rule gets the zero Parent. The span is started from
-	// context.Background() rather than runCtx; future work could thread
-	// runCtx for cancellation propagation into closures, but the closure
-	// API itself does not accept a ctx.
-	tctx := trace.StartSpan(context.Background(), trace.Parent{})
+	// Each run is a root span (tctx): a run has no inbound carrier, so the
+	// continue-or-start rule gets the zero Parent. The caller starts it
+	// from context.Background() rather than runCtx; future work could
+	// thread runCtx for cancellation propagation into closures, but the
+	// closure API itself does not accept a ctx.
 
 	// Dispatch scheduler.task.started event
 	dispatchScheduledTaskStarting(j.getDispatch(), tctx, jobName)

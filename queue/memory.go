@@ -228,7 +228,7 @@ func (m *MemoryDriver) warnIfNonIdentifiable(job Job) {
 		return
 	}
 	m.log().Warn("velocity/queue: job type does not implement Identifiable; MaxAttempts cannot be enforced reliably across process restarts. Implement queue.Identifiable.JobID() to fix.",
-		"type", typ,
+		"job_type", typ,
 	)
 }
 

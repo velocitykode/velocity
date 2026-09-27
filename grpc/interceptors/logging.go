@@ -137,8 +137,11 @@ func isHealthCheck(method string) bool {
 		method == "/grpc.health.v1.Health/Watch"
 }
 
+// logRequest writes the call's line through the configured logger (the
+// fallback when none is set), bound to the call's request, trace and span
+// ids (trace.LogFields).
 func logRequest(ctx context.Context, method string, start time.Time, err error, cfg *LoggingConfig) {
-	logger := fallbacklog.Resolve(cfg.Logger)
+	logger := fallbacklog.Resolve(cfg.Logger).With(trace.LogFields(ctx)...)
 
 	duration := time.Since(start)
 
@@ -166,11 +169,6 @@ func logRequest(ctx context.Context, method string, start time.Time, err error, 
 			"user_id", claims.GetUserID(),
 			"team_id", claims.GetTeamID(),
 		)
-	}
-
-	// Add request ID if available
-	if requestID := trace.GetRequestID(ctx); requestID != "" {
-		fields = append(fields, "request_id", requestID)
 	}
 
 	// Add extra fields if configured

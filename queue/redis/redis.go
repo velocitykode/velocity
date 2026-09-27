@@ -197,7 +197,7 @@ func (r *RedisDriver) warnIfNonIdentifiable(job queue.Job) {
 		return
 	}
 	r.log().Warn("velocity/queue: job type does not implement Identifiable; MaxAttempts cannot be enforced reliably across redelivery. Implement queue.Identifiable.JobID() to fix.",
-		"type", typ,
+		"job_type", typ,
 	)
 }
 

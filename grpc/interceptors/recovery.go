@@ -196,7 +196,8 @@ func handlePanic(ctx context.Context, p interface{}, method string, cfg *Recover
 		if stack != "" {
 			fields = append(fields, "stack", stack)
 		}
-		fallbacklog.Resolve(cfg.Logger).Error("gRPC panic recovered", fields...)
+		// The line is bound to the call's request, trace and span ids.
+		fallbacklog.Resolve(cfg.Logger).With(trace.LogFields(ctx)...).Error("gRPC panic recovered", fields...)
 	}
 
 	if cfg.EventDispatcher != nil {
