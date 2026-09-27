@@ -38,3 +38,10 @@ func (s *FileStore) RestoreLock(key string, owner string) Lock {
 func (s *FileStore) lockKeyForWrite(ctx context.Context, key string) (func(), error) {
 	return nil, ErrLockNotSupported
 }
+
+// lockStripe on non-unix platforms returns ErrLockNotSupported, as
+// lockKeyForWrite does; Flush then removes entries under the store mutex
+// alone, as it always has.
+func (s *FileStore) lockStripe(ctx context.Context, stripe, what string) (func(), error) {
+	return nil, ErrLockNotSupported
+}

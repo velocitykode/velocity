@@ -173,8 +173,10 @@ type CacheReplacer interface {
 //     flock that every write of the key through the file driver takes
 //     (Put, Add, Forever, Forget, Increment, the swap and the set
 //     operations), so it is atomic against those writes from every
-//     process sharing the cache directory on one host. Flush and the
-//     expiry sweep do not take it. A read does not need it: every write
+//     process sharing the cache directory on one host. Flush takes it
+//     around each removal, so a swap never recreates a key a returned
+//     Flush deleted; the expiry sweep's removal of an expired entry does
+//     not take it. A read does not need it: every write
 //     lands whole, through a temp file renamed over the entry, so a read
 //     in any process sees the old value or the new one, never a partial
 //     one. Where flock is missing (Windows) the swap returns an error.

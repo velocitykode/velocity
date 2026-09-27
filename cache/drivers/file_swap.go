@@ -99,6 +99,9 @@ func (s *FileStore) CompareAndSwapCtx(ctx context.Context, key string, expected,
 			return false, nil
 		}
 	}
+	if s.swapMatchedHook != nil {
+		s.swapMatchedHook()
+	}
 	if err := s.writeItemLocked(path, fileCacheItem{Value: valueData, Expiration: expirationFor(ttl)}); err != nil {
 		return false, err
 	}

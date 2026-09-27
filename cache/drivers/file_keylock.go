@@ -4,7 +4,6 @@ package drivers
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -27,10 +26,12 @@ const fileKeyLockPollMax = 10 * time.Millisecond
 
 // lockKeyForWrite takes the write lock of key: an exclusive flock(2) on
 // one of 256 lock files under <cache>/locks/keys, picked by the first byte
-// of the hash of the prefixed key. Every FileStore write of a key (Put, Add,
-// Forever, Forget, Increment, CompareAndSwap and the set operations) holds
-// it around its read and write, so writes of one key from every FileStore
-// sharing the directory, in this process or another, never interleave.
+// of the hash of the prefixed key (keyStripe). Every FileStore write of a
+// key (Put, Add, Forever, Forget, Increment, CompareAndSwap and the set
+// operations) holds it around its read and write, and Flush holds it
+// around its removal of the key's entry, so writes and removals of one key
+// from every FileStore sharing the directory, in this process or another,
+// never interleave.
 //
 // The lock files are stable: they are never removed (the expiry sweep and
 // Flush skip their directory), so every holder locks the same inode. A
@@ -43,49 +44,30 @@ const fileKeyLockPollMax = 10 * time.Millisecond
 // fileKeyLockWait; the wait ending is an error, never a report on a value
 // the caller did not compare. The returned func releases the lock.
 func (s *FileStore) lockKeyForWrite(ctx context.Context, key string) (func(), error) {
+	return s.lockStripe(ctx, s.keyStripe(key), fmt.Sprintf("key %q", key))
+}
+
+// lockStripe takes the write lock of stripe (see lockKeyForWrite), waiting
+// for another holder. what names the lock in the timeout error.
+func (s *FileStore) lockStripe(ctx context.Context, stripe, what string) (func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	sum := sha256.Sum256([]byte(s.prefixedKey(key)))
-	path := filepath.Join(s.keyLockDir(), fmt.Sprintf("%02x.lock", sum[0]))
-
 	deadline := time.Now().Add(fileKeyLockWait)
 	pause := time.Millisecond
 	for {
-		fd, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, cacheFileMode)
-		if errors.Is(err, fs.ErrNotExist) {
-			// First write, or the directory was removed from outside.
-			if merr := os.MkdirAll(s.keyLockDir(), cacheDirMode); merr != nil {
-				return nil, fmt.Errorf("velocity/cache: create key lock directory: %w", merr)
-			}
-			fd, err = os.OpenFile(path, os.O_RDWR|os.O_CREATE, cacheFileMode)
-		}
+		unlock, busy, err := s.flockStripe(stripe)
 		if err != nil {
-			return nil, fmt.Errorf("velocity/cache: open key lock file: %w", err)
+			return nil, err
 		}
-		err = unix.Flock(int(fd.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-		if err == nil {
-			if sameFile(fd, path) {
-				return func() {
-					_ = unix.Flock(int(fd.Fd()), unix.LOCK_UN)
-					_ = fd.Close()
-				}, nil
-			}
-			// The file was unlinked (and maybe recreated) between the open
-			// and the flock: the lock guards nothing. Take it again.
-			_ = unix.Flock(int(fd.Fd()), unix.LOCK_UN)
-			_ = fd.Close()
-			continue
-		}
-		_ = fd.Close()
-		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EINTR) {
-			return nil, fmt.Errorf("velocity/cache: flock key lock: %w", err)
+		if !busy {
+			return unlock, nil
 		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("velocity/cache: key %q write lock held for over %v: %w", key, fileKeyLockWait, ErrLockTimeout)
+			return nil, fmt.Errorf("velocity/cache: %s write lock held for over %v: %w", what, fileKeyLockWait, ErrLockTimeout)
 		}
 		timer := time.NewTimer(pause)
 		select {
@@ -98,6 +80,49 @@ func (s *FileStore) lockKeyForWrite(ctx context.Context, key string) (func(), er
 			pause = fileKeyLockPollMax
 		}
 	}
+}
+
+// flockStripe makes one attempt at the write lock of stripe. busy is true
+// when another holder has it; unlock is non-nil only when it was taken.
+func (s *FileStore) flockStripe(stripe string) (unlock func(), busy bool, err error) {
+	path := s.stripeLockPath(stripe)
+	for {
+		fd, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, cacheFileMode)
+		if errors.Is(err, fs.ErrNotExist) {
+			// First write, or the directory was removed from outside.
+			if merr := os.MkdirAll(s.keyLockDir(), cacheDirMode); merr != nil {
+				return nil, false, fmt.Errorf("velocity/cache: create key lock directory: %w", merr)
+			}
+			fd, err = os.OpenFile(path, os.O_RDWR|os.O_CREATE, cacheFileMode)
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("velocity/cache: open key lock file: %w", err)
+		}
+		err = unix.Flock(int(fd.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			if sameFile(fd, path) {
+				return func() {
+					_ = unix.Flock(int(fd.Fd()), unix.LOCK_UN)
+					_ = fd.Close()
+				}, false, nil
+			}
+			// The file was unlinked (and maybe recreated) between the open
+			// and the flock: the lock guards nothing. Take it again.
+			_ = unix.Flock(int(fd.Fd()), unix.LOCK_UN)
+			_ = fd.Close()
+			continue
+		}
+		_ = fd.Close()
+		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EINTR) {
+			return nil, true, nil
+		}
+		return nil, false, fmt.Errorf("velocity/cache: flock key lock: %w", err)
+	}
+}
+
+// stripeLockPath is the lock file of stripe.
+func (s *FileStore) stripeLockPath(stripe string) string {
+	return filepath.Join(s.keyLockDir(), stripe+".lock")
 }
 
 // sameFile reports whether path still names the file open as fd.

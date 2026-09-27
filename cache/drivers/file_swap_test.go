@@ -300,3 +300,65 @@ func TestFileStore_KeyLockFilesSurviveFlushAndSweep(t *testing.T) {
 		t.Fatal("Flush left the entry")
 	}
 }
+
+// A Flush on another instance cannot land between a swap's comparison and
+// its write: the swap either finishes first (and the Flush then removes
+// what it wrote) or sees the key gone. A swap never recreates a key a
+// completed Flush deleted.
+func TestFileStore_CompareAndSwap_FlushOnOtherInstanceCannotInterleave(t *testing.T) {
+	t.Parallel()
+	stores := newSharedFileStores(t, 2)
+	swapper, flusher := stores[0], stores[1]
+	ctx := context.Background()
+	if err := swapper.PutCtx(ctx, "k", "v1", time.Hour); err != nil {
+		t.Fatalf("PutCtx: %v", err)
+	}
+
+	matched := make(chan struct{})
+	resume := make(chan struct{})
+	swapper.swapMatchedHook = func() {
+		close(matched)
+		<-resume
+	}
+	type result struct {
+		ok  bool
+		err error
+	}
+	swapDone := make(chan result, 1)
+	go func() {
+		ok, err := swapper.CompareAndSwapCtx(ctx, "k", "v1", "v2", time.Hour)
+		swapDone <- result{ok, err}
+	}()
+	<-matched
+
+	flushDone := make(chan error, 1)
+	go func() { flushDone <- flusher.FlushCtx(ctx) }()
+	flushedFirst := false
+	select {
+	case err := <-flushDone:
+		flushedFirst = true
+		if err != nil {
+			t.Fatalf("FlushCtx: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(resume)
+	r := <-swapDone
+	if !flushedFirst {
+		if err := <-flushDone; err != nil {
+			t.Fatalf("FlushCtx: %v", err)
+		}
+	}
+	if r.err != nil {
+		t.Fatalf("CompareAndSwapCtx: %v", r.err)
+	}
+	if flushedFirst && r.ok {
+		t.Fatal("the swap reported success for a key a Flush that had already returned deleted")
+	}
+	if _, err := os.Stat(swapper.getCacheFilePath("k")); !os.IsNotExist(err) {
+		t.Fatalf("an entry survived a Flush that returned after the swap started: stat err = %v", err)
+	}
+	if v, found := flusher.GetCtx(ctx, "k"); found {
+		t.Fatalf("key reads %v after both the swap and the Flush returned; want absent", v)
+	}
+}

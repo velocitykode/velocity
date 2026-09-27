@@ -159,6 +159,12 @@ type FileStore struct {
 	// only: lets tests prove the store mutex is not held during the walk.
 	walkHook func()
 
+	// swapMatchedHook, when non-nil, is invoked by CompareAndSwapCtx after
+	// the stored value matched and before the replacement is written, with
+	// the key's write lock and the store mutex held. Test instrumentation
+	// only: lets tests pause a swap between its comparison and its write.
+	swapMatchedHook func()
+
 	// lockStore and friends back FileStore.Lock with flock(2) so the
 	// file driver satisfies the Locker capability. Created lazily on
 	// first Lock call; lockErr captures any initialisation failure so
@@ -455,6 +461,41 @@ func (s *FileStore) prefixedKey(key string) string {
 // keyLockDir is the directory of the key write-lock files.
 func (s *FileStore) keyLockDir() string {
 	return filepath.Join(s.path, "locks", "keys")
+}
+
+// keyStripe names the write-lock stripe of key: the first byte of the
+// hash of the prefixed key, in hex. It is also the name of the shard
+// directory holding the key's entry and the first two characters of the
+// entry's file name, so the stripe of a file found on disk is known
+// without the key (see entryStripe).
+func (s *FileStore) keyStripe(key string) string {
+	sum := sha256.Sum256([]byte(s.prefixedKey(key)))
+	return hex.EncodeToString(sum[:1])
+}
+
+// entryStripe returns the write-lock stripe of a file under the cache
+// directory: an entry (<shard>/<hash>) or a write's temp file beside one
+// (<shard>/<hash>.tmp-*). ok is false for any other file, such as the
+// Lock() files under locks/.
+func (s *FileStore) entryStripe(path string) (stripe string, ok bool) {
+	dir := filepath.Dir(path)
+	if filepath.Dir(dir) != filepath.Clean(s.path) {
+		return "", false
+	}
+	name := filepath.Base(path)
+	if i := strings.Index(name, fileTempMarker); i >= 0 {
+		name = name[:i]
+	}
+	if len(name) != 2*sha256.Size {
+		return "", false
+	}
+	if _, err := hex.DecodeString(name); err != nil {
+		return "", false
+	}
+	if filepath.Base(dir) != name[:2] {
+		return "", false
+	}
+	return name[:2], true
 }
 
 // lockKeyForPlainWrite takes key's write lock for a write whose contract
@@ -829,11 +870,20 @@ func (s *FileStore) Forget(key string) error {
 // FlushCtx removes all values from the cache.
 //
 // The directory walk runs WITHOUT the store mutex so a flush over a large
-// cache does not stall concurrent Get/Put for the whole traversal; the lock
-// is taken only around each individual os.Remove. A write that races the
-// walk (lands in a shard the walk already passed) survives the flush --
-// observationally identical to the same Put issued just after Flush
-// returned, which the previous whole-walk lock allowed too.
+// cache does not stall concurrent Get/Put for the whole traversal. A write
+// that races the walk (lands in a shard the walk already passed) survives
+// the flush -- observationally identical to the same Put issued just after
+// Flush returned, which the previous whole-walk lock allowed too.
+//
+// Each entry is removed under its key's write lock (the stripe named by
+// its file name, see entryStripe) and then the store mutex, the order
+// every write takes them in. A write of the key from any FileStore sharing
+// the directory therefore lands wholly before the removal or wholly after
+// it: in particular a CompareAndSwapCtx that has matched the stored value
+// finishes its write before the entry is removed, and one that has not
+// yet read it finds the key gone, so a swap never recreates a key a
+// returned Flush deleted. A held stripe is waited for, honouring ctx, as a
+// write waits for it.
 func (s *FileStore) FlushCtx(ctx context.Context) error {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
@@ -875,17 +925,64 @@ func (s *FileStore) FlushCtx(ctx context.Context) error {
 		return err
 	}
 
-	// Delete per-file under a briefly-held lock. Holding the mutex for each
-	// removal (rather than not at all) keeps Flush excluded from a same-
-	// process AddCtx between its O_EXCL create and payload write, so a
-	// successful Add is never silently emptied by a concurrent Flush.
+	// Group the entries by stripe so each stripe's lock is taken once. A
+	// file that belongs to no stripe (the Lock() files under locks/) is
+	// removed under the store mutex alone.
+	byStripe := make(map[string][]string)
+	var stripes, loose []string
 	for _, path := range paths {
-		s.mu.Lock()
-		rmErr := os.Remove(path)
-		s.mu.Unlock()
-		if rmErr != nil && !os.IsNotExist(rmErr) {
-			return rmErr
+		stripe, ok := s.entryStripe(path)
+		if !ok || isTempFile(path) {
+			loose = append(loose, path)
+			continue
 		}
+		if _, seen := byStripe[stripe]; !seen {
+			stripes = append(stripes, stripe)
+		}
+		byStripe[stripe] = append(byStripe[stripe], path)
+	}
+	for _, stripe := range stripes {
+		if err := s.flushStripe(ctx, stripe, byStripe[stripe]); err != nil {
+			return err
+		}
+	}
+	for _, path := range loose {
+		if err := s.removeLocked(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// flushStripe removes the entries of one stripe under its write lock.
+// Where flock is missing they are removed under the store mutex alone.
+func (s *FileStore) flushStripe(ctx context.Context, stripe string, paths []string) error {
+	unlock, err := s.lockStripe(ctx, stripe, "stripe "+stripe)
+	if errors.Is(err, ErrLockNotSupported) {
+		unlock, err = func() {}, nil
+	}
+	if err != nil {
+		return fmt.Errorf("velocity/cache: FileStore.Flush: %w", err)
+	}
+	defer unlock()
+	for _, path := range paths {
+		if err := s.removeLocked(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// removeLocked removes path under the store mutex. Holding the mutex for
+// each removal keeps Flush excluded from a same-process AddCtx between its
+// O_EXCL create and payload write (the fallback without hard links), so a
+// successful Add is never silently emptied by a concurrent Flush.
+func (s *FileStore) removeLocked(path string) error {
+	s.mu.Lock()
+	rmErr := os.Remove(path)
+	s.mu.Unlock()
+	if rmErr != nil && !os.IsNotExist(rmErr) {
+		return rmErr
 	}
 	return nil
 }
