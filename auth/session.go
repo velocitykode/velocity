@@ -440,7 +440,8 @@ type SessionConfig struct {
 	// IdleLifetime is the idle timeout in minutes: a session that receives
 	// no request for this long ends, and every request slides it forward
 	// (the cookie is re-issued and the server record's expiry refreshed,
-	// both at most once a minute). Zero means no idle timeout: the cookie
+	// both at most once per ActivityRefreshInterval: a minute, or half the
+	// idle window when that is shorter). Zero means no idle timeout: the cookie
 	// is a browser-session cookie (no Max-Age) and only AbsoluteLifetime
 	// bounds the session.
 	IdleLifetime int // Minutes
@@ -558,10 +559,34 @@ func (c SessionConfig) ExpiresAt(createdAt, lastActive time.Time) time.Time {
 	return end
 }
 
+// maxActivityRefreshInterval is the longest ActivityRefreshInterval.
+const maxActivityRefreshInterval = time.Minute
+
+// ActivityRefreshInterval returns how often a request slides the session's
+// idle window: the session scheme re-issues the cookie and touches the
+// server record (LastSeenAt and ExpiresAt) only once the last issue or
+// touch is this old. Reads happen on every signed-in request, to honor
+// revocation; the writes are spaced so a chatty client does not cause one
+// store write and one cookie rewrite per request.
+//
+// It is one minute, or half the idle timeout when that is shorter. The
+// window is slid by the first request after the interval, so a session
+// active more often than every idle-minus-interval stays signed in; with
+// a fixed minute an idle timeout of one minute would make the re-issue
+// due at the moment the cookie expires, ending an active session. With
+// no idle timeout it is one minute (the record's LastSeenAt still slides).
+func (c SessionConfig) ActivityRefreshInterval() time.Duration {
+	if idle := c.IdleTimeout(); idle > 0 && idle/2 < maxActivityRefreshInterval {
+		return idle / 2
+	}
+	return maxActivityRefreshInterval
+}
+
 // sessionRecordGrace is how long a server session record outlives the
-// session it backs. The session scheme touches the record at most once a
-// minute and always before it writes a cookie, so a record that ends one
-// minute after the policy's end is never gone while the cookie is live: an
+// session it backs. The session scheme touches the record at most once per
+// ActivityRefreshInterval (never more than a minute) and always before it
+// writes a cookie, so a record that ends one minute after the policy's end
+// is never gone while the cookie is live: an
 // idle session is reported as expired, never as revoked because a store had
 // already reaped its record. The session is checked server-side against the
 // policy's end, so the grace extends nothing a client can use.

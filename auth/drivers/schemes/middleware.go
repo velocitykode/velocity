@@ -562,10 +562,11 @@ type renewableSession interface {
 }
 
 // renewOnActivity slides the session's idle window: a request is
-// activity, so once the cookie is lastSeenDebounce old the session is
-// marked for the seam to re-issue, which restarts its IssuedAt and
-// MaxAge (the absolute cap still bounds both). The debounce keeps a busy
-// client to one cookie rewrite a minute.
+// activity, so once the cookie is activityRefreshInterval old the session
+// is marked for the seam to re-issue, which restarts its IssuedAt and
+// MaxAge (the absolute cap still bounds both). The interval keeps a busy
+// client to one cookie rewrite a minute, or one per half idle window when
+// the idle timeout is shorter than two minutes.
 //
 // For a signed-in session with a server store, the server record slides
 // first: every cookie the seam writes (a renewal or any other change) is
@@ -584,7 +585,7 @@ func (g *SessionScheme) renewOnActivity(r *http.Request, session auth.Session) {
 		return
 	}
 	issuedAt := rs.IssuedAt()
-	due := !issuedAt.IsZero() && sessionclock.Now().Sub(issuedAt) >= lastSeenDebounce
+	due := !issuedAt.IsZero() && sessionclock.Now().Sub(issuedAt) >= g.activityRefreshInterval()
 	if !due && !ms.IsModified() {
 		return
 	}

@@ -66,3 +66,22 @@ func TestSessionConfig_RememberTimeout(t *testing.T) {
 		}
 	}
 }
+
+// The activity refresh interval is a minute, or half the idle timeout when
+// that is shorter, so a one-minute idle window slides before it ends.
+func TestSessionConfig_ActivityRefreshInterval(t *testing.T) {
+	tests := []struct {
+		idle int
+		want time.Duration
+	}{
+		{idle: 0, want: time.Minute},
+		{idle: 1, want: 30 * time.Second},
+		{idle: 2, want: time.Minute},
+		{idle: 120, want: time.Minute},
+	}
+	for _, tt := range tests {
+		if got := (SessionConfig{IdleLifetime: tt.idle}).ActivityRefreshInterval(); got != tt.want {
+			t.Errorf("IdleLifetime %d: ActivityRefreshInterval = %v, want %v", tt.idle, got, tt.want)
+		}
+	}
+}

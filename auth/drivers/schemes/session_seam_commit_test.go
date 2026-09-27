@@ -189,7 +189,7 @@ func TestSessionMiddleware_DeletedSessionCookieIsNotRenewed(t *testing.T) {
 			})
 			b.handler = r
 
-			clock.advance(lastSeenDebounce + time.Second)
+			clock.advance(scheme.activityRefreshInterval() + time.Second)
 			w := b.do(http.MethodGet, "/forget")
 			lines := sessionLines(w)
 			if len(lines) == 0 {

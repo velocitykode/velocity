@@ -275,12 +275,14 @@ func TestSessionMiddleware_OversizeCookieIsNotSent(t *testing.T) {
 	}
 }
 
-// The server record's grace covers the activity debounce, so the record
-// always outlives the cookie the seam last wrote.
-func TestSessionRecordGrace_CoversTheActivityDebounce(t *testing.T) {
-	cfg := auth.SessionConfig{IdleLifetime: 120}
-	now := time.Now()
-	if grace := cfg.RecordExpiresAt(now, now).Sub(cfg.ExpiresAt(now, now)); grace < lastSeenDebounce {
-		t.Fatalf("record grace %v is shorter than the debounce %v", grace, lastSeenDebounce)
+// The server record's grace covers the activity refresh interval, so the
+// record always outlives the cookie the seam last wrote.
+func TestSessionRecordGrace_CoversTheActivityRefreshInterval(t *testing.T) {
+	for _, idle := range []int{0, 1, 2, 120} {
+		cfg := auth.SessionConfig{IdleLifetime: idle}
+		now := time.Now()
+		if grace := cfg.RecordExpiresAt(now, now).Sub(cfg.ExpiresAt(now, now)); grace < cfg.ActivityRefreshInterval() {
+			t.Fatalf("idle %d: record grace %v is shorter than the refresh interval %v", idle, grace, cfg.ActivityRefreshInterval())
+		}
 	}
 }

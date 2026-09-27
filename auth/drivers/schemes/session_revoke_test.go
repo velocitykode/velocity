@@ -266,7 +266,7 @@ func TestSessionScheme_LastSeenAtRefresh(t *testing.T) {
 	// Backdate LastSeenAt past the window, then Check should refresh.
 	// Touch, not Put: Put stamps LastSeenAt with the current time, so a
 	// Put-based backdate would silently leave the record inside the window.
-	backdated := time.Now().Add(-2 * lastSeenDebounce)
+	backdated := time.Now().Add(-2 * scheme.activityRefreshInterval())
 	if err := store.Touch(context.Background(), id, backdated, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Touch backdated: %v", err)
 	}
@@ -340,7 +340,7 @@ func TestSessionScheme_RevokeBetweenReadAndRefresh_DeniesRequest(t *testing.T) {
 			id := list[0].ID
 
 			// Backdate LastSeenAt past the debounce so the next Check refreshes.
-			if err := inner.Touch(context.Background(), id, time.Now().Add(-2*lastSeenDebounce), time.Now().Add(time.Hour)); err != nil {
+			if err := inner.Touch(context.Background(), id, time.Now().Add(-2*scheme.activityRefreshInterval()), time.Now().Add(time.Hour)); err != nil {
 				t.Fatalf("Touch backdated: %v", err)
 			}
 
@@ -390,7 +390,7 @@ func TestSessionScheme_LastSeenAtRefresh_UsesTouchNotPut(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("expected 1 session, got %d", len(list))
 	}
-	backdated := time.Now().Add(-2 * lastSeenDebounce)
+	backdated := time.Now().Add(-2 * scheme.activityRefreshInterval())
 	if err := inner.Touch(context.Background(), list[0].ID, backdated, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Touch backdated: %v", err)
 	}

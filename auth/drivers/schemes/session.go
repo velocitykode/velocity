@@ -504,15 +504,20 @@ type modifiedSession interface {
 	IsDestroyed() bool
 }
 
-// lastSeenDebounce is the minimum interval between activity refreshes for a
-// given session: the server record's Touch (LastSeenAt and the slid
-// ExpiresAt) and the cookie's re-issue. Reads happen on every
-// authenticated request to honor revocation; writes are debounced so a
-// chatty client does not generate one extra store write and one cookie
-// rewrite per request. 60s keeps the idle window accurate to a minute and
-// gives the "active sessions" UI accurate timestamps without amplifying
-// write volume.
-const lastSeenDebounce = 60 * time.Second
+// activityRefreshInterval is the minimum interval between activity
+// refreshes for a given session: the server record's Touch (LastSeenAt and
+// the slid ExpiresAt) and the cookie's re-issue share it, so the record
+// and the cookie slide on the same rule. Reads happen on every
+// authenticated request to honor revocation; writes are spaced so a chatty
+// client does not generate one extra store write and one cookie rewrite
+// per request. It is a minute, which keeps the idle window accurate to a
+// minute and gives the "active sessions" UI accurate timestamps without
+// amplifying write volume, or half the idle window when that is shorter,
+// so a one-minute idle timeout still slides for an active client (see
+// auth.SessionConfig.ActivityRefreshInterval).
+func (g *SessionScheme) activityRefreshInterval() time.Duration {
+	return g.config.ActivityRefreshInterval()
+}
 
 // userStoreHolder boxes an auth.UserStore so atomic.Pointer can hold the
 // two-word interface as a single addressable value (H-10 fix). Without the
@@ -1819,7 +1824,7 @@ func (g *SessionScheme) getSession(r *http.Request) auth.Session {
 // ErrSessionExpired. The Get result is cached on the request-scoped
 // sessionHolder so multiple scheme methods in the same request only pay one
 // round-trip. The record slides (LastSeenAt and ExpiresAt) at most once per
-// lastSeenDebounce interval.
+// activityRefreshInterval.
 //
 // Returns nil when no store is configured (cookie-only mode preserved).
 func (g *SessionScheme) consultServerStore(r *http.Request, session auth.Session) error {
@@ -1909,7 +1914,7 @@ func (g *SessionScheme) maybeRefreshLastSeen(ctx context.Context, store auth.Ser
 		return nil
 	}
 	now := sessionclock.Now()
-	if now.Sub(rec.LastSeenAt) < lastSeenDebounce {
+	if now.Sub(rec.LastSeenAt) < g.activityRefreshInterval() {
 		return nil
 	}
 	err := store.Touch(ctx, rec.ID, now, g.recordExpiry(rec.CreatedAt, now))
