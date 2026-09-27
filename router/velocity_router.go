@@ -741,6 +741,7 @@ func (r *VelocityRouterV2) dispatchRequestStarted(req *http.Request, meta reques
 		Method:     req.Method,
 		Path:       req.URL.Path,
 		RemoteAddr: req.RemoteAddr,
+		ClientIP:   clientIPOf(req, r.trustedProxiesOrParse()),
 		UserAgent:  req.UserAgent(),
 		RequestID:  meta.id,
 	})

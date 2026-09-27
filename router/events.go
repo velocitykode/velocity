@@ -17,8 +17,12 @@ type RequestStarted struct {
 	// RemoteAddr is the peer address the connection came from
 	// (http.Request.RemoteAddr), a proxy's when one forwarded the request.
 	RemoteAddr string
-	UserAgent  string
-	RequestID  string
+	// ClientIP is the client the request came from, resolved through the
+	// router's trusted proxies: the value Context.IP returns and the error
+	// report carries.
+	ClientIP  string
+	UserAgent string
+	RequestID string
 }
 
 // Name returns the event name

@@ -619,12 +619,18 @@ func (c *Context) Path() string {
 // the RFC 7239 Forwarded header (preferred) or X-Forwarded-For /
 // X-Real-IP (legacy) are consulted via internal/clientip.Extract so
 // the framework speaks one IP-resolution policy across rate limit,
-// throttle, audit log, error reports, and this accessor.
+// throttle, audit log, error reports, RequestStarted and this accessor.
 func (c *Context) IP() string {
-	if ip := clientip.ExtractString(c.Request, c.trustedProxies.IPNets()); ip != "" {
+	return clientIPOf(c.Request, c.trustedProxies)
+}
+
+// clientIPOf resolves the client IP of req through proxies, as Context.IP
+// documents.
+func clientIPOf(req *http.Request, proxies *TrustedProxies) string {
+	if ip := clientip.ExtractString(req, proxies.IPNets()); ip != "" {
 		return ip
 	}
-	return stripPortHost(c.Request.RemoteAddr)
+	return stripPortHost(req.RemoteAddr)
 }
 
 // TrustedProxyNets returns the router-level trusted proxy networks
