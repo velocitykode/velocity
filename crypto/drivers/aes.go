@@ -265,6 +265,14 @@ func (d *AESDriver) SetEventDispatcher(fn func(ctx context.Context, event interf
 	d.eventDispatcher = fn
 }
 
+// hasEventDispatcher reports whether an event dispatcher is installed, so
+// an event is built only when one is.
+func (d *AESDriver) hasEventDispatcher() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.eventDispatcher != nil
+}
+
 // dispatchEvent dispatches an event if a dispatcher is configured.
 // Crypto operations operate without a request-scoped ctx (encryption is
 // CPU-bound and not request-bound), so callers pass context.Background()
@@ -394,7 +402,11 @@ func (d *AESDriver) noteLegacyIfV0(version int) {
 		log.Print("velocity/crypto: legacy v0 payload decrypted, rotate before v2.0")
 	})
 	// Dispatch every time so operators can count/alert on the stream.
-	// The once-per-instance log is about noise, not signal.
+	// The once-per-instance log is about noise, not signal. The event is
+	// built only when a dispatcher is installed.
+	if !d.hasEventDispatcher() {
+		return
+	}
 	d.dispatchEvent(&LegacyDecryptEvent{
 		EventMeta: contract.EventMeta{Context: context.Background(), At: time.Now().UTC()},
 		Cipher:    d.cipher,

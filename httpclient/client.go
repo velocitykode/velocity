@@ -784,6 +784,14 @@ func (c *Client) SetEventDispatcher(fn func(ctx context.Context, event interface
 	c.eventDispatcher = fn
 }
 
+// hasEventDispatcher reports whether an event dispatcher is installed, so
+// an event is built only when one is.
+func (c *Client) hasEventDispatcher() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.eventDispatcher != nil
+}
+
 // dispatchEvent dispatches an event if a dispatcher is configured. The
 // caller-supplied ctx is propagated so listeners observe request-scoped
 // values.

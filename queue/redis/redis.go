@@ -295,7 +295,7 @@ func (r *RedisDriver) PushCtx(ctx context.Context, job queue.Job, queueName ...s
 		return err
 	}
 
-	queue.DispatchJobQueued(r.DispatchEvent, ctx, payload.Type, name, false, 0)
+	queue.DispatchJobQueued(r.DispatchFunc(), ctx, payload.Type, name, false, 0)
 	return nil
 }
 
@@ -337,7 +337,7 @@ func (r *RedisDriver) PushDelayedCtx(ctx context.Context, job queue.Job, delay t
 		return err
 	}
 
-	queue.DispatchJobQueued(r.DispatchEvent, ctx, payload.Type, name, true, delay)
+	queue.DispatchJobQueued(r.DispatchFunc(), ctx, payload.Type, name, true, delay)
 	return nil
 }
 
@@ -526,7 +526,7 @@ func (r *RedisDriver) quarantinePoisonedPayload(ctx context.Context, queueName, 
 	if jobType == "" {
 		jobType = "unknown"
 	}
-	queue.DispatchJobFailed(r.DispatchEvent, ctx, jobType, queueName, poisonErr, 0)
+	queue.DispatchJobFailed(r.DispatchFunc(), ctx, jobType, queueName, poisonErr, 0)
 
 	if writeErr != nil {
 		return nil, tc, errors.Join(queue.ErrPoisonJob, poisonErr, writeErr)
@@ -668,7 +668,7 @@ func (r *RedisDriver) moveDelayedJobs(ctx context.Context, queueName string) err
 		member, ok := result[0].Member.(string)
 		if !ok {
 			queue.DispatchJobFailed(
-				r.DispatchEvent,
+				r.DispatchFunc(),
 				ctx,
 				"unknown",
 				queueName,
@@ -870,7 +870,7 @@ func (r *RedisDriver) PushIfNotExistsCtx(ctx context.Context, job queue.Job, ded
 		return nil
 	}
 
-	queue.DispatchJobQueued(r.DispatchEvent, ctx, payload.Type, name, false, 0)
+	queue.DispatchJobQueued(r.DispatchFunc(), ctx, payload.Type, name, false, 0)
 	return nil
 }
 

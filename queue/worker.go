@@ -113,6 +113,16 @@ func (w *Worker) dispatchEvent(ctx context.Context, event interface{}) {
 	}
 }
 
+// jobEventDispatch returns dispatchEvent when an event dispatcher is
+// installed and nil when none is, so the job event helpers build no event
+// for no listener.
+func (w *Worker) jobEventDispatch() func(ctx context.Context, event interface{}) {
+	if w.currentEventDispatcher() == nil {
+		return nil
+	}
+	return w.dispatchEvent
+}
+
 // currentEventDispatcher returns the dispatcher SetEventDispatcher set, or
 // nil.
 func (w *Worker) currentEventDispatcher() func(ctx context.Context, event interface{}) error {
@@ -358,7 +368,7 @@ func (w *Worker) processJob() error {
 	log := w.jobLogger(jobCtx, job, jobType)
 
 	// Dispatch queue.job.started event
-	dispatchJobProcessing(w.dispatchEvent, jobCtx, jobType, w.queueName)
+	dispatchJobProcessing(w.jobEventDispatch(), jobCtx, jobType, w.queueName)
 	startTime := time.Now()
 
 	// Check if this is a cancelled batch job, skip processing.
@@ -467,7 +477,7 @@ func (w *Worker) processJob() error {
 				batch.recordSuccess(jobCtx)
 			}
 		}
-		dispatchJobProcessed(w.dispatchEvent, jobCtx, jobType, w.queueName, duration)
+		dispatchJobProcessed(w.jobEventDispatch(), jobCtx, jobType, w.queueName, duration)
 		return nil
 	case <-jobCtx.Done():
 		duration := time.Since(startTime)
@@ -694,7 +704,7 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 			"backoff_ms", backoff.Milliseconds(),
 			"error", err,
 		)
-		dispatchJobRetrying(w.dispatchEvent, ctx, jobType, w.queueName, attempt, maxAttempts, err, backoff)
+		dispatchJobRetrying(w.jobEventDispatch(), ctx, jobType, w.queueName, attempt, maxAttempts, err, backoff)
 		return
 	}
 

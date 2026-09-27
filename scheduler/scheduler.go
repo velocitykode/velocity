@@ -129,6 +129,14 @@ func (s *Scheduler) SetEventDispatcher(fn func(ctx context.Context, event interf
 	s.eventDispatcher = fn
 }
 
+// hasEventDispatcher reports whether an event dispatcher is installed, so
+// an event is built only when one is.
+func (s *Scheduler) hasEventDispatcher() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.eventDispatcher != nil
+}
+
 // dispatchEvent dispatches an event if a dispatcher is configured. The
 // caller-supplied ctx is propagated so listeners observe scheduler-job
 // scoped values.

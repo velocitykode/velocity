@@ -614,6 +614,9 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		return contract.EventMeta{Context: ctx, TraceID: txTrace, SpanID: txSpanID, ParentID: parentSpanID, At: time.Now()}
 	}
 	dispatchTxExecuted := func(txErr error) {
+		if !m.hasEventDispatcher() {
+			return
+		}
 		meta := txMeta()
 		m.dispatchEvent(ctx, &TransactionExecuted{
 			EventMeta:  meta,
@@ -624,6 +627,9 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		})
 	}
 	dispatchTxRecover := func(ev *TxRecover) {
+		if !m.hasEventDispatcher() {
+			return
+		}
 		ev.EventMeta = txMeta()
 		m.dispatchEvent(ctx, ev)
 	}
@@ -998,8 +1004,20 @@ func (m *Manager) log() contract.Logger {
 
 var _ contract.LoggerAware = (*Manager)(nil)
 
-// dispatchTxRecover dispatches ev for work running under ctx's span.
+// hasEventDispatcher reports whether an event dispatcher is installed, so
+// an event is built only when one is.
+func (m *Manager) hasEventDispatcher() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.eventDispatcher != nil
+}
+
+// dispatchTxRecover dispatches ev for work running under ctx's span. The
+// event is built only when a dispatcher is installed.
 func (m *Manager) dispatchTxRecover(ctx context.Context, ev *TxRecover) {
+	if !m.hasEventDispatcher() {
+		return
+	}
 	ev.EventMeta = eventmeta.Current(ctx)
 	m.dispatchEvent(ctx, ev)
 }

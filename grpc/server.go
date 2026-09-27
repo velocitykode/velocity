@@ -630,8 +630,12 @@ func (s *Server) GracefulStop() {
 }
 
 // serverStartedLocked builds the ServerStarted event for the start just
-// recorded. Caller must hold s.mu.
+// recorded, or returns nil when no event dispatcher is installed. Caller
+// must hold s.mu.
 func (s *Server) serverStartedLocked() *grpcevents.ServerStarted {
+	if !s.hasEventDispatcher() {
+		return nil
+	}
 	return &grpcevents.ServerStarted{
 		EventMeta: contract.EventMeta{Context: context.Background(), At: s.startTime},
 		Port:      s.port,
@@ -641,15 +645,19 @@ func (s *Server) serverStartedLocked() *grpcevents.ServerStarted {
 // stoppedEventLocked builds the ServerStopped event for the current uptime
 // and clears startTime so a subsequent stop path (e.g. Shutdown delegating
 // to GracefulStop, or the Shutdown timeout falling back to Stop) emits
-// nothing. Returns nil when no start was recorded. Caller must hold s.mu;
-// the event is dispatched after the lock is released so a listener that
-// calls back into the Server cannot deadlock.
+// nothing. Returns nil when no start was recorded or no event dispatcher
+// is installed. Caller must hold s.mu; the event is dispatched after the
+// lock is released so a listener that calls back into the Server cannot
+// deadlock.
 func (s *Server) stoppedEventLocked() *grpcevents.ServerStopped {
 	if s.startTime.IsZero() {
 		return nil
 	}
 	start := s.startTime
 	s.startTime = time.Time{}
+	if !s.hasEventDispatcher() {
+		return nil
+	}
 	now := time.Now()
 	return &grpcevents.ServerStopped{
 		EventMeta: contract.EventMeta{Context: context.Background(), At: now},
@@ -693,6 +701,14 @@ func (s *Server) SetEventDispatcher(fn func(ctx context.Context, event any) erro
 	s.eventMu.Lock()
 	s.eventDispatcher = fn
 	s.eventMu.Unlock()
+}
+
+// hasEventDispatcher reports whether an event dispatcher is installed, so
+// an event is built only when one is.
+func (s *Server) hasEventDispatcher() bool {
+	s.eventMu.RLock()
+	defer s.eventMu.RUnlock()
+	return s.eventDispatcher != nil
 }
 
 // dispatchEvent fires an event if a dispatcher is configured. The

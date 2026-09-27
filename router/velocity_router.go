@@ -734,8 +734,12 @@ func durationSince(start, end time.Time) time.Duration {
 	return end.Sub(start)
 }
 
-// dispatchRequestStarted dispatches RequestStarted for req.
+// dispatchRequestStarted dispatches RequestStarted for req. The event is
+// built only when a dispatcher is installed.
 func (r *VelocityRouterV2) dispatchRequestStarted(req *http.Request, meta requestMeta) {
+	if r.eventDispatcher == nil {
+		return
+	}
 	r.dispatchInstanceEvent(req.Context(), &RequestStarted{
 		EventMeta:  meta.eventMeta(req, meta.startedAt),
 		Method:     req.Method,
@@ -749,8 +753,11 @@ func (r *VelocityRouterV2) dispatchRequestStarted(req *http.Request, meta reques
 
 // dispatchRequestRouted dispatches RequestRouted for a request answered
 // without a matched route's params: a static file (route "[static]") or no
-// route at all.
+// route at all. The event is built only when a dispatcher is installed.
 func (r *VelocityRouterV2) dispatchRequestRouted(req *http.Request, meta requestMeta, route string, matched bool) {
+	if r.eventDispatcher == nil {
+		return
+	}
 	r.dispatchInstanceEvent(req.Context(), &RequestRouted{
 		EventMeta: meta.eventMeta(req, time.Now()),
 		RequestID: meta.id,
@@ -760,8 +767,12 @@ func (r *VelocityRouterV2) dispatchRequestRouted(req *http.Request, meta request
 }
 
 // dispatchRequestHandled dispatches RequestHandled, the terminal event of
-// every answered request, with the status rw went out with.
+// every answered request, with the status rw went out with. The event is
+// built only when a dispatcher is installed.
 func (r *VelocityRouterV2) dispatchRequestHandled(req *http.Request, rw *responseWriter, meta requestMeta, route string) {
+	if r.eventDispatcher == nil {
+		return
+	}
 	now := time.Now()
 	r.dispatchInstanceEvent(req.Context(), &RequestHandled{
 		EventMeta:    meta.eventMeta(req, now),

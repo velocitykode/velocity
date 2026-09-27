@@ -27,8 +27,12 @@ func (e *SessionMissing) Name() string {
 	return "csrf.session.missed"
 }
 
-// dispatchSessionMissing dispatches SessionMissing for r.
+// dispatchSessionMissing dispatches SessionMissing for r. The event is
+// built only when a dispatcher is installed.
 func (c *CSRF) dispatchSessionMissing(r *http.Request) {
+	if !c.hasEventDispatcher() {
+		return
+	}
 	c.dispatchEvent(r.Context(), &SessionMissing{
 		EventMeta: eventmeta.Current(r.Context()),
 		Path:      r.URL.Path,

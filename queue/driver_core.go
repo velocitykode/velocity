@@ -36,6 +36,17 @@ func (c *DriverCore) SetEventDispatcher(fn func(ctx context.Context, event inter
 	c.eventDispatcher.Store(&f)
 }
 
+// DispatchFunc returns DispatchEvent when an event dispatcher is installed
+// and nil when none is. The lifecycle event helpers (DispatchJobQueued,
+// DispatchJobFailed) build no event for a nil function, so a driver hands
+// them DispatchFunc() and builds no event for no listener.
+func (c *DriverCore) DispatchFunc() func(ctx context.Context, event interface{}) {
+	if c.eventDispatcher.Load() == nil {
+		return nil
+	}
+	return c.DispatchEvent
+}
+
 // DispatchEvent dispatches an event if a dispatcher is configured. The
 // caller-supplied ctx is propagated so listeners observe request-scoped values;
 // a nil ctx falls back to context.Background. The dispatcher pointer is loaded

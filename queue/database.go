@@ -295,7 +295,7 @@ func (d *DatabaseDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupe
 		return fmt.Errorf("velocity/queue: PushIfNotExistsCtx commit: %w", err)
 	}
 
-	dispatchJobQueued(d.DispatchEvent, ctx, wrapper.Payload.Type, name, false, 0)
+	dispatchJobQueued(d.DispatchFunc(), ctx, wrapper.Payload.Type, name, false, 0)
 	return nil
 }
 
@@ -358,7 +358,7 @@ func (d *DatabaseDriver) PushDelayedCtx(ctx context.Context, job Job, delay time
 	}
 	_ = jobID
 
-	dispatchJobQueued(d.DispatchEvent, ctx, wrapper.Payload.Type, name, delay > 0, delay)
+	dispatchJobQueued(d.DispatchFunc(), ctx, wrapper.Payload.Type, name, delay > 0, delay)
 	return nil
 }
 

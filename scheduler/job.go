@@ -94,10 +94,12 @@ type Job struct {
 }
 
 // getDispatch returns the event dispatch function from the parent scheduler,
-// or nil. The returned closure captures the scheduler's dispatchEvent method so
-// callers pass the per-job ctx through to listeners.
+// or nil when there is none or it has no event dispatcher installed, so the
+// task event helpers build no event for no listener. The returned closure
+// captures the scheduler's dispatchEvent method so callers pass the per-job
+// ctx through to listeners.
 func (j *Job) getDispatch() func(context.Context, interface{}) {
-	if j.scheduler != nil {
+	if j.scheduler != nil && j.scheduler.hasEventDispatcher() {
 		return j.scheduler.dispatchEvent
 	}
 	return nil

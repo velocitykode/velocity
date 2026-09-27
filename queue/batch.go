@@ -451,9 +451,14 @@ func (b *Batch) fireTerminalCallbacks(ctx context.Context, updated *Batch) {
 // only populated when the dispatcher process used WithEventDispatcher.
 // The global dispatcher is what makes cross-process subscriptions work.
 //
-// build returns the event for the envelope of work running under ctx.
+// build returns the event for the envelope of work running under ctx. It
+// is called only when at least one of the two dispatchers is installed,
+// so no event is built for no listener.
 func dispatchBatchEvent(ctx context.Context, dispatch func(context.Context, interface{}), build func(contract.EventMeta) contract.Event) {
 	g := globalEventDispatcher()
+	if dispatch == nil && g == nil {
+		return
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}

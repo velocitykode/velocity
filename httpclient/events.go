@@ -63,8 +63,12 @@ func (e *RequestFailed) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// dispatchRequestSent dispatches a RequestSent event
+// dispatchRequestSent dispatches a RequestSent event. The event is built
+// only when a dispatcher is installed.
 func (c *Client) dispatchRequestSent(ctx context.Context, method, url string, statusCode int, duration time.Duration, requestSize, responseSize int64) {
+	if !c.hasEventDispatcher() {
+		return
+	}
 	c.dispatchEvent(ctx, &RequestSent{
 		EventMeta:    eventmeta.Current(ctx),
 		Method:       method,
@@ -76,8 +80,12 @@ func (c *Client) dispatchRequestSent(ctx context.Context, method, url string, st
 	})
 }
 
-// dispatchRequestFailed dispatches a RequestFailed event
+// dispatchRequestFailed dispatches a RequestFailed event. The event is
+// built only when a dispatcher is installed.
 func (c *Client) dispatchRequestFailed(ctx context.Context, method, url string, err error, duration time.Duration) {
+	if !c.hasEventDispatcher() {
+		return
+	}
 	c.dispatchEvent(ctx, &RequestFailed{
 		EventMeta: eventmeta.Current(ctx),
 		Method:    method,

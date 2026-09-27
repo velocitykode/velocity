@@ -145,6 +145,14 @@ func (c *CSRF) SetEventDispatcher(fn func(ctx context.Context, event interface{}
 	c.eventMu.Unlock()
 }
 
+// hasEventDispatcher reports whether an event dispatcher is installed, so
+// an event is built only when one is.
+func (c *CSRF) hasEventDispatcher() bool {
+	c.eventMu.RLock()
+	defer c.eventMu.RUnlock()
+	return c.eventDispatcher != nil
+}
+
 // dispatchEvent fires an event if a dispatcher is configured. The
 // caller-supplied ctx is propagated so listeners observe request-scoped
 // values. Failures from the dispatcher are swallowed: CSRF validation
