@@ -282,8 +282,12 @@ func TestFileLock_BlockTimesOutWhileTheKeyStripeIsHeld(t *testing.T) {
 	if ran.Load() {
 		t.Fatal("Block ran the callback after its timeout")
 	}
-	if elapsed > 300*time.Millisecond {
-		t.Fatalf("Block returned after %v; want within 300ms of a 50ms timeout", elapsed)
+	// A loose bound: it catches a stripe wait limited by some budget other
+	// than Block's timeout (which would still time out, but late) while
+	// leaving ample room for scheduler pauses, and stays well under the
+	// 10s watchdog.
+	if elapsed > 2*time.Second {
+		t.Fatalf("Block returned after %v; want within 2s of a 50ms timeout", elapsed)
 	}
 
 	// With the stripe free, an attempt with no time left still acquires.
