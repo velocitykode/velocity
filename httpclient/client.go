@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/internal/neturl"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // errPrivateIP is the sentinel returned by the SSRF-guard DialContext
@@ -573,10 +574,29 @@ func sameRedirectOrigin(a, b *url.URL) bool {
 	return neturl.ETLDPlusOne(a.Host) == neturl.ETLDPlusOne(b.Host)
 }
 
-// Do sends an HTTP request and returns an HTTP response, dispatching APM events
+// Do sends an HTTP request and returns an HTTP response, dispatching APM events.
+//
+// The call is its own span under ctx's current span (a root span when ctx
+// carries no trace). Its RequestSent or RequestFailed event records that
+// span, and the request carries it to the upstream as a W3C traceparent
+// header, together with ctx's request id as X-Request-ID (see
+// trace.Propagate). A traceparent or X-Request-ID the caller already set on
+// req is sent as is. The headers are written on the client's copy of the
+// request; req itself is not modified.
 func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
-	// Use context from parameter
+	ctx, _ = trace.ContinueTrace(ctx)
 	req = req.WithContext(ctx)
+	// WithContext copies the request but shares its Header map; clone it so
+	// the propagation headers never land on the caller's request.
+	req.Header = req.Header.Clone()
+	if req.Header == nil {
+		req.Header = make(http.Header)
+	}
+	trace.Propagate(ctx, func(name, value string) {
+		if len(req.Header.Values(name)) == 0 {
+			req.Header.Set(name, value)
+		}
+	})
 
 	start := time.Now()
 	reqURL := req.URL.String()
