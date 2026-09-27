@@ -210,12 +210,38 @@ func TestShutdownEventDispatcher_TimeoutPanicAfterStopIsReported(t *testing.T) {
 // requests dispatching while ShutdownEventDispatcher stops the pool never
 // panic, and that every event they dispatched is either delivered to the
 // pool's target or counted in DroppedEventCount (a full buffer or a
-// stopped pool), none lost silently.
+// stopped pool), none lost silently. One gated request is released only
+// after the stop returned, so at least one event is always dispatched on
+// the stopped pool whatever the stress senders' scheduling.
 func TestShutdownEventDispatcher_ConcurrentSendersNeverPanic(t *testing.T) {
 	col := &stopEventCollector{}
 	r := router.New()
 	r.SetAsyncEventDispatcher(col.dispatch, 2, 8)
 	r.Get("/", func(c *router.Context) error { return c.NoContent() })
+
+	var (
+		dropMu     sync.Mutex
+		dropErrs   []error
+		dropEvents []router.Event
+	)
+	r.OnEventDispatchError = func(err error, ev router.Event) {
+		dropMu.Lock()
+		defer dropMu.Unlock()
+		dropErrs = append(dropErrs, err)
+		dropEvents = append(dropEvents, ev)
+	}
+
+	gateEntered, gate := make(chan struct{}), make(chan struct{})
+	r.Get("/gated", func(c *router.Context) error {
+		close(gateEntered)
+		<-gate
+		return c.NoContent()
+	})
+	gatedEscaped := make(chan any, 1)
+	go func() {
+		gatedEscaped <- serveRecovering(r, httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/gated", nil))
+	}()
+	<-gateEntered
 
 	const senders, perSender = 8, 200
 	var wg sync.WaitGroup
@@ -245,8 +271,40 @@ func TestShutdownEventDispatcher_ConcurrentSendersNeverPanic(t *testing.T) {
 		t.Fatalf("a request panicked dispatching while the pool stopped: %v", p)
 	}
 
-	// RequestStarted, RequestRouted and RequestHandled per request.
-	const dispatched = senders * perSender * 3
+	// Only the gated request is left; its RequestHandled is dispatched
+	// after the stop returned.
+	droppedBefore := r.DroppedEventCount()
+	dropMu.Lock()
+	callsBefore := len(dropEvents)
+	dropMu.Unlock()
+	close(gate)
+	select {
+	case p := <-gatedEscaped:
+		if p != nil {
+			t.Fatalf("the gated request panicked dispatching after the stop: %v", p)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the gated request never finished")
+	}
+	if got := r.DroppedEventCount() - droppedBefore; got != 1 {
+		t.Errorf("DroppedEventCount grew by %d after the stop, want 1 for the gated RequestHandled", got)
+	}
+	dropMu.Lock()
+	if late := dropEvents[callsBefore:]; len(late) != 1 {
+		t.Errorf("OnEventDispatchError calls after the stop = %d, want 1", len(late))
+	} else {
+		if _, ok := late[0].(*router.RequestHandled); !ok {
+			t.Errorf("dropped event = %T, want *router.RequestHandled", late[0])
+		}
+		if err := dropErrs[callsBefore]; err == nil || errors.Is(err, router.ErrEventBufferFull) {
+			t.Errorf("drop error = %v, want the stopped-pool error, not a full buffer", err)
+		}
+	}
+	dropMu.Unlock()
+
+	// RequestStarted, RequestRouted and RequestHandled per request,
+	// the gated one included.
+	const dispatched = (senders*perSender + 1) * 3
 	if got := uint64(col.count()) + r.DroppedEventCount(); got != dispatched {
 		t.Errorf("delivered %d + dropped %d = %d, want %d", col.count(), r.DroppedEventCount(), got, dispatched)
 	}

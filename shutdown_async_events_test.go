@@ -80,10 +80,15 @@ func TestShutdown_AsyncEventsStragglerPastDeadline(t *testing.T) {
 		evMu      sync.Mutex
 		delivered int
 	)
+	// Shutdown's ctx expires before the pool drains, so a worker can still
+	// be delivering when Shutdown returns; each delivery is signalled so
+	// the count is read only after both arrived.
+	deliveries := make(chan struct{}, 64)
 	a.Router.SetAsyncEventDispatcher(func(context.Context, interface{}) error {
 		evMu.Lock()
 		delivered++
 		evMu.Unlock()
+		deliveries <- struct{}{}
 		return nil
 	}, 2, 64)
 
@@ -138,6 +143,13 @@ func TestShutdown_AsyncEventsStragglerPastDeadline(t *testing.T) {
 	}
 	if got := a.Router.DroppedEventCount(); got != 1 {
 		t.Errorf("DroppedEventCount = %d, want 1 (the straggler's late RequestHandled)", got)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-deliveries:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("the pool delivered %d of the straggler's 2 events queued before the stop within 5s", i)
+		}
 	}
 	evMu.Lock()
 	if delivered != 2 {

@@ -117,7 +117,12 @@ func TestFileStore_ExpiredRemovalNeverDropsFreshWrites(t *testing.T) {
 	ctx := context.Background()
 
 	stop := make(chan struct{})
+	var stopOnce sync.Once
 	var wg sync.WaitGroup
+	stopWorkers := func() {
+		stopOnce.Do(func() { close(stop) })
+		wg.Wait()
+	}
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
@@ -141,6 +146,9 @@ func TestFileStore_ExpiredRemovalNeverDropsFreshWrites(t *testing.T) {
 			}
 		}
 	}()
+	// A t.Fatalf below ends this goroutine only; stop and join the
+	// workers before the stores and their directory are cleaned up.
+	t.Cleanup(stopWorkers)
 
 	var misses atomic.Int32
 	deadline := time.Now().Add(2 * time.Second)
@@ -155,8 +163,7 @@ func TestFileStore_ExpiredRemovalNeverDropsFreshWrites(t *testing.T) {
 			misses.Add(1)
 		}
 	}
-	close(stop)
-	wg.Wait()
+	stopWorkers()
 	if n := misses.Load(); n > 0 {
 		t.Fatalf("%d reads after a fresh write missed it", n)
 	}

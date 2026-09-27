@@ -168,14 +168,14 @@ func TestFileLock_ExpiredLockIsReacquirable(t *testing.T) {
 	stores := newSharedFileStores(t, 2)
 	ctx := context.Background()
 
-	first := stores[0].Lock("ttl", 50*time.Millisecond)
+	first := stores[0].Lock("ttl", time.Minute)
 	if !first.Get(ctx) {
 		t.Fatal("first Get failed")
 	}
 	if stores[1].Lock("ttl", time.Minute).Get(ctx) {
 		t.Fatal("second Get acquired a lock inside its TTL")
 	}
-	time.Sleep(100 * time.Millisecond)
+	expireFileLockRecord(t, first.(*FileLock))
 
 	second := stores[1].Lock("ttl", time.Minute)
 	if !second.Get(ctx) {
@@ -281,5 +281,26 @@ func TestFileLock_BlockTimesOutWhileTheKeyStripeIsHeld(t *testing.T) {
 	}
 	if !ran.Load() {
 		t.Fatal("Block with a zero timeout on a free lock did not run the callback")
+	}
+}
+
+// expireFileLockRecord moves the ExpiresAt of l's record into the past
+// under the key's guard, as the TTL passing would.
+func expireFileLockRecord(t *testing.T, l *FileLock) {
+	t.Helper()
+	unlock, err := l.store.guard(context.Background(), l.key)
+	if err != nil {
+		t.Fatalf("take the lock's guard: %v", err)
+	}
+	defer unlock()
+	path := l.store.pathFor(l.key)
+	md, ok, err := l.store.readMetadata(path)
+	if err != nil || !ok {
+		t.Fatalf("read the lock record: ok=%v err=%v", ok, err)
+	}
+	past := time.Now().Add(-time.Second)
+	md.ExpiresAt = &past
+	if err := l.store.writeMetadata(path, md); err != nil {
+		t.Fatalf("write the expired lock record: %v", err)
 	}
 }
