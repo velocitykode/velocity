@@ -24,16 +24,6 @@ func (l fieldLine) field(key string) any {
 	return nil
 }
 
-// has reports whether the line carries key.
-func (l fieldLine) has(key string) bool {
-	for i := 0; i+1 < len(l.kvs); i += 2 {
-		if k, ok := l.kvs[i].(string); ok && k == key {
-			return true
-		}
-	}
-	return false
-}
-
 // fieldSink is the storage every logger bound from one fieldLogger shares.
 type fieldSink struct {
 	mu    sync.Mutex
