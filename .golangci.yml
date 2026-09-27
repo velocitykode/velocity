@@ -18,6 +18,18 @@
 #      //nolint:forbidigo // bounded by <wrapper>. The forbidigo
 #      rule below enforces this directly.
 #
+#   1a. Framework code writes operational lines through its component
+#      logger (contract.Logger: the app logger in an app, the internal
+#      fallbacklog package when a value has none), so LOG_DRIVER,
+#      LOG_LEVEL and LOG_REDACT see every line. The stdlib log and slog
+#      package-level output, fmt.Print*, the print builtins and direct
+#      os.Stdout / os.Stderr use are forbidden outside the few places
+#      whose job is to write to a standard stream: the log drivers, the
+#      fallback logger, the vel CLI and the CI tools, each excluded below
+#      with its reason. analyze-types resolves import aliases (stdlog
+#      "log") so a renamed import is still caught, and pkg keeps
+#      velocity's own log package out of the log.* rule.
+#
 #   2. Suppression directives must carry a rationale and name a
 #      specific linter. nolintlint with require-explanation and
 #      require-specific enforces "no bare //nolint:" and "no
@@ -68,7 +80,21 @@ linters:
       forbid:
         - pattern: '^io\.ReadAll$'
           msg: 'io.ReadAll is forbidden, wrap with io.LimitReader or http.MaxBytesReader first and tag with //nolint:forbidigo // bounded by <wrapper>'
-      analyze-types: false
+        - pattern: '^log\.(Print|Printf|Println|Fatal|Fatalf|Fatalln|Panic|Panicf|Panicln)$'
+          pkg: '^log$'
+          msg: 'stdlib log bypasses LOG_DRIVER, LOG_LEVEL and LOG_REDACT: framework code writes through its component logger (contract.Logger, or internal/fallbacklog when it has none)'
+        - pattern: '^slog\.(Default|Debug|DebugContext|Info|InfoContext|Warn|WarnContext|Error|ErrorContext|Log|LogAttrs)$'
+          pkg: '^log/slog$'
+          msg: 'slog.Default and the slog package-level output bypass LOG_DRIVER, LOG_LEVEL and LOG_REDACT: framework code writes through its component logger (contract.Logger, or internal/fallbacklog when it has none)'
+        - pattern: '^fmt\.(Print|Printf|Println)$'
+          pkg: '^fmt$'
+          msg: 'fmt.Print* writes to stdout outside the log driver: framework code writes through its component logger (contract.Logger, or internal/fallbacklog when it has none)'
+        - pattern: '^os\.(Stdout|Stderr)$'
+          pkg: '^os$'
+          msg: 'a raw standard stream bypasses LOG_DRIVER, LOG_LEVEL and LOG_REDACT: framework code writes through its component logger (contract.Logger, or internal/fallbacklog when it has none)'
+        - pattern: '^print(ln)?$'
+          msg: 'the print builtins write to stderr outside the log driver: framework code writes through its component logger (contract.Logger, or internal/fallbacklog when it has none)'
+      analyze-types: true
       exclude-godoc-examples: true
 
     nolintlint:
@@ -103,9 +129,37 @@ linters:
       - path: (^|/)[a-z]*test/[^/]+\.go$
         linters:
           - forbidigo
-      # async/ is the canonical panic-safe implementation, its
-      # internals are exempt.
-      - path: ^async/
+      # The places whose job is to write to a standard stream. Each rule
+      # matches only the logging rules' shared message text, so io.ReadAll
+      # stays forbidden there.
+      #
+      # The log drivers are the loggers: the console driver writes to
+      # stdout, or stderr when stdout carries machine-readable output.
+      - path: ^log/
+        text: 'writes through its component logger'
+        linters:
+          - forbidigo
+      # The fallback logger is the one writer for a value with no logger,
+      # and for the pre-logger boot path (ConfigFromEnv's .env warning):
+      # it writes warnings and errors to standard error.
+      - path: ^internal/fallbacklog/fallbacklog\.go$
+        text: 'writes through its component logger'
+        linters:
+          - forbidigo
+      # The vel CLI: command output and the subprocess streams of serve,
+      # build and gen grpc go to the terminal (console package, and the
+      # root cmd*.go command files).
+      - path: ^console/
+        text: 'writes through its component logger'
+        linters:
+          - forbidigo
+      - path: ^cmd[a-z_]*\.go$
+        text: 'writes through its component logger'
+        linters:
+          - forbidigo
+      # CI tools run by scripts/ci, not framework code.
+      - path: ^scripts/
+        text: 'writes through its component logger'
         linters:
           - forbidigo
 

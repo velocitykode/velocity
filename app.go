@@ -219,7 +219,7 @@ func New(opts ...Option) (*App, error) {
 			a.config.Log.Config = map[string]any{}
 		}
 		a.config.Log.Config["writer"] = "stderr"
-		prism.SetWriter(os.Stderr)
+		prism.SetWriter(os.Stderr) //nolint:forbidigo // CLI output: vel routes --json keeps stdout for the JSON document, so the CLI's own lines move to stderr before any logger exists
 	}
 	logger, err := log.NewLogger(a.config.Log)
 	if err != nil {
