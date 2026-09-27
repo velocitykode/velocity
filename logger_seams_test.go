@@ -11,10 +11,17 @@ import (
 	"github.com/velocitykode/velocity/broadcast"
 	broadcastdrivers "github.com/velocitykode/velocity/broadcast/drivers"
 	"github.com/velocitykode/velocity/bus"
+	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/console"
 	"github.com/velocitykode/velocity/contract"
+	cryptodrivers "github.com/velocitykode/velocity/crypto/drivers"
+	"github.com/velocitykode/velocity/csrf"
+	csrfstores "github.com/velocitykode/velocity/csrf/stores"
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/grpc/interceptors"
+	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/notification"
+	notificationbroadcast "github.com/velocitykode/velocity/notification/broadcast"
 	"github.com/velocitykode/velocity/orm"
 	ormdrivers "github.com/velocitykode/velocity/orm/drivers"
 	"github.com/velocitykode/velocity/problem"
@@ -23,6 +30,7 @@ import (
 	queueredis "github.com/velocitykode/velocity/queue/redis"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/scheduler"
+	"github.com/velocitykode/velocity/trace"
 	"github.com/velocitykode/velocity/view"
 	"github.com/velocitykode/velocity/websocket"
 )
@@ -69,6 +77,13 @@ func TestAppLog_PassesToEveryLoggerAwareType(t *testing.T) {
 		{"orm/drivers.SQLiteDriver", &ormdrivers.SQLiteDriver{}},
 		{"broadcast.BroadcastManager", &broadcast.BroadcastManager{}},
 		{"broadcast/drivers.WebSocketDriver", &broadcastdrivers.WebSocketDriver{}},
+		{"crypto/drivers.AESDriver", &cryptodrivers.AESDriver{}},
+		{"csrf.CSRF", &csrf.CSRF{}},
+		{"csrf/stores.SessionBagStore", &csrfstores.SessionBagStore{}},
+		{"cache.Manager", &cache.Manager{}},
+		{"mail.LogDriver", mail.NewLogDriver()},
+		{"notification.Manager", notification.NewManager()},
+		{"notification/broadcast.BroadcastChannel", notificationbroadcast.NewBroadcastChannel()},
 	}
 	for _, s := range seams {
 		t.Run(s.name, func(t *testing.T) {
@@ -83,8 +98,11 @@ func TestAppLog_PassesToEveryLoggerAwareType(t *testing.T) {
 func TestAppLog_PassesToEveryLoggerOption(t *testing.T) {
 	log := newLoggerSeamApp(t)
 
-	prevAsync := async.GetLogger()
-	t.Cleanup(func() { async.SetLogger(prevAsync) })
+	prevAsync, prevTrace := async.GetLogger(), trace.GetLogger()
+	t.Cleanup(func() {
+		async.SetLogger(prevAsync)
+		trace.SetLogger(prevTrace)
+	})
 
 	done := make(chan struct{})
 	seams := []struct {
@@ -92,6 +110,8 @@ func TestAppLog_PassesToEveryLoggerOption(t *testing.T) {
 		pass func()
 	}{
 		{"async.SetLogger", func() { async.SetLogger(log) }},
+		{"trace.SetLogger", func() { trace.SetLogger(log) }},
+		{"cache.StoreConfig.Logger", func() { _ = cache.StoreConfig{Logger: log} }},
 		{"async.GoWithLogger", func() { async.GoWithLogger(log, "logger-seam", func() { close(done) }); <-done }},
 		{"queue.SetSigningLogger", func() { queue.SetSigningLogger(log) }},
 		{"queue.QueueConfig.Logger", func() { _ = queue.QueueConfig{Logger: log} }},

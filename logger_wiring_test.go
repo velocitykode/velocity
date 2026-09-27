@@ -15,11 +15,14 @@ import (
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/router"
+	"github.com/velocitykode/velocity/trace"
 	"github.com/velocitykode/velocity/view"
 )
 
@@ -227,9 +230,11 @@ func TestNew_FrameworkBuiltServicesAreLoggerAware(t *testing.T) {
 	a, _ := newLoggerWiringApp(t, func(c *Config) {
 		c.DB = DBConfig{Connection: "sqlite", Database: ":memory:"}
 		c.View = view.Config{ErrorPage: "Error"}
+		c.Crypto = crypto.Config{Key: "0123456789abcdef0123456789abcdef", Cipher: "AES-256-GCM"}
 	})
 	for name, v := range map[string]any{
 		"DB": a.DB, "View": a.View, "Queue": a.Queue, "Scheduler": a.Scheduler, "Auth": a.Auth,
+		"Crypto": a.Crypto, "CSRF": a.CSRF, "Cache": a.Cache, "Mail": a.Mail, "Notification": a.Notification,
 	} {
 		if _, ok := v.(contract.LoggerAware); !ok {
 			t.Errorf("Services.%s (%T) does not implement contract.LoggerAware", name, v)
@@ -283,8 +288,8 @@ func (loggerSwapModule) Shutdown(context.Context) error { return nil }
 // async package, and hands it again when a module replaces Services.Log:
 // after New, both hold the module's logger.
 func TestNew_ReHandsTheLoggerAModuleSwapsIn(t *testing.T) {
-	prevAsync := async.GetLogger()
-	t.Cleanup(func() { async.SetLogger(prevAsync) })
+	prevAsync, prevTrace := async.GetLogger(), trace.GetLogger()
+	t.Cleanup(func() { async.SetLogger(prevAsync); trace.SetLogger(prevTrace) })
 	probe := &loggerProbe{}
 	swapped := &levelLogger{}
 
@@ -296,7 +301,31 @@ func TestNew_ReHandsTheLoggerAModuleSwapsIn(t *testing.T) {
 	if got := async.GetLogger(); got != contract.Logger(swapped) {
 		t.Errorf("async logger = %T, want the swapped logger", got)
 	}
+	if got := trace.GetLogger(); got != contract.Logger(swapped) {
+		t.Errorf("trace logger = %T, want the swapped logger", got)
+	}
 	if a.Log != contract.Logger(swapped) {
 		t.Fatalf("a.Log = %T, want the swapped logger", a.Log)
+	}
+}
+
+// App.Shutdown puts the async and trace packages back on the standalone
+// fallback logger, so neither writes to the app logger it closes.
+func TestShutdown_PutsThePackageLoggersBackOnTheFallback(t *testing.T) {
+	prevAsync, prevTrace := async.GetLogger(), trace.GetLogger()
+	t.Cleanup(func() { async.SetLogger(prevAsync); trace.SetLogger(prevTrace) })
+
+	a, capture := newLoggerWiringApp(t, nil)
+	if got := trace.GetLogger(); got != contract.Logger(capture) {
+		t.Fatalf("trace logger before Shutdown = %T, want the app logger", got)
+	}
+	if err := a.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if _, ok := trace.GetLogger().(fallbacklog.Logger); !ok {
+		t.Errorf("trace logger after Shutdown = %T, want fallbacklog.Logger", trace.GetLogger())
+	}
+	if _, ok := async.GetLogger().(fallbacklog.Logger); !ok {
+		t.Errorf("async logger after Shutdown = %T, want fallbacklog.Logger", async.GetLogger())
 	}
 }

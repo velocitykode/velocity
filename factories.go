@@ -23,7 +23,9 @@ import (
 
 // initCache translates the flat CacheConfig (single driver) into the multi-store
 // cache.Config the cache package expects. Defaults to memory when driver is unrecognized.
-func initCache(config CacheConfig) *cache.Manager {
+// The manager takes logger at once, so a store built during New (the
+// server session store's) writes its startup warnings through it.
+func initCache(config CacheConfig, logger contract.Logger) *cache.Manager {
 	cacheConfig := &cache.Config{
 		Default: "default",
 		Prefix:  config.Prefix,
@@ -54,7 +56,9 @@ func initCache(config CacheConfig) *cache.Manager {
 		}
 	}
 
-	return cache.NewManager(cacheConfig)
+	m := cache.NewManager(cacheConfig)
+	m.SetLogger(logger)
+	return m
 }
 
 // initStorage maps each DiskConfig entry into the storage package's format and

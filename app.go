@@ -342,7 +342,7 @@ func New(opts ...Option) (*App, error) {
 	//
 	// The cache is initialized first: with SESSION_STORE=server the
 	// session scheme keeps sessions in cache-backed server records.
-	a.Cache = initCache(a.config.Cache)
+	a.Cache = initCache(a.config.Cache, a.Log)
 	cleanups = append(cleanups, func() {
 		if a.Cache != nil {
 			_ = a.Cache.Shutdown(context.Background())
@@ -604,10 +604,12 @@ func New(opts ...Option) (*App, error) {
 		mail.SetDefaultMaxAttachmentSize(a.config.Mail.MaxAttachmentSize)
 	}
 	if a.Mail == nil && a.config.Mail.Driver != "" {
-		// The "log" driver discards mail (it only records it in-process). It is
-		// the default when MAIL_DRIVER is unset, so a production deploy that
-		// forgets to configure a real driver silently drops every email. Warn
-		// loudly rather than fail so dev/test stay frictionless.
+		// The "log" driver sends no mail: it writes a summary of each message
+		// (recipients, subject, sizes, never the body) to the app logger at
+		// info and keeps the last 100 in-process. It is the default when
+		// MAIL_DRIVER is unset, so a production deploy that forgets to
+		// configure a real driver silently drops every email. Warn loudly
+		// rather than fail so dev/test stay frictionless.
 		if a.config.Mail.Driver == "log" && contract.IsProductionEnv(a.config.Env) {
 			a.Log.Warn("mail driver is 'log' in production: all outbound email will be DISCARDED. Set MAIL_DRIVER to a real driver (postmark, mailgun, ...)")
 		}
@@ -807,9 +809,10 @@ func New(opts ...Option) (*App, error) {
 	// 17. Initialize validator
 	a.Validator = validation.NewValidator()
 
-	// The sweep below also hands a.Log to the async package (see
-	// wireInstanceLoggers); a failed New puts it back on its fallback.
-	cleanups = append(cleanups, releaseAsyncLogger)
+	// The sweep below also hands a.Log to the async and trace packages
+	// (see wireInstanceLoggers); a failed New puts them back on the
+	// fallback.
+	cleanups = append(cleanups, releasePackageLoggers)
 
 	// Background failures: wireInstanceEvents below installs the async
 	// package's panic hook on the error handler (see wireFailureReporters),
