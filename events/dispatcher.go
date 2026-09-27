@@ -604,7 +604,7 @@ func (d *DefaultDispatcher) Flush(event string) {
 
 	// Also remove matching wildcards
 	for pattern, entries := range d.wildcards {
-		if d.matchesPattern(event, pattern) {
+		if matchesPattern(event, pattern) {
 			for _, entry := range entries {
 				delete(d.listenerByID, entry.id)
 			}
@@ -676,7 +676,7 @@ func (d *DefaultDispatcher) getListenersForEvent(event interface{}) []Listener {
 	// Pre-compute capacity to avoid repeated slice growth
 	capacity := len(d.listeners[eventName])
 	for pattern, entries := range d.wildcards {
-		if d.matchesPattern(eventName, pattern) {
+		if matchesPattern(eventName, pattern) {
 			capacity += len(entries)
 		}
 	}
@@ -692,7 +692,7 @@ func (d *DefaultDispatcher) getListenersForEvent(event interface{}) []Listener {
 
 	// Get wildcard listeners
 	for pattern, entries := range d.wildcards {
-		if d.matchesPattern(eventName, pattern) {
+		if matchesPattern(eventName, pattern) {
 			for _, entry := range entries {
 				result = append(result, entry.listener)
 			}
@@ -708,34 +708,21 @@ func (d *DefaultDispatcher) getEventName(event interface{}) string {
 	return resolveEventName(event)
 }
 
-// matchesPattern checks if an event matches a wildcard pattern
-func (d *DefaultDispatcher) matchesPattern(event, pattern string) bool {
-	// Simple wildcard matching
-	if pattern == "*" {
-		return true
+// matchesPattern reports whether the event name matches a listener key: the
+// key itself when it holds no "*", otherwise the pattern the package
+// documentation describes under "Listening". It is the package's one string
+// matcher; the dispatchers and the fake's assertions all go through it.
+func matchesPattern(name, pattern string) bool {
+	prefix, suffix, isPattern := strings.Cut(pattern, "*")
+	if !isPattern {
+		return name == pattern
 	}
-
-	// Handle patterns like "user.*"
-	if strings.HasSuffix(pattern, ".*") {
-		prefix := strings.TrimSuffix(pattern, ".*")
-		return strings.HasPrefix(event, prefix+".")
+	if strings.Contains(suffix, "*") {
+		return false
 	}
-
-	// Handle patterns like "*.created"
-	if strings.HasPrefix(pattern, "*.") {
-		suffix := strings.TrimPrefix(pattern, "*.")
-		return strings.HasSuffix(event, "."+suffix)
-	}
-
-	// Handle patterns with * in the middle
-	if strings.Contains(pattern, "*") {
-		parts := strings.Split(pattern, "*")
-		if len(parts) == 2 {
-			return strings.HasPrefix(event, parts[0]) && strings.HasSuffix(event, parts[1])
-		}
-	}
-
-	return event == pattern
+	return len(name) >= len(prefix)+len(suffix) &&
+		strings.HasPrefix(name, prefix) &&
+		strings.HasSuffix(name, suffix)
 }
 
 // dispatchToListeners resolves listeners for an event and applies fn to each.

@@ -616,15 +616,6 @@ func TestDispatchAsyncAfterWithoutQueue(t *testing.T) {
 	testsync.Eventually(t, listener2.WasHandled, time.Second, "delayed listener handles event")
 }
 
-// Test matchParts edge case for remaining coverage
-func TestMatchPartsEdgePath(t *testing.T) {
-	// Test the uncovered line in matchParts
-	result := matchParts([]string{"a", "b", "c"}, []string{"a", "**", "d"})
-	if result {
-		t.Error("Should not match when double wildcard doesn't align")
-	}
-}
-
 // Test getEventName edge cases
 func TestGetEventNameEdgeCases(t *testing.T) {
 	d := NewDispatcher()

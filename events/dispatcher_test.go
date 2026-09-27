@@ -339,7 +339,6 @@ func TestGetEventName(t *testing.T) {
 }
 
 func TestMatchesPattern(t *testing.T) {
-	d := NewDispatcher()
 	tests := []struct {
 		pattern  string
 		name     string
@@ -356,10 +355,16 @@ func TestMatchesPattern(t *testing.T) {
 		{"exact", "not.exact", false},
 		{"", "anything", false},
 		{"pattern", "", false},
+		{"*.failed", "queue.job.failed", true},
+		{"queue.*", "queue.batch.job.completed", true},
+		{"queue.*.failed", "queue.job.failed", true},
+		{"queue.*.failed", "queue.failed", false}, // prefix and suffix may not overlap
+		{"*.*", "queue.job.failed", false},        // more than one * matches nothing
+		{"queue.*.*", "queue.job.failed", false},
 	}
 
 	for _, test := range tests {
-		result := d.matchesPattern(test.name, test.pattern)
+		result := matchesPattern(test.name, test.pattern)
 		if result != test.expected {
 			t.Errorf("matchesPattern(%s, %s) = %v, expected %v",
 				test.pattern, test.name, result, test.expected)
