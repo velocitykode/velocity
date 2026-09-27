@@ -10,6 +10,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/log/internal/sanitize"
 )
 
@@ -211,7 +212,9 @@ func (f *FileLogger) log(level, msg string, kvs ...any) {
 	defer o.mu.Unlock()
 
 	if err := o.ensureFile(); err != nil {
-		fmt.Printf("Failed to open log file: %v\n", err)
+		// The file driver cannot write through itself: the failure goes to
+		// the framework's standalone fallback logger (standard error).
+		fallbacklog.Logger{}.Error("velocity/log: open log file failed; the line is dropped", "error", err)
 		return
 	}
 

@@ -3,7 +3,6 @@ package velocity
 import (
 	"errors"
 	"fmt"
-	stdlog "log"
 	"net/http"
 	"os"
 	"strconv"
@@ -16,6 +15,7 @@ import (
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/events"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/queue"
@@ -287,9 +287,11 @@ func WithSchedulerInProcess() Option {
 // ConfigFromEnv loads configuration from environment variables and .env file.
 func ConfigFromEnv() Config {
 	// Load .env file if present; warn if it exists but fails to parse.
+	// This runs before any app logger exists, so the warning goes through
+	// the framework's standalone fallback logger (standard error).
 	if err := godotenv.Load(); err != nil {
 		if _, statErr := os.Stat(".env"); statErr == nil {
-			stdlog.Println("[WARN] .env file exists but failed to parse:", err)
+			fallbacklog.Logger{}.Warn("velocity: .env file exists but failed to parse", "error", err)
 		}
 	}
 
