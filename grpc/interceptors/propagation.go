@@ -33,6 +33,9 @@ type ClientInterceptorPair struct {
 //	)
 //
 // A key the outgoing metadata already holds is left as the caller set it.
+// On a call it proxies for a gateway request, the gateway first sets both
+// keys to the carriers it selected, so the gRPC server sees the request id
+// the gateway echoes.
 func Propagation() ClientInterceptorPair {
 	return ClientInterceptorPair{
 		Unary: func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {

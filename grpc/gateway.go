@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/velocitykode/velocity/async"
@@ -400,10 +401,10 @@ func (g *Gateway) Build(ctx context.Context) error {
 	g.mux = runtime.NewServeMux(g.muxOptions...)
 
 	// Register all handlers. Every registration dials through the
-	// Propagation client interceptors, so the gRPC half of a gateway call
-	// carries the trace and request id correlateGatewayRequest put on the
-	// HTTP half's context.
-	propagation := interceptors.Propagation()
+	// gatewayPropagation client interceptors, so the gRPC half of a gateway
+	// call carries the trace and request id correlateGatewayRequest selected
+	// for the HTTP half.
+	propagation := gatewayPropagation()
 	dialOptions := append(slices.Clip(g.dialOptions),
 		grpc.WithChainUnaryInterceptor(propagation.Unary),
 		grpc.WithChainStreamInterceptor(propagation.Stream),
@@ -448,8 +449,12 @@ func (g *Gateway) Build(ctx context.Context) error {
 //
 // Trace: the gateway records no span of its own, so a valid traceparent is
 // installed as the context's current span unchanged and the proxied call
-// names the HTTP caller's span as the gRPC server's parent. Without one the
-// context carries no trace and the gRPC server starts a root span.
+// names the HTTP caller's span as the gRPC server's parent, with the
+// caller's sampled flag. Without one the context carries no trace and the
+// gRPC server starts a root span.
+//
+// The context is marked as a gateway request, so gatewayPropagation sends
+// these carriers in place of any the outgoing metadata already holds.
 func correlateGatewayRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -459,11 +464,86 @@ func correlateGatewayRequest(next http.Handler) http.Handler {
 		}
 		ctx = trace.WithRequestID(ctx, id)
 		w.Header().Set(trace.RequestIDHeader, id)
+		var call gatewayCall
 		if parent, ok := trace.ParseTraceparent(singleHeaderValue(r.Header, trace.TraceparentHeader)); ok {
 			ctx = trace.WithFullContext(ctx, parent.TraceID, parent.SpanID, "")
+			call.parent = parent
 		}
+		ctx = context.WithValue(ctx, gatewayCallKey{}, call)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// gatewayCallKey is the context key under which correlateGatewayRequest
+// marks a gateway request.
+type gatewayCallKey struct{}
+
+// gatewayCall is what correlateGatewayRequest accepted from a gateway
+// request's headers.
+type gatewayCall struct {
+	// parent is the inbound traceparent; the zero Parent when the gateway
+	// accepted none.
+	parent trace.Parent
+}
+
+// forwardsParent reports whether ctx's current span is still the inbound
+// caller's span, forwarded unchanged: no middleware started a span of its
+// own after correlateGatewayRequest.
+func (c gatewayCall) forwardsParent(ctx context.Context) bool {
+	return c.parent.TraceID != "" &&
+		trace.GetTraceID(ctx) == c.parent.TraceID &&
+		trace.GetSpanID(ctx) == c.parent.SpanID
+}
+
+// gatewayPropagation returns the client interceptors every gateway
+// registration dials through: interceptors.Propagation, and on a call made
+// while serving a gateway request, the carriers the gateway selected first.
+//
+// grpc-gateway turns Grpc-Metadata- prefixed HTTP headers (and whatever the
+// mux's header matcher and metadata annotators produce) into outgoing
+// metadata, and Propagation leaves a key the outgoing metadata already holds
+// as it is. On the gateway path those values would otherwise override the
+// request id the gateway echoes and the trace it accepted, so gatewayCarriers
+// replaces them first. A call through these clients outside a gateway
+// request keeps Propagation's rule.
+func gatewayPropagation() interceptors.ClientInterceptorPair {
+	p := interceptors.Propagation()
+	return interceptors.ClientInterceptorPair{
+		Unary: func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			return p.Unary(gatewayCarriers(ctx), method, req, reply, cc, invoker, opts...)
+		},
+		Stream: func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+			return p.Stream(gatewayCarriers(ctx), desc, cc, method, streamer, opts...)
+		},
+	}
+}
+
+// gatewayCarriers returns ctx with the outgoing traceparent and x-request-id
+// metadata set to exactly the carriers ctx holds (see trace.Propagate), when
+// ctx is a gateway request's. Any other value under those keys is removed,
+// including when ctx holds no carrier for a key because the gateway rejected
+// the inbound header. A traceparent naming the caller's span unchanged keeps
+// the caller's sampled flag: W3C Trace Context lets a participant change
+// the flag only when it sends a span of its own. Other contexts are returned
+// as they are.
+func gatewayCarriers(ctx context.Context) context.Context {
+	call, ok := ctx.Value(gatewayCallKey{}).(gatewayCall)
+	if !ok {
+		return ctx
+	}
+	md, _ := metadata.FromOutgoingContext(ctx) // a copy
+	if md == nil {
+		md = metadata.MD{}
+	}
+	md.Delete(trace.TraceparentHeader)
+	md.Delete(trace.RequestIDHeader)
+	trace.Propagate(ctx, func(name, value string) {
+		if name == trace.TraceparentHeader && call.forwardsParent(ctx) {
+			value, _ = trace.FormatTraceparent(call.parent)
+		}
+		md.Set(name, value)
+	})
+	return metadata.NewOutgoingContext(ctx, md)
 }
 
 // singleHeaderValue returns the one value h holds for key, or the empty
