@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/velocitykode/velocity/trace"
 )
 
 // TestMatchedRoute_OverridesWin guards the last-writer-wins contract for the
@@ -75,34 +77,26 @@ func TestMatchedRoute_BundleWhenNoOverride(t *testing.T) {
 	}
 }
 
-// TestRequestIDKey_ResolvesToString guards the exported RequestIDKey value
-// type: a consumer reading the key directly must still get a string (not the
-// internal lazy holder). Regression test for the deferred-request-ID change.
-func TestRequestIDKey_ResolvesToString(t *testing.T) {
-	var rawType string
-	var rawVal string
-	var matchesAccessor bool
+// TestRequestID_ReadableThroughTrace guards the one request id key: code
+// that holds only the request context (httpclient, the gRPC client
+// interceptors) reads the router's request id through trace.GetRequestID,
+// the same id GetRequestID returns.
+func TestRequestID_ReadableThroughTrace(t *testing.T) {
+	var fromTrace, fromRouter string
 
 	r := NewV2()
 	r.Get("/x", func(c *Context) error {
-		v := c.Request.Context().Value(RequestIDKey)
-		if s, ok := v.(string); ok {
-			rawType = "string"
-			rawVal = s
-			matchesAccessor = s == GetRequestID(c.Request)
-		}
+		fromTrace = trace.GetRequestID(c.Request.Context())
+		fromRouter = GetRequestID(c.Request)
 		return c.String(http.StatusOK, "ok")
 	})
 
 	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
 
-	if rawType != "string" {
-		t.Fatalf("RequestIDKey value is not a string (got %q)", rawType)
+	if fromTrace == "" {
+		t.Fatal("trace.GetRequestID returned empty inside a handler")
 	}
-	if rawVal == "" {
-		t.Error("RequestIDKey resolved to empty string")
-	}
-	if !matchesAccessor {
-		t.Error("raw RequestIDKey value differs from GetRequestID accessor")
+	if fromTrace != fromRouter {
+		t.Errorf("trace.GetRequestID = %q, GetRequestID = %q, want one id", fromTrace, fromRouter)
 	}
 }

@@ -75,12 +75,12 @@ func TestRequestIDEagerMatchesContext(t *testing.T) {
 	}
 }
 
-// TestRequestIDFormat verifies the lazy path preserves the original
-// timestamp-counter-random hex format (16 hex chars: 12 + 8 ... see
-// generateRequestID) so the change is observably identical to consumers.
+// TestRequestIDFormat pins the format GetRequestID's godoc states: 20
+// lowercase hex characters from trace.GenerateRequestID.
 func TestRequestIDFormat(t *testing.T) {
-	id := generateRequestID()
-	// 6 bytes (ts+counter) + 4 bytes (random) = 10 bytes => 20 hex chars.
+	r := NewV2()
+	_, req := r.beginRequest(httptest.NewRequest(http.MethodGet, "/test", nil))
+	id := GetRequestID(req)
 	if len(id) != 20 {
 		t.Fatalf("unexpected ID length %d for %q", len(id), id)
 	}

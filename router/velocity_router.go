@@ -794,7 +794,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // and the updated request.
 func (r *VelocityRouterV2) beginRequest(req *http.Request) (requestMeta, *http.Request) {
 	reqCtx, lazyTrace := trace.StartTraceLazy(req.Context())
-	lazyID := &lazyRequestID{}
+	reqCtx, lazyID := trace.WithLazyRequestID(reqCtx)
 	meta := requestMeta{
 		startedAt: time.Now(),
 		parentID:  trace.GetParentID(reqCtx),
@@ -806,13 +806,9 @@ func (r *VelocityRouterV2) beginRequest(req *http.Request) (requestMeta, *http.R
 	// All paths share the same holders, so the event IDs and any later
 	// context read are guaranteed identical and stable.
 	if r.eventDispatcher != nil {
-		meta.id = lazyID.get()
+		meta.id = lazyID.ID()
 		meta.traceID, meta.spanID = lazyTrace.IDs()
 	}
-	// Wrap rather than WithValue so RequestIDKey resolves to the
-	// materialized string (preserving the exported key's value type)
-	// while keeping generation lazy.
-	reqCtx = requestIDContext{Context: reqCtx, lazy: lazyID}
 	return meta, req.WithContext(reqCtx)
 }
 

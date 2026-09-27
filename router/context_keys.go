@@ -4,9 +4,6 @@ package router
 type contextKey string
 
 const (
-	// RequestIDKey is the context key for the request ID
-	RequestIDKey contextKey = "velocity.request_id"
-
 	// RouterContextKey is the context key for the router context
 	RouterContextKey contextKey = "velocity.router_context"
 
