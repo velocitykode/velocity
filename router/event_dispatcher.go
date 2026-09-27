@@ -16,6 +16,14 @@ import (
 // consumer code that wraps the dispatcher can observe drops.
 var ErrEventBufferFull = errors.New("velocity/router: event buffer full, dropping event")
 
+// errEventDispatcherStopped is what an async dispatcher returns for an
+// event dispatched after ShutdownEventDispatcher (or a replacing
+// SetAsyncEventDispatcher) stopped its pool: a request still running past
+// the server's shutdown deadline dispatches its late events into a pool
+// that no longer accepts them. The router counts the drop like a full
+// buffer (DroppedEventCount, OnEventDispatchError).
+var errEventDispatcherStopped = errors.New("velocity/router: event dispatcher stopped, dropping event")
+
 // SetAsyncEventDispatcher wires an event dispatcher that delivers events
 // to fn from a pool of worker goroutines reading a buffered channel.
 // Dispatch from request handlers is non-blocking: when the buffer is
@@ -33,7 +41,7 @@ var ErrEventBufferFull = errors.New("velocity/router: event buffer full, droppin
 //
 // Calling SetAsyncEventDispatcher replaces any previously installed
 // dispatcher. If a prior async dispatcher is running, it is stopped
-// first: its channel is closed and the call waits for its workers to
+// first: it stops accepting events and the call waits for its workers to
 // deliver the events still buffered, to that pool's own target. When the
 // prior pool was already stopped with a deadline that expired, the call
 // does not wait again; that pool keeps draining in the background.
@@ -51,11 +59,11 @@ func (r *VelocityRouterV2) SetAsyncEventDispatcher(fn func(ctx context.Context, 
 
 	pool := &asyncEventPool{}
 	pool.setTarget(fn)
-	ch := make(chan asyncDispatchItem, bufferSize)
-	wg := r.startEventWorkers(ch, pool, workers)
+	q := &asyncEventQueue{ch: make(chan asyncDispatchItem, bufferSize)}
+	wg := r.startEventWorkers(q.ch, pool, workers)
 
-	r.eventDispatcher = makeNonBlockingEnqueuer(ch)
-	r.stopEventDispatcher = makeDrainCloser(ch, wg)
+	r.eventDispatcher = q.enqueue
+	r.stopEventDispatcher = makeDrainCloser(q, wg)
 	r.asyncPool = pool
 }
 
@@ -159,36 +167,65 @@ func (r *VelocityRouterV2) onListenerFailure(err error, ev interface{}) {
 	}
 }
 
-// makeNonBlockingEnqueuer returns a dispatcher that pushes events
-// without blocking; when the channel is full it returns
-// ErrEventBufferFull so the caller can account for the drop. The ctx
-// passed by the caller is captured alongside the event so the worker
-// goroutine delivers it to listeners.
-func makeNonBlockingEnqueuer(ch chan<- asyncDispatchItem) func(ctx context.Context, event interface{}) error {
-	return func(ctx context.Context, event interface{}) error {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		select {
-		case ch <- asyncDispatchItem{ctx: ctx, event: event}:
-			return nil
-		default:
-			return ErrEventBufferFull
-		}
+// asyncEventQueue is the buffered channel one async worker pool reads,
+// guarded so that no send ever meets the closed channel. A request
+// goroutine may still dispatch after the pool stopped (a handler running
+// past the server's shutdown deadline, or a Timeout handler goroutine
+// reporting a late panic), so the stop and every send are ordered by mu:
+// enqueue sends under the read lock only while stopped is false, and stop
+// sets stopped and closes ch under the write lock. The read lock is
+// shared, so senders never wait on each other, and the send inside it is
+// non-blocking, so stop waits at most for the sends already in flight.
+type asyncEventQueue struct {
+	mu      sync.RWMutex
+	stopped bool
+	ch      chan asyncDispatchItem
+}
+
+// enqueue pushes an event without blocking. It returns
+// ErrEventBufferFull when the channel is full and
+// errEventDispatcherStopped once the pool stopped, so the caller can
+// account for the drop. The ctx passed by the caller is captured
+// alongside the event so the worker goroutine delivers it to listeners.
+func (q *asyncEventQueue) enqueue(ctx context.Context, event interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	if q.stopped {
+		return errEventDispatcherStopped
+	}
+	select {
+	case q.ch <- asyncDispatchItem{ctx: ctx, event: event}:
+		return nil
+	default:
+		return ErrEventBufferFull
 	}
 }
 
-// makeDrainCloser closes the channel and waits for workers to finish,
+// stop makes every later enqueue a drop and closes the channel, so the
+// workers exit once they have delivered what it still buffers.
+func (q *asyncEventQueue) stop() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if !q.stopped {
+		q.stopped = true
+		close(q.ch)
+	}
+}
+
+// makeDrainCloser stops the queue and waits for workers to finish,
 // respecting ctx cancellation. Subsequent calls return the cached
 // result so repeated Shutdown invocations are safe.
-func makeDrainCloser(ch chan asyncDispatchItem, wg *sync.WaitGroup) func(context.Context) error {
+func makeDrainCloser(q *asyncEventQueue, wg *sync.WaitGroup) func(context.Context) error {
 	var (
 		stopOnce sync.Once
 		stopErr  error
 	)
 	return func(ctx context.Context) error {
 		stopOnce.Do(func() {
-			close(ch)
+			q.stop()
 			done := make(chan struct{})
 			// Not async.Go: must close(done) on panic so Shutdown never
 			// blocks waiting on a goroutine that already died.
@@ -214,6 +251,11 @@ func makeDrainCloser(ch chan asyncDispatchItem, wg *sync.WaitGroup) func(context
 // ShutdownEventDispatcher drains pending events and stops dispatcher
 // workers. It is safe to call whether SetAsyncEventDispatcher was used
 // or not — in the synchronous case it is a no-op.
+//
+// Events already queued when it is called are delivered to the pool's
+// target. An event dispatched after it was called (a request still
+// running past the server's shutdown deadline) is dropped and counted in
+// DroppedEventCount, and reported through OnEventDispatchError when set.
 //
 // If ctx expires before workers drain, ShutdownEventDispatcher returns
 // ctx.Err() and workers continue in the background until their channel

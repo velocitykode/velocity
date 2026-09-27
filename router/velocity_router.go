@@ -389,10 +389,11 @@ func (r *VelocityRouterV2) CloseFileRoot() error {
 // Router event configuration calls (SetEventDispatcher,
 // SetAsyncEventDispatcher, BindEventDispatcher, ShutdownEventDispatcher)
 // must be serialized and must not overlap serving. Concurrent
-// configuration is not supported. The normal lifecycle keeps them apart,
-// with one known gap: when the HTTP server's drain times out on Shutdown,
-// ShutdownEventDispatcher runs while a straggling handler may still
-// dispatch (tracked separately).
+// configuration is not supported. The normal lifecycle keeps them apart.
+// Dispatching is not a configuration call: when the HTTP server's drain
+// times out on Shutdown, a straggling handler may still dispatch while or
+// after ShutdownEventDispatcher runs, and under SetAsyncEventDispatcher
+// such an event is dropped and counted in DroppedEventCount.
 func (r *VelocityRouterV2) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	r.asyncPool = nil
 	r.eventDispatcher = fn
@@ -497,8 +498,9 @@ func (r *VelocityRouterV2) trustedProxiesOrParse() *TrustedProxies {
 // DroppedEventCount returns the total number of events for which the
 // dispatcher returned a non-nil error since the router started. Each
 // increment means an event did not reach its listener — under
-// SetAsyncEventDispatcher that almost always indicates buffer saturation.
-// Expose as a metric/gauge in production.
+// SetAsyncEventDispatcher that almost always indicates buffer saturation,
+// or an event a request dispatched after ShutdownEventDispatcher stopped
+// the pool. Expose as a metric/gauge in production.
 func (r *VelocityRouterV2) DroppedEventCount() uint64 {
 	return r.droppedEvents.Load()
 }
