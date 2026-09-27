@@ -11,6 +11,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // LoggingConfig configures the logging interceptor
@@ -95,7 +96,8 @@ func WithEventDispatcher(dispatcher grpcevents.EventDispatchFunc) LoggingOption 
 // Logging creates a logging interceptor pair that logs all requests.
 // The unary variant lives in logging_unary.go and the stream variant in
 // logging_stream.go; this file holds the shared configuration, the
-// logRequest helper, event-dispatch plumbing, and request-ID context helpers.
+// logRequest helper, event-dispatch plumbing, and correlate, which gives
+// every call its span and request id from the incoming metadata.
 func Logging(opts ...LoggingOption) InterceptorPair {
 	cfg := &LoggingConfig{
 		SkipMethods:      make(map[string]bool),
@@ -166,7 +168,7 @@ func logRequest(ctx context.Context, method string, start time.Time, err error, 
 	}
 
 	// Add request ID if available
-	if requestID := RequestIDFromContext(ctx); requestID != "" {
+	if requestID := trace.GetRequestID(ctx); requestID != "" {
 		fields = append(fields, "request_id", requestID)
 	}
 
@@ -250,18 +252,43 @@ func detectProtocol(ctx context.Context) grpcevents.Protocol {
 	return grpcevents.ProtocolGRPC
 }
 
-// Additional context helpers for logging
+// correlate applies the edge rules to an incoming call and returns the
+// context the handler runs under.
+//
+// Trace: when an earlier interceptor in this process already put a trace in
+// ctx, the call is a new span under it. Otherwise the traceparent metadata
+// the caller sent is the carrier for trace.StartSpan: a valid one is
+// continued with a new span whose parent is the caller's span, anything
+// else (absent, malformed, repeated) starts a root span.
+//
+// Request id: an id already in ctx is kept; otherwise the x-request-id the
+// caller sent when trace.ValidRequestID accepts it, else a generated one.
+func correlate(ctx context.Context) context.Context {
+	md, _ := metadata.FromIncomingContext(ctx)
 
-const requestIDKey contextKey = "grpc_request_id"
+	parent := trace.Parent{TraceID: trace.GetTraceID(ctx), SpanID: trace.GetSpanID(ctx)}
+	if parent.TraceID == "" {
+		parent, _ = trace.ParseTraceparent(singleMetadataValue(md, trace.TraceparentHeader))
+	}
+	ctx = trace.StartSpan(ctx, parent)
 
-// ContextWithRequestID adds a request ID to the context
-func ContextWithRequestID(ctx context.Context, requestID string) context.Context {
-	return context.WithValue(ctx, requestIDKey, requestID)
+	if trace.GetRequestID(ctx) == "" {
+		id := singleMetadataValue(md, trace.RequestIDHeader)
+		if !trace.ValidRequestID(id) {
+			id = trace.GenerateRequestID()
+		}
+		ctx = trace.WithRequestID(ctx, id)
+	}
+	return ctx
 }
 
-// RequestIDFromContext extracts the request ID from the context.
-// Returns empty string if no request ID is present.
-func RequestIDFromContext(ctx context.Context) string {
-	id, _ := ctx.Value(requestIDKey).(string)
-	return id
+// singleMetadataValue returns the one value md holds for key, or the empty
+// string when it holds none or several: a repeated carrier is ambiguous and
+// treated as absent.
+func singleMetadataValue(md metadata.MD, key string) string {
+	values := md.Get(key)
+	if len(values) != 1 {
+		return ""
+	}
+	return values[0]
 }

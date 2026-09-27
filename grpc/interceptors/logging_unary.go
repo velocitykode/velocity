@@ -26,7 +26,7 @@ func loggingUnary(cfg *LoggingConfig) grpc.UnaryServerInterceptor {
 			return handler(ctx, req)
 		}
 
-		ctx = ensureTrace(ctx)
+		ctx = correlate(ctx)
 		start := time.Now()
 
 		// Dispatch request started event
@@ -43,18 +43,6 @@ func loggingUnary(cfg *LoggingConfig) grpc.UnaryServerInterceptor {
 
 		return resp, err
 	}
-}
-
-// ensureTrace mints a fresh trace when none is attached, or rotates a child
-// span when an upstream trace already exists. Used by both unary and stream
-// logging interceptors so per-RPC events carry trace ids end-to-end.
-func ensureTrace(ctx context.Context) context.Context {
-	if trace.GetTraceID(ctx) == "" {
-		newCtx, _, _ := trace.StartTrace(ctx)
-		return newCtx
-	}
-	newCtx, _ := trace.WithNewSpan(ctx)
-	return newCtx
 }
 
 func dispatchRequestStarted(ctx context.Context, method string, start time.Time, dispatcher grpcevents.EventDispatchFunc) {

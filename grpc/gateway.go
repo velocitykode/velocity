@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -19,8 +20,10 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/grpc/interceptors"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/log"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // Conservative defaults for the internet-facing HTTP gateway's http.Server.
@@ -396,9 +399,17 @@ func (g *Gateway) Build(ctx context.Context) error {
 	// Create mux with options
 	g.mux = runtime.NewServeMux(g.muxOptions...)
 
-	// Register all handlers
+	// Register all handlers. Every registration dials through the
+	// Propagation client interceptors, so the gRPC half of a gateway call
+	// carries the trace and request id correlateGatewayRequest put on the
+	// HTTP half's context.
+	propagation := interceptors.Propagation()
+	dialOptions := append(slices.Clip(g.dialOptions),
+		grpc.WithChainUnaryInterceptor(propagation.Unary),
+		grpc.WithChainStreamInterceptor(propagation.Stream),
+	)
 	for _, regFunc := range g.registrations {
-		if err := regFunc(ctx, g.mux, g.grpcEndpoint, g.dialOptions); err != nil {
+		if err := regFunc(ctx, g.mux, g.grpcEndpoint, dialOptions); err != nil {
 			return fmt.Errorf("velocity/grpc: failed to register gateway handler: %w", err)
 		}
 	}
@@ -409,6 +420,9 @@ func (g *Gateway) Build(ctx context.Context) error {
 	for i := len(g.middleware) - 1; i >= 0; i-- {
 		handler = g.middleware[i](handler)
 	}
+	// Correlation wraps everything, so application middleware already sees
+	// the request id and trace.
+	handler = correlateGatewayRequest(handler)
 
 	// Create HTTP server
 	g.httpServer = &http.Server{
@@ -422,6 +436,45 @@ func (g *Gateway) Build(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// correlateGatewayRequest gives a gateway request the request id and trace
+// its proxied gRPC call carries.
+//
+// Request id: the caller's X-Request-ID when trace.ValidRequestID accepts
+// it, otherwise a generated one. It is stored on the request context and
+// echoed on the response, so the HTTP and gRPC halves of the call share
+// one id.
+//
+// Trace: the gateway records no span of its own, so a valid traceparent is
+// installed as the context's current span unchanged and the proxied call
+// names the HTTP caller's span as the gRPC server's parent. Without one the
+// context carries no trace and the gRPC server starts a root span.
+func correlateGatewayRequest(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		id := singleHeaderValue(r.Header, trace.RequestIDHeader)
+		if !trace.ValidRequestID(id) {
+			id = trace.GenerateRequestID()
+		}
+		ctx = trace.WithRequestID(ctx, id)
+		w.Header().Set(trace.RequestIDHeader, id)
+		if parent, ok := trace.ParseTraceparent(singleHeaderValue(r.Header, trace.TraceparentHeader)); ok {
+			ctx = trace.WithFullContext(ctx, parent.TraceID, parent.SpanID, "")
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// singleHeaderValue returns the one value h holds for key, or the empty
+// string when it holds none or several: a repeated carrier is ambiguous and
+// treated as absent.
+func singleHeaderValue(h http.Header, key string) string {
+	values := h.Values(key)
+	if len(values) != 1 {
+		return ""
+	}
+	return values[0]
 }
 
 // Start builds (if not already built) and starts the HTTP gateway.

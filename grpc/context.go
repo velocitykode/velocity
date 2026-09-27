@@ -3,7 +3,6 @@ package grpc
 import (
 	"context"
 
-	"github.com/google/uuid"
 	"google.golang.org/grpc/metadata"
 
 	"github.com/velocitykode/velocity/grpc/interceptors"
@@ -67,21 +66,6 @@ type contextKey string
 
 const methodKey contextKey = "grpc_method"
 
-// ContextWithRequestID adds a request ID to the context.
-// This is a convenience wrapper around interceptors.ContextWithRequestID;
-// the request ID is stored under the interceptors package's key so a value
-// set here is visible to RequestIDFromContext and the logging interceptor.
-func ContextWithRequestID(ctx context.Context, requestID string) context.Context {
-	return interceptors.ContextWithRequestID(ctx, requestID)
-}
-
-// RequestIDFromContext extracts the request ID from the context.
-// Returns empty string if no request ID is present.
-// This is a convenience wrapper around interceptors.RequestIDFromContext.
-func RequestIDFromContext(ctx context.Context) string {
-	return interceptors.RequestIDFromContext(ctx)
-}
-
 // ContextWithMethod adds the gRPC method to the context
 func ContextWithMethod(ctx context.Context, method string) context.Context {
 	return context.WithValue(ctx, methodKey, method)
@@ -92,11 +76,6 @@ func ContextWithMethod(ctx context.Context, method string) context.Context {
 func MethodFromContext(ctx context.Context) string {
 	method, _ := ctx.Value(methodKey).(string)
 	return method
-}
-
-// GenerateRequestID generates a new request ID
-func GenerateRequestID() string {
-	return uuid.New().String()
 }
 
 // ExtractBearerToken extracts a bearer token from gRPC metadata.

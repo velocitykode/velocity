@@ -42,7 +42,7 @@ func loggingStream(cfg *LoggingConfig) grpc.StreamServerInterceptor {
 			return handler(srv, ss)
 		}
 
-		ctx := ensureTrace(ss.Context())
+		ctx := correlate(ss.Context())
 		wrapped := &tracedServerStream{inner: ss, ctx: ctx}
 		start := time.Now()
 

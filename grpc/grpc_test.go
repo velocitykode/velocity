@@ -247,22 +247,6 @@ func TestContext(t *testing.T) {
 		}
 	})
 
-	t.Run("request id", func(t *testing.T) {
-		ctx := context.Background()
-
-		// No request ID initially
-		if grpc.RequestIDFromContext(ctx) != "" {
-			t.Error("RequestIDFromContext should return empty string for empty context")
-		}
-
-		// Add request ID
-		ctx = grpc.ContextWithRequestID(ctx, "req-123")
-
-		if grpc.RequestIDFromContext(ctx) != "req-123" {
-			t.Errorf("RequestIDFromContext() = %v, want req-123", grpc.RequestIDFromContext(ctx))
-		}
-	})
-
 	t.Run("method", func(t *testing.T) {
 		ctx := context.Background()
 
@@ -276,18 +260,6 @@ func TestContext(t *testing.T) {
 
 		if grpc.MethodFromContext(ctx) != "/mypackage.MyService/MyMethod" {
 			t.Errorf("MethodFromContext() = %v, want /mypackage.MyService/MyMethod", grpc.MethodFromContext(ctx))
-		}
-	})
-
-	t.Run("generate request id", func(t *testing.T) {
-		id1 := grpc.GenerateRequestID()
-		id2 := grpc.GenerateRequestID()
-
-		if id1 == "" {
-			t.Error("GenerateRequestID returned empty string")
-		}
-		if id1 == id2 {
-			t.Error("GenerateRequestID should return unique IDs")
 		}
 	})
 
