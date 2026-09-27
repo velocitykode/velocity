@@ -331,11 +331,12 @@ func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, rele
 		}
 	}()
 
-	// Create context with trace for APM. We don't propagate ctx into
-	// trace.StartTrace because that API expects a fresh context; future
-	// work could thread the runCtx for cancellation propagation into
-	// closures, but the closure-API itself does not accept a ctx.
-	tctx, traceID, _ := trace.StartTrace(context.Background())
+	// Each run is a root span: a run has no inbound carrier, so the
+	// continue-or-start rule gets the zero Parent. The span is started from
+	// context.Background() rather than runCtx; future work could thread
+	// runCtx for cancellation propagation into closures, but the closure
+	// API itself does not accept a ctx.
+	tctx := trace.StartSpan(context.Background(), trace.Parent{})
 
 	// Dispatch scheduled.starting event
 	dispatchScheduledTaskStarting(j.getDispatch(), tctx, jobName)
@@ -475,9 +476,8 @@ func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, rele
 			// clearRunningFlag + release calls (the waiter owns both).
 			released = true
 			j.spawnBackgroundWaiter(ctx, shutdownGrace, cmd, outFile, jobName, tctx, startTime, afterCallbacks, onSuccessCallbacks, onFailureCallbacks, clearRunningFlag, release)
-			// Release ownership transferred; suppress unused traceID
-			// warning and return without invoking finishSync.
-			_ = traceID
+			// Release ownership transferred; return without invoking
+			// finishSync.
 			return nil
 		}
 
@@ -490,7 +490,6 @@ func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, rele
 		}
 	}
 
-	_ = traceID
 	finishSync(err, panicDispatched)
 	return err
 }
