@@ -550,7 +550,7 @@ func (r *VelocityRouterV2) addRoute(method, path string, handler HandlerFunc) Ro
 	}
 	fullPath := r.buildPath(path)
 	if r.frozen {
-		r.log().Warn("velocity/router: route registered after server start; it will not be served", "method", method, "path", fullPath)
+		r.log().Warn("velocity/router: route registered after server start; it will not be served", "method", method, "route", fullPath)
 	}
 	route := r.currentGroup().AddRoute(method, fullPath, handler)
 	return &routeConfigV2{route: route, router: r}
@@ -621,7 +621,7 @@ func (r *VelocityRouterV2) Prefix(prefix string) {
 // Resource creates RESTful routes for a controller
 func (r *VelocityRouterV2) Resource(path string, controller interface{}) ResourceRoute {
 	if r.frozen {
-		r.log().Warn("velocity/router: resource registered after server start; it will not be served", "path", path)
+		r.log().Warn("velocity/router: resource registered after server start; it will not be served", "route", path)
 	}
 	rr := &resourceWrapperV2{
 		router:     r,
@@ -1736,7 +1736,7 @@ func (g *groupRouterV2) addRoute(method, path string, handler HandlerFunc) Route
 		panic(contract.NewRegistrationError("router", fmt.Sprintf("nil handler for %s %s", method, path)))
 	}
 	if g.router.frozen {
-		g.router.log().Warn("velocity/router: route registered after server start; it will not be served", "method", method, "path", g.group.FullPrefix()+path)
+		g.router.log().Warn("velocity/router: route registered after server start; it will not be served", "method", method, "route", g.group.FullPrefix()+path)
 	}
 	// Store relative path - full path is calculated during CommitToTree
 	route := g.group.AddRoute(method, path, handler)
@@ -1775,7 +1775,7 @@ func (g *groupRouterV2) Prefix(prefix string) {
 
 func (g *groupRouterV2) Resource(path string, controller interface{}) ResourceRoute {
 	if g.router.frozen {
-		g.router.log().Warn("velocity/router: resource registered after server start; it will not be served", "path", g.group.FullPrefix()+path)
+		g.router.log().Warn("velocity/router: resource registered after server start; it will not be served", "route", g.group.FullPrefix()+path)
 	}
 	rr := &resourceWrapperV2{
 		router:     g.router,

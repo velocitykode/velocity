@@ -113,6 +113,9 @@ func TestLateRegistration_WithoutLoggerWarnsThroughTheFallback(t *testing.T) {
 	if got := fallback.Count("WARN", "velocity/router: route registered after server start"); got != 1 {
 		t.Errorf("fallback warn lines = %d, want 1 (%q)", got, fallback.String())
 	}
+	if line := fallback.String(); !strings.Contains(line, "method=GET route=/late") {
+		t.Errorf("line %q does not name the method and the route pattern", line)
+	}
 	if out := stdlib.String(); out != "" {
 		t.Errorf("stdlib log / slog.Default got %q, want nothing", out)
 	}
