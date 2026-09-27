@@ -362,3 +362,79 @@ func TestFileStore_CompareAndSwap_FlushOnOtherInstanceCannotInterleave(t *testin
 		t.Fatalf("key reads %v after both the swap and the Flush returned; want absent", v)
 	}
 }
+
+// An old temp file whose writer still holds the key's write lock is a
+// live write (paused past the grace), not a crashed one: neither the
+// expiry sweep nor Flush removes it, and the writer's rename still lands.
+// An old temp file whose stripe is free is a crashed write's leftover and
+// is still removed.
+func TestFileStore_OldTempFileOfALiveWriterSurvivesCleanup(t *testing.T) {
+	t.Parallel()
+	stores := newSharedFileStores(t, 2)
+	cleaner, writer := stores[0], stores[1]
+	ctx := context.Background()
+
+	liveKey := "live"
+	abandonedKey := ""
+	for i := 0; ; i++ {
+		k := fmt.Sprintf("abandoned-%d", i)
+		if cleaner.keyStripe(k) != cleaner.keyStripe(liveKey) {
+			abandonedKey = k
+			break
+		}
+	}
+	old := time.Now().Add(-2 * fileUnreadableGrace)
+	item := []byte(`{"value":"InYi"}`)
+	oldTemp := func(key string) string {
+		t.Helper()
+		tmp, err := writeTempFile(cleaner.getCacheFilePath(key), item)
+		if err != nil {
+			t.Fatalf("writeTempFile: %v", err)
+		}
+		if err := os.Chtimes(tmp, old, old); err != nil {
+			t.Fatalf("Chtimes: %v", err)
+		}
+		return tmp
+	}
+
+	unlock, err := writer.lockKeyForWrite(ctx, liveKey)
+	if err != nil {
+		t.Fatalf("lockKeyForWrite: %v", err)
+	}
+	live := oldTemp(liveKey)
+
+	abandoned := oldTemp(abandonedKey)
+	cleaner.sweepExpired()
+	if _, err := os.Stat(live); err != nil {
+		t.Fatalf("the sweep removed the temp file of a writer holding the key lock: %v", err)
+	}
+	if _, err := os.Stat(abandoned); !os.IsNotExist(err) {
+		t.Fatalf("the sweep kept an abandoned temp file: stat err = %v", err)
+	}
+
+	abandoned = oldTemp(abandonedKey)
+	flushed := make(chan error, 1)
+	go func() { flushed <- cleaner.FlushCtx(ctx) }()
+	select {
+	case err := <-flushed:
+		if err != nil {
+			t.Fatalf("FlushCtx: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Flush waited on a key lock that guards only a temp file")
+	}
+	if _, err := os.Stat(live); err != nil {
+		t.Fatalf("Flush removed the temp file of a writer holding the key lock: %v", err)
+	}
+	if _, err := os.Stat(abandoned); !os.IsNotExist(err) {
+		t.Fatalf("Flush kept an abandoned temp file: stat err = %v", err)
+	}
+
+	if err := os.Rename(live, writer.getCacheFilePath(liveKey)); err != nil {
+		t.Fatalf("the live writer's rename failed after cleanup: %v", err)
+	}
+	unlock()
+	if v, found := cleaner.GetCtx(ctx, liveKey); !found || v != "v" {
+		t.Fatalf("GetCtx = (%v, %v), want the live writer's value", v, found)
+	}
+}

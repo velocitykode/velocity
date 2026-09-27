@@ -45,3 +45,9 @@ func (s *FileStore) lockKeyForWrite(ctx context.Context, key string) (func(), er
 func (s *FileStore) lockStripe(ctx context.Context, stripe, what string) (func(), error) {
 	return nil, ErrLockNotSupported
 }
+
+// flockStripe on non-unix platforms returns ErrLockNotSupported; the
+// temp-file cleanup then falls back to the age check alone.
+func (s *FileStore) flockStripe(stripe string) (unlock func(), busy bool, err error) {
+	return nil, false, ErrLockNotSupported
+}

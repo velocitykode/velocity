@@ -403,16 +403,23 @@ func (s *FileStore) sweepExpired() {
 // either completed before we acquired the lock (re-check sees the fresh
 // entry and skips) or is queued behind us (its write lands after our
 // remove, exactly as if it had raced a Forget).
+//
+// A temp file is removed only under its stripe's write lock, taken without
+// waiting (see tryLockTempStripe): a held stripe may be a live writer that
+// was paused past the grace, whose rename would fail on a removed file.
 func (s *FileStore) removeIfEligible(path string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if isTempFile(path) {
-		if info, err := os.Stat(path); err == nil && time.Since(info.ModTime()) > fileUnreadableGrace {
-			os.Remove(path)
+		unlock, ok := s.tryLockTempStripe(path)
+		if !ok {
+			return
 		}
+		defer unlock()
+		_ = s.removeTempIfStale(path)
 		return
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -430,6 +437,45 @@ func (s *FileStore) removeIfEligible(path string) {
 	if item.Expiration != nil && time.Now().After(*item.Expiration) {
 		os.Remove(path)
 	}
+}
+
+// tryLockTempStripe takes, without waiting, the write lock of the stripe a
+// write's temp file belongs to. Every write holds its key's lock from the
+// temp file's creation to its rename, so a temp file whose stripe is free
+// is a crashed write's leftover, while one whose stripe is held may be a
+// live write paused past the grace. ok is false when the stripe is held or
+// its lock cannot be taken; cleanup then leaves the file for a later pass.
+// Where flock is missing (and for a temp file outside a shard directory)
+// ok is true with nothing locked: the age check alone decides, as before.
+func (s *FileStore) tryLockTempStripe(path string) (unlock func(), ok bool) {
+	stripe, known := s.entryStripe(path)
+	if !known {
+		return func() {}, true
+	}
+	unlock, busy, err := s.flockStripe(stripe)
+	if errors.Is(err, ErrLockNotSupported) {
+		return func() {}, true
+	}
+	if err != nil || busy {
+		return nil, false
+	}
+	return unlock, true
+}
+
+// removeTempIfStale removes a write's temp file when it is still older
+// than the grace. The caller holds its stripe (tryLockTempStripe or the
+// Flush group lock); the store mutex is taken here, stripe before mutex.
+func (s *FileStore) removeTempIfStale(path string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	info, err := os.Stat(path)
+	if err != nil || time.Since(info.ModTime()) <= fileUnreadableGrace {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // getCacheFilePath returns the file path for a cache key.
@@ -913,7 +959,8 @@ func (s *FileStore) FlushCtx(ctx context.Context) error {
 			}
 			// A write's temp file is an in-flight write, not an entry:
 			// removing it would fail that write's rename. Only a crashed
-			// write's leftover (older than the grace) goes.
+			// write's leftover goes: older than the grace, and with its
+			// stripe free (see flushStripe).
 			if isTempFile(path) && time.Since(info.ModTime()) <= fileUnreadableGrace {
 				return nil
 			}
@@ -925,21 +972,28 @@ func (s *FileStore) FlushCtx(ctx context.Context) error {
 		return err
 	}
 
-	// Group the entries by stripe so each stripe's lock is taken once. A
-	// file that belongs to no stripe (the Lock() files under locks/) is
-	// removed under the store mutex alone.
-	byStripe := make(map[string][]string)
+	// Group the entries and old temp files by stripe so each stripe's lock
+	// is taken once. A file that belongs to no stripe (the Lock() files
+	// under locks/) is removed under the store mutex alone.
+	byStripe := make(map[string]*flushGroup)
 	var stripes, loose []string
 	for _, path := range paths {
 		stripe, ok := s.entryStripe(path)
-		if !ok || isTempFile(path) {
+		if !ok {
 			loose = append(loose, path)
 			continue
 		}
-		if _, seen := byStripe[stripe]; !seen {
+		g := byStripe[stripe]
+		if g == nil {
+			g = &flushGroup{}
+			byStripe[stripe] = g
 			stripes = append(stripes, stripe)
 		}
-		byStripe[stripe] = append(byStripe[stripe], path)
+		if isTempFile(path) {
+			g.temps = append(g.temps, path)
+		} else {
+			g.entries = append(g.entries, path)
+		}
 	}
 	for _, stripe := range stripes {
 		if err := s.flushStripe(ctx, stripe, byStripe[stripe]); err != nil {
@@ -954,18 +1008,43 @@ func (s *FileStore) FlushCtx(ctx context.Context) error {
 	return nil
 }
 
-// flushStripe removes the entries of one stripe under its write lock.
-// Where flock is missing they are removed under the store mutex alone.
-func (s *FileStore) flushStripe(ctx context.Context, stripe string, paths []string) error {
-	unlock, err := s.lockStripe(ctx, stripe, "stripe "+stripe)
-	if errors.Is(err, ErrLockNotSupported) {
-		unlock, err = func() {}, nil
-	}
-	if err != nil {
-		return fmt.Errorf("velocity/cache: FileStore.Flush: %w", err)
+// flushGroup is what Flush removes under one stripe's write lock.
+type flushGroup struct {
+	entries []string
+	temps   []string // temp files older than the grace
+}
+
+// flushStripe removes the entries and old temp files of one stripe under
+// its write lock. With entries to remove it waits for the lock; with only
+// temp files it takes the lock without waiting and leaves them when it is
+// held, since a holder may be the live writer of one of them (see
+// tryLockTempStripe). A temp file found under the lock is re-checked for
+// age before it goes. Where flock is missing the files are removed under
+// the store mutex alone.
+func (s *FileStore) flushStripe(ctx context.Context, stripe string, g *flushGroup) error {
+	var unlock func()
+	if len(g.entries) > 0 {
+		var err error
+		unlock, err = s.lockStripe(ctx, stripe, "stripe "+stripe)
+		if errors.Is(err, ErrLockNotSupported) {
+			unlock, err = func() {}, nil
+		}
+		if err != nil {
+			return fmt.Errorf("velocity/cache: FileStore.Flush: %w", err)
+		}
+	} else {
+		var ok bool
+		if unlock, ok = s.tryLockTempStripe(g.temps[0]); !ok {
+			return nil
+		}
 	}
 	defer unlock()
-	for _, path := range paths {
+	for _, path := range g.temps {
+		if err := s.removeTempIfStale(path); err != nil {
+			return err
+		}
+	}
+	for _, path := range g.entries {
 		if err := s.removeLocked(path); err != nil {
 			return err
 		}
