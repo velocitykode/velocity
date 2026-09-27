@@ -13,19 +13,22 @@ import (
 	"github.com/velocitykode/velocity/contract"
 )
 
-// ErrInsecureSessionConfig is returned from SessionConfig.Validate when the
-// configuration would ship insecure cookie defaults to production (e.g.,
-// Secure=false, HttpOnly=false without opt-in, zero SameSite, or
-// SameSite=None without Secure). A separate error type makes it trivial
-// for bootstrap code to log-then-continue in dev and fail-fast in prod.
+// ErrInsecureSessionConfig is returned from
+// SessionConfig.ValidateCookieSecurity when the configuration would ship
+// insecure cookie defaults to production (e.g., Secure=false, HttpOnly=false
+// without opt-in, zero SameSite, or SameSite=None without Secure). A
+// separate error type makes it trivial for bootstrap code to
+// log-then-continue in dev and fail-fast in prod.
 var ErrInsecureSessionConfig = errors.New("velocity/auth: insecure session config")
 
-// ErrInvalidLifetime is returned from SessionConfig.Validate when the
-// configured IdleLifetime is negative. Negative lifetimes would translate to
-// a cookie with Expires in the past which most browsers treat as already
-// deleted; the framework refuses to boot rather than ship a no-op session
-// cookie. IdleLifetime == 0 is permitted and produces a session-lifetime
-// (no Expires / MaxAge=0) cookie per RFC 6265.
+// ErrInvalidLifetime is returned from SessionConfig.ValidateLifetimes when a
+// lifetime value is out of range: a negative IdleLifetime or
+// RememberLifetime, or a positive AbsoluteLifetime shorter than
+// IdleLifetime. A negative IdleLifetime would translate to a cookie with
+// Expires in the past which most browsers treat as already deleted; the
+// framework refuses to boot, in every environment, rather than ship a no-op
+// session cookie. IdleLifetime == 0 is permitted and produces a
+// session-lifetime (no Expires / MaxAge=0) cookie per RFC 6265.
 var ErrInvalidLifetime = errors.New("velocity/auth: session lifetime must be >= 0")
 
 // ErrSessionSealed is returned by Regenerate on a session that was sealed:
@@ -614,23 +617,17 @@ func (c SessionConfig) CookiePolicy() contract.CookiePolicy {
 	return contract.NewCookiePolicy(c.Path, c.Domain, c.Secure, c.SameSite)
 }
 
-// Validate checks the SessionConfig for insecure defaults. Pass env to
-// enable environment-aware rules: Secure=false is permitted when env is
-// "testing" or "development", rejected otherwise. An empty env is treated
-// as production for strict validation.
-//
-// Rules:
-//   - HttpOnly must be true unless AllowJSAccess is set
-//   - Secure must be true outside testing/development
-//   - SameSite must be set (non-zero value)
-//   - SameSite=None requires Secure=true
+// ValidateLifetimes checks the lifetime values and returns an error
+// wrapping ErrInvalidLifetime on the first bad one. The rules hold in every
+// environment:
 //   - IdleLifetime must be >= 0 (negative produces an already-expired cookie)
 //   - AbsoluteLifetime, when positive, must be >= IdleLifetime (an absolute cap
-//     shorter than the rolling window is a misconfiguration)
+//     shorter than the rolling window is a misconfiguration); negative means
+//     no cap and is accepted
 //   - RememberLifetime must be >= 0
-func (c SessionConfig) Validate(env string) error {
+func (c SessionConfig) ValidateLifetimes() error {
 	if c.IdleLifetime < 0 {
-		return fmt.Errorf("%w: got %d minutes", ErrInvalidLifetime, c.IdleLifetime)
+		return fmt.Errorf("%w: IdleLifetime %d minutes is negative", ErrInvalidLifetime, c.IdleLifetime)
 	}
 	if c.AbsoluteLifetime > 0 && c.AbsoluteLifetime < c.IdleLifetime {
 		return fmt.Errorf("%w: AbsoluteLifetime %d minutes is shorter than IdleLifetime %d minutes", ErrInvalidLifetime, c.AbsoluteLifetime, c.IdleLifetime)
@@ -638,6 +635,21 @@ func (c SessionConfig) Validate(env string) error {
 	if c.RememberLifetime < 0 {
 		return fmt.Errorf("%w: RememberLifetime %d minutes is negative", ErrInvalidLifetime, c.RememberLifetime)
 	}
+	return nil
+}
+
+// ValidateCookieSecurity checks the session cookie's security attributes
+// and returns an error wrapping ErrInsecureSessionConfig on the first
+// insecure one. Pass env to enable environment-aware rules: Secure=false is
+// permitted when env names a dev or test profile, rejected otherwise. An
+// empty env is treated as production for strict validation.
+//
+// Rules:
+//   - HttpOnly must be true unless AllowJSAccess is set
+//   - Secure must be true outside the dev and test profiles
+//   - SameSite must be set (non-zero value)
+//   - SameSite=None requires Secure=true
+func (c SessionConfig) ValidateCookieSecurity(env string) error {
 	if !c.HttpOnly && !c.AllowJSAccess {
 		return fmt.Errorf("%w: HttpOnly=false requires AllowJSAccess=true opt-in", ErrInsecureSessionConfig)
 	}

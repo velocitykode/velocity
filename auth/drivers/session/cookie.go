@@ -323,7 +323,7 @@ func (s *CookieStore) Save(w http.ResponseWriter, session auth.Session) error {
 	// treat as session". Setting Expires=time.Now() (an earlier behaviour)
 	// made the cookie appear already-expired in some browsers, which
 	// silently dropped every Set-Cookie the framework emitted. Negative
-	// IdleLifetime is rejected at SessionConfig.Validate.
+	// IdleLifetime is rejected at SessionConfig.ValidateLifetimes.
 	cookie := s.config.CookiePolicy().Cookie(s.config.Name, encrypted, 0, s.config.HttpOnly)
 	if s.config.IdleTimeout() > 0 {
 		expiresAt := s.config.ExpiresAt(createdAt, now)

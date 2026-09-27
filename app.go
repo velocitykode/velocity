@@ -179,9 +179,10 @@ func New(opts ...Option) (*App, error) {
 	cleanups = append(cleanups, func() { cancel(contract.ErrServerShuttingDown) })
 
 	// Fast-fail config validation. Catches typo'd driver names, malformed
-	// ports, and negative timeouts before we allocate file handles or
-	// database connections. Session/CSRF/Crypto get a second pass below
-	// where they may emit env-aware warnings instead of hard failures.
+	// ports, negative timeouts and out-of-range session lifetimes before we
+	// allocate file handles or database connections. The session cookie
+	// attributes, CSRF and Crypto get a second pass below where they may
+	// emit env-aware warnings instead of hard failures.
 	if err := a.config.Validate(); err != nil {
 		return nil, err
 	}
@@ -318,19 +319,13 @@ func New(opts ...Option) (*App, error) {
 		})
 	}
 
-	// 5. Validate the session cookie config (the source of the cookie
-	// policy every framework cookie follows) and the CSRF config. The
-	// session classification routes through the canonical vocabulary so "test"
-	// and "testing" are silent, every other documented non-prod profile
-	// ("dev", "development", "local") warns, and only true production
-	// classes ("production", "prod", "staging", or any unknown value)
-	// fail closed. Previously the switch matched only the two literal
-	// strings "testing" and "development", which made APP_ENV=dev /
-	// APP_ENV=local behave identically to production.
-	if err := a.config.Session.Validate(a.config.Env); err != nil {
-		if e := a.envGatedSecurityCheck("Insecure session cookie config (dev only, will fail in production)", []any{"error", err}, fmt.Errorf("velocity: %w", err)); e != nil {
-			return nil, e
-		}
+	// 5. Validate the session cookie's security attributes (the source of
+	// the cookie policy every framework cookie follows) and the CSRF
+	// config. The session lifetimes were already checked by
+	// Config.Validate above, in every environment; only the cookie
+	// attributes go through the environment gate.
+	if err := a.checkSessionCookieSecurity(); err != nil {
+		return nil, err
 	}
 	if err := a.config.CSRF.Validate(); err != nil {
 		return nil, fmt.Errorf("velocity: %w", err)
@@ -931,6 +926,20 @@ func (a *App) envGatedSecurityCheck(warnMsg string, warnArgs []any, prodErr erro
 		return prodErr
 	}
 	return nil
+}
+
+// checkSessionCookieSecurity runs SessionConfig.ValidateCookieSecurity
+// through the environment gate. The classification routes through the
+// canonical vocabulary so "test" and "testing" are silent, every other
+// documented non-prod profile ("dev", "development", "local") warns, and
+// only true production classes ("production", "prod", "staging", or any
+// unknown value) fail closed.
+func (a *App) checkSessionCookieSecurity() error {
+	err := a.config.Session.ValidateCookieSecurity(a.config.Env)
+	if err == nil {
+		return nil
+	}
+	return a.envGatedSecurityCheck("Insecure session cookie config (dev only, will fail in production)", []any{"error", err}, fmt.Errorf("velocity: %w", err))
 }
 
 // Version returns the framework version.

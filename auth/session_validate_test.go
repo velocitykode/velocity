@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-// TestSessionConfig_Validate_RejectsInsecureDefaults pins the matrix of
-// SessionConfig.Validate rules. Every production-env misconfiguration must
+// TestSessionConfig_ValidateCookieSecurity_RejectsInsecureDefaults pins the matrix of
+// SessionConfig.ValidateCookieSecurity rules. Every production-env misconfiguration must
 // surface as an ErrInsecureSessionConfig before boot completes — the
 // previous config shipped without a Validate method, so apps could ship
 // with Secure=false / HttpOnly=false / zero SameSite and boot silently.
-func TestSessionConfig_Validate_RejectsInsecureDefaults(t *testing.T) {
+func TestSessionConfig_ValidateCookieSecurity_RejectsInsecureDefaults(t *testing.T) {
 	// A config that is valid under production rules. Each test row mutates
 	// one field at a time so failures point at the single broken rule.
 	ok := SessionConfig{
@@ -110,7 +110,7 @@ func TestSessionConfig_Validate_RejectsInsecureDefaults(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := ok
 			tt.mutate(&cfg)
-			err := cfg.Validate(tt.env)
+			err := cfg.ValidateCookieSecurity(tt.env)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error")
@@ -125,10 +125,10 @@ func TestSessionConfig_Validate_RejectsInsecureDefaults(t *testing.T) {
 	}
 }
 
-// TestSessionConfig_Validate_AbsoluteLifetime pins the V2-09 config rule: a
+// TestSessionConfig_ValidateLifetimes_AbsoluteLifetime pins the V2-09 config rule: a
 // positive absolute cap shorter than the rolling IdleLifetime window is a
 // misconfiguration; zero (default) and negative (explicit opt-out) pass.
-func TestSessionConfig_Validate_AbsoluteLifetime(t *testing.T) {
+func TestSessionConfig_ValidateLifetimes_AbsoluteLifetime(t *testing.T) {
 	base := SessionConfig{
 		Name:         "velocity_session",
 		IdleLifetime: 120,
@@ -154,7 +154,7 @@ func TestSessionConfig_Validate_AbsoluteLifetime(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := base
 			cfg.AbsoluteLifetime = tt.absolute
-			err := cfg.Validate("production")
+			err := cfg.ValidateLifetimes()
 			if tt.wantErr {
 				if !errors.Is(err, ErrInvalidLifetime) {
 					t.Fatalf("expected ErrInvalidLifetime, got %v", err)
@@ -166,10 +166,10 @@ func TestSessionConfig_Validate_AbsoluteLifetime(t *testing.T) {
 	}
 }
 
-// TestSessionConfig_Validate_RememberLifetime: the remember lifetime is its
+// TestSessionConfig_ValidateLifetimes_RememberLifetime: the remember lifetime is its
 // own and may be shorter or longer than the session lifetime; only a
 // negative value is rejected.
-func TestSessionConfig_Validate_RememberLifetime(t *testing.T) {
+func TestSessionConfig_ValidateLifetimes_RememberLifetime(t *testing.T) {
 	base := SessionConfig{
 		Name:         "velocity_session",
 		IdleLifetime: 120,
@@ -192,7 +192,7 @@ func TestSessionConfig_Validate_RememberLifetime(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := base
 			cfg.RememberLifetime = tt.remember
-			err := cfg.Validate("production")
+			err := cfg.ValidateLifetimes()
 			if tt.wantErr {
 				if !errors.Is(err, ErrInvalidLifetime) {
 					t.Fatalf("expected ErrInvalidLifetime, got %v", err)
@@ -201,5 +201,75 @@ func TestSessionConfig_Validate_RememberLifetime(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+// TestSessionConfig_ValidationFamiliesAreSeparate pins the split between the
+// two rule families: a lifetime error is reported by ValidateLifetimes only
+// (whatever the environment), a cookie security error by
+// ValidateCookieSecurity only, so the environment gate at boot relaxes
+// cookie attributes and never a lifetime value.
+func TestSessionConfig_ValidationFamiliesAreSeparate(t *testing.T) {
+	ok := SessionConfig{
+		Name:         "velocity_session",
+		IdleLifetime: 120,
+		Path:         "/",
+		Secure:       true,
+		HttpOnly:     true,
+		SameSite:     http.SameSiteLaxMode,
+	}
+	tests := []struct {
+		name         string
+		mutate       func(c *SessionConfig)
+		wantLifetime bool
+		wantCookie   bool
+	}{
+		{name: "valid", mutate: func(c *SessionConfig) {}},
+		{name: "negative idle lifetime", mutate: func(c *SessionConfig) { c.IdleLifetime = -1 }, wantLifetime: true},
+		{name: "negative remember lifetime", mutate: func(c *SessionConfig) { c.RememberLifetime = -1 }, wantLifetime: true},
+		{name: "absolute cap shorter than idle", mutate: func(c *SessionConfig) { c.AbsoluteLifetime = 60 }, wantLifetime: true},
+		{name: "negative absolute lifetime (no cap)", mutate: func(c *SessionConfig) { c.AbsoluteLifetime = -1 }},
+		{name: "Secure=false", mutate: func(c *SessionConfig) { c.Secure = false }, wantCookie: true},
+		{name: "HttpOnly=false", mutate: func(c *SessionConfig) { c.HttpOnly = false }, wantCookie: true},
+		{name: "zero SameSite", mutate: func(c *SessionConfig) { c.SameSite = 0 }, wantCookie: true},
+		{
+			name: "negative remember lifetime and Secure=false",
+			mutate: func(c *SessionConfig) {
+				c.RememberLifetime = -1
+				c.Secure = false
+			},
+			wantLifetime: true,
+			wantCookie:   true,
+		},
+	}
+	for _, tt := range tests {
+		for _, env := range []string{"production", "development", "testing", ""} {
+			t.Run(tt.name+"/"+env, func(t *testing.T) {
+				cfg := ok
+				tt.mutate(&cfg)
+				lifetimeErr := cfg.ValidateLifetimes()
+				if tt.wantLifetime != (lifetimeErr != nil) {
+					t.Fatalf("ValidateLifetimes = %v, want error %v", lifetimeErr, tt.wantLifetime)
+				}
+				if lifetimeErr != nil && !errors.Is(lifetimeErr, ErrInvalidLifetime) {
+					t.Fatalf("ValidateLifetimes = %v, want ErrInvalidLifetime", lifetimeErr)
+				}
+				if errors.Is(lifetimeErr, ErrInsecureSessionConfig) {
+					t.Fatalf("ValidateLifetimes = %v, must not report a cookie security error", lifetimeErr)
+				}
+				cookieErr := cfg.ValidateCookieSecurity(env)
+				// Secure=false alone is permitted in the dev and test profiles.
+				wantCookie := tt.wantCookie && !(cfg.HttpOnly && cfg.SameSite == http.SameSiteLaxMode && (env == "development" || env == "testing"))
+				if wantCookie != (cookieErr != nil) {
+					t.Fatalf("ValidateCookieSecurity(%q) = %v, want error %v", env, cookieErr, wantCookie)
+				}
+				if cookieErr != nil && !errors.Is(cookieErr, ErrInsecureSessionConfig) {
+					t.Fatalf("ValidateCookieSecurity(%q) = %v, want ErrInsecureSessionConfig", env, cookieErr)
+				}
+				if errors.Is(cookieErr, ErrInvalidLifetime) {
+					t.Fatalf("ValidateCookieSecurity(%q) = %v, must not report a lifetime error", env, cookieErr)
+				}
+			})
+		}
 	}
 }

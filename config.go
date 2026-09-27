@@ -661,12 +661,14 @@ func parseSameSiteStrict(envName, value string) (http.SameSite, error) {
 // configuration typos (unknown driver names, malformed ports, negative
 // timeouts) fail fast with a clear error.
 //
-// Session, CSRF, and Crypto validation are intentionally NOT chained here:
-// those checks have dev-mode warning paths (Session/CSRF) or an
-// env-conditional fallback (Crypto.Key empty => warn in dev) that New()
-// applies after the logger is up. Calling them here would short-circuit
-// the dev relaxations and break test fixtures that boot with permissive
-// configs.
+// The session lifetimes (SessionConfig.ValidateLifetimes) are checked here:
+// an out-of-range lifetime is a value error with no dev relaxation. The
+// session cookie security attributes, CSRF, and Crypto validation are
+// intentionally NOT chained here: those checks have dev-mode warning paths
+// (session cookie/CSRF) or an env-conditional fallback (Crypto.Key empty =>
+// warn in dev) that New() applies after the logger is up. Calling them here
+// would short-circuit the dev relaxations and break test fixtures that boot
+// with permissive configs.
 //
 // Returns nil on success. On failure the returned error wraps
 // ErrInvalidConfig so callers that want a generic "is this config OK?"
@@ -682,6 +684,9 @@ func (c Config) Validate() error {
 	}
 	if _, err := parseSameSiteStrict("SESSION_SAME_SITE", c.sessionSameSiteRaw); err != nil {
 		return err
+	}
+	if err := c.Session.ValidateLifetimes(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
 	switch c.Session.Store {
 	case "", auth.SessionStoreCookie, auth.SessionStoreServer:
