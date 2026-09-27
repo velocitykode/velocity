@@ -163,6 +163,12 @@ type FileStore struct {
 	// instrumentation only: lets tests pause a lock acquire between steps.
 	lockStepHook func(step string)
 
+	// expiredRemoveHook, when non-nil, is invoked by a read or the expiry
+	// sweep after it found an entry still expired under the key's write
+	// lock and the store mutex, and before it removes the file. Test
+	// instrumentation only: lets tests race a write against the removal.
+	expiredRemoveHook func()
+
 	// lockStore and friends back FileStore.Lock (see FileLock) so the
 	// file driver satisfies the Locker capability. Created lazily on
 	// first Lock call; lockErr captures any initialisation failure so
@@ -201,6 +207,12 @@ func (item fileCacheItem) isSet() bool {
 // live reports whether the item has not expired.
 func (item fileCacheItem) live() bool {
 	return item.Expiration == nil || time.Now().Before(*item.Expiration)
+}
+
+// expired reports whether the item's expiration has passed: what a read
+// treats as a miss and the sweep removes.
+func (item fileCacheItem) expired() bool {
+	return item.Expiration != nil && time.Now().After(*item.Expiration)
 }
 
 // value returns what a read of the item returns: a set reads back as a
@@ -397,25 +409,29 @@ func (s *FileStore) sweepExpired() {
 	}
 }
 
-// removeIfEligible re-reads a cleanup candidate under the write lock and
+// removeIfEligible re-reads a cleanup candidate under its key's write
+// lock and the store mutex, the order every write takes them in, and
 // deletes it only if it is still expired (or still unreadable past the
-// grace window). Holding the lock for a single read+remove keeps the
-// critical section bounded while excluding same-process writers: a Put
-// or Add that refreshed the entry after the lock-free walk observed it
-// either completed before we acquired the lock (re-check sees the fresh
-// entry and skips) or is queued behind us (its write lands after our
-// remove, exactly as if it had raced a Forget).
+// grace window). A write of the key from any FileStore sharing the
+// directory, in this process or another, that refreshed the entry after
+// the lock-free walk observed it either completed before the lock was
+// taken (the re-check sees the fresh entry and skips) or waits behind the
+// removal (its write lands after it, exactly as if it had raced a Forget).
 //
-// A temp file is removed only under its stripe's write lock, taken without
-// waiting (see tryLockTempStripe): a held stripe may be a live writer that
-// was paused past the grace, whose rename would fail on a removed file.
+// The key's write lock is taken without waiting (see tryLockFileStripe):
+// when another holder has it the file is left for a later sweep, so a
+// sweep never blocks on a busy key. A temp file is likewise removed only
+// under its stripe's lock: a held stripe may be a live writer that was
+// paused past the grace, whose rename would fail on a removed file. Where
+// flock is missing the removal runs under the store mutex alone, as every
+// write does there.
 func (s *FileStore) removeIfEligible(path string) {
+	unlock, ok := s.tryLockFileStripe(path)
+	if !ok {
+		return
+	}
+	defer unlock()
 	if isTempFile(path) {
-		unlock, ok := s.tryLockTempStripe(path)
-		if !ok {
-			return
-		}
-		defer unlock()
 		_ = s.removeTempIfStale(path)
 		return
 	}
@@ -436,20 +452,32 @@ func (s *FileStore) removeIfEligible(path string) {
 		return
 	}
 
-	if item.Expiration != nil && time.Now().After(*item.Expiration) {
-		os.Remove(path)
+	if item.expired() {
+		s.removeExpiredLocked(path)
 	}
 }
 
-// tryLockTempStripe takes, without waiting, the write lock of the stripe a
-// write's temp file belongs to. Every write holds its key's lock from the
-// temp file's creation to its rename, so a temp file whose stripe is free
-// is a crashed write's leftover, while one whose stripe is held may be a
-// live write paused past the grace. ok is false when the stripe is held or
-// its lock cannot be taken; cleanup then leaves the file for a later pass.
-// Where flock is missing (and for a temp file outside a shard directory)
-// ok is true with nothing locked: the age check alone decides, as before.
-func (s *FileStore) tryLockTempStripe(path string) (unlock func(), ok bool) {
+// removeExpiredLocked removes the expired entry at path. The caller holds
+// the key's write lock (where flock exists) and the store mutex, and has
+// just re-read the entry as expired.
+func (s *FileStore) removeExpiredLocked(path string) {
+	if s.expiredRemoveHook != nil {
+		s.expiredRemoveHook()
+	}
+	_ = os.Remove(path)
+}
+
+// tryLockFileStripe takes, without waiting, the write lock of the stripe a
+// file under the cache directory belongs to: an entry or a write's temp
+// file (see entryStripe). Every write holds its key's lock from its read
+// to its rename, so under the lock an entry does not change and a temp
+// file whose stripe is free is a crashed write's leftover, while one whose
+// stripe is held may be a live write paused past the grace. ok is false
+// when the stripe is held or its lock cannot be taken; cleanup then leaves
+// the file for a later pass. Where flock is missing (and for a file
+// outside a shard directory, such as a Lock() record) ok is true with
+// nothing locked: cleanup runs under the store mutex alone, as before.
+func (s *FileStore) tryLockFileStripe(path string) (unlock func(), ok bool) {
 	stripe, known := s.entryStripe(path)
 	if !known {
 		return func() {}, true
@@ -465,7 +493,7 @@ func (s *FileStore) tryLockTempStripe(path string) (unlock func(), ok bool) {
 }
 
 // removeTempIfStale removes a write's temp file when it is still older
-// than the grace. The caller holds its stripe (tryLockTempStripe or the
+// than the grace. The caller holds its stripe (tryLockFileStripe or the
 // Flush group lock); the store mutex is taken here, stripe before mutex.
 func (s *FileStore) removeTempIfStale(path string) error {
 	s.mu.Lock()
@@ -563,15 +591,17 @@ func (s *FileStore) lockKeyForPlainWrite(ctx context.Context, key string) (func(
 // GetCtx retrieves a value from the cache. The file store performs only
 // local disk I/O that is not cancellable through context, so ctx is
 // honoured as a pre-flight cancellation check but otherwise unused.
+//
+// A read of an expired entry is a miss and removes the entry (see
+// removeExpired); a read of a live entry takes no write lock.
 func (s *FileStore) GetCtx(ctx context.Context, key string) (interface{}, bool) {
 	if ctx != nil && ctx.Err() != nil {
 		return nil, false
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	path := s.getCacheFilePath(key)
 	data, err := os.ReadFile(path)
+	s.mu.RUnlock()
 	if err != nil {
 		return nil, false
 	}
@@ -581,9 +611,8 @@ func (s *FileStore) GetCtx(ctx context.Context, key string) (interface{}, bool) 
 		return nil, false
 	}
 
-	// Check expiration
-	if item.Expiration != nil && time.Now().After(*item.Expiration) {
-		os.Remove(path)
+	if item.expired() {
+		s.removeExpired(key, path)
 		return nil, false
 	}
 
@@ -594,6 +623,37 @@ func (s *FileStore) GetCtx(ctx context.Context, key string) (interface{}, bool) 
 	}
 
 	return value, true
+}
+
+// removeExpired removes key's entry at path, which a read found expired,
+// if it is still expired under the key's write lock and the store mutex,
+// the order every write takes them in: a fresh write of the key from any
+// FileStore sharing the directory that landed after the read is kept, and
+// one still in flight lands after the removal. The key's write lock is
+// taken without waiting, so a read never blocks on a writer; when another
+// holder has it the entry is left for a later read or sweep. Where flock
+// is missing the removal runs under the store mutex alone, as every write
+// does there.
+func (s *FileStore) removeExpired(key, path string) {
+	unlock, busy, err := s.flockStripe(s.keyStripe(key))
+	if errors.Is(err, ErrLockNotSupported) {
+		unlock, busy, err = func() {}, false, nil
+	}
+	if err != nil || busy {
+		return
+	}
+	defer unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var item fileCacheItem
+	if json.Unmarshal(data, &item) == nil && item.expired() {
+		s.removeExpiredLocked(path)
+	}
 }
 
 // Get retrieves a value from the cache.
@@ -985,7 +1045,7 @@ type flushGroup struct {
 // its write lock. With entries to remove it waits for the lock; with only
 // temp files it takes the lock without waiting and leaves them when it is
 // held, since a holder may be the live writer of one of them (see
-// tryLockTempStripe). A temp file found under the lock is re-checked for
+// tryLockFileStripe). A temp file found under the lock is re-checked for
 // age before it goes. Where flock is missing the files are removed under
 // the store mutex alone.
 func (s *FileStore) flushStripe(ctx context.Context, stripe string, g *flushGroup) error {
@@ -1001,7 +1061,7 @@ func (s *FileStore) flushStripe(ctx context.Context, stripe string, g *flushGrou
 		}
 	} else {
 		var ok bool
-		if unlock, ok = s.tryLockTempStripe(g.temps[0]); !ok {
+		if unlock, ok = s.tryLockFileStripe(g.temps[0]); !ok {
 			return nil
 		}
 	}
