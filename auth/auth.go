@@ -342,6 +342,11 @@ type Manager struct {
 	// the scheme/user store maps.
 	logger atomic.Value // holds authLoggerHolder{Logger}
 
+	// loggerMu serialises SetLogger against the logger hand-off in
+	// RegisterScheme, so a scheme registered while SetLogger runs ends
+	// with the logger installed last, never a stale one.
+	loggerMu sync.Mutex
+
 	// serverSessions holds an optional server-side session store used by
 	// administrative operations (RevokeSession, RevokeAllSessions,
 	// ListActiveSessions). Nil disables those operations.
@@ -412,7 +417,8 @@ func NewManager() *Manager {
 // session store is already installed and the scheme implements
 // ServerSessionStoreReceiver, the store is propagated immediately so
 // registration order does not matter. The same applies to the
-// trusted-proxies list and TrustedProxiesReceiver.
+// trusted-proxies list and TrustedProxiesReceiver, and to the logger
+// and LoggerReceiver.
 func (m *Manager) RegisterScheme(name string, scheme Scheme) {
 	m.mu.Lock()
 	m.schemes[name] = scheme
@@ -422,6 +428,14 @@ func (m *Manager) RegisterScheme(name string, scheme Scheme) {
 	challenge := m.loginChallenge
 	rotator := m.csrfRotator
 	m.mu.Unlock()
+
+	if r, ok := scheme.(LoggerReceiver); ok {
+		m.loggerMu.Lock()
+		if l := m.log(); l != nil {
+			r.SetLogger(l)
+		}
+		m.loggerMu.Unlock()
+	}
 
 	if dispatcher := m.eventDispatcher.Load(); dispatcher != nil && dispatcher.fn != nil {
 		if r, ok := scheme.(EventDispatcherReceiver); ok {
@@ -682,18 +696,43 @@ func (m *Manager) SetHasher(h Hasher) {
 	}
 }
 
+// LoggerReceiver is the optional capability interface implemented by
+// schemes that log their own operational events (the session scheme's
+// save, revival and teardown warnings). Manager.SetLogger propagates the
+// logger to every registered scheme satisfying it, and RegisterScheme
+// hands the current logger to a scheme registered later.
+type LoggerReceiver interface {
+	SetLogger(l Logger)
+}
+
 // SetLogger installs a logger for auth operational events (authentication
 // required denials, authorization rejections, hasher configuration warnings).
 // Nil disables logging. Safe to call concurrently.
+//
+// Every registered scheme implementing LoggerReceiver is notified
+// immediately, nil included; schemes registered later inherit a non-nil
+// logger at registration time (see RegisterScheme).
 func (m *Manager) SetLogger(l Logger) {
+	m.loggerMu.Lock()
+	defer m.loggerMu.Unlock()
+
 	m.logger.Store(authLoggerHolder{Logger: l})
 
 	m.mu.RLock()
 	hasher := m.hasher
+	receivers := make([]LoggerReceiver, 0, len(m.schemes))
+	for _, g := range m.schemes {
+		if r, ok := g.(LoggerReceiver); ok {
+			receivers = append(receivers, r)
+		}
+	}
 	m.mu.RUnlock()
 
 	if bh, ok := hasher.(*BcryptHasher); ok {
 		bh.SetLogger(l)
+	}
+	for _, r := range receivers {
+		r.SetLogger(l)
 	}
 }
 

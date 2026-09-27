@@ -782,13 +782,21 @@ func (g *SessionScheme) getTrustedProxies() []*net.IPNet {
 	return clientip.CloneIPNets(g.trustedProxies)
 }
 
-// SetLogger installs a logger used for non-fatal store errors (e.g. Redis
-// transient failure on Put). Nil disables logging.
+// SetLogger installs a logger used for the scheme's non-fatal warnings
+// (store errors, a session cookie too large to send, a refused revival,
+// a queued write that touched the response body). Nil disables logging.
+//
+// Manager.SetLogger propagates to every registered scheme via the
+// auth.LoggerReceiver interface, and Manager.RegisterScheme hands the
+// manager's logger to a scheme registered later, so a bootstrapped app
+// logs through its framework logger without calling this directly.
 func (g *SessionScheme) SetLogger(l auth.Logger) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.logger = l
 }
+
+var _ auth.LoggerReceiver = (*SessionScheme)(nil)
 
 // getServerStore returns the installed server-side session store, or nil
 // when none has been configured.
