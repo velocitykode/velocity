@@ -666,9 +666,9 @@ func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationT
 		return err
 	}
 	if token.IsZero() {
-		// No reservation to clean up; record the failure the way Failed
-		// does, bound to ctx, so a failed_jobs row is still recorded.
-		return d.failedCtx(ctx, job, jobErr, queueName)
+		// No reservation to clean up; record the failure the way FailedCtx
+		// does, so a failed_jobs row is still recorded.
+		return d.FailedCtx(ctx, job, jobErr, queueName)
 	}
 
 	wrapper, wrapErr := createJobWrapper(job, queueName)
@@ -695,7 +695,7 @@ func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationT
 	// (returned above) never runs it. A panic in the hook is contained and
 	// returned as ErrFailedHookPanicked with the failure already recorded.
 	// Mirrors MemoryDriver.FailReservedCtx.
-	return RunFailedHook(job, jobErr)
+	return RunFailedHook(ctx, job, jobErr)
 }
 
 // commitFailedReservation deletes the reserved row and inserts its
@@ -839,17 +839,11 @@ func dedupeTableMissing(err error) bool {
 		strings.Contains(msg, "doesn't exist")
 }
 
-// Failed marks a job as failed: it records the job in failed_jobs and then
-// runs the job's Failed hook, once. A failure to record returns the error
-// without running the hook.
-func (d *DatabaseDriver) Failed(job Job, err error, queueName string) error {
-	return d.failedCtx(context.Background(), job, err, queueName)
-}
-
-// failedCtx is Failed with the failed_jobs insert bound to ctx: a ctx
-// cancelled before or during the insert returns its error without running
-// the hook.
-func (d *DatabaseDriver) failedCtx(ctx context.Context, job Job, err error, queueName string) error {
+// FailedCtx marks a job as failed: it records the job in failed_jobs,
+// with the insert bound to ctx, and then runs the job's Failed hook under
+// ctx, once. A failure to record, a ctx cancelled before or during the
+// insert included, returns the error without running the hook.
+func (d *DatabaseDriver) FailedCtx(ctx context.Context, job Job, err error, queueName string) error {
 	// Create job wrapper for serialization
 	wrapper, wrapErr := createJobWrapper(job, queueName)
 	if wrapErr != nil {
@@ -891,8 +885,8 @@ func (d *DatabaseDriver) failedCtx(ctx context.Context, job Job, err error, queu
 
 	// The job's Failed hook runs once the failed_jobs row is recorded; a
 	// failed insert (returned above) never runs it, and a panic in it is
-	// contained (ErrFailedHookPanicked). Mirrors MemoryDriver.Failed.
-	return RunFailedHook(job, err)
+	// contained (ErrFailedHookPanicked). Mirrors MemoryDriver.FailedCtx.
+	return RunFailedHook(ctx, job, err)
 }
 
 // GetDelayedJobs returns the number of delayed jobs

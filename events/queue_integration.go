@@ -195,10 +195,19 @@ func (j *EventListenerJob) MaxAttempts() int {
 // a documented no-op rather than a silent one (it is still observable via
 // the test's assertion on the original Handle error). Whether the reporter
 // reported it is recorded for FailureReported, so the worker's queue.job.failed
-// event reports the failure only when this did not.
+// event reports the failure only when this did not. Failed reports under
+// context.Background(); a driver running the hook through
+// queue.RunFailedHook calls FailedCtx with the failed attempt's context.
 func (j *EventListenerJob) Failed(err error) {
+	j.FailedCtx(context.Background(), err)
+}
+
+// FailedCtx is Failed under ctx, the context of the attempt that failed the
+// job: the reporter receives ctx, so the report carries the job's trace and
+// span. It implements queue.FailedCtxer.
+func (j *EventListenerJob) FailedCtx(ctx context.Context, err error) {
 	var reported uint32
-	if reportFailure(j, err) {
+	if reportFailure(ctx, j, err) {
 		reported = 1
 	}
 	atomic.StoreUint32(&j.failureReported, reported)
@@ -596,14 +605,15 @@ func EventJobFactory(data []byte) (queue.Job, error) {
 }
 
 // FailureReporter receives queued-listener failure callbacks invoked by
-// queue.Driver.Failed once the job has exhausted its retry budget. The
+// the job's failed hook once the job has exhausted its retry budget, with
+// ctx, the context of the attempt that failed it (its trace and span). The
 // framework wires the App's error handler via InitializeQueueIntegration
 // so a silently dropped security / audit listener becomes visible to the
 // configured reporters (sentry, log, etc). It returns whether it reported
 // the failure: false when it had nowhere to report it or the error
 // handler's report gate dropped it, so the queue worker's queue.job.failed event
 // reports the failure instead (see EventListenerJob.FailureReported).
-type FailureReporter func(job *EventListenerJob, err error) bool
+type FailureReporter func(ctx context.Context, job *EventListenerJob, err error) bool
 
 // InitializeQueueIntegration wires the queue-integration plumbing that turns
 // queued listeners from a silent-drop hole (H-22) into a production-ready
@@ -769,24 +779,27 @@ func setFailureReporter(fn FailureReporter) {
 }
 
 // reportFailure routes a queued-listener failure through the installed
-// reporter, recovering from any panic in the reporter so a misbehaving
-// sink cannot take down the queue worker. It returns whether the reporter
-// reported the failure: false when none is installed, err is nil, the
-// reporter declined it, or the reporter panicked, so the worker's
-// queue.job.failed bridge still reports it.
-func reportFailure(job *EventListenerJob, err error) (reported bool) {
+// reporter under ctx (context.Background() when nil), recovering from any
+// panic in the reporter so a misbehaving sink cannot take down the queue
+// worker. It returns whether the reporter reported the failure: false when
+// none is installed, err is nil, the reporter declined it, or the reporter
+// panicked, so the worker's queue.job.failed bridge still reports it.
+func reportFailure(ctx context.Context, job *EventListenerJob, err error) (reported bool) {
 	failureReporterMu.RLock()
 	fn := failureReporter
 	failureReporterMu.RUnlock()
 	if fn == nil || err == nil {
 		return false
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	defer func() {
 		if recover() != nil {
 			reported = false
 		}
 	}()
-	return fn(job, err)
+	return fn(ctx, job, err)
 }
 
 // PriorityListener extends Listener with priority support

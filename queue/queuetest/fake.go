@@ -118,8 +118,8 @@ func (f *FakeQueue) Clear(queue string) error {
 	return nil
 }
 
-// Failed is a no-op record; the fake does not track failures.
-func (f *FakeQueue) Failed(job contract.QueueJob, err error, queue string) error {
+// FailedCtx is a no-op record; the fake does not track failures.
+func (f *FakeQueue) FailedCtx(ctx context.Context, job contract.QueueJob, err error, queue string) error {
 	return nil
 }
 

@@ -30,7 +30,7 @@ func TestErrorContext_Builders(t *testing.T) {
 	st := &StackTrace{Frames: []StackFrame{{File: "a.go", Line: 1}}}
 	c := (&ErrorContext{}).
 		WithRequestInfo("POST", "/orders", "10.0.0.1", "agent/1").
-		WithIDs("req-1", "trace-1").
+		WithIDs("req-1", "trace-1", "span-1").
 		WithUserID("42").
 		WithStackTrace(st).
 		WithExtra("k", "v")
@@ -46,6 +46,7 @@ func TestErrorContext_Builders(t *testing.T) {
 		{"user agent", c.UserAgent, "agent/1"},
 		{"request id", c.RequestID, "req-1"},
 		{"trace id", c.TraceID, "trace-1"},
+		{"span id", c.SpanID, "span-1"},
 		{"user id", c.UserID, "42"},
 		{"stack trace", c.StackTrace, st},
 		{"extra", c.Extra["k"], "v"},

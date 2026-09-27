@@ -27,7 +27,7 @@ func TestMemoryDriver_Failed_CallbackReentryNoDeadlock(t *testing.T) {
 	}
 
 	go func() {
-		_ = d.Failed(job, errors.New("boom"), "requeue")
+		_ = d.FailedCtx(context.Background(), job, errors.New("boom"), "requeue")
 	}()
 
 	select {

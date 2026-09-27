@@ -249,12 +249,12 @@ func RunDriverContractTests(t *testing.T, factory DriverFactory) {
 		}
 	})
 
-	t.Run("Failed_AcceptsTerminalFailure", func(t *testing.T) {
+	t.Run("FailedCtx_AcceptsTerminalFailure", func(t *testing.T) {
 		d := factory(t)
 		job := &ContractJob{IDValue: "fail-me"}
-		err := d.Failed(job, errors.New("boom"), "q-failed")
+		err := d.FailedCtx(context.Background(), job, errors.New("boom"), "q-failed")
 		if err != nil {
-			t.Fatalf("Failed: %v", err)
+			t.Fatalf("FailedCtx: %v", err)
 		}
 	})
 

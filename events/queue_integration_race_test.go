@@ -26,8 +26,10 @@ func (nopMemQueueDriver) PushDelayedCtx(ctx context.Context, job queue.Job, dela
 func (nopMemQueueDriver) PopCtx(ctx context.Context, q string) (queue.Job, error) { return nil, nil }
 func (nopMemQueueDriver) Size(q string) (int64, error)                            { return 0, nil }
 func (nopMemQueueDriver) Clear(q string) error                                    { return nil }
-func (nopMemQueueDriver) Failed(job queue.Job, err error, q string) error         { return nil }
-func (nopMemQueueDriver) Shutdown(ctx context.Context) error                      { return nil }
+func (nopMemQueueDriver) FailedCtx(_ context.Context, job queue.Job, err error, q string) error {
+	return nil
+}
+func (nopMemQueueDriver) Shutdown(ctx context.Context) error { return nil }
 
 // raceQueuedListener implements QueuedListener so QueueIntegratedDispatcher.Dispatch
 // takes the queued branch (pushToQueue).

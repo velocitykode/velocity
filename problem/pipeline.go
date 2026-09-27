@@ -12,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // HandleRequest reports err once and renders one response for it through
@@ -120,7 +121,7 @@ func (h *Handler) TryReport(err error, ctx *ErrorContext) bool {
 	}
 	s := h.snap()
 	if ctx == nil {
-		ctx = NewErrorContext()
+		ctx = trace.NewErrorContext(context.Background())
 	}
 	if outsidePanic(err, ctx, contract.IsReported) {
 		return false
@@ -429,7 +430,7 @@ func (h *Handler) stage(s *snapshot, rc RenderContext, ctx *ErrorContext, write 
 // captures still hold the panicking frames. The gate honours a report-once
 // marker as for any report (one outside the panic value counts).
 func (h *Handler) reportRenderPanic(s *snapshot, rc RenderContext, ctx *ErrorContext, p any) {
-	pctx := NewErrorContext()
+	pctx := trace.NewErrorContext(contextOf(requestOf(rc)))
 	if ctx != nil {
 		pctx.RequestID, pctx.TraceID, pctx.SpanID, pctx.UserID = ctx.RequestID, ctx.TraceID, ctx.SpanID, ctx.UserID
 		pctx.URL, pctx.Method, pctx.IP, pctx.UserAgent = ctx.URL, ctx.Method, ctx.IP, ctx.UserAgent

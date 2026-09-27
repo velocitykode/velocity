@@ -10,6 +10,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // Middleware returns net/http middleware that recovers a panic in next and
@@ -60,7 +61,7 @@ func recoverInto(h contract.ErrorHandler, w http.ResponseWriter, r *http.Request
 	if err, ok := p.(error); ok && errors.Is(err, http.ErrAbortHandler) {
 		panic(p)
 	}
-	ctx := NewErrorContext()
+	ctx := trace.NewErrorContext(r.Context())
 	ctx.Recovered = true
 	ctx.PanicStack = string(debug.Stack())
 	ctx.StackTrace = contract.CaptureStackTrace(1)

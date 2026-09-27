@@ -136,7 +136,7 @@ func TestRedisDriver_FailedHookPanicContained(t *testing.T) {
 
 	const queueName = "redis-hook-panic"
 	job := &redisPanickingHookJob{ID: "p1"}
-	err = driver.Failed(job, errors.New("boom"), queueName)
+	err = driver.FailedCtx(context.Background(), job, errors.New("boom"), queueName)
 	if !errors.Is(err, queue.ErrFailedHookPanicked) {
 		t.Fatalf("Failed returned %v, want ErrFailedHookPanicked", err)
 	}

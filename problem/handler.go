@@ -1,6 +1,7 @@
 package problem
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // Verify *Handler implements contract.ErrorHandler at compile time.
@@ -341,22 +343,18 @@ func (h *Handler) snap() *snapshot {
 	}
 }
 
-// NewErrorContext returns an ErrorContext stamped with the current time.
-func NewErrorContext() *ErrorContext {
-	return &ErrorContext{Timestamp: time.Now(), Extra: make(map[string]any)}
-}
-
-// fillRequestContext returns ctx (or a new one when nil) with the request
-// facts it is missing filled from rc: method, path, client IP (through the
-// trusted-proxy list), user agent and timestamp.
+// fillRequestContext returns ctx (or, when nil, a new one built by
+// trace.NewErrorContext from the request's context, carrying its ids) with
+// the request facts it is missing filled from rc: method, path, client IP
+// (through the trusted-proxy list), user agent and timestamp.
 func fillRequestContext(ctx *ErrorContext, rc RenderContext, proxies []*net.IPNet) *ErrorContext {
+	r := requestOf(rc)
 	if ctx == nil {
-		ctx = NewErrorContext()
+		ctx = trace.NewErrorContext(contextOf(r))
 	}
 	if ctx.Timestamp.IsZero() {
 		ctx.Timestamp = time.Now()
 	}
-	r := requestOf(rc)
 	if r == nil {
 		return ctx
 	}
@@ -373,6 +371,14 @@ func fillRequestContext(ctx *ErrorContext, rc RenderContext, proxies []*net.IPNe
 		ctx.UserAgent = r.UserAgent()
 	}
 	return ctx
+}
+
+// contextOf returns r's context, or context.Background() when r is nil.
+func contextOf(r *http.Request) context.Context {
+	if r == nil {
+		return context.Background()
+	}
+	return r.Context()
 }
 
 // requestOf returns the request behind rc, or nil.

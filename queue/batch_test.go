@@ -93,7 +93,7 @@ func (d *memoryDriver) PopCtx(ctx context.Context, queue string) (Job, error) {
 	return job, nil
 }
 
-func (d *memoryDriver) Failed(job Job, err error, queue string) error {
+func (d *memoryDriver) FailedCtx(_ context.Context, job Job, err error, queue string) error {
 	return nil
 }
 
@@ -733,14 +733,14 @@ func (d *failingDriver) Push(job Job, queue ...string) error {
 func (d *failingDriver) PushDelayedCtx(context.Context, Job, time.Duration, ...string) error {
 	return nil
 }
-func (d *failingDriver) PushDelayed(Job, time.Duration, ...string) error { return nil }
-func (d *failingDriver) PopCtx(context.Context, string) (Job, error)     { return nil, nil }
-func (d *failingDriver) Pop(string) (Job, error)                         { return nil, nil }
-func (d *failingDriver) Size(string) (int64, error)                      { return 0, nil }
-func (d *failingDriver) Clear(string) error                              { return nil }
-func (d *failingDriver) Failed(Job, error, string) error                 { return nil }
-func (d *failingDriver) Shutdown(context.Context) error                  { return nil }
-func (d *failingDriver) Close() error                                    { return nil }
+func (d *failingDriver) PushDelayed(Job, time.Duration, ...string) error     { return nil }
+func (d *failingDriver) PopCtx(context.Context, string) (Job, error)         { return nil, nil }
+func (d *failingDriver) Pop(string) (Job, error)                             { return nil, nil }
+func (d *failingDriver) Size(string) (int64, error)                          { return 0, nil }
+func (d *failingDriver) Clear(string) error                                  { return nil }
+func (d *failingDriver) FailedCtx(context.Context, Job, error, string) error { return nil }
+func (d *failingDriver) Shutdown(context.Context) error                      { return nil }
+func (d *failingDriver) Close() error                                        { return nil }
 
 // testOnQueuerJob implements both Batchable and OnQueuer
 type testOnQueuerJob struct {

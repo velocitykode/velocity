@@ -54,11 +54,11 @@ func (noMarshalDriver) PushCtx(context.Context, Job, ...string) error { return n
 func (noMarshalDriver) PushDelayedCtx(context.Context, Job, time.Duration, ...string) error {
 	return nil
 }
-func (noMarshalDriver) PopCtx(context.Context, string) (Job, error) { return nil, nil }
-func (noMarshalDriver) Size(string) (int64, error)                  { return 0, nil }
-func (noMarshalDriver) Clear(string) error                          { return nil }
-func (noMarshalDriver) Failed(Job, error, string) error             { return nil }
-func (noMarshalDriver) Shutdown(context.Context) error              { return nil }
+func (noMarshalDriver) PopCtx(context.Context, string) (Job, error)         { return nil, nil }
+func (noMarshalDriver) Size(string) (int64, error)                          { return 0, nil }
+func (noMarshalDriver) Clear(string) error                                  { return nil }
+func (noMarshalDriver) FailedCtx(context.Context, Job, error, string) error { return nil }
+func (noMarshalDriver) Shutdown(context.Context) error                      { return nil }
 
 // newFailureWorker builds a worker over the no-op driver with a zero
 // reservation token, so handleJobFailure exercises the in-memory attempt

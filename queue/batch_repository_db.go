@@ -421,7 +421,7 @@ func (r *DatabaseBatchRepository) IncrementSuccess(ctx context.Context, id Batch
 // instead of completed_jobs and stores the error on last_error for
 // post-mortem inspection. Truncated to 4 KiB so a runaway error chain
 // does not bloat the row; full error text remains available on the
-// failed_jobs row written by Driver.Failed.
+// failed_jobs row written by Driver.FailedCtx.
 func (r *DatabaseBatchRepository) IncrementFailure(ctx context.Context, id BatchID, jobErr error) (*Batch, bool, error) {
 	var truncated string
 	if jobErr != nil {

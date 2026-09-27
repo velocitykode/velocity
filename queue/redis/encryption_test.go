@@ -202,7 +202,7 @@ func TestRedisDriver_FailedListEntryIsCiphertext(t *testing.T) {
 	defer mr.Close()
 	defer driver.Shutdown(context.Background())
 
-	if err := driver.Failed(&encJob{ID: "fail-1", Message: "pii-in-failed-row"}, errors.New("handler exploded"), "enc-failed"); err != nil {
+	if err := driver.FailedCtx(context.Background(), &encJob{ID: "fail-1", Message: "pii-in-failed-row"}, errors.New("handler exploded"), "enc-failed"); err != nil {
 		t.Fatalf("Failed: %v", err)
 	}
 

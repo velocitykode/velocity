@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -28,7 +29,7 @@ func TestEventListenerJob_FailureReported(t *testing.T) {
 
 	var calls atomic.Int32
 	var accept atomic.Bool
-	setFailureReporter(func(j *EventListenerJob, err error) bool {
+	setFailureReporter(func(_ context.Context, j *EventListenerJob, err error) bool {
 		calls.Add(1)
 		if j != job || !errors.Is(err, boom) {
 			t.Errorf("reporter got (%p, %v), want (%p, %v)", j, err, job, boom)
@@ -63,7 +64,7 @@ func TestEventListenerJob_FailureReported(t *testing.T) {
 		t.Error("FailureReported() kept an earlier call's answer after a reporter-less Failed")
 	}
 
-	setFailureReporter(func(*EventListenerJob, error) bool { panic("sink exploded") })
+	setFailureReporter(func(context.Context, *EventListenerJob, error) bool { panic("sink exploded") })
 	job.Failed(boom)
 	if job.FailureReported() {
 		t.Error("FailureReported() = true after the reporter panicked")

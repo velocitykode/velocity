@@ -15,6 +15,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
+	"github.com/velocitykode/velocity/trace"
 )
 
 func TestRender_Order(t *testing.T) {
@@ -1000,7 +1001,7 @@ func TestHTMLRenderer_TemplateFailureLeavesResponseUntouched(t *testing.T) {
 
 func TestHTMLRenderer_DebugPage(t *testing.T) {
 	h, _, _ := newTestHandler(WithDebug(true))
-	ctx := NewErrorContext()
+	ctx := trace.NewErrorContext(context.Background())
 	ctx.RequestID = "req-1"
 	ctx.StackTrace = contract.CaptureStackTrace(0)
 	ctx.WithExtra("tenant", "acme")
@@ -1219,7 +1220,7 @@ func TestFrameworkRenderFor_AnswersOnlyTheStatusOwner(t *testing.T) {
 				rc.WriteHeader(http.StatusTeapot)
 				return true
 			})
-			ctx := NewErrorContext()
+			ctx := trace.NewErrorContext(context.Background())
 			ctx.Recovered = tt.recovered
 			rc, w := newRC(http.MethodGet, "/x", "Accept", "application/json")
 			h.HandleRequest(rc, tt.err, ctx)
@@ -1349,7 +1350,7 @@ func TestRender_ResponseWrittenMarkers(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			h, rep, _ := newTestHandler()
 			rc, w := newRC(http.MethodGet, "/x", "Accept", "application/json")
-			ctx := NewErrorContext()
+			ctx := trace.NewErrorContext(context.Background())
 			ctx.Recovered = tt.recovered
 			h.Render(rc, tt.err, ctx)
 			if rep.count() != 0 {
@@ -1451,7 +1452,7 @@ func TestFakeHandler_RenderResponseWrittenMarkers(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := NewFakeHandler()
 			rc, w := newRC(http.MethodGet, "/x", "Accept", "application/json")
-			ctx := NewErrorContext()
+			ctx := trace.NewErrorContext(context.Background())
 			ctx.Recovered = tt.recovered
 			f.Render(rc, tt.err, ctx)
 			if got := f.RenderedErrors(); len(got) != 1 || got[0] != tt.err {

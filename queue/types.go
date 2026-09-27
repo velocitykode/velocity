@@ -26,6 +26,15 @@ type HandleCtxer interface {
 	HandleCtx(ctx context.Context) error
 }
 
+// FailedCtxer is an optional interface a job implements to receive, in its
+// Failed hook, the context of the attempt that failed it (its trace and
+// span, and any request-scoped values), detached from that attempt's
+// cancellation. RunFailedHook calls FailedCtx instead of Failed on such a
+// job.
+type FailedCtxer interface {
+	FailedCtx(ctx context.Context, err error)
+}
+
 // Driver defines the interface for queue drivers.
 type Driver = contract.QueueDriver
 

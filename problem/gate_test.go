@@ -15,6 +15,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/router"
+	"github.com/velocitykode/velocity/trace"
 )
 
 var errSentinel = errors.New("sentinel")
@@ -558,7 +559,7 @@ func TestHandleRequest_MarkersInsideAndAroundAPanic(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h, rep, _ := newTestHandler()
-			ctx := NewErrorContext()
+			ctx := trace.NewErrorContext(context.Background())
 			ctx.Recovered = tt.recovered
 			rc, w := newRC(http.MethodGet, "/x", "Accept", "application/json")
 			h.HandleRequest(rc, tt.err, ctx)
@@ -611,7 +612,7 @@ func TestMarkers_OutsidePanicParity(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h, rep, _ := newTestHandler()
-			ctx := NewErrorContext()
+			ctx := trace.NewErrorContext(context.Background())
 			ctx.Recovered = tt.recovered
 			rc, w := newRC(http.MethodGet, "/x", "Accept", "application/json")
 			h.HandleRequest(rc, tt.err, ctx)
@@ -626,7 +627,7 @@ func TestMarkers_OutsidePanicParity(t *testing.T) {
 			}
 
 			h2, rep2, _ := newTestHandler()
-			ctx2 := NewErrorContext()
+			ctx2 := trace.NewErrorContext(context.Background())
 			ctx2.Recovered = tt.recovered
 			h2.Report(tt.err, ctx2)
 			if rep2.count() != tt.wantReport {
@@ -646,7 +647,7 @@ func TestReport_ThenMarkARecoveredPanic(t *testing.T) {
 	h.Report(pe, nil)
 	marked := contract.MarkReported(pe)
 
-	ctx := NewErrorContext()
+	ctx := trace.NewErrorContext(context.Background())
 	ctx.Recovered = true
 	rc, w := newRC(http.MethodGet, "/x", "Accept", "application/json")
 	h.HandleRequest(rc, marked, ctx)
@@ -832,7 +833,7 @@ func TestEntryPoints_MapRuleKeepsRecoveredPanic(t *testing.T) {
 					mapped++
 					return NotFound("invoice not found")
 				})
-				ctx := NewErrorContext()
+				ctx := trace.NewErrorContext(context.Background())
 				status := entry.run(t, h, src.err(), ctx)
 
 				if mapped != 1 {

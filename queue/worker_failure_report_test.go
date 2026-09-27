@@ -343,7 +343,7 @@ func TestDatabaseDriver_FailedHookRunsOnceAfterRecording(t *testing.T) {
 		{
 			name: "Failed",
 			fail: func(_ *testing.T, d *DatabaseDriver, job Job) error {
-				return d.Failed(job, boom, queueName)
+				return d.FailedCtx(context.Background(), job, boom, queueName)
 			},
 			wantRuns: 1,
 		},
@@ -389,7 +389,7 @@ func TestDatabaseDriver_FailedHookRunsOnceAfterRecording(t *testing.T) {
 			name: "Failed with a failed insert",
 			fail: func(t *testing.T, d *DatabaseDriver, job Job) error {
 				dropFailedJobs(t, d)
-				return d.Failed(job, boom, queueName)
+				return d.FailedCtx(context.Background(), job, boom, queueName)
 			},
 			wantErr: true,
 		},

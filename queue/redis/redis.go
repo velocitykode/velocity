@@ -583,8 +583,10 @@ func (r *RedisDriver) Clear(queueName string) error {
 	return err
 }
 
-// Failed moves a job to the failed queue
-func (r *RedisDriver) Failed(job queue.Job, err error, queueName string) error {
+// FailedCtx moves a job to the failed queue and runs its Failed hook under
+// ctx. The failed-list write runs under the driver's own context, as the
+// other list writes do.
+func (r *RedisDriver) FailedCtx(ctx context.Context, job queue.Job, err error, queueName string) error {
 	failedKey := r.getFailedKey(queueName)
 	r.takePoppedAttempts(job)
 
@@ -619,7 +621,7 @@ func (r *RedisDriver) Failed(job queue.Job, err error, queueName string) error {
 
 	// Run the job's Failed hook now that the failure is stored; a panic in
 	// it is contained and returned as queue.ErrFailedHookPanicked.
-	return queue.RunFailedHook(job, err)
+	return queue.RunFailedHook(ctx, job, err)
 }
 
 // moveDelayedJobs moves ready delayed jobs to the main queue. The supplied

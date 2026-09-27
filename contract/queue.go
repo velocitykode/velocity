@@ -47,8 +47,11 @@ type QueueDriver interface {
 	// Clear removes all jobs from the queue
 	Clear(queue string) error
 
-	// Failed moves a job to the failed queue
-	Failed(job QueueJob, err error, queue string) error
+	// FailedCtx moves a job to the failed queue and then runs its Failed
+	// hook. ctx is the context of the attempt that failed the job, detached
+	// from that attempt's cancellation: the hook runs under it, so a hook
+	// that reports the failure carries the job's trace.
+	FailedCtx(ctx context.Context, job QueueJob, err error, queue string) error
 
 	// Shutdown gracefully shuts down the driver, honoring the context deadline.
 	Shutdown(ctx context.Context) error

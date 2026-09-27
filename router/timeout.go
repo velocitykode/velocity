@@ -14,7 +14,6 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
-	"github.com/velocitykode/velocity/trace"
 )
 
 // ErrHandlerTimeout is returned by the timeout-safe response writer when a
@@ -404,21 +403,8 @@ func reportLatePanic(c *Context, err error) {
 		stack, st = pe.Stack, pe.Trace
 	}
 	if c.services != nil && c.services.Errors != nil {
-		ec := &contract.ErrorContext{
-			Timestamp:  time.Now(),
-			Recovered:  true,
-			PanicStack: stack,
-			StackTrace: st,
-		}
-		if req := c.Request; req != nil {
-			ec.RequestID = GetRequestID(req)
-			ec.TraceID, ec.SpanID = trace.GetTraceID(req.Context()), trace.GetSpanID(req.Context())
-			ec.Method = req.Method
-			if req.URL != nil {
-				ec.URL = req.URL.Path
-			}
-			ec.UserAgent = req.UserAgent()
-		}
+		ec := c.ErrorContext()
+		ec.Recovered, ec.PanicStack, ec.StackTrace = true, stack, st
 		c.services.Errors.Report(err, ec)
 		return
 	}

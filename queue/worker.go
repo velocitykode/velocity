@@ -744,13 +744,15 @@ func (w *Worker) attemptKey(job Job, token ReservationToken) interface{} {
 // would let the failure events fire while the row redelivers and the
 // new worker records its own outcome on top.
 //
-// The driver-side cleanup write MUST use a fresh context with its own
-// short timeout, not the per-job ctx: when this is reached via the
-// jobCtx-timeout branch in processJob, ctx is already
+// The driver-side cleanup write MUST use a context with its own short
+// timeout, detached from the per-job ctx's cancellation: when this is
+// reached via the jobCtx-timeout branch in processJob, ctx is already
 // context.DeadlineExceeded and any DB write bound to it returns the
 // deadline error before touching the row. The row would then stay
 // reserved (never moved to failed_jobs) until the lease expires,
-// breaking the at-least-once-but-bounded contract.
+// breaking the at-least-once-but-bounded contract. The cleanup context
+// keeps ctx's values, so the job's Failed hook, which the driver runs
+// under it, sees the job's trace.
 //
 // Event dispatch still uses ctx so trace ids and request-scoped values
 // propagate; only the database mutation runs under the detached
@@ -768,11 +770,11 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 	// carries Attempts and no cache entry was ever stored).
 	w.removeAttempts(key)
 
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), terminalCleanupTimeout)
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), terminalCleanupTimeout)
 	defer cleanupCancel()
 
 	// Reservation-capable drivers record + delete the row atomically;
-	// other drivers fall back to the bare Failed() path.
+	// other drivers fall back to the bare FailedCtx() path.
 	if rd, ok := w.queue.(ReservationDriver); ok && !reservation.IsZero() {
 		switch failErr := rd.FailReservedCtx(cleanupCtx, reservation, job, err, w.queueName); {
 		case failErr == nil:
@@ -817,10 +819,10 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 	} else {
 		// Non-reservation driver (memory, redis): the row was deleted
 		// at pop time, so there is no redelivery to double-count
-		// against. Run side effects regardless of Failed()'s outcome
+		// against. Run side effects regardless of FailedCtx()'s outcome
 		// so alerting pipelines still see the failure when the
 		// failed_jobs sink itself is degraded.
-		switch failErr := w.queue.Failed(job, err, w.queueName); {
+		switch failErr := w.queue.FailedCtx(cleanupCtx, job, err, w.queueName); {
 		case failErr == nil:
 		case errors.Is(failErr, ErrFailedHookPanicked):
 			w.logger.Error("Job Failed hook panicked after the failure was recorded",

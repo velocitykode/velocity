@@ -339,10 +339,11 @@ func (c *ErrorContext) WithRequestInfo(method, url, ip, userAgent string) *Error
 	return c
 }
 
-// WithIDs adds request and trace IDs to the context.
-func (c *ErrorContext) WithIDs(requestID, traceID string) *ErrorContext {
+// WithIDs sets the request, trace and span IDs of the context.
+func (c *ErrorContext) WithIDs(requestID, traceID, spanID string) *ErrorContext {
 	c.RequestID = requestID
 	c.TraceID = traceID
+	c.SpanID = spanID
 	return c
 }
 

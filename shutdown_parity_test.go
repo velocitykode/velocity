@@ -104,7 +104,7 @@ func TestShutdown_ClearsEventQueueFailureReporter(t *testing.T) {
 	// Install the probe AFTER New(): New wires its own reporter and would
 	// overwrite an earlier install.
 	var fires atomic.Int32
-	eventqueue.InitializeQueueIntegration(nil, nil, func(_ *events.EventListenerJob, _ error) bool {
+	eventqueue.InitializeQueueIntegration(nil, nil, func(_ context.Context, _ *events.EventListenerJob, _ error) bool {
 		fires.Add(1)
 		return true
 	})
@@ -231,7 +231,9 @@ func (q *orderRecordingQueue) Size(_ string) (int64, error) { return 0, nil }
 
 func (q *orderRecordingQueue) Clear(_ string) error { return nil }
 
-func (q *orderRecordingQueue) Failed(_ contract.QueueJob, _ error, _ string) error { return nil }
+func (q *orderRecordingQueue) FailedCtx(context.Context, contract.QueueJob, error, string) error {
+	return nil
+}
 
 func (q *orderRecordingQueue) Shutdown(_ context.Context) error {
 	*q.order = append(*q.order, "queue")

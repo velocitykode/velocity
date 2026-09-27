@@ -19,6 +19,7 @@ import (
 	"github.com/velocitykode/velocity/csrf/stores"
 	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/router"
+	"github.com/velocitykode/velocity/trace"
 	"github.com/velocitykode/velocity/validation"
 )
 
@@ -455,7 +456,7 @@ func TestInstall_MiddlewareReportsAMarkedPanicOnce(t *testing.T) {
 			err := next(c)
 			var pe *router.PanicError
 			if errors.As(err, &pe) {
-				c.Errors().Report(err, problem.NewErrorContext())
+				c.Errors().Report(err, trace.NewErrorContext(context.Background()))
 				return contract.MarkReported(err)
 			}
 			return err

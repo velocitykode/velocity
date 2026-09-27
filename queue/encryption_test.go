@@ -478,7 +478,7 @@ func TestDatabaseDriver_FailedJobsRowIsCiphertext(t *testing.T) {
 	defer cleanup()
 
 	job := &TestJob{ID: "fail-1", Message: "pii-in-failed-row"}
-	if err := driver.Failed(job, errors.New("handler exploded"), "enc-failed"); err != nil {
+	if err := driver.FailedCtx(context.Background(), job, errors.New("handler exploded"), "enc-failed"); err != nil {
 		t.Fatalf("Failed: %v", err)
 	}
 

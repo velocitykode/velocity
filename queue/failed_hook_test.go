@@ -57,11 +57,11 @@ func init() {
 // whether the panic value is a string or an error.
 func TestRunFailedHook(t *testing.T) {
 	boom := errors.New("boom")
-	if err := RunFailedHook(&panickingHookJob{ID: "quiet"}, boom); err != nil {
+	if err := RunFailedHook(context.Background(), &panickingHookJob{ID: "quiet"}, boom); err != nil {
 		t.Fatalf("hook that returns: err = %v, want nil", err)
 	}
 
-	err := RunFailedHook(&panickingHookJob{ID: "loud", PanicInFailed: true}, boom)
+	err := RunFailedHook(context.Background(), &panickingHookJob{ID: "loud", PanicInFailed: true}, boom)
 	if !errors.Is(err, ErrFailedHookPanicked) {
 		t.Fatalf("hook that panics: err = %v, want ErrFailedHookPanicked", err)
 	}
@@ -71,9 +71,54 @@ func TestRunFailedHook(t *testing.T) {
 	}
 
 	errValue := errors.New("hook error value")
-	err = RunFailedHook(&TestJob{OnFail: func(error) { panic(errValue) }}, boom)
+	err = RunFailedHook(context.Background(), &TestJob{OnFail: func(error) { panic(errValue) }}, boom)
 	if !errors.Is(err, ErrFailedHookPanicked) || !errors.Is(err, errValue) {
 		t.Errorf("hook that panics with an error: err = %v, want ErrFailedHookPanicked wrapping the value", err)
+	}
+}
+
+// ctxHookJob records the context its FailedCtx hook got, and whether its
+// plain Failed hook ran; PanicInFailed makes FailedCtx panic.
+type ctxHookJob struct {
+	PanicInFailed bool
+	gotCtx        context.Context
+	plainFailed   bool
+}
+
+func (j *ctxHookJob) Handle() error { return nil }
+func (j *ctxHookJob) Failed(error)  { j.plainFailed = true }
+func (j *ctxHookJob) FailedCtx(ctx context.Context, _ error) {
+	j.gotCtx = ctx
+	if j.PanicInFailed {
+		panic("ctx hook exploded")
+	}
+}
+
+type hookCtxKey struct{}
+
+// RunFailedHook hands a FailedCtxer job the driver's context, never
+// calling its plain Failed, contains a panic in FailedCtx, and turns a nil
+// context into context.Background().
+func TestRunFailedHook_FailedCtx(t *testing.T) {
+	ctx := context.WithValue(context.Background(), hookCtxKey{}, "job-ctx")
+	job := &ctxHookJob{}
+	if err := RunFailedHook(ctx, job, errors.New("boom")); err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if job.plainFailed || job.gotCtx == nil || job.gotCtx.Value(hookCtxKey{}) != "job-ctx" {
+		t.Errorf("FailedCtx got %v (plain Failed ran: %v), want the driver's context", job.gotCtx, job.plainFailed)
+	}
+
+	loud := &ctxHookJob{PanicInFailed: true}
+	if err := RunFailedHook(ctx, loud, errors.New("boom")); !errors.Is(err, ErrFailedHookPanicked) {
+		t.Errorf("panicking FailedCtx: err = %v, want ErrFailedHookPanicked", err)
+	}
+
+	bare := &ctxHookJob{}
+	//lint:ignore SA1012 a nil context is the case under test
+	_ = RunFailedHook(nil, bare, errors.New("boom"))
+	if bare.gotCtx == nil {
+		t.Error("nil context reached FailedCtx, want context.Background()")
 	}
 }
 

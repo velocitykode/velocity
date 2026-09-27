@@ -144,7 +144,7 @@ func TestMemoryQueue(t *testing.T) {
 		}
 
 		// Mark as failed
-		err = q.Failed(job, errors.New("test error"), "fail-queue")
+		err = q.FailedCtx(context.Background(), job, errors.New("test error"), "fail-queue")
 		if err != nil {
 			t.Fatalf("Failed to mark job as failed: %v", err)
 		}

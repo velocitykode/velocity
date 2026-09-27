@@ -6,15 +6,14 @@
 // A panic with net/http's http.ErrAbortHandler is not one of them: the
 // router lets it abort the connection without reporting it.
 //
-// It is the only package that imports both router and problem, so router
-// stays standalone and problem stays free of router types.
+// It sits above router and talks to the error handler through contract,
+// so router stays standalone and problem stays free of router types.
 package routerbridge
 
 import (
 	"net/http"
 
 	"github.com/velocitykode/velocity/contract"
-	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -122,29 +121,18 @@ func handle(c *router.Context, err error, info router.ErrorInfo, h contract.Erro
 	h.HandleRequest(rc, err, errorContext(c, info, uid))
 }
 
-// errorContext builds the ErrorContext for a failed request from info and
-// c's request.
+// errorContext builds the ErrorContext for a failed request: c's
+// ErrorContext (method, path, client IP, user agent) with the ids and panic
+// facts info carries, which the router reads from the request context, and
+// the user uid names.
 func errorContext(c *router.Context, info router.ErrorInfo, uid contract.RequestUserIdentifier) *contract.ErrorContext {
-	ctx := problem.NewErrorContext()
-	ctx.RequestID = info.RequestID
-	ctx.TraceID = info.TraceID
-	ctx.SpanID = info.SpanID
+	ctx := c.ErrorContext().WithIDs(info.RequestID, info.TraceID, info.SpanID)
 	ctx.Recovered = info.Recovered
 	ctx.PanicStack = info.Stack
 	ctx.StackTrace = info.StackTrace
-	r := c.Request
-	if r == nil {
-		return ctx
+	if r := c.Request; r != nil {
+		ctx.UserID = userID(uid, r)
 	}
-	ctx.Method = r.Method
-	if r.URL != nil {
-		// The path only: a query string can carry signatures and tokens
-		// that must not reach the logs.
-		ctx.URL = r.URL.Path
-	}
-	ctx.IP = c.IP()
-	ctx.UserAgent = r.UserAgent()
-	ctx.UserID = userID(uid, r)
 	return ctx
 }
 

@@ -160,9 +160,10 @@ func reportInternalError(ctx context.Context, err error, method string, cfg *Rec
 	}
 }
 
-// report hands err, a failure of the call to method, to reporter with an
-// ErrorContext naming the method and carrying the call's request and trace
-// IDs; recovered marks a recovered panic, with its stack. It returns
+// report hands err, a failure of the call to method, to reporter with the
+// ErrorContext trace.NewErrorContext builds from the call's ctx (its
+// request, trace and span ids), naming the method; recovered marks a
+// recovered panic, with its stack. It returns
 // whether the reporter returned normally: a reporter that panics is
 // contained, since reporting must never fail the call or crash the server.
 func report(ctx context.Context, reporter contract.Reporter, err error, method string, recovered bool, stack string) (reported bool) {
@@ -171,16 +172,10 @@ func report(ctx context.Context, reporter contract.Reporter, err error, method s
 			reported = false
 		}
 	}()
-	traceID, spanID, _ := trace.GetTraceContext(ctx)
-	reporter.Report(err, &contract.ErrorContext{
-		RequestID:  trace.GetRequestID(ctx),
-		TraceID:    traceID,
-		SpanID:     spanID,
-		Timestamp:  time.Now(),
-		Recovered:  recovered,
-		PanicStack: stack,
-		Extra:      map[string]any{"method": method},
-	})
+	ec := trace.NewErrorContext(ctx)
+	ec.Recovered, ec.PanicStack = recovered, stack
+	ec.Extra["method"] = method
+	reporter.Report(err, ec)
 	return true
 }
 

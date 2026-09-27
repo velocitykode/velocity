@@ -68,7 +68,7 @@ var (
 	// row was reclaimed by another worker. The caller must NOT retry
 	// the mutation; the new owner is now responsible for the row.
 	ErrLeaseLost = errors.New("velocity/queue: lease lost; row reclaimed by another worker")
-	// ErrFailedHookPanicked is returned by a driver's Failed or
+	// ErrFailedHookPanicked is returned by a driver's FailedCtx or
 	// FailReservedCtx when the job's Failed hook panicked after the
 	// failure was recorded: the failed row is written and, for a
 	// reservation, the lease is settled; only the hook did not finish. It

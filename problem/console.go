@@ -1,12 +1,14 @@
 package problem
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // HandleConsole reports err for a console command through the same report
@@ -27,7 +29,7 @@ func (h *Handler) HandleConsole(stderr io.Writer, err error) int {
 	}
 	s := h.snap()
 	marked := contract.IsReported(err)
-	ctx := NewErrorContext()
+	ctx := trace.NewErrorContext(context.Background())
 	markRecovered(err, ctx)
 	err = h.applyMap(s, err, ctx.Source)
 	if !marked {

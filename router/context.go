@@ -849,10 +849,12 @@ func (rc *ctxRenderContext) Redirect(status int, target string) error {
 }
 
 // Report sends err to the application error handler (Services.Errors)
-// for reporting without rendering anything, and returns err marked with
-// contract.MarkReported so the router boundary does not report it again
-// when the handler returns it. With no services or no error handler
-// wired, err is returned unchanged. Report(nil) returns nil.
+// for reporting without rendering anything, with the request's
+// ErrorContext and the user the auth manager names for the request (its
+// contract.RequestUserIdentifier facet, when it has one), and returns err
+// marked with contract.MarkReported so the router boundary does not report
+// it again when the handler returns it. With no services or no error
+// handler wired, err is returned unchanged. Report(nil) returns nil.
 func (c *Context) Report(err error) error {
 	if err == nil {
 		return nil
@@ -861,26 +863,45 @@ func (c *Context) Report(err error) error {
 	if s == nil || s.Errors == nil {
 		return err
 	}
-	s.Errors.Report(err, c.errorContext())
+	ec := c.ErrorContext()
+	ec.UserID = requestUserID(s.Auth, c.Request)
+	s.Errors.Report(err, ec)
 	return contract.MarkReported(err)
 }
 
-// errorContext builds the contract.ErrorContext for a report made from
-// this request. URL is the path only, as the router boundary records it:
-// a query string can carry tokens or signatures that must not reach logs.
-func (c *Context) errorContext() *contract.ErrorContext {
-	ec := &contract.ErrorContext{Timestamp: time.Now()}
-	if r := c.Request; r != nil {
-		ec.RequestID = GetRequestID(r)
-		ec.TraceID = trace.GetTraceID(r.Context())
-		ec.SpanID = trace.GetSpanID(r.Context())
-		path := ""
-		if r.URL != nil {
-			path = r.URL.Path
-		}
-		ec.WithRequestInfo(r.Method, path, c.IP(), r.UserAgent())
+// ErrorContext returns the ErrorContext for a failure of this request:
+// built by trace.NewErrorContext from the request's context, so it carries
+// the request, trace and span ids of the request's log lines, with the
+// method, the path, the client IP (through the trusted proxies) and the
+// user agent. URL is the path only: a query string can carry tokens or
+// signatures that must not reach logs. The user, the panic facts and the
+// level are left to the caller.
+func (c *Context) ErrorContext() *contract.ErrorContext {
+	r := c.Request
+	if r == nil {
+		return trace.NewErrorContext(context.Background())
 	}
-	return ec
+	path := ""
+	if r.URL != nil {
+		path = r.URL.Path
+	}
+	return trace.NewErrorContext(r.Context()).WithRequestInfo(r.Method, path, c.IP(), r.UserAgent())
+}
+
+// requestUserID asks auth's contract.RequestUserIdentifier facet for the
+// user of r, or returns "" when there is no facet or no request. A
+// panicking facet yields "" so a failure there never costs the report.
+func requestUserID(auth contract.AuthManager, r *http.Request) (id string) {
+	uid, ok := auth.(contract.RequestUserIdentifier)
+	if !ok || r == nil {
+		return ""
+	}
+	defer func() {
+		if recover() != nil {
+			id = ""
+		}
+	}()
+	return uid.RequestUserID(r)
 }
 
 // SanitizeRedirect validates a redirect URL against an explicit host

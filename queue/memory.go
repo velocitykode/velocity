@@ -486,7 +486,7 @@ func (m *MemoryDriver) ReleaseCtx(ctx context.Context, token ReservationToken, d
 // Implements ReservationDriver.
 func (m *MemoryDriver) FailReservedCtx(ctx context.Context, token ReservationToken, job Job, jobErr error, queueName string) error {
 	if token.IsZero() {
-		return m.Failed(job, jobErr, queueName)
+		return m.FailedCtx(ctx, job, jobErr, queueName)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -515,7 +515,7 @@ func (m *MemoryDriver) FailReservedCtx(ctx context.Context, token ReservationTok
 	// driver (Push/Size) does not self-deadlock. A panic in it is
 	// contained and returned as ErrFailedHookPanicked; the failure is
 	// recorded either way.
-	return RunFailedHook(job, jobErr)
+	return RunFailedHook(ctx, job, jobErr)
 }
 
 // PushIfNotExistsCtx implements DedupeAwarePusher. The dedupe key is
@@ -621,8 +621,9 @@ func (m *MemoryDriver) Clear(queueName string) error {
 	return nil
 }
 
-// Failed moves a job to the failed queue
-func (m *MemoryDriver) Failed(job Job, err error, queueName string) error {
+// FailedCtx moves a job to the failed queue and runs its Failed hook under
+// ctx.
+func (m *MemoryDriver) FailedCtx(ctx context.Context, job Job, err error, queueName string) error {
 	wrapper, serr := createJobWrapper(job, queueName)
 	if serr != nil {
 		return serr
@@ -645,7 +646,7 @@ func (m *MemoryDriver) Failed(job Job, err error, queueName string) error {
 	// Job.Failed runs outside the lock so a handler that re-enters the
 	// driver (Push/Size) does not self-deadlock. Mirrors FailReservedCtx,
 	// including the containment of a panicking hook.
-	return RunFailedHook(job, err)
+	return RunFailedHook(ctx, job, err)
 }
 
 // GetFailed returns all failed jobs for a queue
