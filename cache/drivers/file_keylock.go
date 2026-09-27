@@ -50,10 +50,17 @@ func (s *FileStore) lockKeyForWrite(ctx context.Context, key string) (func(), er
 // lockStripe takes the write lock of stripe (see lockKeyForWrite), waiting
 // for another holder. what names the lock in the timeout error.
 func (s *FileStore) lockStripe(ctx context.Context, stripe, what string) (func(), error) {
+	return s.lockStripeWithin(ctx, stripe, what, fileKeyLockWait)
+}
+
+// lockStripeWithin is lockStripe waiting at most wait for another holder.
+// The first attempt is always made, so a wait of zero or less takes a
+// free lock and reports a held one as the timeout error.
+func (s *FileStore) lockStripeWithin(ctx context.Context, stripe, what string, wait time.Duration) (func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	deadline := time.Now().Add(fileKeyLockWait)
+	deadline := time.Now().Add(wait)
 	pause := time.Millisecond
 	for {
 		unlock, busy, err := s.flockStripe(stripe)
@@ -67,7 +74,7 @@ func (s *FileStore) lockStripe(ctx context.Context, stripe, what string) (func()
 			return nil, err
 		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("velocity/cache: %s write lock held for over %v: %w", what, fileKeyLockWait, ErrLockTimeout)
+			return nil, fmt.Errorf("velocity/cache: %s write lock held for over %v: %w", what, wait, ErrLockTimeout)
 		}
 		timer := time.NewTimer(pause)
 		select {

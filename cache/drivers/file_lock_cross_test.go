@@ -5,6 +5,7 @@ package drivers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -234,5 +235,51 @@ func TestFileLock_UnreadableRecordIsAnErrorNotAFreeLock(t *testing.T) {
 	}
 	if !holder.Release(ctx) {
 		t.Fatal("holder Release failed after the failed Get")
+	}
+}
+
+// Block gives up at its timeout while a cache write on another instance
+// holds the key's stripe, and never runs the callback late: the stripe
+// wait inside an acquisition attempt is bounded by the time Block has
+// left.
+func TestFileLock_BlockTimesOutWhileTheKeyStripeIsHeld(t *testing.T) {
+	stores := newSharedFileStores(t, 2)
+	ctx := context.Background()
+
+	lock := stores[0].Lock("striped", time.Minute).(*FileLock)
+	peer := stores[1].Lock("striped", time.Minute).(*FileLock)
+	unlock, err := peer.store.guard(ctx, peer.key)
+	if err != nil {
+		t.Fatalf("take the key's stripe from instance 2: %v", err)
+	}
+	released := make(chan struct{})
+	go func() {
+		defer close(released)
+		time.Sleep(500 * time.Millisecond)
+		unlock()
+	}()
+
+	var ran atomic.Bool
+	start := time.Now()
+	err = lock.Block(ctx, 50*time.Millisecond, func() { ran.Store(true) })
+	elapsed := time.Since(start)
+	<-released
+
+	if !errors.Is(err, ErrLockTimeout) {
+		t.Fatalf("Block with the stripe held past its timeout = %v; want ErrLockTimeout", err)
+	}
+	if ran.Load() {
+		t.Fatal("Block ran the callback after its timeout")
+	}
+	if elapsed > 300*time.Millisecond {
+		t.Fatalf("Block returned after %v; want within 300ms of a 50ms timeout", elapsed)
+	}
+
+	// With the stripe free, an attempt with no time left still acquires.
+	if err := lock.Block(ctx, 0, func() { ran.Store(true) }); err != nil {
+		t.Fatalf("Block with a zero timeout on a free lock = %v; want nil", err)
+	}
+	if !ran.Load() {
+		t.Fatal("Block with a zero timeout on a free lock did not run the callback")
 	}
 }

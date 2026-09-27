@@ -62,6 +62,11 @@ func (md fileLockMetadata) held(now time.Time) bool {
 // A lock is held until its owner releases it, it is force-released, or
 // its TTL passes, as on the memory and redis drivers; a holder that
 // crashes keeps the lock until the TTL passes.
+//
+// The stripe is shared with the cache writes of the keys that hash to
+// it, so an acquisition by Get (and so Run) waits, up to fileKeyLockWait,
+// while such a write holds it. Block bounds that wait by the time it has
+// left, so it never acquires after its timeout.
 type FileLock struct {
 	store *fileLockStore
 	key   string
@@ -93,9 +98,14 @@ func (s *fileLockStore) pathFor(key string) string {
 // another holder as a cache write does, honouring ctx. The returned func
 // releases it.
 func (s *fileLockStore) guard(ctx context.Context, key string) (func(), error) {
+	return s.guardWithin(ctx, key, fileKeyLockWait)
+}
+
+// guardWithin is guard waiting at most wait for another holder.
+func (s *fileLockStore) guardWithin(ctx context.Context, key string, wait time.Duration) (func(), error) {
 	sum := sha256.Sum256([]byte(key))
 	stripe := hex.EncodeToString(sum[:1])
-	return s.cache.lockStripe(ctx, stripe, "stripe "+stripe)
+	return s.cache.lockStripeWithin(ctx, stripe, "stripe "+stripe, wait)
 }
 
 // readMetadata reads the record at path. ok is false when the file is
@@ -147,6 +157,7 @@ func NewFileLock(store *fileLockStore, key, owner string, ttl time.Duration) *Fi
 }
 
 // Get attempts to acquire the lock. Returns true if the lock was acquired.
+// It may wait up to fileKeyLockWait for the key's stripe (see FileLock).
 func (l *FileLock) Get(ctx context.Context) bool {
 	acquired, _ := l.GetWithErr(ctx)
 	return acquired
@@ -159,13 +170,29 @@ func (l *FileLock) Get(ctx context.Context) bool {
 // constructed with a non-positive TTL (ErrInvalidLockTTL). A record that
 // cannot be read is left untouched. Contention, including a second Get
 // on a lock this instance already holds, is reported as (false, nil), as
-// is a ctx cancelled before the lock was taken.
+// is a ctx cancelled before the lock was taken. Taking the record may
+// wait up to fileKeyLockWait, honouring ctx, while a cache write of a key
+// on the same stripe holds it.
 //
 // A zero/negative TTL is rejected: without expiry, a holder process
 // that crashes between Get and Release would pin the lock forever.
 // Forcing a positive TTL gives operators a reliable maximum-stale-lock
 // window.
 func (l *FileLock) GetWithErr(ctx context.Context) (bool, error) {
+	return l.acquire(ctx, fileKeyLockWait)
+}
+
+// getBefore is the acquisition attempt of BlockLock: GetWithErr waiting
+// for the key's stripe only until deadline. An attempt at or after
+// deadline still takes a free stripe, without waiting for a held one.
+func (l *FileLock) getBefore(ctx context.Context, deadline time.Time) bool {
+	wait := min(max(time.Until(deadline), 0), fileKeyLockWait)
+	acquired, _ := l.acquire(ctx, wait)
+	return acquired
+}
+
+// acquire is GetWithErr waiting at most wait for the key's stripe.
+func (l *FileLock) acquire(ctx context.Context, wait time.Duration) (bool, error) {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
 			return false, nil
@@ -174,7 +201,7 @@ func (l *FileLock) GetWithErr(ctx context.Context) (bool, error) {
 	if l.ttl <= 0 {
 		return false, ErrInvalidLockTTL
 	}
-	unlock, err := l.store.guard(ctx, l.key)
+	unlock, err := l.store.guardWithin(ctx, l.key, wait)
 	if err != nil {
 		if ctx != nil && ctx.Err() != nil {
 			return false, nil
@@ -255,7 +282,10 @@ func (l *FileLock) Run(ctx context.Context, callback func()) error {
 
 // Block polls for the lock up to timeout (every 100ms) then runs the
 // callback under the lock. Returns ErrLockTimeout on timeout, or
-// ctx.Err() if ctx is cancelled before acquisition.
+// ctx.Err() if ctx is cancelled before acquisition. An attempt waits for
+// the key's stripe only for the time Block has left, so a cache write
+// holding the stripe past the timeout ends in ErrLockTimeout and the
+// callback does not run.
 func (l *FileLock) Block(ctx context.Context, timeout time.Duration, callback func()) error {
 	return BlockLock(ctx, l, timeout, callback)
 }

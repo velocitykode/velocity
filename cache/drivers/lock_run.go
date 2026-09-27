@@ -12,6 +12,14 @@ type lockRunner interface {
 	Release(ctx context.Context) bool
 }
 
+// deadlineLockProber is a lock whose acquisition attempt can wait (a
+// FileLock waits for its key's stripe). BlockLock bounds that wait by its
+// own deadline through getBefore, so an attempt never acquires long after
+// the timeout. Locks whose attempt does not wait are probed with Get.
+type deadlineLockProber interface {
+	getBefore(ctx context.Context, deadline time.Time) bool
+}
+
 // lockBlockRetryInterval is how often BlockLock re-attempts acquisition while
 // waiting for the lock to free up.
 const lockBlockRetryInterval = 100 * time.Millisecond
@@ -43,7 +51,13 @@ func BlockLock(ctx context.Context, l lockRunner, timeout time.Duration, callbac
 			}
 		}
 
-		if l.Get(ctx) {
+		var acquired bool
+		if p, ok := l.(deadlineLockProber); ok {
+			acquired = p.getBefore(ctx, deadline)
+		} else {
+			acquired = l.Get(ctx)
+		}
+		if acquired {
 			defer l.Release(ctx)
 			callback()
 			return nil
