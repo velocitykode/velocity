@@ -33,9 +33,15 @@ type DefaultDispatcher struct {
 	nextID       int             // Counter for generating listener IDs
 	listenerByID map[int]string  // Maps listener ID to event name for removal
 
-	// resolvedCache memoizes the fully-resolved []Listener slice (exact +
-	// wildcard matches) keyed by event name, so the hot Dispatch path skips
-	// the per-call slice allocation and double scan of d.wildcards. It is a
+	// typed holds the listeners registered under an EventType key, in
+	// registration order. They are matched against an event's Go type, not
+	// its name.
+	typed []typedEntry
+
+	// resolvedCache memoizes the fully-resolved []Listener slice (exact,
+	// wildcard and type matches) keyed by event name and Go type, so the
+	// hot Dispatch path skips the per-call slice allocation and the scans of
+	// d.wildcards and d.typed. It is a
 	// sync.Map (security rule #3: a shared map needs its own protection)
 	// rather than data guarded by d.mu so the common cache-hit path needs no
 	// d.mu at all.
@@ -48,7 +54,7 @@ type DefaultDispatcher struct {
 	// blocks behind the writer and sees the completed mutation. This restores
 	// the pre-cache property that a dispatch starting after a writer takes
 	// d.mu.Lock cannot fire a removed listener or miss a newly added one.
-	resolvedCache sync.Map // event name (string) -> resolvedListeners
+	resolvedCache sync.Map // resolvedKey -> resolvedListeners
 	cacheEpoch    atomic.Uint64
 
 	// failureReporter, when set, receives every dispatched event that
@@ -72,6 +78,21 @@ type DefaultDispatcher struct {
 type listenerEntry struct {
 	id       int
 	listener Listener
+}
+
+// typedEntry is a listener registered under an EventType key.
+type typedEntry struct {
+	id       int
+	key      EventType
+	listener Listener
+}
+
+// resolvedKey is a resolvedCache key. The Go type is part of it because
+// EventType listeners match by type, so two events that share a name can
+// reach different listeners.
+type resolvedKey struct {
+	name string
+	typ  reflect.Type
 }
 
 // resolvedListeners is a resolvedCache value: the memoized listener slice plus
@@ -259,13 +280,19 @@ func goroutineID() uint64 {
 	return id
 }
 
-// Listen adds a listener for the given events. Multiple listeners may be registered
-// for the same event (append semantics -- duplicates are intentional, not an error).
-// Returns a listener ID that can be used with Off() to unregister the listener.
-// Panics with *contract.RegistrationError if listener is nil.
-func (d *DefaultDispatcher) Listen(events interface{}, listener Listener) int {
+// Listen adds a listener for the events key selects: an EventType from
+// OfType, a name or pattern, several names ([]string), or an event value
+// (its name); the package documentation describes each under "Listening".
+// Multiple listeners may be registered for the same event (append semantics
+// -- duplicates are intentional, not an error). Returns a listener ID that
+// can be used with Off() to unregister the listener. Panics with
+// *contract.RegistrationError if listener is nil or key is a zero EventType.
+func (d *DefaultDispatcher) Listen(key interface{}, listener Listener) int {
 	if listener == nil {
 		panic(contract.NewRegistrationError("events", "nil listener"))
+	}
+	if k, ok := key.(EventType); ok && k.matches == nil {
+		panic(contract.NewRegistrationError("events", "zero EventType key; build one with OfType"))
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -279,7 +306,9 @@ func (d *DefaultDispatcher) Listen(events interface{}, listener Listener) int {
 	id := d.nextID
 
 	// Handle different event types
-	switch e := events.(type) {
+	switch e := key.(type) {
+	case EventType:
+		d.typed = append(d.typed, typedEntry{id: id, key: e, listener: listener})
 	case string:
 		d.addListener(e, listener, id)
 	case []string:
@@ -318,7 +347,7 @@ func (d *DefaultDispatcher) Off(id int) bool {
 
 	eventName, exists := d.listenerByID[id]
 	if !exists {
-		return false
+		return d.removeTyped(id)
 	}
 
 	// Invalidate the resolved cache before mutating listener state.
@@ -343,6 +372,20 @@ func (d *DefaultDispatcher) Off(id int) bool {
 	}
 
 	return removed
+}
+
+// removeTyped removes the EventType listener with the given ID. Caller must
+// hold d.mu.Lock.
+func (d *DefaultDispatcher) removeTyped(id int) bool {
+	for i, entry := range d.typed {
+		if entry.id == id {
+			// Invalidate the resolved cache before mutating listener state.
+			d.cacheEpoch.Add(1)
+			d.typed = append(d.typed[:i], d.typed[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // removeListenerByID removes a listener entry by ID from a slice
@@ -639,21 +682,22 @@ func (d *DefaultDispatcher) GetListeners(event interface{}) []Listener {
 
 // getListenersForEvent retrieves all listeners for an event.
 //
-// The fully-resolved slice is memoized in resolvedCache keyed by event name,
-// so the common exact-match path returns the cached slice with no map scan and
-// no per-dispatch allocation. On a miss it builds the slice once (exact +
-// wildcard matches) under d.mu.RLock and stores it. Callers must treat the
+// The fully-resolved slice is memoized in resolvedCache keyed by event name
+// and Go type, so the common exact-match path returns the cached slice with
+// no map scan and no per-dispatch allocation. On a miss it builds the slice
+// once (exact, wildcard and type matches) under d.mu.RLock and stores it. Callers must treat the
 // returned slice as read-only: it is shared with the cache. The only in-place
 // mutator, PriorityDispatcher.getListenersForEvent, clones before sorting.
 func (d *DefaultDispatcher) getListenersForEvent(event interface{}) []Listener {
 	eventName := d.getEventName(event)
+	cacheKey := resolvedKey{name: eventName, typ: reflect.TypeOf(event)}
 
 	epoch := d.cacheEpoch.Load()
 
 	// Fast path: no d.mu, no map scan, no alloc. The epoch tag rejects any
 	// entry built before an in-progress or completed mutation, so a hit can
 	// never return a pre-mutation slice once a writer has bumped the epoch.
-	if cached, ok := d.resolvedCache.Load(eventName); ok {
+	if cached, ok := d.resolvedCache.Load(cacheKey); ok {
 		if entry := cached.(resolvedListeners); entry.epoch == epoch {
 			return entry.listeners
 		}
@@ -667,7 +711,7 @@ func (d *DefaultDispatcher) getListenersForEvent(event interface{}) []Listener {
 	epoch = d.cacheEpoch.Load()
 
 	// Re-check under the lock: a concurrent miss may have populated it.
-	if cached, ok := d.resolvedCache.Load(eventName); ok {
+	if cached, ok := d.resolvedCache.Load(cacheKey); ok {
 		if entry := cached.(resolvedListeners); entry.epoch == epoch {
 			return entry.listeners
 		}
@@ -678,6 +722,11 @@ func (d *DefaultDispatcher) getListenersForEvent(event interface{}) []Listener {
 	for pattern, entries := range d.wildcards {
 		if matchesPattern(eventName, pattern) {
 			capacity += len(entries)
+		}
+	}
+	for _, entry := range d.typed {
+		if entry.key.matches(event) {
+			capacity++
 		}
 	}
 
@@ -699,7 +748,14 @@ func (d *DefaultDispatcher) getListenersForEvent(event interface{}) []Listener {
 		}
 	}
 
-	d.resolvedCache.Store(eventName, resolvedListeners{epoch: epoch, listeners: result})
+	// Get EventType listeners
+	for _, entry := range d.typed {
+		if entry.key.matches(event) {
+			result = append(result, entry.listener)
+		}
+	}
+
+	d.resolvedCache.Store(cacheKey, resolvedListeners{epoch: epoch, listeners: result})
 	return result
 }
 

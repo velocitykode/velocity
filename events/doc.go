@@ -26,11 +26,17 @@
 //
 // # Listening
 //
-// Listen takes a key that says which events reach the listener:
+// Listen takes a key that says which events reach the listener. Listening
+// by type is the primary form: it follows the event's Go type, so it cannot
+// drift from a renamed string, and an interface key subscribes to a group of
+// events at once.
 //
-//	"queue.job.failed"    the event with that name
-//	[]string{...}         each of those names
-//	an event value        the name that value resolves to
+//	OfType[*queue.JobFailed]()             every event of that Go type
+//	OfType[contract.FailureEvent]()        every event that implements it
+//	"queue.job.failed"                     the event with that name
+//	"queue.*"                              every name the pattern matches
+//	[]string{...}                          each of those names
+//	an event value                         the name that value resolves to
 //
 // An event's name is what its Name method returns (contract.Event), the
 // string itself for a string event, and otherwise its type name split at
@@ -40,9 +46,16 @@
 // characters, dots included, and a name matches when it starts with the
 // text before the "*" and ends with the text after it, the two not
 // overlapping: "*" matches every name, "queue.*" every name under queue,
-// "*.failed" every name that ends in failed, and "queue.*.failed" every
-// queue name that ends in failed. A key with more than one "*" matches no
-// name. The same matching decides FakeDispatcher's assertions.
+// "*.failed" every name whose last segment is failed, and "queue.*.failed"
+// every name under queue whose last segment is failed. A key with more
+// than one "*" matches no name. The same matching decides FakeDispatcher's
+// assertions.
+//
+// The two group keys differ: OfType[contract.FailureEvent]() receives the
+// failures no caller observes, the ones the error handler reports (such as
+// a failed job), while "*.failed" receives every
+// event named for a failure, including those whose error is also returned
+// to the caller.
 //
 // # Optional listener capabilities
 //

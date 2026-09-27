@@ -126,15 +126,22 @@ func (f *FakeDispatcher) GetListeners(event interface{}) []Listener {
 }
 
 // recordedMatcher returns how an assertion names key and the predicate that
-// selects the recorded events it names. A string key selects the events a
-// listener registered under that key would receive: the name, or the
-// pattern, matched against each event's resolved name. Any other key
-// selects events of its Go type, pointers dereferenced.
+// selects the recorded events it names. A string or EventType key selects
+// the events a listener registered under that key would receive: a name or
+// pattern matched against each event's resolved name, or a Go type (or
+// interface) matched against each event. Any other key selects events of
+// its Go type, pointers dereferenced.
 func recordedMatcher(key interface{}) (string, func(event interface{}) bool) {
-	if pattern, ok := key.(string); ok {
-		return pattern, func(event interface{}) bool {
-			return matchesPattern(resolveEventName(event), pattern)
+	switch k := key.(type) {
+	case string:
+		return k, func(event interface{}) bool {
+			return matchesPattern(resolveEventName(event), k)
 		}
+	case EventType:
+		if k.matches == nil {
+			return "of the zero EventType", func(interface{}) bool { return false }
+		}
+		return k.typeName, k.matches
 	}
 	typeName := resolveTypeName(key)
 	return typeName, func(event interface{}) bool {
@@ -157,8 +164,9 @@ func (f *FakeDispatcher) countMatchingEvents(key interface{}) (string, int) {
 
 // AssertDispatched asserts that an event key selects was dispatched and, when
 // callback is non-nil, that callback accepts one of them. A string key
-// selects events by name (or pattern) as a listener registered under it
-// would; any other value selects events of its Go type.
+// (name or pattern) or an EventType key from OfType selects events as a
+// listener registered under it would; any other value selects events of
+// its Go type.
 func (f *FakeDispatcher) AssertDispatched(key interface{}, callback func(interface{}) bool) error {
 	f.mu.RLock()
 	defer f.mu.RUnlock()

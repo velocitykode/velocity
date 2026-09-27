@@ -12,8 +12,9 @@ import (
 
 // AssertDispatched fails the test if no recorded event key selects
 // satisfies match. A nil match matches on key alone. A string key selects
-// events by name (or pattern); any other value selects events of its type
-// (see events.FakeDispatcher.AssertDispatched).
+// events by name (or pattern), an events.OfType key by Go type or
+// interface, and any other value events of its type (see
+// events.FakeDispatcher.AssertDispatched).
 func AssertDispatched(tb testing.TB, f *events.FakeDispatcher, key any, match func(any) bool) {
 	tb.Helper()
 	if err := f.AssertDispatched(key, match); err != nil {

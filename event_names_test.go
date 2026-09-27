@@ -1,15 +1,18 @@
 package velocity
 
 import (
+	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"path"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
@@ -412,5 +415,58 @@ func TestFrameworkPackages_DeclareNoOwnEventInterface(t *testing.T) {
 	sort.Strings(offenders)
 	for _, o := range offenders {
 		t.Errorf("%s declares its own Name() interface; use contract.Event", o)
+	}
+}
+
+// typedListener records the Go type of every event it receives.
+type typedListener struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (l *typedListener) Handle(_ context.Context, event any) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.seen = append(l.seen, eventTypeKey(event))
+	return nil
+}
+
+func (l *typedListener) Async() bool { return false }
+
+func (l *typedListener) received() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.seen)
+}
+
+// TestFailureFacet_ReceivesEveryFrameworkFailureEvent dispatches every
+// framework event to a listener subscribed to the failure facet and a
+// listener subscribed to one event type: the first receives exactly the
+// events implementing contract.FailureEvent, the second exactly its type.
+func TestFailureFacet_ReceivesEveryFrameworkFailureEvent(t *testing.T) {
+	d := events.NewDispatcher()
+	failures := &typedListener{}
+	jobFailures := &typedListener{}
+	d.Listen(events.OfType[contract.FailureEvent](), failures)
+	d.Listen(events.OfType[*queue.JobFailed](), jobFailures)
+
+	var want []string
+	for _, fe := range frameworkEvents {
+		if _, ok := fe.event.(contract.FailureEvent); ok {
+			want = append(want, eventTypeKey(fe.event))
+		}
+		if err := d.Dispatch(context.Background(), fe.event); err != nil {
+			t.Fatalf("Dispatch(%s): %v", eventTypeKey(fe.event), err)
+		}
+	}
+
+	if len(want) == 0 {
+		t.Fatal("no framework event implements contract.FailureEvent")
+	}
+	if got := failures.received(); !slices.Equal(got, want) {
+		t.Errorf("failure facet received %v, want %v", got, want)
+	}
+	if got, want := jobFailures.received(), []string{"github.com/velocitykode/velocity/queue.JobFailed"}; !slices.Equal(got, want) {
+		t.Errorf("OfType[*queue.JobFailed] received %v, want %v", got, want)
 	}
 }

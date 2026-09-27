@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // OrderShipped has no Name method, so both dispatchers must derive its name
@@ -54,6 +56,10 @@ func TestFakeDispatcher_ResolvesListenersLikeDefault(t *testing.T) {
 		{"suffix pattern across segments", "*.failed", "queue.job.failed", true},
 		{"match everything", "*", "anything.at.all", true},
 		{"event value as key", OrderShipped{}, &OrderShipped{ID: 2}, true},
+		{"type key", OfType[*OrderShipped](), &OrderShipped{ID: 3}, true},
+		{"type key is exact", OfType[*OrderShipped](), OrderShipped{ID: 3}, false},
+		{"interface key", OfType[contract.Event](), UserRegistered{UserID: 1}, true},
+		{"interface key skips non-implementers", OfType[contract.Event](), OrderShipped{}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

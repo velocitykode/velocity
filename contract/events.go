@@ -38,6 +38,10 @@ type EventSubscriber interface {
 type Dispatcher interface {
 	// Listen registers a listener for one or more events and returns a listener ID.
 	// The ID can be used with Off() to unregister the specific listener.
+	// events is a type key from events.OfType (every event of a Go type,
+	// or implementing an interface such as FailureEvent), an event name or
+	// pattern, several names ([]string), or an event value (its name);
+	// package events documents each form.
 	Listen(events interface{}, listener EventListener) int
 
 	// Off removes a listener by its ID.
