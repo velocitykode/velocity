@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/trace"
 )
 
 func TestExceptionReportedEventName(t *testing.T) {
@@ -18,7 +20,7 @@ func TestReportException(t *testing.T) {
 	fake := NewFakeDispatcher()
 
 	ctx := context.Background()
-	ctx = WithTrace(ctx, "trace123", "span456")
+	ctx = trace.WithTrace(ctx, "trace123", "span456")
 
 	testErr := errors.New("test error message")
 	ReportException(ctx, fake, testErr)
@@ -53,7 +55,7 @@ func TestReportExceptionWithStack(t *testing.T) {
 	fake := NewFakeDispatcher()
 
 	ctx := context.Background()
-	ctx = WithTrace(ctx, "abc123", "def456")
+	ctx = trace.WithTrace(ctx, "abc123", "def456")
 
 	testErr := errors.New("custom error")
 	customStack := "custom stack trace\nat SomeFunction:123"
@@ -74,7 +76,7 @@ func TestReportPanicWithError(t *testing.T) {
 	fake := NewFakeDispatcher()
 
 	ctx := context.Background()
-	ctx = WithTrace(ctx, "trace789", "span012")
+	ctx = trace.WithTrace(ctx, "trace789", "span012")
 
 	panicErr := errors.New("panic error")
 	stack := "goroutine 1 [running]:\nsome/package.Function()"
@@ -125,7 +127,7 @@ func TestExceptionReportedCapturesTraceContext(t *testing.T) {
 
 	// Create context with trace information
 	ctx := context.Background()
-	ctx, traceID, spanID := StartTrace(ctx)
+	ctx, traceID, spanID := trace.StartTrace(ctx)
 
 	testErr := errors.New("traced error")
 	ReportException(ctx, fake, testErr)
@@ -136,68 +138,6 @@ func TestExceptionReportedCapturesTraceContext(t *testing.T) {
 	})
 	if err != nil {
 		t.Errorf("Trace context not captured: %v", err)
-	}
-}
-
-func TestTraceHelperReexports(t *testing.T) {
-	// Test that the events package correctly re-exports trace functions
-	ctx := context.Background()
-
-	// Test GenerateTraceID
-	traceID, err := GenerateTraceID()
-	if err != nil {
-		t.Fatalf("GenerateTraceID: %v", err)
-	}
-	if len(traceID) != 32 {
-		t.Errorf("Expected trace ID length 32, got %d", len(traceID))
-	}
-
-	// Test GenerateSpanID
-	spanID, err := GenerateSpanID()
-	if err != nil {
-		t.Fatalf("GenerateSpanID: %v", err)
-	}
-	if len(spanID) != 16 {
-		t.Errorf("Expected span ID length 16, got %d", len(spanID))
-	}
-
-	// Test WithTrace and getters
-	ctx = WithTrace(ctx, traceID, spanID)
-	if got := GetTraceID(ctx); got != traceID {
-		t.Errorf("Expected trace ID %s, got %s", traceID, got)
-	}
-	if got := GetSpanID(ctx); got != spanID {
-		t.Errorf("Expected span ID %s, got %s", spanID, got)
-	}
-
-	// Test WithSpan
-	ctx = WithSpan(ctx, "newspan123456789")
-	if got := GetParentID(ctx); got != spanID {
-		t.Errorf("Expected parent ID %s, got %s", spanID, got)
-	}
-
-	// Test GetTraceContext
-	gotTrace, gotSpan, gotParent := GetTraceContext(ctx)
-	if gotTrace != traceID {
-		t.Errorf("Expected trace %s, got %s", traceID, gotTrace)
-	}
-	if gotSpan != "newspan123456789" {
-		t.Errorf("Expected span newspan123456789, got %s", gotSpan)
-	}
-	if gotParent != spanID {
-		t.Errorf("Expected parent %s, got %s", spanID, gotParent)
-	}
-
-	// Test StartTrace
-	_, newTrace, newSpan := StartTrace(context.Background())
-	if len(newTrace) != 32 || len(newSpan) != 16 {
-		t.Error("StartTrace should generate valid IDs")
-	}
-
-	// Test ContinueTrace
-	_, contSpan := ContinueTrace(ctx)
-	if len(contSpan) != 16 {
-		t.Errorf("ContinueTrace should generate valid span ID, got %s", contSpan)
 	}
 }
 

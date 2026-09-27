@@ -4,6 +4,8 @@ import (
 	"context"
 	"runtime"
 	"strings"
+
+	"github.com/velocitykode/velocity/trace"
 )
 
 // ExceptionReported is dispatched when an exception or error is reported to the APM system.
@@ -29,7 +31,7 @@ func ReportException(ctx context.Context, d Dispatcher, err error) {
 		return
 	}
 
-	traceID, spanID, _ := GetTraceContext(ctx)
+	traceID, spanID, _ := trace.GetTraceContext(ctx)
 	stack := captureStack(3) // Skip ReportException and runtime.Callers
 
 	d.Dispatch(ctx, &ExceptionReported{
@@ -49,7 +51,7 @@ func ReportExceptionWithStack(ctx context.Context, d Dispatcher, err error, stac
 		return
 	}
 
-	traceID, spanID, _ := GetTraceContext(ctx)
+	traceID, spanID, _ := trace.GetTraceContext(ctx)
 
 	d.Dispatch(ctx, &ExceptionReported{
 		Context:    ctx,
@@ -68,7 +70,7 @@ func ReportPanic(ctx context.Context, d Dispatcher, recovered interface{}, stack
 		return
 	}
 
-	traceID, spanID, _ := GetTraceContext(ctx)
+	traceID, spanID, _ := trace.GetTraceContext(ctx)
 
 	var typeName, message string
 	switch v := recovered.(type) {

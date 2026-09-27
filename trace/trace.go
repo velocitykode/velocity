@@ -1,4 +1,18 @@
-// Package trace provides distributed tracing context helpers for APM instrumentation.
+// Package trace carries the ids that correlate work across a request and
+// across processes: the trace id, span id and parent span id of the running
+// operation, and the request id.
+//
+// Every entry point that receives work from another process applies one
+// rule, StartSpan: a valid inbound carrier (a traceparent header, gRPC
+// metadata, a queued job's persisted ids) is continued with a new span whose
+// parent is the caller's span; anything else starts a root span. Operations
+// inside a process (a query, a cache call, an outbound HTTP call) are spans
+// of their own under the enclosing span, by the same rule (ChildSpanIDs,
+// ContinueTrace).
+//
+// Across process edges the ids travel as the W3C traceparent header
+// (ParseTraceparent, FormatTraceparent, Propagate) and the request id as
+// X-Request-ID. The package imports only the standard library.
 package trace
 
 import (
@@ -306,13 +320,53 @@ func StartTraceLazy(ctx context.Context) (context.Context, *LazyTrace) {
 	return lazyTraceContext{Context: ctx, lazy: lazy}, lazy
 }
 
-// ContinueTrace continues an existing trace with a new span.
-// If the context has no trace ID, creates a new trace.
-// Returns the updated context and the new span ID.
+// ContinueTrace starts a new span under ctx's current span: the same trace,
+// a fresh span id, ctx's span as the parent. When ctx carries no trace the
+// new span is a root. It is StartSpan with ctx's own span as the Parent, for
+// an operation that runs inside the process and wraps further work (an
+// outbound call, a mail send). Returns the updated context and the new span
+// ID.
 func ContinueTrace(ctx context.Context) (context.Context, string) {
-	if GetTraceID(ctx) == "" {
-		ctx, _, spanID := StartTrace(ctx)
-		return ctx, spanID
+	ctx = StartSpan(ctx, Parent{TraceID: GetTraceID(ctx), SpanID: GetSpanID(ctx)})
+	return ctx, GetSpanID(ctx)
+}
+
+// StartSpan applies the continue-or-start rule and returns ctx carrying the
+// new span. A parent that names a trace is continued: the new span keeps
+// parent.TraceID, gets a fresh span id and records parent.SpanID as its
+// parent. Any other parent (the zero Parent included) starts a root span: a
+// fresh trace id, a fresh span id and no parent. Any trace, span or parent
+// id ctx already carried is replaced, so a stale parent never leaks into the
+// new span. Parent.Sampled does not change the rule.
+//
+// Every entry point that receives work from another process calls it with
+// the inbound carrier: the gRPC server interceptor with the parsed
+// traceparent metadata, the queue worker with the producer's persisted ids,
+// the scheduler with the zero Parent (a run has no inbound carrier). A
+// carrier read from the network must come through ParseTraceparent first.
+func StartSpan(ctx context.Context, parent Parent) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return WithNewSpan(ctx)
+	traceID, spanID, parentID := newSpanIDs(parent)
+	return WithFullContext(ctx, traceID, spanID, parentID)
+}
+
+// ChildSpanIDs returns the ids an operation records when it runs as its own
+// span under ctx's current span, without deriving a context: ctx's trace
+// id, a fresh span id, and ctx's span id as the parent. When ctx carries no
+// trace the operation is a root span: a fresh trace id, a fresh span id and
+// no parent. Use it for an operation that wraps no further work (a query, a
+// cache call); use ContinueTrace for one that does.
+func ChildSpanIDs(ctx context.Context) (traceID, spanID, parentID string) {
+	return newSpanIDs(Parent{TraceID: GetTraceID(ctx), SpanID: GetSpanID(ctx)})
+}
+
+// newSpanIDs is the continue-or-start rule shared by StartSpan,
+// ContinueTrace and ChildSpanIDs.
+func newSpanIDs(parent Parent) (traceID, spanID, parentID string) {
+	if parent.TraceID != "" {
+		return parent.TraceID, MustGenerateSpanID(), parent.SpanID
+	}
+	return MustGenerateTraceID(), MustGenerateSpanID(), ""
 }
