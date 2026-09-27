@@ -61,9 +61,9 @@ type BroadcastManager struct {
 	// warning fires only for the latter.
 	customAuthorizer bool
 
-	// logger receives one-time configuration warnings. nil means fall back
-	// to the stdlib log package. Guarded by mu like the rest of the manager
-	// state.
+	// logger receives one-time configuration warnings. nil means the
+	// framework's standalone fallback logger. Guarded by mu like the rest of
+	// the manager state.
 	logger contract.Logger
 
 	// noSecretWarned ensures the "authorizer without auth secret" warning
