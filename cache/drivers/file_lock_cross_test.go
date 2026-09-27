@@ -284,6 +284,38 @@ func TestFileLock_BlockTimesOutWhileTheKeyStripeIsHeld(t *testing.T) {
 	}
 }
 
+// refusingFileLock embeds a FileLock and overrides Get to refuse every
+// acquisition.
+type refusingFileLock struct{ *FileLock }
+
+func (refusingFileLock) Get(context.Context) bool { return false }
+
+// BlockLock acquires through the lock's own Get: a type embedding a
+// FileLock whose Get refuses times out on a free key, never runs the
+// callback and never takes the record through the embedded FileLock.
+func TestBlockLock_UsesTheGetOfATypeEmbeddingFileLock(t *testing.T) {
+	stores := newSharedFileStores(t, 2)
+	ctx := context.Background()
+
+	wrapper := refusingFileLock{stores[0].Lock("wrapped", time.Minute).(*FileLock)}
+	var ran atomic.Bool
+	err := BlockLock(ctx, wrapper, 50*time.Millisecond, func() { ran.Store(true) })
+	if !errors.Is(err, ErrLockTimeout) {
+		t.Fatalf("BlockLock with a refusing Get = %v; want ErrLockTimeout", err)
+	}
+	if ran.Load() {
+		t.Fatal("BlockLock ran the callback although the lock's Get refused")
+	}
+
+	peer := stores[1].Lock("wrapped", time.Minute)
+	if !peer.Get(ctx) {
+		t.Fatal("a FileLock on another instance could not take the key; the refusing lock took the record")
+	}
+	if !peer.Release(ctx) {
+		t.Fatal("peer Release failed")
+	}
+}
+
 // expireFileLockRecord moves the ExpiresAt of l's record into the past
 // under the key's guard, as the TTL passing would.
 func expireFileLockRecord(t *testing.T, l *FileLock) {

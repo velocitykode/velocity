@@ -12,14 +12,6 @@ type lockRunner interface {
 	Release(ctx context.Context) bool
 }
 
-// deadlineLockProber is a lock whose acquisition attempt can wait (a
-// FileLock waits for its key's stripe). BlockLock bounds that wait by its
-// own deadline through getBefore, so an attempt never acquires long after
-// the timeout. Locks whose attempt does not wait are probed with Get.
-type deadlineLockProber interface {
-	getBefore(ctx context.Context, deadline time.Time) bool
-}
-
 // lockBlockRetryInterval is how often BlockLock re-attempts acquisition while
 // waiting for the lock to free up.
 const lockBlockRetryInterval = 100 * time.Millisecond
@@ -42,6 +34,14 @@ func RunLock(ctx context.Context, l lockRunner, callback func()) error {
 // callback panics; the panic propagates. A nil ctx is tolerated (no
 // cancellation, plain sleep between retries).
 func BlockLock(ctx context.Context, l lockRunner, timeout time.Duration, callback func()) error {
+	return blockLock(ctx, func(ctx context.Context, _ time.Time) bool { return l.Get(ctx) }, l.Release, timeout, callback)
+}
+
+// blockLock is the retry loop of BlockLock. probe makes one acquisition
+// attempt and receives the deadline, so an attempt that can wait (a
+// FileLock waiting for its key's stripe) can bound that wait; release
+// releases a lock probe took.
+func blockLock(ctx context.Context, probe func(context.Context, time.Time) bool, release func(context.Context) bool, timeout time.Duration, callback func()) error {
 	deadline := time.Now().Add(timeout)
 
 	for {
@@ -51,14 +51,8 @@ func BlockLock(ctx context.Context, l lockRunner, timeout time.Duration, callbac
 			}
 		}
 
-		var acquired bool
-		if p, ok := l.(deadlineLockProber); ok {
-			acquired = p.getBefore(ctx, deadline)
-		} else {
-			acquired = l.Get(ctx)
-		}
-		if acquired {
-			defer l.Release(ctx)
+		if probe(ctx, deadline) {
+			defer release(ctx)
 			callback()
 			return nil
 		}

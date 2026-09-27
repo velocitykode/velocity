@@ -182,7 +182,7 @@ func (l *FileLock) GetWithErr(ctx context.Context) (bool, error) {
 	return l.acquire(ctx, fileKeyLockWait)
 }
 
-// getBefore is the acquisition attempt of BlockLock: GetWithErr waiting
+// getBefore is the acquisition attempt of Block: GetWithErr waiting
 // for the key's stripe only until deadline. An attempt at or after
 // deadline still takes a free stripe, without waiting for a held one.
 func (l *FileLock) getBefore(ctx context.Context, deadline time.Time) bool {
@@ -287,7 +287,7 @@ func (l *FileLock) Run(ctx context.Context, callback func()) error {
 // holding the stripe past the timeout ends in ErrLockTimeout and the
 // callback does not run.
 func (l *FileLock) Block(ctx context.Context, timeout time.Duration, callback func()) error {
-	return BlockLock(ctx, l, timeout, callback)
+	return blockLock(ctx, l.getBefore, l.Release, timeout, callback)
 }
 
 // Owner returns the owner identifier of this lock instance.
