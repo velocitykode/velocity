@@ -142,6 +142,14 @@ func (m *Manager) SetChannel(name string, ch Channel) {
 // This is what makes "the email I just received" and "the database row
 // I just inserted" correlate by ID.
 func (m *Manager) Send(ctx context.Context, notifiable interface{}, notification Notification) error {
+	return m.send(ctx, notifiable, notification, nil)
+}
+
+// send is Send. When delivery is non-nil, each channel delivery sets it to
+// the context of its span before the channel runs, so a caller that
+// recovers a panic from a channel can report it under the span that
+// channel ran in.
+func (m *Manager) send(ctx context.Context, notifiable interface{}, notification Notification, delivery *context.Context) error {
 	channels := notification.Via(notifiable)
 	if len(channels) == 0 {
 		return nil
@@ -160,7 +168,7 @@ func (m *Manager) Send(ctx context.Context, notifiable interface{}, notification
 
 	var firstErr error
 	for _, channelName := range channels {
-		if err := m.sendViaChannel(ctx, channelName, notifiable, notification); err != nil {
+		if err := m.sendViaChannel(ctx, channelName, notifiable, notification, delivery); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -193,20 +201,27 @@ func (m *Manager) SendMany(ctx context.Context, notifiables []interface{}, notif
 		// event plus records the error so SendMany's caller sees the failure.
 		async.Go(func() {
 			defer wg.Done()
+			// delivery is the span of the channel delivery in progress,
+			// set before each channel runs.
+			var delivery context.Context
 			defer func() {
 				if r := recover(); r != nil {
 					err := panicerr.FromRecovered(r)
-					// Any span a channel delivery opened died with the
-					// panic; the failure is a span of its own under the
-					// caller's.
-					spanCtx, _ := trace.ContinueTrace(ctx)
+					// The panic is the failure of the delivery's span, the
+					// one the channel and its nested work ran in. A panic
+					// before any delivery opened one is a span of its own
+					// under the caller's.
+					spanCtx := delivery
+					if spanCtx == nil {
+						spanCtx, _ = trace.ContinueTrace(ctx)
+					}
 					m.dispatchEvent(spanCtx, buildNotificationFailed(spanCtx, n, notification, "", err))
 					errsMu.Lock()
 					errs = append(errs, fmt.Errorf("velocity/notification: send many panic: %w", err))
 					errsMu.Unlock()
 				}
 			}()
-			if err := m.Send(ctx, n, notification); err != nil {
+			if err := m.send(ctx, n, notification, &delivery); err != nil {
 				errsMu.Lock()
 				errs = append(errs, err)
 				errsMu.Unlock()
@@ -222,12 +237,16 @@ func (m *Manager) SendMany(ctx context.Context, notifiables []interface{}, notif
 	return nil
 }
 
-// sendViaChannel sends a notification through a specific channel.
-func (m *Manager) sendViaChannel(ctx context.Context, channelName string, notifiable interface{}, notification Notification) error {
+// sendViaChannel sends a notification through a specific channel. A
+// non-nil delivery is set to the delivery's span context (see send).
+func (m *Manager) sendViaChannel(ctx context.Context, channelName string, notifiable interface{}, notification Notification, delivery *context.Context) error {
 	// Delivery through one channel is its own span under the caller's span
 	// (a root span when ctx carries no trace). The channel runs inside it,
 	// and NotificationSent / NotificationFailed record it.
 	ctx, _ = trace.ContinueTrace(ctx)
+	if delivery != nil {
+		*delivery = ctx
+	}
 	ch, err := m.Channel(channelName)
 	if err != nil {
 		m.dispatchEvent(ctx, buildNotificationFailed(ctx, notifiable, notification, channelName, err))

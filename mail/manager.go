@@ -108,6 +108,13 @@ func (m *Manager) GetChannels() []string {
 
 // Send sends a message using a specific channel
 func (m *Manager) Send(ctx context.Context, channel string, msg *Message) error {
+	return m.send(ctx, channel, msg, nil)
+}
+
+// send is Send. When delivery is non-nil, it is set to the context of the
+// send's span before the driver runs, so a caller that recovers a panic from
+// the driver can report it under the span the driver ran in.
+func (m *Manager) send(ctx context.Context, channel string, msg *Message, delivery *context.Context) error {
 	// A nil message would panic at the GetTo/GetSubject calls below (and in
 	// the driver), so reject it up front before the channel lookup.
 	if msg == nil {
@@ -138,6 +145,9 @@ func (m *Manager) Send(ctx context.Context, channel string, msg *Message) error 
 	// a mail API parents under the send, and MailSent / MailFailed record
 	// it.
 	ctx, _ = trace.ContinueTrace(ctx)
+	if delivery != nil {
+		*delivery = ctx
+	}
 
 	start := time.Now()
 	err = mailer.Send(ctx, msg)
@@ -165,6 +175,8 @@ func (m *Manager) Broadcast(ctx context.Context, channels []string, msg *Message
 		// goroutine is bound to wg.Wait() in this call frame.
 		go func(ch string) { //safe-goroutine: channel-scoped recovery dispatches MailFailed and errChan entry, see comment above
 			defer wg.Done()
+			// delivery is the send's span, set before the driver runs.
+			var delivery context.Context
 			defer func() {
 				if r := recover(); r != nil {
 					err := panicerr.FromRecovered(r)
@@ -172,14 +184,19 @@ func (m *Manager) Broadcast(ctx context.Context, channels []string, msg *Message
 					for _, addr := range msg.GetTo() {
 						toEmails = append(toEmails, addr.Email)
 					}
-					// The span Send opened died with the panic; the
-					// failure is a span of its own under the caller's.
-					spanCtx, _ := trace.ContinueTrace(ctx)
+					// The panic is the failure of the send's span, the one
+					// the driver and its nested work (an HTTP call to a
+					// mail API) ran in. A panic before the send opened it
+					// is a span of its own under the caller's.
+					spanCtx := delivery
+					if spanCtx == nil {
+						spanCtx, _ = trace.ContinueTrace(ctx)
+					}
 					dispatchMailFailed(m.dispatchEvent, spanCtx, toEmails, msg.GetSubject(), ch, err, 0)
 					errChan <- fmt.Errorf("velocity/mail: channel %s panic: %w", ch, err)
 				}
 			}()
-			if err := m.Send(ctx, ch, msg); err != nil {
+			if err := m.send(ctx, ch, msg, &delivery); err != nil {
 				errChan <- fmt.Errorf("velocity/mail: channel %s: %w", ch, err)
 			}
 		}(channel)
