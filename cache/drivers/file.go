@@ -185,10 +185,14 @@ type FileStore struct {
 // A string set (SetAddCtx) is stored in Members, sorted, with Value empty.
 // No other write stores an empty Value (MarshalValue of any value yields
 // at least one byte), so a read tells a set from a value by Members alone.
+// Each member is kept as its bytes (base64 in the item JSON), not as a
+// JSON string: a JSON string would replace invalid UTF-8 with U+FFFD, so a
+// member would read back different from what was added, removal by the
+// original bytes would miss, and distinct members could collide.
 type fileCacheItem struct {
 	Value      []byte     `json:"value"`
 	Expiration *time.Time `json:"expiration,omitempty"`
-	Members    []string   `json:"members,omitempty"`
+	Members    [][]byte   `json:"members,omitempty"`
 }
 
 // isSet reports whether the item holds a string set.
@@ -208,7 +212,7 @@ func (item fileCacheItem) value() (interface{}, error) {
 	if item.isSet() {
 		set := make(map[string]struct{}, len(item.Members))
 		for _, m := range item.Members {
-			set[m] = struct{}{}
+			set[string(m)] = struct{}{}
 		}
 		return set, nil
 	}

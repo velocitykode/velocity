@@ -479,6 +479,37 @@ func RunSetStoreContractTests(t *testing.T, factory SetStoreFactory, advance fun
 		}
 	})
 
+	t.Run("SetMembers_ArbitraryBytes_RoundTripExactly", func(t *testing.T) {
+		// Members are byte strings: invalid UTF-8 must come back as the
+		// bytes that went in, stay distinct from each other and from the
+		// replacement character, and be removable by those bytes.
+		s := factory(t)
+		ctx := context.Background()
+		const ff, fe, repl = "\xff", "\xfe", "\ufffd"
+		if err := s.SetAddCtx(ctx, "set-bytes", time.Minute, ff, fe, "a"); err != nil {
+			t.Fatalf("SetAddCtx: %v", err)
+		}
+		want := []string{ff, fe, "a"}
+		sort.Strings(want)
+		if got := members(t, s, "set-bytes"); !equal(got, want) {
+			t.Fatalf("members = %q, want %q", got, want)
+		}
+		if err := s.SetRemoveCtx(ctx, "set-bytes", repl); err != nil {
+			t.Fatalf("SetRemoveCtx: %v", err)
+		}
+		if got := members(t, s, "set-bytes"); !equal(got, want) {
+			t.Fatalf("removing U+FFFD changed the set: %q, want %q", got, want)
+		}
+		if err := s.SetRemoveCtx(ctx, "set-bytes", ff); err != nil {
+			t.Fatalf("SetRemoveCtx: %v", err)
+		}
+		want = []string{fe, "a"}
+		sort.Strings(want)
+		if got := members(t, s, "set-bytes"); !equal(got, want) {
+			t.Fatalf("members after removing 0xff = %q, want %q", got, want)
+		}
+	})
+
 	t.Run("SetAddCtx_TTL_ExpiresWholeSet", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()

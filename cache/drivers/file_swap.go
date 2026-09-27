@@ -140,7 +140,7 @@ func (s *FileStore) SetAddCtx(ctx context.Context, key string, ttl time.Duration
 	set := make(map[string]struct{}, len(members))
 	if item, ok := s.readLiveItemLocked(path); ok && item.isSet() {
 		for _, m := range item.Members {
-			set[m] = struct{}{}
+			set[string(m)] = struct{}{}
 		}
 		switch {
 		case item.Expiration == nil:
@@ -182,7 +182,7 @@ func (s *FileStore) SetRemoveCtx(ctx context.Context, key string, members ...str
 	}
 	set := make(map[string]struct{}, len(item.Members))
 	for _, m := range item.Members {
-		set[m] = struct{}{}
+		set[string(m)] = struct{}{}
 	}
 	for _, m := range members {
 		delete(set, m)
@@ -218,16 +218,24 @@ func (s *FileStore) SetMembersCtx(ctx context.Context, key string) ([]string, er
 	if !ok || !item.isSet() {
 		return nil, nil
 	}
-	return item.Members, nil
+	out := make([]string, len(item.Members))
+	for i, m := range item.Members {
+		out[i] = string(m)
+	}
+	return out, nil
 }
 
-// sortedMembers returns the members of set in sorted order, so the stored
-// form of a set does not depend on map iteration.
-func sortedMembers(set map[string]struct{}) []string {
-	out := make([]string, 0, len(set))
+// sortedMembers returns the members of set as their bytes in sorted
+// order, so the stored form of a set does not depend on map iteration.
+func sortedMembers(set map[string]struct{}) [][]byte {
+	keys := make([]string, 0, len(set))
 	for m := range set {
-		out = append(out, m)
+		keys = append(keys, m)
 	}
-	sort.Strings(out)
+	sort.Strings(keys)
+	out := make([][]byte, len(keys))
+	for i, m := range keys {
+		out[i] = []byte(m)
+	}
 	return out
 }

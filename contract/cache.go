@@ -221,10 +221,12 @@ type CacheSwapper interface {
 // set is kept forever (a later positive ttl does not reinstate one).
 // SetRemoveCtx removes members; removing the last member may delete the
 // key. SetMembersCtx returns the live members, nil when the key is absent.
+// Members are byte strings: any bytes, invalid UTF-8 included, read back
+// exactly as added and are removed by those bytes.
 //
 // The memory driver keeps the set as a map[string]struct{} under the store
-// mutex, redis as a native set, and the file driver as the sorted members
-// under the same per-key flock its compare-and-swap takes (see
+// mutex, redis as a native set, and the file driver as the sorted member
+// bytes under the same per-key flock its compare-and-swap takes (see
 // CacheSwapper). A read (GetCtx) of a set key returns the
 // map[string]struct{} on the memory and file drivers.
 type CacheSetStore interface {
