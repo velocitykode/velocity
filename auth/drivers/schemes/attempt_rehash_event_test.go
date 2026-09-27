@@ -10,6 +10,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/events"
 )
 
 // rehashStubHasher reports NeedsRehash according to the configured flag
@@ -111,8 +112,8 @@ func TestSessionScheme_Attempt_EmitsRehashEvent(t *testing.T) {
 	if got.SchemeName != "session" {
 		t.Errorf("event SchemeName = %q, want session", got.SchemeName)
 	}
-	if got.EventName() != "auth.password.needs_rehash" {
-		t.Errorf("EventName = %q, want auth.password.needs_rehash", got.EventName())
+	if got.Name() != "auth.password.rehash.needed" {
+		t.Errorf("Name = %q, want auth.password.rehash.needed", got.Name())
 	}
 }
 
@@ -201,4 +202,67 @@ func (p *rehashStubStore) FindByCredentialsCtx(_ context.Context, credentials ma
 }
 func (p *rehashStubStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
+}
+
+// rehashNameListener counts the events it receives.
+type rehashNameListener struct {
+	mu     sync.Mutex
+	events []any
+}
+
+func (l *rehashNameListener) Handle(_ context.Context, event any) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.events = append(l.events, event)
+	return nil
+}
+
+func (l *rehashNameListener) Async() bool { return false }
+
+func (l *rehashNameListener) count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.events)
+}
+
+// attemptStaleLogin runs one successful Attempt against a stale hash with
+// dispatch wired as the scheme's event dispatcher.
+func attemptStaleLogin(t *testing.T, dispatch func(context.Context, any) error) {
+	t.Helper()
+	scheme, _ := newRehashScheme(t, true)
+	scheme.SetEventDispatcher(dispatch)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/login", nil)
+	ok, err := scheme.Attempt(w, r, map[string]interface{}{
+		"email":    "alice@example.com",
+		"password": "correct",
+	})
+	if err != nil || !ok {
+		t.Fatalf("Attempt = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
+// TestSessionScheme_Attempt_RehashEventReachesListenerByName verifies that
+// a listener registered on the framework dispatcher under the event's name
+// fires on a successful login that needs a rehash, and that the fake
+// dispatcher finds the event under that same name.
+func TestSessionScheme_Attempt_RehashEventReachesListenerByName(t *testing.T) {
+	name := auth.PasswordNeedsRehashEvent{}.Name()
+	if name != "auth.password.rehash.needed" {
+		t.Fatalf("PasswordNeedsRehashEvent.Name() = %q, want auth.password.rehash.needed", name)
+	}
+
+	d := events.NewDispatcher()
+	listener := &rehashNameListener{}
+	d.Listen(name, listener)
+	attemptStaleLogin(t, d.Dispatch)
+	if got := listener.count(); got != 1 {
+		t.Fatalf("listener under %q fired %d times, want 1", name, got)
+	}
+
+	fake := events.NewFakeDispatcher()
+	attemptStaleLogin(t, fake.Dispatch)
+	if err := fake.AssertDispatched(name, nil); err != nil {
+		t.Fatalf("FakeDispatcher.AssertDispatched(%q): %v", name, err)
+	}
 }

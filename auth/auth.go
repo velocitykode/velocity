@@ -123,11 +123,11 @@ type PasswordNeedsRehashEvent struct {
 	SchemeName string
 }
 
-// EventName returns the canonical event name used by listeners
-// subscribed to the framework dispatcher. Static so listeners can
-// register before the auth subsystem is constructed.
-func (PasswordNeedsRehashEvent) EventName() string {
-	return "auth.password.needs_rehash"
+// Name returns the event name the dispatcher routes the event under
+// (contract.Event). Static so listeners can register before the auth
+// subsystem is constructed.
+func (PasswordNeedsRehashEvent) Name() string {
+	return "auth.password.rehash.needed"
 }
 
 // Errors
