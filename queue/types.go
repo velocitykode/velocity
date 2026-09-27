@@ -52,7 +52,11 @@ type Payload struct {
 
 // TraceContext carries the producer-side APM trace ids associated with a
 // popped job. Drivers that persist trace ids on the wire return this from
-// PopCtxWithTrace so workers can rebuild the trace ctx on the consumer side.
+// PopCtxWithTrace (or PopCtxReserved) and the worker hands TraceID and
+// SpanID to trace.StartSpan as the carrier: the job runs as a new span of
+// the producer's trace under the producer's span, or as a root span when
+// TraceID is empty. ParentID is the producer's own parent, persisted for
+// completeness; the worker does not use it.
 type TraceContext struct {
 	TraceID  string
 	SpanID   string
@@ -60,9 +64,10 @@ type TraceContext struct {
 }
 
 // TraceAwareDriver is an optional driver capability. Drivers that persist
-// trace ids on the wire implement this so the worker can rebuild trace
-// context for the per-job ctx, restoring correlation across the queue
-// boundary. Workers fall back to PopCtx when a driver does not implement it.
+// trace ids on the wire implement this so the worker can run each job as a
+// new span under the producer's span, keeping correlation across the queue
+// boundary. Workers fall back to PopCtx when a driver does not implement it,
+// and the job then starts a root span.
 type TraceAwareDriver interface {
 	PopCtxWithTrace(ctx context.Context, queue string) (Job, TraceContext, error)
 }

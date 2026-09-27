@@ -6,10 +6,14 @@
 //
 // Drivers MAY implement any of these to opt into framework features:
 //
-//	TraceAwareDriver    Persist APM trace ids on the wire so workers can
-//	                    rebuild trace context on the consumer side via
-//	                    PopCtxWithTrace. Drivers that do not implement
-//	                    this fall back to PopCtx and start a fresh trace.
+//	TraceAwareDriver    Persist the producer's trace ids on the wire and
+//	                    return them from PopCtxWithTrace (a
+//	                    ReservationDriver returns them from
+//	                    PopCtxReserved), so the worker runs each job as a
+//	                    new span of the producer's trace whose parent is
+//	                    the producer's span. Drivers that do not implement
+//	                    either fall back to PopCtx, and every job starts a
+//	                    root span (a fresh trace).
 //
 //	ReservationDriver   Lease-and-ack lifecycle: PopCtxReserved returns a
 //	                    fencing token, AckCtx removes the row on success,

@@ -374,12 +374,14 @@ func (w *Worker) processJob() error {
 	jobCtx, cancel := context.WithTimeout(w.ctx, timeout)
 	defer cancel()
 
-	// Restore the producer's trace ids so per-job events and HandleCtxer
-	// callers see the same trace as the originating request. Empty strings
-	// produce a no-op trace context, leaving legacy rows unaffected.
-	if producerTC.TraceID != "" || producerTC.SpanID != "" || producerTC.ParentID != "" {
-		jobCtx = trace.WithFullContext(jobCtx, producerTC.TraceID, producerTC.SpanID, producerTC.ParentID)
-	}
+	// Run the job as a new span of the producer's trace whose parent is the
+	// producer's span, so per-job events and HandleCtxer callers join the
+	// originating request's trace. A payload with no trace ids (a producer
+	// without a trace, a row written before trace ids were persisted) and a
+	// driver without trace support leave producerTC empty: the job starts a
+	// root span, never inheriting whatever trace the worker's own context
+	// carries.
+	jobCtx = trace.StartSpan(jobCtx, trace.Parent{TraceID: producerTC.TraceID, SpanID: producerTC.SpanID})
 
 	// Dispatch job.processing event
 	dispatchJobProcessing(w.dispatchEvent, jobCtx, jobType, w.queueName)
@@ -611,6 +613,20 @@ func (w *Worker) drainHandler(done <-chan error, job Job, jobType string) {
 	}
 }
 
+// retryCarrier returns a context detached from jobCtx (no deadline, no
+// cancellation, no values) that carries only the trace a retried attempt
+// continues: the job's trace with the producer's span, which is the failed
+// attempt's parent, as the current span. An attempt that started a root
+// span (no producer span) retries from an untraced context and starts a new
+// root, as it does on reservation drivers.
+func retryCarrier(jobCtx context.Context) context.Context {
+	producerSpan := trace.GetParentID(jobCtx)
+	if producerSpan == "" {
+		return context.Background()
+	}
+	return trace.WithTrace(context.Background(), trace.GetTraceID(jobCtx), producerSpan)
+}
+
 // jobIDOf returns the job's stable ID if it implements Identifiable, or
 // an empty string otherwise. Used purely for diagnostic logging; do not
 // rely on this for attempt tracking (see Worker.jobKey).
@@ -674,7 +690,12 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 		// stale lease that has been reclaimed by another worker will
 		// get ErrLeaseLost back from ReleaseCtx; firing the retry
 		// event first would double-emit JobRetrying for the same row.
-		pushCtx, pushCancel := context.WithTimeout(context.Background(), retryPushTimeout)
+		//
+		// The detached context carries the producer's span (the parent of
+		// the attempt that failed), so a re-pushed copy runs its next
+		// attempt as a new span under the same parent, as a released row
+		// does on reservation drivers.
+		pushCtx, pushCancel := context.WithTimeout(retryCarrier(ctx), retryPushTimeout)
 		var requeueErr error
 		if rd, ok := w.queue.(ReservationDriver); ok && !reservation.IsZero() {
 			// Reservation-capable driver: release the row in place so
