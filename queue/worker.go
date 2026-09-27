@@ -102,15 +102,20 @@ func (w *Worker) SetEventDispatcher(fn func(ctx context.Context, event interface
 // caller-supplied ctx is propagated so listeners observe per-job scoped
 // values (deadline, trace ID).
 func (w *Worker) dispatchEvent(ctx context.Context, event interface{}) {
-	w.mu.RLock()
-	fn := w.eventDispatcher
-	w.mu.RUnlock()
-	if fn != nil {
+	if fn := w.currentEventDispatcher(); fn != nil {
 		if ctx == nil {
 			ctx = context.Background()
 		}
 		fn(ctx, event)
 	}
+}
+
+// currentEventDispatcher returns the dispatcher SetEventDispatcher set, or
+// nil.
+func (w *Worker) currentEventDispatcher() func(ctx context.Context, event interface{}) error {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.eventDispatcher
 }
 
 // Option configures a worker
@@ -255,7 +260,11 @@ func (w *Worker) work(id int) {
 			return
 		default:
 			if err := w.processJob(); err != nil {
-				if !errors.Is(err, ErrNoJobAvailable) {
+				// A failed job was already retried, or failed for good and
+				// reported or logged once (see failJob); only a worker
+				// error of its own is logged here.
+				var failed *jobFailedError
+				if !errors.Is(err, ErrNoJobAvailable) && !errors.As(err, &failed) {
 					w.logger.Error("Worker error", "id", id, "error", err)
 				}
 				// Back off on errors
@@ -264,6 +273,18 @@ func (w *Worker) work(id int) {
 		}
 	}
 }
+
+// jobFailedError is what processJob returns for a job that failed or timed
+// out: handleJobFailure has already retried it, or failed it for good and
+// reported or logged the failure, so the work loop backs off without
+// logging it again. It is transparent: same text, and Unwrap exposes the
+// failure.
+type jobFailedError struct {
+	err error
+}
+
+func (e *jobFailedError) Error() string { return e.err.Error() }
+func (e *jobFailedError) Unwrap() error { return e.err }
 
 // processJob processes a single job
 func (w *Worker) processJob() error {
@@ -412,7 +433,7 @@ func (w *Worker) processJob() error {
 				return nil
 			}
 			w.handleJobFailure(jobCtx, job, jobType, err, duration, reservation)
-			return fmt.Errorf("velocity/queue: job failed: %w", err)
+			return &jobFailedError{err: fmt.Errorf("velocity/queue: job failed: %w", err)}
 		}
 		// Success: ack first, then run side effects only if we still
 		// own the lease. A stale worker whose lease was reclaimed must
@@ -465,7 +486,7 @@ func (w *Worker) processJob() error {
 		}
 		timeoutErr := fmt.Errorf("velocity/queue: job timed out")
 		w.handleJobFailure(jobCtx, job, jobType, timeoutErr, duration, reservation)
-		return timeoutErr
+		return &jobFailedError{err: timeoutErr}
 	}
 }
 
@@ -731,6 +752,12 @@ func (w *Worker) attemptKey(job Job, token ReservationToken) interface{} {
 // Event dispatch still uses ctx so trace ids and request-scoped values
 // propagate; only the database mutation runs under the detached
 // terminalCleanupTimeout budget.
+//
+// The failure is reported or logged exactly once: with an event dispatcher,
+// queue.job.failed carries it to the dispatcher's failure-report bridge; with
+// none, nothing would report it, so failJob logs the job's own error at
+// error level (job type, queue, job id, attempts), unless the job's Failed
+// hook already reported it (FailureSelfReporter).
 func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error, duration time.Duration, attempt, maxAttempts int, key interface{}, reservation ReservationToken) {
 	// Cleanup attempt cache regardless of ownership; this is pure
 	// per-worker state. key is the precomputed attempt-tracking key
@@ -810,7 +837,21 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 			batch.recordFailure(ctx, err)
 		}
 	}
-	dispatchJobFailed(w.dispatchEvent, ctx, jobType, w.queueName, failureForEvent(job, err), duration)
+	failure := failureForEvent(job, err)
+	dispatch := w.currentEventDispatcher()
+	if dispatch == nil {
+		if !contract.IsReported(failure) {
+			w.logger.Error("Job failed",
+				"type", jobType,
+				"queue", w.queueName,
+				"job_id", jobIDOf(job),
+				"attempts", attempt,
+				"error", err,
+			)
+		}
+		return
+	}
+	dispatchJobFailed(func(ctx context.Context, event interface{}) { _ = dispatch(ctx, event) }, ctx, jobType, w.queueName, failure, duration)
 }
 
 // failureForEvent returns the error the queue.job.failed event carries for a job
