@@ -14,17 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/velocitykode/velocity/async"
 )
-
-// newAddOwnerID returns a unique owner identifier for the cross-process
-// flock used by FileStore.Add when taking over an expired entry. The
-// owner string is opaque to callers; it just needs to be unique enough
-// for the flock release to recognise its own acquire.
-func newAddOwnerID() string {
-	return uuid.New().String()
-}
 
 // DefaultFileCleanupInterval is the default period between expired-file sweeps.
 const DefaultFileCleanupInterval = 5 * time.Minute
@@ -165,7 +156,14 @@ type FileStore struct {
 	// only: lets tests pause a swap between its comparison and its write.
 	swapMatchedHook func()
 
-	// lockStore and friends back FileStore.Lock with flock(2) so the
+	// lockStepHook, when non-nil, is invoked with "guard-opened" after a
+	// write lock's file is opened and before it is flocked, and with
+	// "record-read" by FileLock.GetWithErr after it read the lock record
+	// and before it writes its own, under the key's guard. Test
+	// instrumentation only: lets tests pause a lock acquire between steps.
+	lockStepHook func(step string)
+
+	// lockStore and friends back FileStore.Lock (see FileLock) so the
 	// file driver satisfies the Locker capability. Created lazily on
 	// first Lock call; lockErr captures any initialisation failure so
 	// subsequent calls don't repeatedly attempt MkdirAll on a broken
@@ -692,13 +690,13 @@ func (s *FileStore) Put(key string, value interface{}, ttl time.Duration) error 
 //
 //   - Every write of the key, from any FileStore over the same directory,
 //     holds the key's write lock (lockKeyForWrite) where flock exists.
+//     AddCtx holds it from its first read of the entry to its write, so
+//     the expired-entry takeover has exactly one winner across processes.
 //   - Same-process goroutines serialize on the FileStore write mutex.
-//   - Cross-process / cross-instance contention is gated by a hard link
-//     of the fully written temp file onto the entry name (or os.O_EXCL
-//     where links are unsupported) for the create path (kernel-enforced
-//     single creator, see createFileExclusive) and by an
-//     advisory flock(2) under the existing per-key lock infrastructure
-//     for the expired-entry takeover path.
+//   - The create path is gated by a hard link of the fully written temp
+//     file onto the entry name (or os.O_EXCL where links are
+//     unsupported): a kernel-enforced single creator on every platform,
+//     see createFileExclusive.
 //
 // On a platform where flock is unavailable (the windows build), the
 // expired-entry takeover path returns ErrLockNotSupported instead of
@@ -712,7 +710,11 @@ func (s *FileStore) AddCtx(ctx context.Context, key string, value interface{}, t
 			return false, err
 		}
 	}
-	unlock, err := s.lockKeyForPlainWrite(ctx, key)
+	unlock, err := s.lockKeyForWrite(ctx, key)
+	keyLocked := err == nil
+	if errors.Is(err, ErrLockNotSupported) {
+		unlock, err = func() {}, nil
+	}
 	if err != nil {
 		return false, err
 	}
@@ -748,12 +750,11 @@ func (s *FileStore) AddCtx(ctx context.Context, key string, value interface{}, t
 		return true, nil
 	}
 
-	// File exists. Read it under the same process mutex; if still
-	// valid, refuse insertion. If expired, the caller wants to take
-	// over - but we must coordinate with other processes that may
-	// have made the same observation. Acquire the per-key flock via
-	// the existing lock infrastructure, then re-check after lock to
-	// avoid the lost-update window.
+	// File exists. Read it under the key's write lock and the process
+	// mutex; if still valid, refuse insertion. If expired, take it over:
+	// every writer of the key from any FileStore over the directory is
+	// excluded until this write lands, so no other caller can have
+	// taken it over in between.
 	if existing, rerr := os.ReadFile(path); rerr == nil {
 		// A zero-byte file means another instance just won the O_EXCL
 		// create (the fallback of createFileExclusive on a filesystem
@@ -773,54 +774,16 @@ func (s *FileStore) AddCtx(ctx context.Context, key string, value interface{}, t
 		}
 	}
 
-	// Expired or unparseable entry. Take over under a flock. On
-	// platforms where flock(2) is unavailable (windows), there is no
+	// Expired or unparseable entry. On platforms where flock(2) is
+	// unavailable (windows) no key write lock is held, so there is no
 	// safe way to honor the Store.Add SETNX contract for the takeover
 	// path - last-writer-wins would let two processes both report
 	// successful Add for the same expired key. Surface
 	// ErrLockNotSupported instead so the caller knows the driver
 	// cannot fulfil the contract on this platform; operators relying
 	// on cross-process single-flight should use Redis or run on POSIX.
-	lockStore, lerr := s.ensureLockStore()
-	if lerr != nil {
-		return false, fmt.Errorf("velocity/cache: FileStore.Add cannot fulfil SETNX contract on this platform: %w", lerr)
-	}
-	owner := newAddOwnerID()
-	lock := NewFileLock(lockStore, PrefixKey(s.prefix, "add:"+key), owner, 30*time.Second)
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	acquired, aerr := lock.GetWithErr(ctx)
-	if aerr != nil {
-		// Backend failure on the lock store itself (filesystem
-		// problem, exhausted file descriptors, etc) is a real error
-		// the caller needs to see. Don't mask it as benign
-		// contention; Cache.Remember would otherwise poll, then run
-		// the populate callback without ever caching the result.
-		return false, fmt.Errorf("velocity/cache: FileStore.Add lock acquire failed: %w", aerr)
-	}
-	if !acquired {
-		// Genuine contention: another process holds the takeover
-		// lock. Treat as existing entry; caller retries the Get.
-		return false, nil
-	}
-	defer func() { _ = lock.Release(ctx) }()
-
-	// Re-check after acquiring the lock: another worker may have
-	// already inserted a fresh entry.
-	if existing, rerr := os.ReadFile(path); rerr == nil {
-		// Empty file => another O_EXCL creator owns the slot; defer
-		// to them just like the pre-lock check does. Without this the
-		// takeover write below would clobber a live creator's payload.
-		if len(existing) == 0 {
-			return false, nil
-		}
-		var ex fileCacheItem
-		if json.Unmarshal(existing, &ex) == nil {
-			if ex.Expiration == nil || time.Now().Before(*ex.Expiration) {
-				return false, nil
-			}
-		}
+	if !keyLocked {
+		return false, fmt.Errorf("velocity/cache: FileStore.Add cannot fulfil SETNX contract on this platform: %w", ErrLockNotSupported)
 	}
 
 	if werr := replaceFile(path, data); werr != nil {

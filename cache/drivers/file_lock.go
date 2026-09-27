@@ -9,13 +9,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/sys/unix"
 
 	"github.com/velocitykode/velocity/contract"
 )
@@ -24,103 +23,75 @@ import (
 // Kept under the unix build tag with the type it asserts.
 var _ contract.CacheLock = (*FileLock)(nil)
 
-// fileLockMetadata is written to the on-disk lock file so that a
-// recovering ForceRelease (or a peer process inspecting state) can see
-// the owner and expiry. The metadata is purely informational - actual
-// mutual exclusion is enforced by flock(2). On a peer-process crash the
-// kernel drops the LOCK_EX automatically, so an expired lock file
-// without a holder is reacquirable immediately.
+// fileLockMetadata is the record of a held lock: its owner and when the
+// hold ends. The record is the lock: a key whose record is missing,
+// unreadable, without an owner, or past ExpiresAt is free.
 type fileLockMetadata struct {
 	Owner     string     `json:"owner"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
-// FileLock is a process-aware file lock backed by flock(2). It satisfies
-// the Lock interface for FileStore. The lock state lives in a file under
-// <cache>/locks/<sha256(key)>.lock; flock provides mutual exclusion
-// across processes on the same host and within a single process across
-// goroutines. TTL is advisory: it lets a holder express an upper bound
-// on how long it will hold the lock so manual recovery can be scripted,
-// but the kernel reclaims the flock when the holding process exits.
+// held reports whether the record still holds the lock at now.
+func (md fileLockMetadata) held(now time.Time) bool {
+	return md.Owner != "" && md.ExpiresAt != nil && now.Before(*md.ExpiresAt)
+}
+
+// FileLock is a lock shared by every FileStore over the same directory,
+// in this process or another on the same host. It satisfies the Lock
+// interface for FileStore.
+//
+// The lock of a key is a record, <cache>/locks/<sha256(key)>.lock, naming
+// its owner and the end of its TTL. Every read and change of the record
+// (Get, Release, ForceRelease) runs under the write lock of the stripe
+// the key hashes to: an exclusive flock(2) on one of the stable files
+// under <cache>/locks/keys that the cache writes use (see
+// lockKeyForWrite). Those files are never removed, so every caller locks
+// the same inode and the check-and-set of a record is atomic across
+// processes; the record itself is only ever read and changed under that
+// lock, so removing it on release is safe.
+//
+// A lock is held until its owner releases it, it is force-released, or
+// its TTL passes, as on the memory and redis drivers; a holder that
+// crashes keeps the lock until the TTL passes.
 type FileLock struct {
 	store *fileLockStore
 	key   string
 	owner string
 	ttl   time.Duration
-
-	mu sync.Mutex
-	// fd holds the open *os.File while the lock is acquired. The flock
-	// is associated with the file descriptor; closing fd releases the
-	// kernel-level lock automatically as a defence in depth.
-	fd *os.File
 }
 
-// fileLockStore owns the per-FileStore lock directory and an in-process
-// holders map that records which goroutine currently owns each key.
-// flock is a process-level primitive on POSIX, so two goroutines in
-// one process can each hold LOCK_EX on the same inode -- the holders
-// map closes that hole and lets ForceRelease safely steal a lock from
-// a peer goroutine without trying to "force-unlock" a sync.Mutex
-// (which is undefined behaviour).
+// fileLockStore owns the per-FileStore lock record directory.
 type fileLockStore struct {
+	cache   *FileStore
 	lockDir string
-
-	mu      sync.Mutex
-	holders map[string]string // key -> owner ID of the in-process holder
 }
 
-func newFileLockStore(cacheDir string) (*fileLockStore, error) {
-	lockDir := filepath.Join(cacheDir, "locks")
+func newFileLockStore(cache *FileStore) (*fileLockStore, error) {
+	lockDir := filepath.Join(cache.path, "locks")
 	if err := os.MkdirAll(lockDir, cacheDirMode); err != nil {
 		return nil, fmt.Errorf("velocity/cache: failed to create lock directory: %w", err)
 	}
-	return &fileLockStore{
-		lockDir: lockDir,
-		holders: make(map[string]string),
-	}, nil
+	return &fileLockStore{cache: cache, lockDir: lockDir}, nil
 }
 
-// tryClaim attempts to record `owner` as the in-process holder of `key`.
-// Returns true if claimed (key was unheld); false if another goroutine
-// in the same process already holds it.
-func (s *fileLockStore) tryClaim(key, owner string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, held := s.holders[key]; held {
-		return false
-	}
-	s.holders[key] = owner
-	return true
-}
-
-// release drops the in-process holder record only if the caller owns
-// it. Returns true if the entry was removed.
-func (s *fileLockStore) release(key, owner string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if existing, held := s.holders[key]; held && existing == owner {
-		delete(s.holders, key)
-		return true
-	}
-	return false
-}
-
-// forceRelease drops the in-process holder record regardless of owner.
-// Used by ForceRelease to steal a stale lock from a peer goroutine.
-func (s *fileLockStore) forceRelease(key string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.holders, key)
-}
-
+// pathFor is the record file of key.
 func (s *fileLockStore) pathFor(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return filepath.Join(s.lockDir, hex.EncodeToString(sum[:])+".lock")
 }
 
-// readMetadata best-effort reads owner/expiry from the on-disk lock
-// file. Returns ok=false if the file is missing or unparseable; callers
-// MUST NOT rely on the metadata for mutual exclusion (use flock).
+// guard takes the write lock of the stripe key hashes to, waiting for
+// another holder as a cache write does, honouring ctx. The returned func
+// releases it.
+func (s *fileLockStore) guard(ctx context.Context, key string) (func(), error) {
+	sum := sha256.Sum256([]byte(key))
+	stripe := hex.EncodeToString(sum[:1])
+	return s.cache.lockStripe(ctx, stripe, "stripe "+stripe)
+}
+
+// readMetadata reads the record at path. ok is false when the file is
+// missing or unparseable, which means the lock is free. The caller holds
+// the key's guard.
 func (s *fileLockStore) readMetadata(path string) (fileLockMetadata, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -133,12 +104,23 @@ func (s *fileLockStore) readMetadata(path string) (fileLockMetadata, bool) {
 	return md, true
 }
 
+// writeMetadata replaces the record at path. The caller holds the key's
+// guard.
 func (s *fileLockStore) writeMetadata(path string, md fileLockMetadata) error {
 	data, err := json.Marshal(md)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, cacheFileMode)
+}
+
+// removeMetadata removes the record at path. The caller holds the key's
+// guard.
+func (s *fileLockStore) removeMetadata(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // NewFileLock creates a new FileLock bound to the given lock store.
@@ -159,16 +141,16 @@ func (l *FileLock) Get(ctx context.Context) bool {
 
 // GetWithErr is the error-returning variant. The bool reports whether
 // the lock was acquired; the error is non-nil on backend failure
-// (cannot open the lock file, etc.) or when the lock was constructed
-// with a non-positive TTL (ErrInvalidLockTTL). Contention is reported
-// as (false, nil).
+// (cannot read or write the lock record, the key's guard held for over
+// fileKeyLockWait) or when the lock was constructed with a non-positive
+// TTL (ErrInvalidLockTTL). Contention, including a second Get on a lock
+// this instance already holds, is reported as (false, nil), as is a ctx
+// cancelled before the lock was taken.
 //
 // A zero/negative TTL is rejected: without expiry, a holder process
-// that crashes between Get and Release pins the on-disk lock file
-// forever; subsequent acquirers see the metadata "still held until
-// ExpiresAt" check (which is now `ExpiresAt == nil` -> treated as
-// "no declared end") and may keep blocking. Forcing a positive TTL
-// gives operators a reliable maximum-stale-lock window.
+// that crashes between Get and Release would pin the lock forever.
+// Forcing a positive TTL gives operators a reliable maximum-stale-lock
+// window.
 func (l *FileLock) GetWithErr(ctx context.Context) (bool, error) {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
@@ -178,141 +160,70 @@ func (l *FileLock) GetWithErr(ctx context.Context) (bool, error) {
 	if l.ttl <= 0 {
 		return false, ErrInvalidLockTTL
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.fd != nil {
-		// Already held by this FileLock instance. Treat as "not acquired
-		// by this call" so Get matches the MemoryLock contract.
-		return false, nil
+	unlock, err := l.store.guard(ctx, l.key)
+	if err != nil {
+		if ctx != nil && ctx.Err() != nil {
+			return false, nil
+		}
+		return false, fmt.Errorf("velocity/cache: lock guard: %w", err)
 	}
-
-	// Claim the in-process holder slot BEFORE flock. flock is a
-	// process-level primitive on Linux/macOS; two goroutines in one
-	// process can each hold LOCK_EX on the same inode, so we need an
-	// intra-process gate too. tryClaim is a check-and-set under the
-	// store's holders mutex so concurrent goroutines see exactly one
-	// winner per key. The matching release runs in Release /
-	// ForceRelease.
-	if !l.store.tryClaim(l.key, l.owner) {
-		return false, nil
-	}
+	defer unlock()
 
 	path := l.store.pathFor(l.key)
-	fd, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, cacheFileMode)
-	if err != nil {
-		l.store.release(l.key, l.owner)
-		return false, fmt.Errorf("velocity/cache: open lock file: %w", err)
+	now := time.Now()
+	md, ok := l.store.readMetadata(path)
+	if hook := l.store.cache.lockStepHook; hook != nil {
+		hook("record-read")
 	}
-
-	// Non-blocking exclusive flock. EWOULDBLOCK == contention.
-	if err := unix.Flock(int(fd.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		_ = fd.Close()
-		l.store.release(l.key, l.owner)
-		if errors.Is(err, unix.EWOULDBLOCK) {
-			return false, nil
-		}
-		return false, fmt.Errorf("velocity/cache: flock: %w", err)
+	if ok && md.held(now) {
+		return false, nil
 	}
-
-	// Before declaring success, honour any expiry recorded by a prior
-	// holder: if a previous owner wrote a future ExpiresAt that has not
-	// elapsed, refuse the acquire even though flock succeeded (which
-	// would only happen if the previous holder crashed without writing
-	// "released" metadata - i.e. a stale lock that we treat as still
-	// held until its declared TTL elapses, mirroring MemoryLock).
-	if md, ok := l.store.readMetadata(path); ok && md.Owner != "" && md.Owner != l.owner {
-		if md.ExpiresAt != nil && time.Now().Before(*md.ExpiresAt) {
-			_ = unix.Flock(int(fd.Fd()), unix.LOCK_UN)
-			_ = fd.Close()
-			l.store.release(l.key, l.owner)
-			return false, nil
-		}
-	}
-
-	md := fileLockMetadata{Owner: l.owner}
-	if l.ttl > 0 {
-		exp := time.Now().Add(l.ttl)
-		md.ExpiresAt = &exp
-	}
-	if err := l.store.writeMetadata(path, md); err != nil {
-		_ = unix.Flock(int(fd.Fd()), unix.LOCK_UN)
-		_ = fd.Close()
-		l.store.release(l.key, l.owner)
+	exp := now.Add(l.ttl)
+	if err := l.store.writeMetadata(path, fileLockMetadata{Owner: l.owner, ExpiresAt: &exp}); err != nil {
 		return false, fmt.Errorf("velocity/cache: write lock metadata: %w", err)
 	}
-
-	l.fd = fd
 	return true, nil
 }
 
-// Release releases the lock only if the current instance is the owner.
-// Returns true if released. Drops both the on-disk flock and the
-// intra-process holder record.
+// Release releases the lock only if the current instance is the owner:
+// the record names this owner. Returns true if released. A lock restored
+// with RestoreLock releases the lock its owner ID holds.
 func (l *FileLock) Release(ctx context.Context) bool {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
 			return false
 		}
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.fd == nil {
-		// Caller never acquired (or already released). Check on-disk
-		// metadata for owner match: if a different process or a
-		// restored FileLock instance owns it, we must refuse.
-		path := l.store.pathFor(l.key)
-		md, ok := l.store.readMetadata(path)
-		if !ok || md.Owner != l.owner {
-			return false
-		}
-		// Owner match but we have no fd - this is a restored lock.
-		// Drop the on-disk record so the next Get can acquire. The
-		// flock itself isn't held by us; the previous holder's flock
-		// has either been released (typical) or its process exited
-		// and the kernel reclaimed it.
-		_ = os.Remove(path)
-		return true
+	unlock, err := l.store.guard(ctx, l.key)
+	if err != nil {
+		return false
 	}
+	defer unlock()
 
 	path := l.store.pathFor(l.key)
 	md, ok := l.store.readMetadata(path)
-	if ok && md.Owner != l.owner {
-		// Metadata says someone else owns it (race after a stale
-		// recovery), even though we hold the fd. Refuse.
+	if !ok || md.Owner != l.owner {
 		return false
 	}
-	_ = os.Remove(path)
-	_ = unix.Flock(int(l.fd.Fd()), unix.LOCK_UN)
-	_ = l.fd.Close()
-	l.fd = nil
-	l.store.release(l.key, l.owner)
-	return true
+	return l.store.removeMetadata(path) == nil
 }
 
-// ForceRelease deletes the lock state regardless of owner. Drops the
-// on-disk lock file and the in-process holder record so a subsequent
-// Get from any caller can acquire. If THIS instance currently holds
-// the fd it is released too; otherwise only the bookkeeping is
-// touched and the original holder's fd will become a no-op release
-// when it eventually Releases (the file is already gone).
+// ForceRelease deletes the lock record regardless of owner, so a
+// subsequent Get from any caller can acquire.
 func (l *FileLock) ForceRelease(ctx context.Context) error {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	path := l.store.pathFor(l.key)
-	_ = os.Remove(path)
-	if l.fd != nil {
-		_ = unix.Flock(int(l.fd.Fd()), unix.LOCK_UN)
-		_ = l.fd.Close()
-		l.fd = nil
+	unlock, err := l.store.guard(ctx, l.key)
+	if err != nil {
+		return fmt.Errorf("velocity/cache: lock guard: %w", err)
 	}
-	// forceRelease drops the in-process holder record unconditionally
-	// so a stale peer's hold no longer blocks future tryClaim calls.
-	l.store.forceRelease(l.key)
+	defer unlock()
+	if err := l.store.removeMetadata(l.store.pathFor(l.key)); err != nil {
+		return fmt.Errorf("velocity/cache: remove lock metadata: %w", err)
+	}
 	return nil
 }
 
@@ -373,7 +284,7 @@ func (s *FileStore) RestoreLock(key string, owner string) Lock {
 // first Lock call. Returns the cached instance on subsequent calls.
 func (s *FileStore) ensureLockStore() (*fileLockStore, error) {
 	s.lockOnce.Do(func() {
-		store, err := newFileLockStore(s.path)
+		store, err := newFileLockStore(s)
 		if err != nil {
 			s.lockErr = err
 			return

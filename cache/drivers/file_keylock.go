@@ -98,6 +98,9 @@ func (s *FileStore) flockStripe(stripe string) (unlock func(), busy bool, err er
 		if err != nil {
 			return nil, false, fmt.Errorf("velocity/cache: open key lock file: %w", err)
 		}
+		if s.lockStepHook != nil {
+			s.lockStepHook("guard-opened")
+		}
 		err = unix.Flock(int(fd.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 		if err == nil {
 			if sameFile(fd, path) {
