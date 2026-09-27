@@ -383,7 +383,7 @@ func TestListener_SameFailureEventWithReceivedCtx_NotReReported(t *testing.T) {
 }
 
 // --- uncomparable failure events: fallback paths must still report exactly
-// once (deterministic report-flag skip, not identity-based dedupe) ---
+// once (deterministic detached-flag skip, not identity-based dedupe) ---
 
 // uncomparableFailed is a VALUE-type failure event whose dynamic type is
 // uncomparable (slice field); identity comparison cannot dedupe it.

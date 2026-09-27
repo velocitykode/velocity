@@ -133,7 +133,7 @@ func (d *DefaultDispatcher) SetQueueDispatcher(qd QueueDispatcher) {
 // suppression of everything under a marked ctx would silently swallow
 // listener-originated terminal failures. The bridge-internal fallback
 // re-dispatches do not rely on this marker at all; they skip the bridge
-// deterministically via the report flag on dispatch/dispatchNow.
+// deterministically via the detached flag on dispatch/dispatchNow.
 type failureReportedKey struct{}
 
 // SetFailureReporter installs the bridge that forwards FailureEvent
@@ -161,7 +161,7 @@ func (d *DefaultDispatcher) SetFailureReporter(fn func(ctx context.Context, even
 //     received skips the report, while a different failure event dispatched
 //     downstream with the same ctx still reports. (The bridge-internal
 //     fallback re-dispatches skip the bridge deterministically via the
-//     report flag instead and do not depend on this identity check.)
+//     detached flag instead and do not depend on this identity check.)
 //
 //  2. Per-goroutine reporter guard: while a reporter call is in flight on a
 //     goroutine, any failure event dispatched synchronously from inside it is
@@ -223,7 +223,7 @@ func (d *DefaultDispatcher) reportFailure(ctx context.Context, event interface{}
 // uncomparable dynamic type panics, so uncomparable events are treated as
 // distinct, which errs on the side of not losing a failure. The bridge-
 // internal fallback paths do not depend on this comparison (they skip the
-// bridge deterministically via the report flag on dispatch/dispatchNow);
+// bridge deterministically via the detached flag on dispatch/dispatchNow);
 // the marker only dedupes a LISTENER or REPORTER re-dispatching the same
 // event instance with the ctx it received, where pointer events compare by
 // identity and an uncomparable value event would at worst re-report.
@@ -417,28 +417,33 @@ func (d *DefaultDispatcher) Subscribe(subscriber Subscriber) {
 // always fire inline (or via the queue if Async is true) regardless
 // of the after-commit queue state.
 func (d *DefaultDispatcher) Dispatch(ctx context.Context, event interface{}) error {
-	return d.dispatch(ctx, event, true)
+	return d.dispatch(ctx, event, false)
 }
 
-// dispatch is the Dispatch core. report selects whether the failure-reporter
-// bridge runs: every public entry point passes true; the bridge-internal
-// re-dispatch paths (DispatchAfter's no-queue timer fallback) pass false so
-// "exactly once" holds DETERMINISTICALLY for every event value, comparable or
-// not, instead of depending on the ctx marker's identity comparison.
-func (d *DefaultDispatcher) dispatch(ctx context.Context, event interface{}, report bool) error {
+// dispatch is the Dispatch core. detached marks a delivery that runs after
+// the public call returned, with no caller left waiting on it (DispatchAfter's
+// no-queue timer fallback, and the failure events a detached delivery
+// dispatches): the public call already reported a FailureEvent at the point
+// of dispatch, so the failure-reporter bridge is skipped, which keeps
+// "exactly once" DETERMINISTIC for every event value, comparable or not,
+// instead of depending on the ctx marker's identity comparison; and each
+// listener's error or recovered panic, which no caller would receive, is
+// dispatched as its own AsyncFailed (see dispatchListenerFailure). Every
+// public entry point passes false.
+func (d *DefaultDispatcher) dispatch(ctx context.Context, event interface{}, detached bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if event == nil {
 		return fmt.Errorf("events: cannot dispatch nil event")
 	}
-	if report {
+	if !detached {
 		ctx = d.reportFailure(ctx, event)
 	}
 	d.mu.RLock()
 	q := d.queue
 	d.mu.RUnlock()
-	return d.dispatchToListeners(event, func(listener Listener) error {
+	deliver := func(listener Listener) error {
 		// After-commit gate runs FIRST: a listener that opts into
 		// post-commit delivery should never reach the queue or the
 		// inline branch while the transaction is still in flight.
@@ -490,31 +495,73 @@ func (d *DefaultDispatcher) dispatch(ctx context.Context, event interface{}, rep
 			return nil
 		}
 		return d.processListener(ctx, event, listener)
-	})
+	}
+	if detached {
+		deliver = d.dispatchingListenerFailures(ctx, event, deliver)
+	}
+	return d.dispatchToListeners(event, deliver)
 }
 
 // DispatchNow fires an event synchronously to all listeners.
 func (d *DefaultDispatcher) DispatchNow(ctx context.Context, event interface{}) error {
-	return d.dispatchNow(ctx, event, true)
+	return d.dispatchNow(ctx, event, false)
 }
 
-// dispatchNow is the DispatchNow core; see dispatch for the report flag.
-// DispatchAsync's no-queue goroutine fallback passes false because the public
-// DispatchAsync call already reported synchronously at the point of dispatch.
-func (d *DefaultDispatcher) dispatchNow(ctx context.Context, event interface{}, report bool) error {
+// dispatchNow is the DispatchNow core; see dispatch for the detached flag.
+// DispatchAsync's no-queue goroutine fallback passes true: the public
+// DispatchAsync call already reported synchronously at the point of
+// dispatch, and no caller waits on the goroutine.
+func (d *DefaultDispatcher) dispatchNow(ctx context.Context, event interface{}, detached bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if report {
+	if !detached {
 		ctx = d.reportFailure(ctx, event)
 	}
-	return d.dispatchToListeners(event, func(listener Listener) error {
+	deliver := func(listener Listener) error {
 		return d.processListener(ctx, event, listener)
-	})
+	}
+	if detached {
+		deliver = d.dispatchingListenerFailures(ctx, event, deliver)
+	}
+	return d.dispatchToListeners(event, deliver)
+}
+
+// dispatchingListenerFailures wraps deliver for a detached delivery of
+// event under ctx: a listener's error or recovered panic has no caller left
+// to return to, so it is dispatched as that listener's AsyncFailed (see
+// dispatchListenerFailure) and nil is returned in its place.
+func (d *DefaultDispatcher) dispatchingListenerFailures(ctx context.Context, event interface{}, deliver func(Listener) error) func(Listener) error {
+	return func(listener Listener) error {
+		if err := deliver(listener); err != nil {
+			d.dispatchListenerFailure(ctx, event, listener, err)
+		}
+		return nil
+	}
+}
+
+// dispatchListenerFailure dispatches the AsyncFailed for listener, which
+// failed with err during a detached delivery of event under ctx. The
+// failure is reported through the failure-report bridge here, once, under
+// ctx, which carries the caller's trace IDs; then the AsyncFailed is
+// delivered to its own listeners detached, so a listener of AsyncFailed
+// that fails in turn is reported as well. A failure while delivering an
+// AsyncFailed is reported but not dispatched again, so a listener that
+// fails on every event cannot loop.
+func (d *DefaultDispatcher) dispatchListenerFailure(ctx context.Context, event interface{}, listener Listener, err error) {
+	failed := newAsyncFailed(ctx, event, listener, err)
+	ctx = d.reportFailure(ctx, failed)
+	if _, nested := event.(*AsyncFailed); nested {
+		return
+	}
+	_ = d.dispatch(ctx, failed, true)
 }
 
 // DispatchAsync fires an event asynchronously via the queue.
-// Falls back to a panic-safe goroutine (async.Go) if no queue is configured.
+// Falls back to a panic-safe goroutine (async.Go) if no queue is configured;
+// there, a listener that returns an error or panics has no caller to return
+// to, so the dispatcher dispatches an AsyncFailed for it, which the
+// failure-report bridge reports.
 func (d *DefaultDispatcher) DispatchAsync(ctx context.Context, event interface{}) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -528,12 +575,13 @@ func (d *DefaultDispatcher) DispatchAsync(ctx context.Context, event interface{}
 	if q == nil {
 		// Detach from request lifetime so the goroutine can outlive the
 		// caller, while still preserving values via context.WithoutCancel.
-		// report=false: the failure was already reported above; skipping
+		// detached: the failure was already reported above, and skipping
 		// the bridge here is deterministic and does not depend on the ctx
-		// marker's identity comparison (uncomparable events included).
+		// marker's identity comparison (uncomparable events included); each
+		// listener's failure is dispatched as an AsyncFailed.
 		bgCtx := context.WithoutCancel(ctx)
 		async.Go(func() {
-			_ = d.dispatchNow(bgCtx, event, false)
+			_ = d.dispatchNow(bgCtx, event, true)
 		})
 		return nil
 	}
@@ -547,7 +595,10 @@ func (d *DefaultDispatcher) DispatchAsync(ctx context.Context, event interface{}
 }
 
 // DispatchAfter fires an event after a delay.
-// Falls back to a timer if no queue is configured.
+// Falls back to a timer if no queue is configured; there, a listener that
+// returns an error or panics has no caller to return to, so the dispatcher
+// dispatches an AsyncFailed for it, which the failure-report bridge
+// reports.
 func (d *DefaultDispatcher) DispatchAfter(ctx context.Context, event interface{}, delay time.Duration) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -560,11 +611,12 @@ func (d *DefaultDispatcher) DispatchAfter(ctx context.Context, event interface{}
 	d.mu.RUnlock()
 	if q == nil {
 		bgCtx := context.WithoutCancel(ctx)
-		// report=false: already reported above; the deterministic skip
-		// replaces reliance on the ctx marker's identity comparison, which
-		// cannot dedupe uncomparable event values.
+		// detached: already reported above; the deterministic skip replaces
+		// reliance on the ctx marker's identity comparison, which cannot
+		// dedupe uncomparable event values, and each listener's failure is
+		// dispatched as an AsyncFailed.
 		time.AfterFunc(delay, func() {
-			_ = d.dispatch(bgCtx, event, false)
+			_ = d.dispatch(bgCtx, event, true)
 		})
 		return nil
 	}

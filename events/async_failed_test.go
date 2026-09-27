@@ -2,97 +2,154 @@ package events
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	testsync "github.com/velocitykode/velocity/testing"
+	"github.com/velocitykode/velocity/trace"
 )
 
-// panicingListener panics the first time Handle is invoked.
-type panicingListener struct{}
-
-func (l *panicingListener) Handle(ctx context.Context, event interface{}) error {
-	panic("boom")
-}
-func (l *panicingListener) Async() bool { return false }
-
-// erroringListener returns a non-nil error.
-type erroringListener struct{ msg string }
-
-func (l *erroringListener) Handle(ctx context.Context, event interface{}) error { return fmtErr(l.msg) }
-func (l *erroringListener) Async() bool                                         { return false }
-
-type fmtErrType string
-
-func (e fmtErrType) Error() string { return string(e) }
-
-func fmtErr(s string) error { return fmtErrType(s) }
-
-// TestAsyncDispatcher_PanicRecovered covers Task 6b: listener panics must be
-// recovered and surfaced as an events.listener.failed event through the
-// configured failure sink.
-func TestAsyncDispatcher_PanicRecovered(t *testing.T) {
-	a := NewAsyncDispatcher()
-
-	var (
-		mu     sync.Mutex
-		events []*AsyncFailed
-	)
-	a.SetFailureSink(func(e interface{}) error {
-		mu.Lock()
-		defer mu.Unlock()
-		if af, ok := e.(*AsyncFailed); ok {
-			events = append(events, af)
-		}
-		return nil
-	})
-
-	if err := a.Push(context.Background(), "evt", &panicingListener{}, 0); err != nil {
-		t.Fatalf("Push: %v", err)
-	}
-
-	testsync.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(events) == 1
-	}, time.Second, "AsyncFailed event reported")
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(events) != 1 {
-		t.Fatalf("expected 1 AsyncFailed, got %d", len(events))
-	}
-	if events[0].Name() != "events.listener.failed" {
-		t.Errorf("event Name = %q, want events.listener.failed", events[0].Name())
-	}
-	if !strings.Contains(events[0].Error, "boom") {
-		t.Errorf("error field = %q, want substring 'boom'", events[0].Error)
-	}
+// failureCollector is a listener of AsyncFailed that records every one it
+// receives.
+type failureCollector struct {
+	mu       sync.Mutex
+	failures []*AsyncFailed
 }
 
-// TestAsyncDispatcher_ErrorReported covers Task 6b for the non-panic case —
-// listener returning an error also triggers the failure sink.
-func TestAsyncDispatcher_ErrorReported(t *testing.T) {
-	a := NewAsyncDispatcher()
+func (c *failureCollector) Handle(_ context.Context, event interface{}) error {
+	if failed, ok := event.(*AsyncFailed); ok {
+		c.mu.Lock()
+		c.failures = append(c.failures, failed)
+		c.mu.Unlock()
+	}
+	return nil
+}
 
-	ch := make(chan *AsyncFailed, 1)
-	a.SetFailureSink(func(e interface{}) error {
-		if af, ok := e.(*AsyncFailed); ok {
-			ch <- af
+func (c *failureCollector) Async() bool { return false }
+
+func (c *failureCollector) snapshot() []*AsyncFailed {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]*AsyncFailed(nil), c.failures...)
+}
+
+// TestAsyncFailed_DeliveredToItsListeners asserts the AsyncFailed a detached
+// delivery dispatches for a failed listener reaches the listeners of
+// AsyncFailed, carrying the failure itself with its type (the listener's
+// error, or the recovered panic), the event and listener names and the
+// caller's trace IDs.
+func TestAsyncFailed_DeliveredToItsListeners(t *testing.T) {
+	d := NewDispatcher()
+	collector := &failureCollector{}
+	d.Listen(&AsyncFailed{}, collector)
+	d.Listen("evt", failingListener{})
+	d.Listen("evt", panickingListener{})
+
+	ctx := trace.WithTrace(context.Background(), "trace-async-failed", "span-async-failed")
+	if err := d.DispatchAsync(ctx, "evt"); err != nil {
+		t.Fatalf("DispatchAsync: %v", err)
+	}
+	testsync.Eventually(t, func() bool { return len(collector.snapshot()) == 2 }, 2*time.Second, "AsyncFailed delivered per failed listener")
+
+	for _, failed := range collector.snapshot() {
+		if failed.EventName != "evt" {
+			t.Errorf("EventName = %q, want evt", failed.EventName)
 		}
-		return nil
-	})
-
-	_ = a.Push(context.Background(), "evt", &erroringListener{msg: "velocity/test: bad"}, 0)
-
-	select {
-	case ev := <-ch:
-		if !strings.Contains(ev.Error, "velocity/test: bad") {
-			t.Errorf("Error = %q, want substring 'velocity/test: bad'", ev.Error)
+		if failed.TraceID != "trace-async-failed" || failed.SpanID != "span-async-failed" {
+			t.Errorf("trace IDs = %q/%q, want the caller's", failed.TraceID, failed.SpanID)
 		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("timed out waiting for AsyncFailed")
+		if got := trace.GetTraceID(failed.Context); got != "trace-async-failed" {
+			t.Errorf("Context trace id = %q, want the caller's", got)
+		}
+		if failed.Err == nil || failed.Error != failed.Err.Error() {
+			t.Errorf("Error = %q, want the text of Err %v", failed.Error, failed.Err)
+		}
+		switch failed.ListenerName {
+		case fmt.Sprintf("%T", failingListener{}):
+			if !errors.Is(failed.Err, errListenerBroke) {
+				t.Errorf("Err = %v, want the listener's own error", failed.Err)
+			}
+		case fmt.Sprintf("%T", panickingListener{}):
+			var rp contract.RecoveredPanic
+			if !errors.As(failed.Err, &rp) || rp.Recovered() != "listener exploded" {
+				t.Errorf("Err = %#v, want the recovered panic", failed.Err)
+			}
+		default:
+			t.Errorf("ListenerName = %q, want one of the failing listeners", failed.ListenerName)
+		}
+	}
+}
+
+// alwaysFailingListener fails on every event it is handed and counts them.
+type alwaysFailingListener struct{ calls atomic.Int32 }
+
+func (l *alwaysFailingListener) Handle(context.Context, interface{}) error {
+	l.calls.Add(1)
+	return errors.New("velocity/test: fails on everything")
+}
+func (l *alwaysFailingListener) Async() bool { return false }
+
+// TestAsyncFailed_FailingFailureListenerReportedOnce asserts a listener that
+// fails on the AsyncFailed it is handed is itself reported, once, and the
+// failure is not dispatched again, so a listener failing on every event
+// cannot loop.
+func TestAsyncFailed_FailingFailureListenerReportedOnce(t *testing.T) {
+	d := NewDispatcher()
+	reports := &listenerFailureReports{}
+	d.SetFailureReporter(reports.fn())
+	l := &alwaysFailingListener{}
+	d.Listen("evt", l)
+	d.Listen(&AsyncFailed{}, l)
+
+	if err := d.DispatchAfter(context.Background(), "evt", time.Millisecond); err != nil {
+		t.Fatalf("DispatchAfter: %v", err)
+	}
+	testsync.Eventually(t, func() bool { return reports.count() >= 2 }, 2*time.Second, "both failures reported")
+	time.Sleep(100 * time.Millisecond)
+
+	if n := reports.count(); n != 2 {
+		t.Fatalf("failures reported %d times, want 2 (the listener on evt, then on its AsyncFailed)", n)
+	}
+	if n := l.calls.Load(); n != 2 {
+		t.Errorf("listener ran %d times, want 2", n)
+	}
+	reports.mu.Lock()
+	defer reports.mu.Unlock()
+	if got := reports.failures[1].EventName; got != resolveEventName(&AsyncFailed{}) {
+		t.Errorf("second report EventName = %q, want the AsyncFailed event's", got)
+	}
+}
+
+// TestAsyncFailed_FailureError asserts FailureError returns the failure
+// with its type, falls back to the Error text for an event decoded from
+// JSON, and that Err never reaches the JSON form; and FailureSource names
+// a listener.
+func TestAsyncFailed_FailureError(t *testing.T) {
+	cause := contract.NewHTTPError(404, "gone")
+	if got := (&AsyncFailed{Error: cause.Error(), Err: cause}).FailureError(); got != error(cause) {
+		t.Errorf("FailureError() = %#v, want Err itself", got)
+	}
+	if got := (&AsyncFailed{Error: "listener broke"}).FailureError(); got == nil || got.Error() != "listener broke" {
+		t.Errorf("FailureError() without Err = %v, want the Error text", got)
+	}
+	if got := (&AsyncFailed{}).FailureError(); got != nil {
+		t.Errorf("FailureError() of an empty event = %v, want nil", got)
+	}
+	if got := (&AsyncFailed{}).FailureSource(); got != contract.ErrorSourceListener {
+		t.Errorf("FailureSource() = %v, want ErrorSourceListener", got)
+	}
+	data, err := json.Marshal(&AsyncFailed{EventName: "evt", Error: "listener broke", Err: errors.New("listener broke")})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"Err"`) {
+		t.Errorf("JSON form carries Err: %s", data)
 	}
 }

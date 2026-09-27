@@ -10,39 +10,6 @@ import (
 	testsync "github.com/velocitykode/velocity/testing"
 )
 
-// countingPanicListener panics on Handle — used to verify recovery in both
-// AsyncDispatcher.Push and DefaultDispatcher.DispatchAsync fallback.
-type countingPanicListener struct {
-	handled atomic.Int32
-}
-
-func (p *countingPanicListener) Handle(ctx context.Context, event interface{}) error {
-	p.handled.Add(1)
-	panic("listener boom")
-}
-func (p *countingPanicListener) Async() bool { return false }
-
-// TestAsyncDispatcher_Push_RecoversPanic verifies that a listener panic in
-// the async goroutine does not tear down the process.
-func TestAsyncDispatcher_Push_RecoversPanic(t *testing.T) {
-	ad := NewAsyncDispatcher()
-	listener := &countingPanicListener{}
-
-	// Immediate dispatch — no delay — goroutine path.
-	if err := ad.Push(context.Background(), "event", listener, 0); err != nil {
-		t.Fatalf("push failed: %v", err)
-	}
-
-	testsync.Eventually(t, func() bool { return listener.handled.Load() > 0 }, time.Second, "immediate listener invoked")
-
-	// Delayed dispatch — time.AfterFunc path.
-	listener2 := &countingPanicListener{}
-	if err := ad.Push(context.Background(), "event", listener2, 10*time.Millisecond); err != nil {
-		t.Fatalf("push failed: %v", err)
-	}
-	testsync.Eventually(t, func() bool { return listener2.handled.Load() > 0 }, time.Second, "delayed listener invoked")
-}
-
 // TestDispatcher_DispatchAsync_Fallback_RecoversPanic verifies that when
 // no queue is configured, the fallback goroutine in DispatchAsync
 // recovers from listener panics.

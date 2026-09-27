@@ -5,38 +5,49 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
 
-	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
-	"github.com/velocitykode/velocity/internal/panicerr"
+	"github.com/velocitykode/velocity/trace"
 )
 
-// AsyncDispatcher handles asynchronous event dispatching
-type AsyncDispatcher struct {
-	// failureSinkMu guards failureSink so the sink can be reconfigured
-	// concurrently with Push() without races.
-	failureSinkMu sync.RWMutex
-	failureSink   func(event interface{}) error
-}
-
-// AsyncFailed is dispatched when a listener invoked through the async
-// dispatcher panics or returns an error. Applications can Listen("events.listener.failed")
-// to observe async failures (e.g. for alerting or metrics).
+// AsyncFailed is dispatched when a listener fails with no caller waiting on
+// it: a listener the no-queue fallback of DispatchAsync or DispatchAfter
+// ran returned an error or panicked. The dispatcher dispatches one per
+// failed listener, and the failure-report bridge reports each to the error
+// Reporter chain. Applications can listen for it (for example for alerting
+// or metrics).
 type AsyncFailed struct {
-	Context      context.Context
-	EventName    string
+	// Context is the context the listener ran under: the caller's,
+	// detached from its cancellation, so it carries the caller's trace IDs.
+	Context context.Context
+	// EventName is the name of the event the listener was handling.
+	EventName string
+	// ListenerName is the listener's Go type.
 	ListenerName string
-	Error        string
+	// Error is the failure's text.
+	Error string
+	// Err is the failure itself: the listener's error, or the recovered
+	// panic as an error. It is not serialized: the JSON form keeps Error
+	// alone.
+	Err error `json:"-"`
+	// TraceID, SpanID and ParentID are the trace IDs of Context.
+	TraceID  string
+	SpanID   string
+	ParentID string
 }
 
 // Name returns the event name.
 func (e *AsyncFailed) Name() string { return "events.listener.failed" }
 
-// FailureError implements contract.FailureEvent: a listener that panicked
-// or errored on an async goroutine has no caller observing the failure, so
-// the dispatcher bridges it to the error Reporter chain.
+// FailureError implements contract.FailureEvent: a listener that failed with
+// no caller waiting on it has no caller observing the failure, so the
+// dispatcher bridges it to the error Reporter chain. It returns Err, the
+// failure with its type; an event without Err (one decoded from its JSON
+// form) returns a new error with the Error text, or nil when there is none.
 func (e *AsyncFailed) FailureError() error {
+	if e.Err != nil {
+		return e.Err
+	}
 	if e.Error == "" {
 		return nil
 	}
@@ -49,70 +60,20 @@ func (e *AsyncFailed) FailureSource() contract.ErrorSource {
 	return contract.ErrorSourceListener
 }
 
-// NewAsyncDispatcher creates a new async dispatcher
-func NewAsyncDispatcher() *AsyncDispatcher {
-	return &AsyncDispatcher{}
-}
-
-// SetFailureSink installs a sink that receives AsyncFailed events whenever a
-// listener panics or returns an error from a goroutine spawned by Push().
-// Passing nil disables failure dispatch.
-func (a *AsyncDispatcher) SetFailureSink(fn func(event interface{}) error) {
-	a.failureSinkMu.Lock()
-	defer a.failureSinkMu.Unlock()
-	a.failureSink = fn
-}
-
-// Push processes an event asynchronously in a panic-safe goroutine. Panics
-// from the listener are recovered and surfaced as an events.listener.failed event
-// via the configured failure sink.
-//
-// Context semantics: the ctx passed to the listener is derived from the
-// caller's ctx via context.WithoutCancel. Request-scoped values (trace IDs,
-// tenant IDs, etc.) flow through, but cancellation and deadlines do NOT.
-// The spawned goroutine can and will outlive the caller. Callers that need
-// cancellation to propagate to the listener should not use Push; either run
-// the listener synchronously or push to a queue with a cancellation contract
-// of your own.
-func (a *AsyncDispatcher) Push(ctx context.Context, event interface{}, listener Listener, delay time.Duration) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	bgCtx := context.WithoutCancel(ctx)
-	run := func() {
-		defer func() {
-			if p := recover(); p != nil {
-				a.dispatchFailure(bgCtx, event, listener, panicerr.FromRecovered(p))
-			}
-		}()
-		if err := listener.Handle(bgCtx, event); err != nil {
-			a.dispatchFailure(bgCtx, event, listener, err)
-		}
-	}
-
-	if delay > 0 {
-		time.AfterFunc(delay, func() { async.Go(run) })
-	} else {
-		async.Go(run)
-	}
-	return nil
-}
-
-func (a *AsyncDispatcher) dispatchFailure(ctx context.Context, event interface{}, listener Listener, err error) {
-	a.failureSinkMu.RLock()
-	sink := a.failureSink
-	a.failureSinkMu.RUnlock()
-	if sink == nil || err == nil {
-		return
-	}
-	// Best-effort: failure sink errors are intentionally ignored to avoid
-	// runaway recursion on a misbehaving sink.
-	_ = sink(&AsyncFailed{
+// newAsyncFailed returns the AsyncFailed for listener, which failed with
+// err while handling event under ctx.
+func newAsyncFailed(ctx context.Context, event interface{}, listener Listener, err error) *AsyncFailed {
+	traceID, spanID, parentID := trace.GetTraceContext(ctx)
+	return &AsyncFailed{
 		Context:      ctx,
 		EventName:    resolveEventName(event),
 		ListenerName: fmt.Sprintf("%T", listener),
 		Error:        err.Error(),
-	})
+		Err:          err,
+		TraceID:      traceID,
+		SpanID:       spanID,
+		ParentID:     parentID,
+	}
 }
 
 // PendingEvents tracks events that should be dispatched after database commit

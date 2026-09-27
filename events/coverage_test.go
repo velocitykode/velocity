@@ -151,31 +151,6 @@ func TestQueuedBaseListenerComplete(t *testing.T) {
 	}
 }
 
-// Test AsyncDispatcher full coverage
-func TestAsyncDispatcherFullCoverage(t *testing.T) {
-	dispatcher := NewAsyncDispatcher()
-	if dispatcher == nil {
-		t.Fatal("NewAsyncDispatcher should not return nil")
-	}
-
-	listener := &TestListener{}
-
-	// Test Push
-	err := dispatcher.Push(context.Background(), "test", listener, 10*time.Millisecond)
-	if err != nil {
-		t.Errorf("Push failed: %v", err)
-	}
-
-	testsync.Eventually(t, listener.WasHandled, time.Second, "async listener handles event")
-
-	// Test Push with error — just verify it doesn't leak the error up.
-	errorListener := &TestListener{shouldErr: true}
-	if err := dispatcher.Push(context.Background(), "error", errorListener, 0); err != nil {
-		t.Error("Push should not return listener errors")
-	}
-	testsync.Eventually(t, errorListener.WasHandled, time.Second, "error listener handled")
-}
-
 // Test Dispatcher with queue error
 func TestDispatcherQueueError(t *testing.T) {
 	d := NewDispatcher()

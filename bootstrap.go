@@ -342,8 +342,9 @@ func backgroundErrorContext(ctx context.Context, source contract.ErrorSource) *c
 
 // buildFailureReporter returns the bridge target for FailureEvent
 // dispatches: it forwards the failure to h.Report with an ErrorContext
-// carrying the trace ID, the source the event names and the event name.
-// It returns nil (no bridge) when h is nil.
+// carrying the trace ID, the source the event names and the event name;
+// a listener's failure also names the listener type and the event the
+// listener was handling. It returns nil (no bridge) when h is nil.
 func buildFailureReporter(h contract.ErrorHandler) func(ctx context.Context, event interface{}, err error) {
 	if h == nil {
 		return nil
@@ -356,6 +357,10 @@ func buildFailureReporter(h contract.ErrorHandler) func(ctx context.Context, eve
 		exCtx := backgroundErrorContext(ctx, source)
 		if n, ok := event.(interface{ Name() string }); ok {
 			exCtx.Extra["event"] = n.Name()
+		}
+		if failed, ok := event.(*events.AsyncFailed); ok {
+			exCtx.Extra["event_name"] = failed.EventName
+			exCtx.Extra["listener_type"] = failed.ListenerName
 		}
 		h.Report(err, exCtx)
 	}
