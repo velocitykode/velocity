@@ -252,18 +252,29 @@ func TestFileLock_BlockTimesOutWhileTheKeyStripeIsHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("take the key's stripe from instance 2: %v", err)
 	}
-	released := make(chan struct{})
+	// The stripe stays held until Block returns. The watchdog releases it
+	// only if Block has not returned after 10s, so a Block that waits for
+	// the stripe fails the test instead of hanging it.
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(unlock) }
+	blockReturned := make(chan struct{})
+	watchdogDone := make(chan struct{})
 	go func() {
-		defer close(released)
-		time.Sleep(500 * time.Millisecond)
-		unlock()
+		defer close(watchdogDone)
+		select {
+		case <-blockReturned:
+		case <-time.After(10 * time.Second):
+			release()
+		}
 	}()
 
 	var ran atomic.Bool
 	start := time.Now()
 	err = lock.Block(ctx, 50*time.Millisecond, func() { ran.Store(true) })
 	elapsed := time.Since(start)
-	<-released
+	close(blockReturned)
+	<-watchdogDone
+	release()
 
 	if !errors.Is(err, ErrLockTimeout) {
 		t.Fatalf("Block with the stripe held past its timeout = %v; want ErrLockTimeout", err)
