@@ -11,6 +11,7 @@ import (
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // Notifier is the interface satisfied by *Manager. It covers the methods
@@ -195,7 +196,11 @@ func (m *Manager) SendMany(ctx context.Context, notifiables []interface{}, notif
 			defer func() {
 				if r := recover(); r != nil {
 					err := panicerr.FromRecovered(r)
-					m.dispatchEvent(ctx, buildNotificationFailed(ctx, n, notification, "", err))
+					// Any span a channel delivery opened died with the
+					// panic; the failure is a span of its own under the
+					// caller's.
+					spanCtx, _ := trace.ContinueTrace(ctx)
+					m.dispatchEvent(spanCtx, buildNotificationFailed(spanCtx, n, notification, "", err))
 					errsMu.Lock()
 					errs = append(errs, fmt.Errorf("velocity/notification: send many panic: %w", err))
 					errsMu.Unlock()
@@ -219,6 +224,10 @@ func (m *Manager) SendMany(ctx context.Context, notifiables []interface{}, notif
 
 // sendViaChannel sends a notification through a specific channel.
 func (m *Manager) sendViaChannel(ctx context.Context, channelName string, notifiable interface{}, notification Notification) error {
+	// Delivery through one channel is its own span under the caller's span
+	// (a root span when ctx carries no trace). The channel runs inside it,
+	// and NotificationSent / NotificationFailed record it.
+	ctx, _ = trace.ContinueTrace(ctx)
 	ch, err := m.Channel(channelName)
 	if err != nil {
 		m.dispatchEvent(ctx, buildNotificationFailed(ctx, notifiable, notification, channelName, err))

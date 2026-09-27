@@ -10,6 +10,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // Manager manages multiple mail channels
@@ -132,6 +133,12 @@ func (m *Manager) Send(ctx context.Context, channel string, msg *Message) error 
 	}
 	subject := msg.GetSubject()
 
+	// The send is its own span under the caller's span (a root span when
+	// ctx carries no trace). The driver runs inside it, so an HTTP call to
+	// a mail API parents under the send, and MailSent / MailFailed record
+	// it.
+	ctx, _ = trace.ContinueTrace(ctx)
+
 	start := time.Now()
 	err = mailer.Send(ctx, msg)
 	duration := time.Since(start)
@@ -165,7 +172,10 @@ func (m *Manager) Broadcast(ctx context.Context, channels []string, msg *Message
 					for _, addr := range msg.GetTo() {
 						toEmails = append(toEmails, addr.Email)
 					}
-					dispatchMailFailed(m.dispatchEvent, ctx, toEmails, msg.GetSubject(), ch, err, 0)
+					// The span Send opened died with the panic; the
+					// failure is a span of its own under the caller's.
+					spanCtx, _ := trace.ContinueTrace(ctx)
+					dispatchMailFailed(m.dispatchEvent, spanCtx, toEmails, msg.GetSubject(), ch, err, 0)
 					errChan <- fmt.Errorf("velocity/mail: channel %s panic: %w", ch, err)
 				}
 			}()

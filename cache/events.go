@@ -86,9 +86,13 @@ func (e *CacheOperationFailed) Name() string {
 	return "cache.operation.failed"
 }
 
+// Each cache operation event is its own span under the caller's span (a
+// root span when ctx carries no trace): SpanID is the operation's span and
+// ParentID the caller's, per trace.ChildSpanIDs.
+
 // dispatchCacheHit dispatches a CacheHit event
 func (m *Manager) dispatchCacheHit(ctx context.Context, key, store string) {
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
+	traceID, spanID, parentID := trace.ChildSpanIDs(ctx)
 	m.dispatchEvent(ctx, &CacheHit{
 		Context:  ctx,
 		Key:      key,
@@ -101,7 +105,7 @@ func (m *Manager) dispatchCacheHit(ctx context.Context, key, store string) {
 
 // dispatchCacheMiss dispatches a CacheMiss event
 func (m *Manager) dispatchCacheMiss(ctx context.Context, key, store string) {
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
+	traceID, spanID, parentID := trace.ChildSpanIDs(ctx)
 	m.dispatchEvent(ctx, &CacheMiss{
 		Context:  ctx,
 		Key:      key,
@@ -114,7 +118,7 @@ func (m *Manager) dispatchCacheMiss(ctx context.Context, key, store string) {
 
 // dispatchCacheWritten dispatches a CacheWritten event
 func (m *Manager) dispatchCacheWritten(ctx context.Context, key, store string, ttl time.Duration) {
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
+	traceID, spanID, parentID := trace.ChildSpanIDs(ctx)
 	m.dispatchEvent(ctx, &CacheWritten{
 		Context:  ctx,
 		Key:      key,
@@ -128,7 +132,7 @@ func (m *Manager) dispatchCacheWritten(ctx context.Context, key, store string, t
 
 // dispatchCacheForgotten dispatches a CacheForgotten event
 func (m *Manager) dispatchCacheForgotten(ctx context.Context, key, store string) {
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
+	traceID, spanID, parentID := trace.ChildSpanIDs(ctx)
 	m.dispatchEvent(ctx, &CacheForgotten{
 		Context:  ctx,
 		Key:      key,
@@ -143,7 +147,7 @@ func (m *Manager) dispatchCacheForgotten(ctx context.Context, key, store string)
 // failed store operation. op is one of the lowercase verbs documented on
 // CacheOperationFailed; key is empty for keyless operations (flush).
 func (m *Manager) dispatchCacheOperationFailed(ctx context.Context, store, op, key string, opErr error) {
-	traceID, spanID, parentID := trace.GetTraceContext(ctx)
+	traceID, spanID, parentID := trace.ChildSpanIDs(ctx)
 	m.dispatchEvent(ctx, &CacheOperationFailed{
 		Context:  ctx,
 		Store:    store,

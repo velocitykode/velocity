@@ -54,8 +54,8 @@ type QueryExecuted struct {
 	File         string // Caller file
 	Line         int    // Caller line
 	TraceID      string // APM trace ID
-	SpanID       string // APM span ID
-	ParentID     string // Parent span ID for correlation
+	SpanID       string // The statement's own span
+	ParentID     string // The span the statement ran under (the tx span inside a transaction)
 }
 
 // Name returns the canonical event name.
@@ -83,8 +83,8 @@ type QueryFailed struct {
 	File     string // Caller file
 	Line     int    // Caller line
 	TraceID  string // APM trace ID
-	SpanID   string // APM span ID
-	ParentID string // Parent span ID for correlation
+	SpanID   string // The statement's own span
+	ParentID string // The span the statement ran under (the tx span inside a transaction)
 }
 
 // Name returns the canonical event name.
@@ -150,24 +150,6 @@ func txStatementCounter(ctx context.Context) *atomic.Int32 {
 	}
 	c, _ := ctx.Value(txStatementCounterKey{}).(*atomic.Int32)
 	return c
-}
-
-// txSpanIDKey scopes the surrounding tx span ID onto ctx so a nested
-// Manager.Transaction call can parent its own tx span under the outer one.
-// Without this, the inner call would read trace.GetSpanID(ctx), which points
-// at the outer tx body's stmt-root span (not the outer tx span itself).
-type txSpanIDKey struct{}
-
-func withTxSpanID(ctx context.Context, txSpanID string) context.Context {
-	return context.WithValue(ctx, txSpanIDKey{}, txSpanID)
-}
-
-func txSpanIDFromContext(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	s, _ := ctx.Value(txSpanIDKey{}).(string)
-	return s
 }
 
 // captureCallerInfo captures the file and line of the caller
@@ -297,6 +279,9 @@ func (o managerObserver) ObserveStatement(ev drivers.StatementEvent) {
 	}
 	// Only valid on this goroutine, at this instant.
 	file, line := applicationCaller()
+	// Each statement is its own span under the caller's span (a root span
+	// when ctx carries no trace).
+	traceID, spanID, parentID := trace.ChildSpanIDs(ctx)
 
 	if ev.Err != nil {
 		p.enqueue(ctx, &QueryFailed{
@@ -308,9 +293,9 @@ func (o managerObserver) ObserveStatement(ev drivers.StatementEvent) {
 			Duration:   ev.Duration,
 			File:       file,
 			Line:       line,
-			TraceID:    trace.GetTraceID(ctx),
-			SpanID:     trace.GetSpanID(ctx),
-			ParentID:   trace.GetParentID(ctx),
+			TraceID:    traceID,
+			SpanID:     spanID,
+			ParentID:   parentID,
 		})
 		return
 	}
@@ -330,8 +315,8 @@ func (o managerObserver) ObserveStatement(ev drivers.StatementEvent) {
 		Connection:   ev.Connection,
 		File:         file,
 		Line:         line,
-		TraceID:      trace.GetTraceID(ctx),
-		SpanID:       trace.GetSpanID(ctx),
-		ParentID:     trace.GetParentID(ctx),
+		TraceID:      traceID,
+		SpanID:       spanID,
+		ParentID:     parentID,
 	})
 }

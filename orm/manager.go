@@ -473,34 +473,20 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		return tx.Rollback()
 	}
 
-	// Mint a fresh span for the tx body so every QueryExecuted event running
-	// under fn parents under this span. The pre-existing tx span (if any)
-	// becomes the ParentID for nested Transaction calls, letting an APM
-	// exporter render nested transactions as a tree. For top-level calls the
-	// caller's span is the parent. Per-statement events read parentID from
-	// txCtx, so we install txSpanID as the parent on the body ctx and a fresh
-	// stmtRoot as the body's own span.
+	// The transaction is its own span under the caller's span (a root span
+	// when the caller has no trace; a nested Transaction's caller span is
+	// the outer tx span), and the body runs under it: every statement in fn
+	// is a span of its own whose ParentID is the tx span, and a nested
+	// Transaction parents its tx span under this one. ContinueTrace uses
+	// the Must* generators, so a transient entropy outage never fails a
+	// transaction; the ids degrade to the distinguishable fallback markers.
 	//
 	// Statements emitted under txTraceCtx increment txStmtCounter as the
 	// statement observer records them - synchronously, even though their
 	// events are delivered later - so the count ships accurately on the
 	// TransactionExecuted event.
-	parentSpanID := txSpanIDFromContext(ctx)
-	if parentSpanID == "" {
-		parentSpanID = trace.GetSpanID(ctx)
-	}
-	txTrace := trace.GetTraceID(ctx)
-	if txTrace == "" {
-		// Use Must* helpers: a transaction must not fail because of a
-		// transient entropy outage. On rand failure the IDs degrade to
-		// the distinguishable fallback markers (not all-zero hex), so
-		// downstream APM cannot conflate fake with real traces.
-		txTrace = trace.MustGenerateTraceID()
-	}
-	txSpanID := trace.MustGenerateSpanID()
-	stmtRootSpan := trace.MustGenerateSpanID()
-	txTraceCtx := trace.WithFullContext(ctx, txTrace, stmtRootSpan, txSpanID)
-	txTraceCtx = withTxSpanID(txTraceCtx, txSpanID)
+	txTraceCtx, txSpanID := trace.ContinueTrace(ctx)
+	txTrace, parentSpanID := trace.GetTraceID(txTraceCtx), trace.GetParentID(txTraceCtx)
 	txStmtCounter := &atomic.Int32{}
 	txTraceCtx = withTxStatementCounter(txTraceCtx, txStmtCounter)
 	txStart := time.Now()
