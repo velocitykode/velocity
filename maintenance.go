@@ -61,13 +61,12 @@ var maintenancePathLogOnce sync.Once
 // the resolved path is logged at WARN so operators can verify which
 // directory the framework is watching; subsequent calls are silent.
 //
-// The line goes to logger, or to fallback when logger is nil, or to
-// slog.Default() when both are.
+// The line goes to logger, or to slog.Default() when logger is nil.
 //
 // Returns ("", err) when VELOCITY_MAINTENANCE_ROOT is set but fails
 // validation. Callers treat that as "no marker file present" so an
 // operator typo cannot accidentally pin the app into maintenance.
-func maintenanceMarkerPath(logger contract.Logger, fallback *slog.Logger) (string, error) {
+func maintenanceMarkerPath(logger contract.Logger) (string, error) {
 	p, err := maintpath.MarkerPath()
 	maintenancePathLogOnce.Do(func() {
 		source := maintpath.Source()
@@ -75,14 +74,10 @@ func maintenanceMarkerPath(logger contract.Logger, fallback *slog.Logger) (strin
 		if err != nil {
 			msg, kvs = "maintenance marker path resolution failed", []any{"error", err.Error(), "source", source}
 		}
-		switch {
-		case logger != nil:
-			logger.Warn(msg, kvs...)
-		case fallback != nil:
-			fallback.Warn(msg, kvs...)
-		default:
-			slog.Default().Warn(msg, kvs...)
+		if logger == nil {
+			logger = slogLogger{l: slog.Default()}
 		}
+		logger.Warn(msg, kvs...)
 	})
 	return p, err
 }
@@ -149,12 +144,10 @@ type maintenanceConfig struct {
 	// construction (see maintenanceSalt) so the per-request bypass paths
 	// perform no environment reads.
 	salt []byte
-	// logger receives the one-time marker-path resolution warning; set by
-	// WithMaintenanceLogger. Nil sends the warning to fallback.
+	// logger receives the one-time marker-path resolution warning: the
+	// logger WithMaintenanceLogger set, otherwise slog.Default() as it stood
+	// when the middleware was built.
 	logger contract.Logger
-	// fallback is slog.Default() as it stood when the middleware was
-	// built: the marker-path warning's destination when no logger is set.
-	fallback *slog.Logger
 }
 
 // WithMaintenanceExcludePaths appends path prefixes to the bypass list.
@@ -194,7 +187,7 @@ func resolveMaintenanceConfig(opts ...MaintenanceOption) *maintenanceConfig {
 	cfg := &maintenanceConfig{
 		excludePaths: append([]string{}, defaultMaintenanceExcludePaths...),
 		salt:         maintenanceSalt(),
-		fallback:     slog.Default(),
+		logger:       slogLogger{l: slog.Default()},
 	}
 	if raw, ok := os.LookupEnv("VELOCITY_MAINTENANCE_EXCLUDE_PATHS"); ok {
 		for _, p := range strings.Split(raw, ",") {
@@ -258,7 +251,7 @@ func PreventRequestsDuringMaintenance(opts ...MaintenanceOption) router.Middlewa
 	cfg := resolveMaintenanceConfig(opts...)
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
-			path, err := maintenanceMarkerPath(cfg.logger, cfg.fallback)
+			path, err := maintenanceMarkerPath(cfg.logger)
 			if err != nil {
 				// Misconfigured root: treat as "not in maintenance" so a
 				// bad env var cannot lock everyone out. The error is
@@ -319,7 +312,7 @@ func PreventRequestsDuringMaintenance(opts ...MaintenanceOption) router.Middlewa
 // Retained for backwards compatibility with callers that only need a
 // boolean status check.
 func isDownForMaintenance() bool {
-	path, err := maintenanceMarkerPath(nil, slog.Default())
+	path, err := maintenanceMarkerPath(nil)
 	if err != nil {
 		return false
 	}

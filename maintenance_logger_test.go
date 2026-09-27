@@ -62,6 +62,35 @@ func TestPreventRequestsDuringMaintenance_WarnsThroughSlogDefaultAtConstruction(
 	}
 }
 
+// TestPreventRequestsDuringMaintenance_SlogDefaultKeepsWarnLevelAndSource
+// pins that the marker-path warning reaches the slog default captured at
+// construction exactly as a direct *slog.Logger Warn call from maintenance.go
+// would write it: warn level, the same attributes, and a source naming
+// maintenance.go rather than the adapter that carries the line.
+func TestPreventRequestsDuringMaintenance_SlogDefaultKeepsWarnLevelAndSource(t *testing.T) {
+	useTempMaintRoot(t)
+	prev, prevOut, prevFlags := slog.Default(), stdlog.Writer(), stdlog.Flags()
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+		stdlog.SetOutput(prevOut)
+		stdlog.SetFlags(prevFlags)
+	})
+
+	var out bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&out, &slog.HandlerOptions{AddSource: true})))
+	runMaintenanceOnce(t, PreventRequestsDuringMaintenance())
+
+	line := out.String()
+	for _, want := range []string{"level=WARN", `msg="maintenance marker path resolved"`, "path=", "source="} {
+		if !strings.Contains(line, want) {
+			t.Errorf("warning %q lacks %q", line, want)
+		}
+	}
+	if !strings.Contains(line, "/maintenance.go:") || strings.Contains(line, "slog_logger.go") {
+		t.Errorf("warning %q, want its source in maintenance.go", line)
+	}
+}
+
 // entriesWith counts l's entries with msg, at level when level is set.
 func entriesWith(l *levelLogger, level, msg string) int {
 	l.mu.Lock()
