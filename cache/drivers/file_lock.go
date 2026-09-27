@@ -65,10 +65,17 @@ func (md fileLockMetadata) held(now time.Time) bool {
 //
 // The stripe is shared with the cache writes of the keys that hash to
 // it, so an acquisition by Get (and so Run) waits, up to fileKeyLockWait,
-// while such a write holds it. Block bounds that stripe wait by the time
-// it has left. The retry interval between Block's own attempts is
-// unchanged, so when the holder releases in between, an acquisition can
-// still land up to one retry interval after the timeout.
+// while such a write holds it. Block's timeout is a retry budget, not a
+// hard deadline. Block limits the stripe wait inside each attempt to the
+// time it has left, so a stripe still held when that budget is spent
+// ends the attempt: a cache write holding the stripe past the timeout
+// ends in ErrLockTimeout and the callback does not run. Block pauses
+// 100ms between its own attempts, so a lock record released between two
+// attempts can be taken by the next one: nominally up to one retry
+// interval after the timeout, later under scheduling or filesystem
+// delays. This stripe bound applies to the lock's own Block; the generic
+// BlockLock helper probes through Get, which keeps the fileKeyLockWait
+// stripe wait.
 type FileLock struct {
 	store *fileLockStore
 	key   string
@@ -184,9 +191,12 @@ func (l *FileLock) GetWithErr(ctx context.Context) (bool, error) {
 	return l.acquire(ctx, fileKeyLockWait)
 }
 
-// getBefore is the acquisition attempt of Block: GetWithErr waiting
-// for the key's stripe only until deadline. An attempt at or after
-// deadline still takes a free stripe, without waiting for a held one.
+// getBefore is the acquisition attempt of Block: GetWithErr with its
+// wait for the key's stripe limited to the time left before deadline.
+// An attempt at or after deadline still makes one try, taking a free
+// stripe and giving up on a held one without waiting. Only the stripe
+// wait is limited; the filesystem calls of the attempt are not bounded
+// by deadline.
 func (l *FileLock) getBefore(ctx context.Context, deadline time.Time) bool {
 	wait := min(max(time.Until(deadline), 0), fileKeyLockWait)
 	acquired, _ := l.acquire(ctx, wait)
@@ -284,12 +294,14 @@ func (l *FileLock) Run(ctx context.Context, callback func()) error {
 
 // Block polls for the lock up to timeout (every 100ms) then runs the
 // callback under the lock. Returns ErrLockTimeout on timeout, or
-// ctx.Err() if ctx is cancelled before acquisition. An attempt waits for
-// the key's stripe only for the time Block has left, so a cache write
-// holding the stripe past the timeout ends in ErrLockTimeout and the
-// callback does not run. A lock record released between two attempts can
-// still be taken by the next attempt, up to one retry interval after the
-// timeout.
+// ctx.Err() if ctx is cancelled before acquisition. The timeout is a
+// retry budget, not a hard deadline. An attempt waits for the key's
+// stripe only for the time Block has left, so a stripe still held when
+// that budget is spent ends the attempt: a cache write holding the
+// stripe past the timeout ends in ErrLockTimeout and the callback does
+// not run. A lock record released between two attempts can be taken by
+// the next attempt: nominally up to one retry interval after the
+// timeout, later under scheduling or filesystem delays.
 func (l *FileLock) Block(ctx context.Context, timeout time.Duration, callback func()) error {
 	return blockLock(ctx, l.getBefore, l.Release, timeout, callback)
 }
