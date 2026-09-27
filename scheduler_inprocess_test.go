@@ -1,3 +1,8 @@
+//go:build unix
+
+// The serve tests below stop the server by sending the test process
+// SIGTERM, which only unix platforms deliver.
+
 package velocity
 
 import (

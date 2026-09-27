@@ -87,7 +87,7 @@ func startVite() *exec.Cmd {
 	cmd := exec.Command(runner, "run", "dev")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	startInOwnProcessGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
 		prism.Warning(fmt.Sprintf("Failed to start Vite: %v", err))
@@ -115,7 +115,7 @@ func setupGracefulShutdown(viteCmd *exec.Cmd) {
 			// plugin's own SIGINT/SIGTERM/SIGHUP handlers remove
 			// public/hot before exit so a later `vel build` + run
 			// does not start in dev mode by accident.
-			syscall.Kill(-viteCmd.Process.Pid, syscall.SIGTERM)
+			stopProcessGroup(viteCmd)
 		}
 		os.Exit(0)
 	})
