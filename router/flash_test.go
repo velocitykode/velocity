@@ -56,6 +56,8 @@ func (l *warnLog) Debug(string, ...any) {}
 func (l *warnLog) Info(string, ...any)  {}
 func (l *warnLog) Error(string, ...any) {}
 func (l *warnLog) Fatal(string, ...any) {}
+
+func (l *warnLog) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 func (l *warnLog) Warn(msg string, kvs ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/websocket"
 )
 
@@ -25,6 +26,8 @@ func (l *captureLogger) Warn(msg string, kvs ...any) {
 
 func (*captureLogger) Debug(string, ...any) {}
 func (*captureLogger) Fatal(string, ...any) {}
+
+func (l *captureLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 func (l *captureLogger) warnCount() int {
 	l.mu.Lock()

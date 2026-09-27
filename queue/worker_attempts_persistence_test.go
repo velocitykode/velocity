@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // failingIdentifiableJob is an Identifiable job that always fails. Used
@@ -65,6 +67,8 @@ func (c *captureLogger) Warn(msg string, kvs ...any)  { c.record("WARN", msg, kv
 func (c *captureLogger) Error(msg string, kvs ...any) { c.record("ERROR", msg, kvs) }
 func (*captureLogger) Debug(string, ...any)           {}
 func (*captureLogger) Fatal(string, ...any)           {}
+
+func (l *captureLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 func (c *captureLogger) countContaining(needle string) int {
 	c.mu.Lock()

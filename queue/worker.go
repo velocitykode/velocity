@@ -32,6 +32,9 @@ func (nullLogger) Warn(string, ...any)  {}
 func (nullLogger) Error(string, ...any) {}
 func (nullLogger) Fatal(string, ...any) {}
 
+// With returns the silent sink itself.
+func (n nullLogger) With(...any) contract.Logger { return n }
+
 // retryPushTimeout bounds how long the worker will wait when re-queueing
 // a failed job for retry. It is intentionally short so that a slow driver
 // (e.g. Redis partition, DB lock) cannot hold shutdown open. If the retry

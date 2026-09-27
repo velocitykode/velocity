@@ -70,6 +70,8 @@ func (*mockLogger) Warn(string, ...any)  {}
 func (*mockLogger) Error(string, ...any) {}
 func (*mockLogger) Fatal(string, ...any) {}
 
+func (l *mockLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
 // --- tests ---
 
 func TestBus_Dispatch_RegisteredHandler(t *testing.T) {

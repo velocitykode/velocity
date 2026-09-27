@@ -40,6 +40,8 @@ func (*fakeLogger) Debug(string, ...any) {}
 func (*fakeLogger) Info(string, ...any)  {}
 func (*fakeLogger) Fatal(string, ...any) {}
 
+func (l *fakeLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
 // TestManager_SetLogger_StoresLogger verifies SetLogger wires a logger
 // that Transaction can reach without racing.
 func TestManager_SetLogger_StoresLogger(t *testing.T) {

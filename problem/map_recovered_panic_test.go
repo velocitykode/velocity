@@ -73,6 +73,8 @@ func (quietAsyncLogger) Info(string, ...any)  {}
 func (quietAsyncLogger) Warn(string, ...any)  {}
 func (quietAsyncLogger) Fatal(string, ...any) {}
 
+func (l quietAsyncLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
 // getInvoice serves one JSON GET /invoices/7 through h.
 func getInvoice(h http.Handler) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()

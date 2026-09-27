@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	testsync "github.com/velocitykode/velocity/testing"
 )
 
@@ -37,6 +38,8 @@ func (l *levelLogger) Info(msg string, kvs ...any)  { l.record("info", msg, kvs)
 func (l *levelLogger) Warn(msg string, kvs ...any)  { l.record("warn", msg, kvs) }
 func (l *levelLogger) Error(msg string, kvs ...any) { l.record("error", msg, kvs) }
 func (l *levelLogger) Fatal(msg string, kvs ...any) { l.record("fatal", msg, kvs) }
+
+func (l *levelLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 // errorLines returns the lines recorded at error level.
 func (l *levelLogger) errorLines() []leveledLine {

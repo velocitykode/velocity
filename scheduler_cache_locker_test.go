@@ -12,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/cache/drivers"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/scheduler"
 )
 
@@ -209,6 +210,8 @@ func (*captureLogger) Debug(string, ...any) {}
 func (*captureLogger) Info(string, ...any)  {}
 func (*captureLogger) Error(string, ...any) {}
 func (*captureLogger) Fatal(string, ...any) {}
+
+func (l *captureLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 func (c *captureLogger) Warns() []capturedWarn {
 	c.mu.Lock()

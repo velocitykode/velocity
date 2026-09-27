@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // waitFor polls the condition function until it returns true or the timeout expires.
@@ -1037,6 +1039,8 @@ func (r *recordingLogger) Error(msg string, _ ...any) {
 
 func (*recordingLogger) Debug(string, ...any) {}
 func (*recordingLogger) Fatal(string, ...any) {}
+
+func (l *recordingLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 func (r *recordingLogger) warnCount(substr string) int {
 	r.mu.Lock()

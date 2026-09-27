@@ -26,6 +26,8 @@ func (l *warnLog) Warn(msg string, _ ...any) {
 func (l *warnLog) Error(string, ...any) {}
 func (l *warnLog) Fatal(string, ...any) {}
 
+func (l *warnLog) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
 // The engine takes a logger (contract.LoggerAware) and hands it to the
 // Bond it renders through, so the Bond's warnings reach it.
 func TestEngineSetLogger_ReachesItsBond(t *testing.T) {

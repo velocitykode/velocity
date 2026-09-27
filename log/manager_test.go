@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func TestNewManager(t *testing.T) {
@@ -213,6 +215,8 @@ func (c *countingLogger) Info(msg string, kvs ...any)  {}
 func (c *countingLogger) Warn(msg string, kvs ...any)  {}
 func (c *countingLogger) Error(msg string, kvs ...any) {}
 func (c *countingLogger) Fatal(msg string, kvs ...any) {}
+
+func (c *countingLogger) With(kvs ...any) contract.Logger { return contract.BindFields(c, kvs...) }
 func (c *countingLogger) Shutdown(ctx context.Context) error {
 	atomic.AddInt32(c.shutdowns, 1)
 	return nil

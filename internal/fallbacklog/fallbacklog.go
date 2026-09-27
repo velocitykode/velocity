@@ -54,6 +54,9 @@ func (Logger) Error(msg string, kvs ...any) { write("ERROR", msg, kvs) }
 // Fatal writes an ERROR line; library code never exits the process.
 func (Logger) Fatal(msg string, kvs ...any) { write("ERROR", msg, kvs) }
 
+// With binds kvs before each line's own pairs.
+func (l Logger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
 // Resolve returns l, or the fallback Logger when l is nil.
 func Resolve(l contract.Logger) contract.Logger {
 	if l == nil {

@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // outboxTestPayload is a tiny gob-encodable type used across the outbox tests.
@@ -889,6 +891,8 @@ func (testLogger) Error(_ string, _ ...any) {}
 func (testLogger) Debug(string, ...any)     {}
 func (testLogger) Info(string, ...any)      {}
 func (testLogger) Fatal(string, ...any)     {}
+
+func (l testLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 func contains(s, sub string) bool {
 	return len(sub) == 0 || (len(s) >= len(sub) && stringIndex(s, sub) >= 0)

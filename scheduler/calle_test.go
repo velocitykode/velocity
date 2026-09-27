@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // TestJob_CallE_FiresOnFailureForReturnedError covers item 6: a closure
@@ -423,6 +425,8 @@ func (l *captureLogger) Warn(msg string, _ ...interface{})  { l.add(&l.wrn, msg)
 func (l *captureLogger) Error(msg string, _ ...interface{}) { l.add(&l.err, msg) }
 func (l *captureLogger) Debug(msg string, _ ...interface{}) { l.add(&l.dbg, msg) }
 func (*captureLogger) Fatal(string, ...any)                 {}
+
+func (l *captureLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 func (l *captureLogger) add(buf *[]string, msg string) {
 	l.mu.Lock()

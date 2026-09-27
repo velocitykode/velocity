@@ -49,6 +49,8 @@ func (quietLogger) Error(string, ...any) {}
 func (quietLogger) Debug(string, ...any) {}
 func (quietLogger) Fatal(string, ...any) {}
 
+func (l quietLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
 // TestRedisDriver_JobFailedMarkedWhenHookReported asserts that on the redis
 // driver, which fails a job through Failed and runs the job's hook on the
 // instance the worker popped, the queue.job.failed event carries the job's own

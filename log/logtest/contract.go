@@ -94,6 +94,38 @@ func RunLoggerContractTests(t *testing.T, factory LoggerFactory) {
 		wg.Wait()
 	})
 
+	t.Run("With_DoesNotPanic", func(t *testing.T) {
+		l := factory(t)
+		assertNoPanic(t, func() {
+			bound := l.With("request_id", "r1")
+			if bound == nil {
+				t.Fatal("With returned nil")
+			}
+			bound.Info("bound", "k", "v")
+			bound.With("job_id", "j1", "dangling").Warn("nested and odd", "k", "v")
+			l.With().Error("no pairs")
+			l.Info("receiver still logs", "k", "v")
+		})
+	})
+
+	t.Run("With_ConcurrentIsSafe", func(t *testing.T) {
+		l := factory(t)
+		var wg sync.WaitGroup
+		const goroutines = 8
+		wg.Add(goroutines)
+		for i := 0; i < goroutines; i++ {
+			go func(i int) {
+				defer wg.Done()
+				bound := l.With("g", i)
+				for j := 0; j < 20; j++ {
+					bound.Info("concurrent bound", "n", j)
+					l.Info("concurrent", "n", j)
+				}
+			}(i)
+		}
+		wg.Wait()
+	})
+
 	t.Run("CRLF_InMessage_DoesNotPanic", func(t *testing.T) {
 		l := factory(t)
 		// Loggers sanitise CRLF (see log/internal/sanitize); the

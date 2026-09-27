@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/grpc/interceptors"
 	"github.com/velocitykode/velocity/log"
@@ -97,6 +98,8 @@ func (l *requestLog) Info(_ string, kvs ...any)  { l.record(kvs) }
 func (l *requestLog) Warn(_ string, kvs ...any)  { l.record(kvs) }
 func (l *requestLog) Error(_ string, kvs ...any) { l.record(kvs) }
 func (l *requestLog) Fatal(_ string, kvs ...any) { l.record(kvs) }
+
+func (l *requestLog) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 func (l *requestLog) last() string {
 	l.mu.Lock()

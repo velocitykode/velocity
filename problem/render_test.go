@@ -319,6 +319,8 @@ func (panicLogger) Warn(string, ...any)  { panic("log") }
 func (panicLogger) Error(string, ...any) { panic("log") }
 func (panicLogger) Fatal(string, ...any) { panic("log") }
 
+func (l panicLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
 func TestRender_ClientGoneWritesNothing(t *testing.T) {
 	h, rep, _ := newTestHandler()
 	ctx, cancel := context.WithCancel(context.Background())

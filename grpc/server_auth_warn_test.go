@@ -8,6 +8,7 @@ import (
 
 	"google.golang.org/grpc"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/interceptors"
 )
 
@@ -23,6 +24,8 @@ func (l *warnCaptureLogger) Debug(string, ...any) {}
 func (l *warnCaptureLogger) Info(string, ...any)  {}
 func (l *warnCaptureLogger) Error(string, ...any) {}
 func (l *warnCaptureLogger) Fatal(string, ...any) {}
+
+func (l *warnCaptureLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 func (l *warnCaptureLogger) Warn(msg string, _ ...any) {
 	l.mu.Lock()

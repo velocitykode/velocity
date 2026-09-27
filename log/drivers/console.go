@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/log/internal/sanitize"
 )
 
@@ -13,6 +14,9 @@ import (
 type ConsoleLogger struct {
 	level int // minimum level: 0=debug, 1=info, 2=warn, 3=error, 4=fatal
 	out   io.Writer
+	// fields are the key-value pairs With bound, written before each
+	// line's own pairs.
+	fields []any
 }
 
 // NewConsoleLogger creates a new console logger that outputs to stdout.
@@ -50,20 +54,38 @@ func (c *ConsoleLogger) formatMessage(level, msg string, kvs ...any) string {
 
 	logLine := fmt.Sprintf("[%s] %s: %s", timestamp, level, sanitize.Value(msg))
 
-	if len(kvs) > 0 {
+	if len(c.fields) > 0 || len(kvs) > 0 {
 		logLine += " |"
-		for i := 0; i < len(kvs); i += 2 {
-			if i+1 < len(kvs) {
-				// Sanitise both halves: a user-tainted kv key forges
-				// a log line just as effectively as a tainted value.
-				k := sanitize.Value(fmt.Sprintf("%v", kvs[i]))
-				v := sanitize.Value(fmt.Sprintf("%v", kvs[i+1]))
-				logLine += fmt.Sprintf(" %s=%s", k, v)
-			}
-		}
+		logLine = appendPairs(logLine, c.fields)
+		logLine = appendPairs(logLine, kvs)
 	}
 
 	return logLine
+}
+
+// appendPairs appends each complete key-value pair of kvs to line as
+// " key=value"; a trailing key without a value is left out.
+func appendPairs(line string, kvs []any) string {
+	for i := 0; i+1 < len(kvs); i += 2 {
+		// Sanitise both halves: a user-tainted kv key forges
+		// a log line just as effectively as a tainted value.
+		k := sanitize.Value(fmt.Sprintf("%v", kvs[i]))
+		v := sanitize.Value(fmt.Sprintf("%v", kvs[i+1]))
+		line += fmt.Sprintf(" %s=%s", k, v)
+	}
+	return line
+}
+
+// With returns a ConsoleLogger writing to the same destination at the same
+// level with kvs written before each line's own pairs, after any pairs c
+// already binds. A trailing key without a value is left out.
+func (c *ConsoleLogger) With(kvs ...any) contract.Logger {
+	if len(kvs)%2 == 1 {
+		kvs = kvs[:len(kvs)-1]
+	}
+	fields := make([]any, 0, len(c.fields)+len(kvs))
+	fields = append(fields, c.fields...)
+	return &ConsoleLogger{level: c.level, out: c.out, fields: append(fields, kvs...)}
 }
 
 // Level returns the configured minimum severity (0=debug .. 4=fatal). A

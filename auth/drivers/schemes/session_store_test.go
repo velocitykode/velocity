@@ -13,6 +13,7 @@ import (
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/session"
 	"github.com/velocitykode/velocity/cache/drivers"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/router"
 )
@@ -33,6 +34,8 @@ func (l *warnLog) Warn(msg string, _ ...any) {
 
 func (*warnLog) Debug(string, ...any) {}
 func (*warnLog) Fatal(string, ...any) {}
+
+func (l *warnLog) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 func (l *warnLog) contains(s string) bool {
 	l.mu.Lock()

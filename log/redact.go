@@ -520,6 +520,15 @@ func (r *redactingLogger) Fatal(msg string, kvs ...any) {
 	r.inner.Fatal(m, k...)
 }
 
+// With returns a redacting logger over the inner logger's With, binding kvs
+// run through the redactor chain the way each line's own pairs are, so a
+// secret in a bound value is redacted before it reaches the driver. The
+// inner logger's level still gates redaction.
+func (r *redactingLogger) With(kvs ...any) Logger {
+	_, redacted := r.redact("", kvs)
+	return &redactingLogger{inner: r.inner.With(redacted...), redactor: r.redactor, level: r.level}
+}
+
 // Shutdown forwards to the wrapped logger when it implements the
 // optional Shutdowner interface. Without this the framework would
 // leak file handles whenever a redacting wrapper was the outermost

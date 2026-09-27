@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/velocitykode/velocity/contract"
 	testsync "github.com/velocitykode/velocity/testing"
 )
 
@@ -85,6 +86,8 @@ func (l *errCapLogger) Error(msg string, _ ...any) {
 
 func (*errCapLogger) Debug(string, ...any) {}
 func (*errCapLogger) Fatal(string, ...any) {}
+
+func (l *errCapLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 func (l *errCapLogger) has(substr string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()

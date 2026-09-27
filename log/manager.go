@@ -268,6 +268,17 @@ func (s *StackLogger) Fatal(msg string, kvs ...any) {
 	}
 }
 
+// With returns a stack over each child's With(kvs...), so every child
+// writes kvs before each line's own pairs. The returned stack does not own
+// those children: its Shutdown closes nothing.
+func (s *StackLogger) With(kvs ...any) Logger {
+	children := make([]Logger, len(s.loggers))
+	for i, l := range s.loggers {
+		children[i] = l.With(kvs...)
+	}
+	return newManagerStackLogger(children...)
+}
+
 // Level reports the stack's effective minimum severity so the below-level
 // redaction gate (see redactingLogger / WithRedactors) can skip redaction for
 // a record every child would discard. A stack fans each record out to all
@@ -329,3 +340,6 @@ func (n *NullLogger) Info(msg string, kvs ...any)  {}
 func (n *NullLogger) Warn(msg string, kvs ...any)  {}
 func (n *NullLogger) Error(msg string, kvs ...any) {}
 func (n *NullLogger) Fatal(msg string, kvs ...any) {}
+
+// With returns n: a line with bound pairs is discarded like any other.
+func (n *NullLogger) With(kvs ...any) Logger { return n }

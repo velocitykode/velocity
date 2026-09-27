@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	testsync "github.com/velocitykode/velocity/testing"
 )
@@ -179,3 +180,5 @@ func (l hookPanicLogger) Error(msg string, _ ...any) {
 
 func (hookPanicLogger) Debug(string, ...any) {}
 func (hookPanicLogger) Fatal(string, ...any) {}
+
+func (l hookPanicLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }

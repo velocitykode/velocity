@@ -876,6 +876,8 @@ func (l *errLineLogger) Debug(string, ...any) {}
 func (l *errLineLogger) Info(string, ...any)  {}
 func (l *errLineLogger) Warn(string, ...any)  {}
 func (l *errLineLogger) Fatal(string, ...any) {}
+
+func (l *errLineLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 func (l *errLineLogger) Error(msg string, kvs ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

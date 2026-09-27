@@ -7,6 +7,7 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // recordingLogger keeps every Warn message for assertions.
@@ -24,6 +25,8 @@ func (l *recordingLogger) Warn(msg string, _ ...any) {
 }
 func (l *recordingLogger) Error(string, ...any) {}
 func (l *recordingLogger) Fatal(string, ...any) {}
+
+func (l *recordingLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 // The environment gate covers the cookie security attributes only: a
 // development profile warns about an insecure cookie and proceeds, and

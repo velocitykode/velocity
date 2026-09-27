@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/queue"
 )
 
@@ -46,6 +47,8 @@ func (l *redisCaptureLogger) Warn(msg string, _ ...any) {
 
 func (*redisCaptureLogger) Debug(string, ...any) {}
 func (*redisCaptureLogger) Fatal(string, ...any) {}
+
+func (l *redisCaptureLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 func (l *redisCaptureLogger) countContaining(needle string) int {
 	l.mu.Lock()

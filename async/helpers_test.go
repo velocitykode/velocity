@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -37,6 +38,8 @@ func (*captureLogger) Debug(string, ...any) {}
 func (*captureLogger) Info(string, ...any)  {}
 func (*captureLogger) Warn(string, ...any)  {}
 func (*captureLogger) Fatal(string, ...any) {}
+
+func (l *captureLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 func (c *captureLogger) snapshot() []capturedEntry {
 	c.mu.Lock()

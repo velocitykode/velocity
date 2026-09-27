@@ -34,6 +34,8 @@ func (l *recLogger) Warn(msg string, kvs ...any)  { l.add("warn", msg, kvs) }
 func (l *recLogger) Error(msg string, kvs ...any) { l.add("error", msg, kvs) }
 func (l *recLogger) Fatal(msg string, kvs ...any) { l.add("fatal", msg, kvs) }
 
+func (l *recLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
 func (l *recLogger) all() []logEntry {
 	l.mu.Lock()
 	defer l.mu.Unlock()

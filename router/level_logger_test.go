@@ -1,5 +1,7 @@
 package router
 
+import "github.com/velocitykode/velocity/contract"
+
 // levelLogger is a contract.Logger that hands error- and warn-level lines
 // to the funcs set and drops every other line, so a test observes the
 // router's default error path per level.
@@ -23,3 +25,5 @@ func (l levelLogger) Warn(msg string, kvs ...any) {
 func (levelLogger) Debug(string, ...any) {}
 func (levelLogger) Info(string, ...any)  {}
 func (levelLogger) Fatal(string, ...any) {}
+
+func (l levelLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }

@@ -171,11 +171,9 @@ type RedirectAllowlist interface {
 	AllowedRedirectHosts() []string
 }
 
-// Logger is the logging contract shared across the framework. It mirrors
-// the log package's Logger interface exactly (Debug/Info/Warn/Error/Fatal),
-// so *log.StackLogger, log.NullLogger, and the redacting logger all satisfy
-// it with no adapter, and a Logger value is interchangeable with a
-// log.Logger anywhere a concrete logger is expected.
+// Logger is the logging contract shared across the framework. The log
+// package's Logger is this interface, so every log driver, the stack and
+// null loggers and the redacting logger satisfy it with no adapter.
 //
 // app.Services types its Log field as this contract so the app leaf need
 // not import log; the router only emits warnings (dropped-event and
@@ -192,6 +190,11 @@ type Logger interface {
 	Warn(msg string, kvs ...any)
 	Error(msg string, kvs ...any)
 	Fatal(msg string, kvs ...any)
+	// With returns a Logger that writes every line as this one does, with
+	// kvs placed before the line's own key-value pairs. The receiver is
+	// unchanged. A Logger with no field binding of its own implements it
+	// with BindFields.
+	With(kvs ...any) Logger
 }
 
 // Encryptor is the contract for symmetric encryption. Implemented by the

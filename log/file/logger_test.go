@@ -315,3 +315,33 @@ func TestDirModeFromFileMode(t *testing.T) {
 		}
 	}
 }
+
+// A logger With returned writes to its parent's file, its bound pairs
+// before each line's own, and its Shutdown leaves the file open.
+func TestFileLogger_With(t *testing.T) {
+	dir := t.TempDir()
+	parent := NewFileLogger(dir, 0, 0)
+	defer parent.Shutdown(context.Background())
+	child := parent.With("request_id", "r1")
+
+	child.Info("bound line", "k", "v")
+	if err := child.(*FileLogger).Shutdown(context.Background()); err != nil {
+		t.Fatalf("child Shutdown: %v", err)
+	}
+	parent.Info("parent line", "k", "v")
+
+	content, err := os.ReadFile(filepath.Join(dir, "velocity-"+time.Now().Format("2006-01-02")+".log"))
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	out := string(content)
+	if !strings.Contains(out, "bound line | request_id=r1 k=v") {
+		t.Errorf("bound line missing its pairs:\n%s", out)
+	}
+	if !strings.Contains(out, "parent line | k=v") {
+		t.Errorf("parent line missing after the child's Shutdown:\n%s", out)
+	}
+	if parent.file == nil {
+		t.Error("the child's Shutdown closed the parent's file")
+	}
+}

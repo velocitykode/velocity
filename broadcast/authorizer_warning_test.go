@@ -4,6 +4,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // warnSink is a contract.Logger that hands each warn-level message to the
@@ -15,6 +17,8 @@ func (warnSink) Debug(string, ...any)        {}
 func (warnSink) Info(string, ...any)         {}
 func (warnSink) Error(string, ...any)        {}
 func (warnSink) Fatal(string, ...any)        {}
+
+func (l warnSink) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 // TestSetAuthorizer_WarnsWithoutSecret verifies the fail-loud behaviour for the
 // authorizer-without-verifier misconfiguration: installing a non-deny

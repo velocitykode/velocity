@@ -26,6 +26,8 @@ func (l *warnCounter) Warn(string, ...any)  { l.mu.Lock(); l.warn++; l.mu.Unlock
 func (l *warnCounter) Error(string, ...any) { l.mu.Lock(); l.error++; l.mu.Unlock() }
 func (l *warnCounter) Fatal(string, ...any) { l.mu.Lock(); l.error++; l.mu.Unlock() }
 
+func (l *warnCounter) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
 func (l *warnCounter) counts() (int, int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

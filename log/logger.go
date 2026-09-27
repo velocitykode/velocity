@@ -3,6 +3,8 @@ package log
 import (
 	"context"
 	"strings"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // Shutdowner is an optional interface loggers may implement for graceful shutdown.
@@ -21,17 +23,12 @@ const (
 	FATAL
 )
 
-// Logger defines the interface for all log implementations.
+// Logger is the interface every log implementation satisfies: the
+// framework's logging contract, contract.Logger, itself.
 //
 // Implementations must pass logtest.RunLoggerContractTests. See logtest
 // for the executable specification.
-type Logger interface {
-	Debug(msg string, kvs ...any)
-	Info(msg string, kvs ...any)
-	Warn(msg string, kvs ...any)
-	Error(msg string, kvs ...any)
-	Fatal(msg string, kvs ...any)
-}
+type Logger = contract.Logger
 
 // NewLogger creates a new Logger instance with the given configuration.
 // This is the preferred way to create loggers instead of using the global Init().

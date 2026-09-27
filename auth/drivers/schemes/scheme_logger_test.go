@@ -39,6 +39,8 @@ func (l *kvLog) Warn(msg string, kvs ...any) {
 func (*kvLog) Debug(string, ...any) {}
 func (*kvLog) Fatal(string, ...any) {}
 
+func (l *kvLog) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
 // find returns the first warning whose message contains s.
 func (l *kvLog) find(s string) (kvEntry, bool) {
 	l.mu.Lock()

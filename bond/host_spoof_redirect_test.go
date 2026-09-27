@@ -48,6 +48,8 @@ func (*captureLogger) Debug(string, ...any)   {}
 func (*captureLogger) Info(string, ...any)    {}
 func (*captureLogger) Fatal(string, ...any)   {}
 
+func (l *captureLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
 func requestWithAllowlist(t *testing.T, allowed []string, host string) *http.Request {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)

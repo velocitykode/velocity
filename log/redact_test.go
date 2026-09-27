@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // TestHeaderRedactor_StripsSensitiveValues confirms the canonical
@@ -749,6 +751,8 @@ func (c *capturingLogger) Warn(msg string, kvs ...any)  { c.level, c.msg, c.kvs 
 func (c *capturingLogger) Error(msg string, kvs ...any) { c.level, c.msg, c.kvs = "ERROR", msg, kvs }
 func (c *capturingLogger) Fatal(msg string, kvs ...any) { c.level, c.msg, c.kvs = "FATAL", msg, kvs }
 
+func (c *capturingLogger) With(kvs ...any) contract.Logger { return contract.BindFields(c, kvs...) }
+
 // shutdownCapture is a Logger + Shutdowner used to assert the
 // redacting wrapper forwards Shutdown calls.
 type shutdownCapture struct {
@@ -957,5 +961,25 @@ func BenchmarkRedactingLogger_StackBelowLevel(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		wrapped.Debug("Authorization: Bearer secret", "token", "eyJ0.eyJ1.sig", "n", i)
+	}
+}
+
+// A logger With returned from a redacting logger redacts the bound pairs
+// as it redacts each line's own, and writes them first.
+func TestWithRedactors_WithRedactsBoundPairs(t *testing.T) {
+	cap := &capturingLogger{}
+	wrapped := WithRedactors(cap, HeaderRedactor(), JWTRedactor()).With("token", "eyJ0.eyJ1.sig_value")
+
+	wrapped.Info("m", "k", "v")
+
+	want := []any{"token", "[JWT]", "k", "v"}
+	if len(cap.kvs) != len(want) {
+		t.Fatalf("kvs = %v, want %v", cap.kvs, want)
+	}
+	for i := range want {
+		if cap.kvs[i] != want[i] {
+			t.Errorf("kvs = %v, want %v", cap.kvs, want)
+			break
+		}
 	}
 }

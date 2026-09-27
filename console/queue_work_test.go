@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/queue"
 	testsync "github.com/velocitykode/velocity/testing"
 )
@@ -63,6 +64,8 @@ func (quietWorkerLogger) Warn(string, ...any)  {}
 func (quietWorkerLogger) Error(string, ...any) {}
 func (quietWorkerLogger) Debug(string, ...any) {}
 func (quietWorkerLogger) Fatal(string, ...any) {}
+
+func (l quietWorkerLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 // TestNewQueueWorker_WiresDispatcher asserts the worker queue work runs
 // fires its job lifecycle events into opts.Dispatcher: a job that fails

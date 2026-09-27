@@ -44,6 +44,8 @@ func (l *errorLines) Debug(string, ...any) {}
 func (l *errorLines) Info(string, ...any)  {}
 func (l *errorLines) Warn(string, ...any)  {}
 func (l *errorLines) Fatal(string, ...any) {}
+
+func (l *errorLines) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 func (l *errorLines) Error(string, ...any) {
 	l.mu.Lock()
 	l.n++

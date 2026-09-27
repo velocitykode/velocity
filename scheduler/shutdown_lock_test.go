@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // blockingLocker is a Locker whose Acquire blocks until either
@@ -375,6 +377,8 @@ func (l *levelCaptureLogger) Info(msg string, _ ...any)    { l.add(&l.infos, nil
 func (l *levelCaptureLogger) Warn(msg string, kvs ...any)  { l.add(&l.warns, &l.warnKvs, msg, kvs) }
 func (l *levelCaptureLogger) Error(msg string, _ ...any)   { l.add(&l.errors_, nil, msg, nil) }
 func (*levelCaptureLogger) Fatal(string, ...any)           {}
+
+func (l *levelCaptureLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 func (l *levelCaptureLogger) add(msgs *[]string, kvsOut *[][]any, msg string, kvs []any) {
 	l.mu.Lock()

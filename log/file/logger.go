@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/log/internal/sanitize"
 )
 
@@ -100,6 +101,12 @@ type FileLogger struct {
 	mu          sync.Mutex
 	file        *os.File
 	date        string
+	// fields are the key-value pairs With bound, written before each
+	// line's own pairs.
+	fields []any
+	// base is the logger that owns the file a logger With returned writes
+	// to, under base's lock; nil on the owner itself.
+	base *FileLogger
 }
 
 // NewFileLogger creates a file logger that writes to the specified directory.
@@ -175,12 +182,35 @@ func (f *FileLogger) ensureFile() error {
 	return nil
 }
 
+// owner returns the logger that owns the file f writes to: f itself, or
+// the logger With bound f from.
+func (f *FileLogger) owner() *FileLogger {
+	if f.base != nil {
+		return f.base
+	}
+	return f
+}
+
+// With returns a FileLogger that writes to f's file, under f's lock and at
+// f's level, with kvs written before each line's own pairs, after any
+// pairs f already binds. A trailing key without a value is left out. The
+// returned logger does not own the file: its Shutdown closes nothing.
+func (f *FileLogger) With(kvs ...any) contract.Logger {
+	if len(kvs)%2 == 1 {
+		kvs = kvs[:len(kvs)-1]
+	}
+	fields := make([]any, 0, len(f.fields)+len(kvs))
+	fields = append(fields, f.fields...)
+	return &FileLogger{level: f.level, fields: append(fields, kvs...), base: f.owner()}
+}
+
 // log writes a formatted message to the log file with proper locking
 func (f *FileLogger) log(level, msg string, kvs ...any) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	o := f.owner()
+	o.mu.Lock()
+	defer o.mu.Unlock()
 
-	if err := f.ensureFile(); err != nil {
+	if err := o.ensureFile(); err != nil {
 		fmt.Printf("Failed to open log file: %v\n", err)
 		return
 	}
@@ -193,19 +223,10 @@ func (f *FileLogger) log(level, msg string, kvs ...any) {
 	// second record. See log/internal/sanitize.
 	logLine := fmt.Sprintf("[%s] %s: %s", timestamp, level, sanitize.Value(msg))
 
-	if len(kvs) > 0 {
+	if len(f.fields) > 0 || len(kvs) > 0 {
 		logLine += " |"
-		for i := 0; i < len(kvs); i += 2 {
-			if i+1 < len(kvs) {
-				// Both halves of the kv pair are sanitised: nothing in
-				// the framework prevents a user-tainted string from
-				// being passed as a key, and a CRLF in the key forges
-				// a log line just as effectively as one in the value.
-				k := sanitize.Value(fmt.Sprintf("%v", kvs[i]))
-				v := sanitize.Value(fmt.Sprintf("%v", kvs[i+1]))
-				logLine += fmt.Sprintf(" %s=%s", k, v)
-			}
-		}
+		logLine = appendPairs(logLine, f.fields)
+		logLine = appendPairs(logLine, kvs)
 	}
 
 	// Cross-process advisory lock around the single write so two
@@ -214,8 +235,8 @@ func (f *FileLogger) log(level, msg string, kvs ...any) {
 	// behaviour is OS-dependent on Darwin and undefined for writes
 	// above the limit). No-op when useFileLock is false and on
 	// platforms without flock support.
-	if f.useFileLock && f.file != nil {
-		release, lockErr := lockFile(f.file)
+	if o.useFileLock && o.file != nil {
+		release, lockErr := lockFile(o.file)
 		if lockErr == nil {
 			defer release()
 		}
@@ -224,10 +245,25 @@ func (f *FileLogger) log(level, msg string, kvs ...any) {
 		// data loss.
 	}
 
-	_, err := fmt.Fprintln(f.file, logLine)
+	_, err := fmt.Fprintln(o.file, logLine)
 	if err != nil {
 		return
 	}
+}
+
+// appendPairs appends each complete key-value pair of kvs to line as
+// " key=value"; a trailing key without a value is left out.
+func appendPairs(line string, kvs []any) string {
+	for i := 0; i+1 < len(kvs); i += 2 {
+		// Both halves of the kv pair are sanitised: nothing in
+		// the framework prevents a user-tainted string from
+		// being passed as a key, and a CRLF in the key forges
+		// a log line just as effectively as one in the value.
+		k := sanitize.Value(fmt.Sprintf("%v", kvs[i]))
+		v := sanitize.Value(fmt.Sprintf("%v", kvs[i+1]))
+		line += fmt.Sprintf(" %s=%s", k, v)
+	}
+	return line
 }
 
 // Level returns the configured minimum severity (0=debug .. 4=fatal). A
@@ -299,7 +335,11 @@ func (f *FileLogger) cleanup() {
 }
 
 // Shutdown closes the underlying file handle, honoring the context deadline.
+// A logger With returned owns no file and closes nothing.
 func (f *FileLogger) Shutdown(ctx context.Context) error {
+	if f.base != nil {
+		return nil
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.file != nil {

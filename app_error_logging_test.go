@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/router"
@@ -30,6 +31,8 @@ func (l *errCaptureLogger) Debug(string, ...any) {}
 func (l *errCaptureLogger) Info(string, ...any)  {}
 func (l *errCaptureLogger) Warn(string, ...any)  {}
 func (l *errCaptureLogger) Fatal(string, ...any) {}
+
+func (l *errCaptureLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 func (l *errCaptureLogger) Error(msg string, kvs ...any) {
 	l.mu.Lock()

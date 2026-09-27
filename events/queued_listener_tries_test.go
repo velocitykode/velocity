@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/queue"
 )
 
@@ -20,6 +21,8 @@ func (silentWorkerLogger) Warn(string, ...any)  {}
 func (silentWorkerLogger) Error(string, ...any) {}
 func (silentWorkerLogger) Debug(string, ...any) {}
 func (silentWorkerLogger) Fatal(string, ...any) {}
+
+func (l silentWorkerLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 // failingTriesListener is a QueuedListener whose Handle always errors. The
 // atomic counter records how many times the worker invoked it so the test can

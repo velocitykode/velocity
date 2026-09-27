@@ -128,3 +128,19 @@ func (*recorder) Info(string, ...any)  {}
 func (*recorder) Warn(string, ...any)  {}
 func (*recorder) Error(string, ...any) {}
 func (*recorder) Fatal(string, ...any) {}
+
+func (l *recorder) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
+// A fallback logger With returns writes its bound pairs before each line's
+// own, and still drops Debug and Info.
+func TestLogger_With(t *testing.T) {
+	buf := capture(t)
+	l := Logger{}.With("request_id", "r1")
+
+	l.Info("dropped")
+	l.Warn("bound line", "k", "v")
+
+	if got := stripTime(t, strings.TrimSuffix(buf.String(), "\n")); got != "WARN bound line request_id=r1 k=v" {
+		t.Errorf("line = %q, want the bound pair before k=v", got)
+	}
+}

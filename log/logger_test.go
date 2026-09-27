@@ -3,6 +3,8 @@ package log
 import (
 	"context"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func TestNewLogger_ConsoleDriver(t *testing.T) {
@@ -132,6 +134,8 @@ func (m *mockLogger) Fatal(msg string, kvs ...any) {
 	}
 }
 
+func (m *mockLogger) With(kvs ...any) contract.Logger { return contract.BindFields(m, kvs...) }
+
 func TestNewLogger_NullDriver(t *testing.T) {
 	logger, err := NewLogger(LogConfig{
 		Driver: "null",
@@ -233,5 +237,49 @@ func TestLoggerLevels(t *testing.T) {
 		if int(level) != expected[i] {
 			t.Errorf("Level %d = %d, want %d", i, level, expected[i])
 		}
+	}
+}
+
+// stackChild records the pairs of its last Info line and whether it was
+// shut down.
+type stackChild struct {
+	kvs      []any
+	shutdown bool
+}
+
+func (c *stackChild) Debug(string, ...any)            {}
+func (c *stackChild) Info(_ string, kvs ...any)       { c.kvs = kvs }
+func (c *stackChild) Warn(string, ...any)             {}
+func (c *stackChild) Error(string, ...any)            {}
+func (c *stackChild) Fatal(string, ...any)            {}
+func (c *stackChild) With(kvs ...any) contract.Logger { return contract.BindFields(c, kvs...) }
+func (c *stackChild) Shutdown(context.Context) error  { c.shutdown = true; return nil }
+
+// A stack's With binds the pairs on every child, and the stack it returns
+// does not shut its children down.
+func TestStackLogger_With(t *testing.T) {
+	a, b := &stackChild{}, &stackChild{}
+	bound := NewStackLogger(a, b).With("request_id", "r1")
+
+	bound.Info("m", "k", "v")
+	if err := bound.(Shutdowner).Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	for name, child := range map[string]*stackChild{"a": a, "b": b} {
+		if got := child.kvs; len(got) != 4 || got[0] != "request_id" || got[1] != "r1" || got[2] != "k" || got[3] != "v" {
+			t.Errorf("child %s got %v, want request_id=r1 then k=v", name, got)
+		}
+		if child.shutdown {
+			t.Errorf("child %s shut down by the bound stack", name)
+		}
+	}
+}
+
+// NullLogger.With returns the null logger.
+func TestNullLogger_With(t *testing.T) {
+	n := NewNullLogger()
+	if got := n.With("k", "v"); got != Logger(n) {
+		t.Errorf("With = %T, want the null logger", got)
 	}
 }

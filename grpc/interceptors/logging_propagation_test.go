@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/grpc/interceptors"
 )
@@ -37,6 +38,8 @@ func (l *fieldLogger) Info(_ string, kvs ...any)  { l.record(kvs) }
 func (l *fieldLogger) Warn(_ string, kvs ...any)  { l.record(kvs) }
 func (l *fieldLogger) Error(_ string, kvs ...any) { l.record(kvs) }
 func (l *fieldLogger) Fatal(_ string, kvs ...any) { l.record(kvs) }
+
+func (l *fieldLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 func (l *fieldLogger) lastRequestID() string {
 	l.mu.Lock()

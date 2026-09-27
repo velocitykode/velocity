@@ -25,6 +25,8 @@ func (l *levelLog) Warn(msg string, _ ...any)  { l.add("WARN " + msg) }
 func (l *levelLog) Error(msg string, _ ...any) { l.add("ERROR " + msg) }
 func (l *levelLog) Fatal(msg string, _ ...any) { l.add("FATAL " + msg) }
 
+func (l *levelLog) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
 func (l *levelLog) add(e string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

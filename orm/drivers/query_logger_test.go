@@ -28,6 +28,8 @@ func (l *queryLog) Warn(msg string, kvs ...any)  { l.add("warn", msg, kvs) }
 func (l *queryLog) Error(msg string, kvs ...any) { l.add("error", msg, kvs) }
 func (l *queryLog) Fatal(msg string, kvs ...any) { l.add("fatal", msg, kvs) }
 
+func (l *queryLog) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
 func (l *queryLog) add(level, msg string, kvs []any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
