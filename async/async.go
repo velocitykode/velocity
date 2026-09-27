@@ -27,7 +27,7 @@ var (
 	loggerMu sync.RWMutex
 	logger   contract.Logger = fallbacklog.Logger{}
 
-	panicHook atomic.Pointer[func(any)]
+	panicHook atomic.Pointer[func(any) bool]
 )
 
 // SetLogger sets the package-level logger recovered panics and GoCtx
@@ -56,28 +56,41 @@ func getLogger() contract.Logger {
 	return logger
 }
 
-// SetPanicHook installs a non-logging interceptor invoked for every panic
-// recovered by the async package's helpers (Run, RunWithTimeout,
-// RunWithContext, Go, GoCtx, GoWithRecover, GoWithRecoverE, GoWithLogger,
-// ForEach, GoForEach, TryForEach). Pass nil to clear. The hook runs in
-// addition to logging, not in place of it. The hook itself is panic-safe:
-// if it panics, the panic is swallowed.
+// SetPanicHook installs an interceptor invoked for every panic recovered
+// by the async package's helpers (Run, RunWithTimeout, RunWithContext, Go,
+// GoCtx, GoWithRecover, GoWithRecoverE, GoWithLogger, ForEach, GoForEach,
+// TryForEach). Pass nil to clear. A hook that returns normally takes the
+// panic over: the package does not also log it (velocity.New installs a
+// hook that reports the panic to the app's error handler, whose log
+// reporter writes the one entry). The hook itself is panic-safe: if it
+// panics, that panic is swallowed and the package logs the recovered panic
+// as it does with no hook. GoWithLogger logs to the logger it was given,
+// and a GoWithRecover or GoWithRecoverE recover function runs, with a hook
+// or without.
 func SetPanicHook(hook func(any)) {
 	if hook == nil {
 		panicHook.Store(nil)
 		return
 	}
-	safe := func(p any) {
-		defer func() { _ = recover() }()
+	safe := func(p any) (took bool) {
+		defer func() {
+			if recover() != nil {
+				took = false
+			}
+		}()
 		hook(p)
+		return true
 	}
 	panicHook.Store(&safe)
 }
 
-func runPanicHook(p any) {
+// runPanicHook runs the installed panic hook, if any, and reports whether
+// it took the panic over: it ran and returned normally.
+func runPanicHook(p any) bool {
 	if h := panicHook.Load(); h != nil && *h != nil {
-		(*h)(p)
+		return (*h)(p)
 	}
+	return false
 }
 
 // logRecoveredPanic emits a structured Error log for a recovered panic.
@@ -99,10 +112,13 @@ func logRecoveredPanic(l contract.Logger, p any, kvs ...any) {
 	l.Error("async: panic recovered", attrs...)
 }
 
-// handlePanic handles panics in goroutines.
+// handlePanic handles panics in goroutines: the installed panic hook takes
+// the panic over, or the package logs it.
 func handlePanic(p any) {
+	if runPanicHook(p) {
+		return
+	}
 	logRecoveredPanic(nil, p)
-	runPanicHook(p)
 }
 
 // Run executes function asynchronously
@@ -139,7 +155,7 @@ func RunWithTimeout[T any](timeout time.Duration, fn func() T) *Result[T] {
 		done := make(chan T, 1)
 		// panicCh is cap=1 so the inner goroutine never blocks if the outer
 		// already moved on to the timeout branch (drop-on-floor is fine: the
-		// panic was already logged by handlePanic).
+		// panic was already handled by handlePanic).
 		panicCh := make(chan error, 1)
 		go func() {
 			defer func() {

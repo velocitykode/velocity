@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
 	"github.com/velocitykode/velocity/chain"
@@ -285,12 +288,13 @@ func wireInstanceEvents(a *App) {
 	wireComponentEvents(a, dispatch)
 }
 
-// wireFailureReporters installs the two reporters background failures reach
-// the error handler through, both bound to the handler a.Services.Errors
-// holds now, read once:
+// wireFailureReporters installs the three reporters background failures
+// reach the error handler through, all bound to the handler
+// a.Services.Errors holds now, read once:
 //
 //   - the dispatcher's failure-report bridge, which reports every
-//     contract.FailureEvent dispatch (queue.job.failed, scheduler.task.failed, ...).
+//     contract.FailureEvent dispatch (a failed job, a failed scheduled
+//     task, a listener that failed with no caller waiting on it).
 //     Wired on the dispatcher itself (not the dispatch closure) so every
 //     dispatch path is covered: service-fired events, registry components,
 //     and app code calling Services.Events.Dispatch directly. Optional
@@ -300,20 +304,25 @@ func wireInstanceEvents(a *App) {
 //   - the queued-listener failure reporter a queued listener's Failed hook
 //     calls once it has exhausted its retries. Installed with or without
 //     events: a worker can run listener jobs another process queued.
+//   - the async package's panic hook, which reports a panic recovered in
+//     any goroutine the async helpers run (worker pumps, the ORM query
+//     pump, the server, the dispatcher's detached deliveries). The hook is
+//     process-wide: the app that wired it last owns it, and its Shutdown
+//     (or a failed New) removes it (see wirePanicHook).
 //
-// Both close over the handler value rather than reading a.Services.Errors
-// when a failure happens: a worker a module Start launched runs on its own
-// goroutine, and a later module Start replacing s.Errors would otherwise be
-// an unsynchronized write against the worker's read. The setters behind
-// both installs are synchronized, so re-running this while workers fail
-// jobs only changes which handler later failures reach. It runs from
-// wireInstanceEvents (in New before and after the WithModules lifecycle,
-// and in bootstrap after the chain modules' Start) and once more at the end
-// of bootstrap's error-handler step, so a handler a module swapped in or
-// an Errors callback installed is the one reported to from then on. A
-// worker already failing jobs before a re-install reports to the handler
-// installed before it, which still reports; nothing is dropped by the
-// switch.
+// All three close over the handler value rather than reading
+// a.Services.Errors when a failure happens: a worker a module Start
+// launched runs on its own goroutine, and a later module Start replacing
+// s.Errors would otherwise be an unsynchronized write against the worker's
+// read. The setters behind the installs are synchronized, so re-running
+// this while workers fail jobs only changes which handler later failures
+// reach. It runs from wireInstanceEvents (in New before and after the
+// WithModules lifecycle, and in bootstrap after the chain modules' Start)
+// and once more at the end of bootstrap's error-handler step, so a handler
+// a module swapped in or an Errors callback installed is the one reported
+// to from then on. A worker already failing jobs before a re-install
+// reports to the handler installed before it, which still reports;
+// nothing is dropped by the switch.
 func wireFailureReporters(a *App) {
 	h := a.Services.Errors
 	if fr, ok := a.Services.Events.(interface {
@@ -325,6 +334,7 @@ func wireFailureReporters(a *App) {
 	// stays, so a factory a module's Start registered for the job is not
 	// overwritten by a re-install.
 	eventqueue.SetFailureReporter(buildQueuedListenerReporter(h))
+	wirePanicHook(a, h)
 }
 
 // backgroundErrorContext returns the ErrorContext a failure of background
@@ -363,6 +373,65 @@ func buildFailureReporter(h contract.ErrorHandler) func(ctx context.Context, eve
 			exCtx.Extra["listener_type"] = failed.ListenerName
 		}
 		h.Report(err, exCtx)
+	}
+}
+
+// panicHookMu guards panicHookOwner, the app whose error handler the async
+// package's process-wide panic hook reports to: the app that wired it
+// last.
+var (
+	panicHookMu    sync.Mutex
+	panicHookOwner *App
+)
+
+// wirePanicHook installs the async package's panic hook (async.SetPanicHook)
+// reporting to h, owned by a. A nil h removes the hook when a owns it.
+// While the hook is installed the async package does not also log the
+// panics it recovers: the hook's report is the one entry (the handler's
+// LogReporter writes it through the app logger).
+func wirePanicHook(a *App, h contract.ErrorHandler) {
+	hook := buildPanicHook(h)
+	panicHookMu.Lock()
+	defer panicHookMu.Unlock()
+	if hook == nil {
+		if panicHookOwner == a {
+			panicHookOwner = nil
+			async.SetPanicHook(nil)
+		}
+		return
+	}
+	panicHookOwner = a
+	async.SetPanicHook(hook)
+}
+
+// removePanicHook removes the async package's panic hook when a owns it,
+// so a panic recovered after a's Shutdown is not reported to a's
+// torn-down error handler. A hook an app wired after a stays installed.
+func removePanicHook(a *App) {
+	panicHookMu.Lock()
+	defer panicHookMu.Unlock()
+	if panicHookOwner != a {
+		return
+	}
+	panicHookOwner = nil
+	async.SetPanicHook(nil)
+}
+
+// buildPanicHook returns the async panic hook for h: it reports a panic
+// recovered in a background goroutine to h.Report as a recovered panic
+// (the error carries the contract.RecoveredPanic facet) with the stack of
+// the goroutine that panicked, under contract.ErrorSourceGoroutine. The
+// hook runs inside the recovering goroutine's deferred recover, so the
+// stack is the panic site's. It returns nil when h is nil.
+func buildPanicHook(h contract.ErrorHandler) func(any) {
+	if h == nil {
+		return nil
+	}
+	return func(p any) {
+		exCtx := backgroundErrorContext(context.Background(), contract.ErrorSourceGoroutine)
+		exCtx.Recovered = true
+		exCtx.PanicStack = string(debug.Stack())
+		h.Report(async.FromRecovered(p), exCtx)
 	}
 }
 

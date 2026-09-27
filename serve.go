@@ -310,7 +310,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 		orm.ResetDefault()
 	}
 
-	// 8. Close logger last so all prior steps can still log.
+	// 8. Remove the async panic hook New installed (its reports end in the
+	// logger), then close the logger last so all prior steps can still log.
+	removePanicHook(a)
 	if a.Log != nil {
 		if sd, ok := a.Log.(contract.ShutdownAware); ok {
 			collect(sd.Shutdown(ctx))

@@ -811,6 +811,12 @@ func New(opts ...Option) (*App, error) {
 	// wireInstanceLoggers); a failed New puts it back on its fallback.
 	cleanups = append(cleanups, releaseAsyncLogger)
 
+	// Background failures: wireInstanceEvents below installs the async
+	// package's panic hook on the error handler (see wireFailureReporters),
+	// so a panic recovered in a framework goroutine reaches the Reporter
+	// chain. A failed New removes it again, as Shutdown does.
+	cleanups = append(cleanups, func() { removePanicHook(a) })
+
 	// Wire event dispatchers into service instances
 	wireInstanceEvents(a)
 
