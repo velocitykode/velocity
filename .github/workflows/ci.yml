@@ -1,7 +1,8 @@
 name: CI
 
 # Single pipeline for correctness gates + release automation.
-# On push/PR: go vet, staticcheck, -race tests, router benchmarks, govulncheck.
+# On push/PR: go vet, Windows build and vet, staticcheck, -race tests, router
+# benchmarks, govulncheck.
 # On push-to-main: if all correctness gates pass, auto-version/tag/release
 # and propagate to the template and installer repos.
 # On weekly schedule: govulncheck only (new CVEs in existing deps).
@@ -28,6 +29,22 @@ jobs:
           go-version: "1.26.x"
           check-latest: true
       - run: go vet ./...
+
+  # The framework builds for Windows too (the file cache and console carry
+  # non-unix counterparts of their flock and process-group code); every
+  # other job runs on Linux only, so a unix-only call outside a build tag
+  # would otherwise break the Windows build silently.
+  windows-build:
+    name: windows build and vet
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+      - run: GOOS=windows go build ./... && GOOS=windows go vet ./...
 
   staticcheck:
     name: staticcheck
@@ -189,7 +206,7 @@ jobs:
     # Release only on direct push to main. PRs and the weekly cron
     # don't publish anything.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [vet, staticcheck, race-tests, skip-lint, goroutine-lint, golangci-lint, coverage-floors]
+    needs: [vet, windows-build, staticcheck, race-tests, skip-lint, goroutine-lint, golangci-lint, coverage-floors]
     runs-on: ubuntu-latest
     permissions:
       contents: write
