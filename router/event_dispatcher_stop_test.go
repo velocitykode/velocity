@@ -238,9 +238,17 @@ func TestShutdownEventDispatcher_ConcurrentSendersNeverPanic(t *testing.T) {
 		return c.NoContent()
 	})
 	gatedEscaped := make(chan any, 1)
+	gatedDone := make(chan struct{})
 	go func() {
+		defer close(gatedDone)
 		gatedEscaped <- serveRecovering(r, httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/gated", nil))
 	}()
+	var openGateOnce sync.Once
+	openGate := func() { openGateOnce.Do(func() { close(gate) }) }
+	t.Cleanup(func() {
+		openGate()
+		<-gatedDone
+	})
 	<-gateEntered
 
 	const senders, perSender = 8, 200
@@ -277,7 +285,7 @@ func TestShutdownEventDispatcher_ConcurrentSendersNeverPanic(t *testing.T) {
 	dropMu.Lock()
 	callsBefore := len(dropEvents)
 	dropMu.Unlock()
-	close(gate)
+	openGate()
 	select {
 	case p := <-gatedEscaped:
 		if p != nil {
