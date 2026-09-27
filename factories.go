@@ -14,7 +14,6 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/internal/clientip"
-	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/notification"
 	"github.com/velocitykode/velocity/orm"
@@ -61,7 +60,7 @@ func initCache(config CacheConfig) *cache.Manager {
 // initStorage maps each DiskConfig entry into the storage package's format and
 // configures drivers. Disk configuration failures are logged as warnings rather
 // than failing startup, since storage may not be required by every app.
-func initStorage(config StorageConfig, logger log.Logger) *storage.Manager {
+func initStorage(config StorageConfig, logger contract.Logger) *storage.Manager {
 	storageCfg := storage.Config{
 		Default: config.Default,
 		Disks:   make(map[string]storage.DiskConfig),
@@ -102,7 +101,7 @@ func initStorage(config StorageConfig, logger log.Logger) *storage.Manager {
 //
 // Misconfigured schemes are skipped with a warning so the app can still start -
 // only the broken scheme is unavailable at runtime.
-func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger log.Logger, enc crypto.Encryptor, sessionOpts ...schemes.SessionSchemeOption) *auth.Manager {
+func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger contract.Logger, enc crypto.Encryptor, sessionOpts ...schemes.SessionSchemeOption) *auth.Manager {
 	manager := auth.NewManager()
 
 	// Route auth diagnostics (authentication/authorization denials, hasher
@@ -239,7 +238,7 @@ func initDB(config DBConfig) (*orm.Manager, error) {
 // DB for the database driver prevents the requested driver from starting,
 // so boot fails loudly rather than silently downgrading to the in-memory
 // driver.
-func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey string, appKey string, appEnv string, encryptor contract.Encryptor, logger log.Logger) (_ queue.Driver, err error) {
+func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey string, appKey string, appEnv string, encryptor contract.Encryptor, logger contract.Logger) (_ queue.Driver, err error) {
 	// Route queue-signing diagnostics through the framework logger before
 	// configuring so missing/APP_KEY fallbacks are surfaced consistently.
 	queue.SetSigningLogger(logger)

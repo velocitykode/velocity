@@ -82,6 +82,9 @@ func (l *errCapLogger) Error(msg string, _ ...any) {
 	l.errors = append(l.errors, msg)
 	l.mu.Unlock()
 }
+
+func (*errCapLogger) Debug(string, ...any) {}
+func (*errCapLogger) Fatal(string, ...any) {}
 func (l *errCapLogger) has(substr string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()

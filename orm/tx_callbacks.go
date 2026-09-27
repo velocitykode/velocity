@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // TxCallback is the signature for callbacks registered against a
@@ -228,7 +229,7 @@ func lookupTxRecoverDispatcher(ctx context.Context) func(*TxRecover) {
 // the commit timing out mid-Commit) must NOT poison the cache /
 // outbox cascade. Callbacks still observe trace IDs and request-scoped
 // values from the parent.
-func (c *TxCallbacks) runCommit(ctx context.Context, logger eventLogger) {
+func (c *TxCallbacks) runCommit(ctx context.Context, logger contract.Logger) {
 	if c == nil {
 		return
 	}
@@ -271,7 +272,7 @@ func (c *TxCallbacks) runCommit(ctx context.Context, logger eventLogger) {
 // Cancellation is detached: OnRollback is most often called precisely
 // because the parent ctx was canceled (deadline / request abort),
 // so propagating that cancellation would poison the rollback cascade.
-func (c *TxCallbacks) runRollback(ctx context.Context, logger eventLogger) {
+func (c *TxCallbacks) runRollback(ctx context.Context, logger contract.Logger) {
 	if c == nil {
 		return
 	}
@@ -306,7 +307,7 @@ func (c *TxCallbacks) runRollback(ctx context.Context, logger eventLogger) {
 //
 // Same recover / dispatcher / logger contract as runCommit. Same
 // WithoutCancel ctx detaching as runCommit / runRollback.
-func (c *TxCallbacks) runCommitFailure(ctx context.Context, logger eventLogger, commitErr error) {
+func (c *TxCallbacks) runCommitFailure(ctx context.Context, logger contract.Logger, commitErr error) {
 	if c == nil {
 		return
 	}
@@ -360,7 +361,7 @@ func (c *TxCallbacks) runCommitFailure(ctx context.Context, logger eventLogger, 
 // adapter (carrying the original value plus a stack frame). This
 // keeps callback panic logs symmetric with goroutine panic logs
 // elsewhere in the framework.
-func runCallbackSafe(ctx context.Context, fn TxCallback, phase string, logger eventLogger, dispatcher func(*TxRecover)) {
+func runCallbackSafe(ctx context.Context, fn TxCallback, phase string, logger contract.Logger, dispatcher func(*TxRecover)) {
 	defer func() {
 		if p := recover(); p != nil {
 			wrapped := async.FromRecovered(p)

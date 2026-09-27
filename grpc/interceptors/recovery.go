@@ -9,15 +9,15 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
-	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/trace"
 )
 
 // RecoveryConfig configures the recovery interceptor
 type RecoveryConfig struct {
 	// Logger is the logger to use. Defaults to the global logger.
-	Logger log.Logger
+	Logger contract.Logger
 
 	// EnableStackTrace enables logging of stack traces on panic
 	EnableStackTrace bool
@@ -35,7 +35,7 @@ type RecoveryConfig struct {
 type RecoveryOption func(*RecoveryConfig)
 
 // WithRecoveryLogger sets a custom logger for recovery
-func WithRecoveryLogger(logger log.Logger) RecoveryOption {
+func WithRecoveryLogger(logger contract.Logger) RecoveryOption {
 	return func(c *RecoveryConfig) {
 		c.Logger = logger
 	}

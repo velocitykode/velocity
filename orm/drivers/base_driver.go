@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // BaseDriver provides shared implementations for common driver operations.
@@ -17,13 +19,10 @@ type BaseDriver struct {
 	// opened, and is filled with an observer when the owning manager
 	// attaches itself via SetStatementObserver.
 	binding *observerBinding
-	// queryLogger receives every executed statement when Config.LogQueries
-	// is set. It defaults to defaultQueryLogger (stdout via fmt.Printf) so
-	// behavior is unchanged out of the box; SetQueryLogger swaps in a sink
-	// that routes through the framework logger. It stays a plain func so the
-	// drivers package never imports the log package (drivers is imported by
-	// orm core; a log import would risk a cycle).
-	queryLogger func(query string, argCount int)
+	// logger receives every executed statement when Config.LogQueries is
+	// set. Nil (the default) writes the statement to stdout through
+	// defaultQueryLogger instead, so behavior is unchanged out of the box.
+	logger contract.Logger
 }
 
 // defaultQueryLogger writes the executed statement to stdout, preserving the
@@ -32,24 +31,28 @@ func defaultQueryLogger(query string, argCount int) {
 	fmt.Printf("SQL: %s\nArgs: [%d params]\n", query, argCount)
 }
 
-// SetQueryLogger installs a sink for executed-statement logging, replacing the
-// default stdout writer. Pass nil to restore the default. The sink is only
-// invoked when Config.LogQueries is true.
-func (b *BaseDriver) SetQueryLogger(fn func(query string, argCount int)) {
-	b.queryLogger = fn
+// SetLogger installs the logger executed statements are written to when
+// Config.LogQueries is true: one debug line per statement with the
+// statement and its argument count, never the argument values. Nil restores
+// the stdout default. Call it before the driver runs queries: the query
+// path reads it without a lock.
+func (b *BaseDriver) SetLogger(l contract.Logger) {
+	b.logger = l
 }
 
-// logQuery emits one executed statement through the configured query logger
-// when query logging is enabled.
+var _ contract.LoggerAware = (*BaseDriver)(nil)
+
+// logQuery emits one executed statement through the configured logger when
+// query logging is enabled.
 func (b *BaseDriver) logQuery(query string, argCount int) {
 	if !b.Config.LogQueries {
 		return
 	}
-	logger := b.queryLogger
-	if logger == nil {
-		logger = defaultQueryLogger
+	if l := b.logger; l != nil {
+		l.Debug("velocity/orm: query executed", "query", query, "arg_count", argCount)
+		return
 	}
-	logger(query, argCount)
+	defaultQueryLogger(query, argCount)
 }
 
 // Close closes the database connection.

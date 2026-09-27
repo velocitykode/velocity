@@ -9,6 +9,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"golang.org/x/crypto/hkdf"
 )
@@ -23,13 +24,13 @@ var (
 	signingMu      sync.RWMutex
 	signingKey     []byte
 	signingEnabled bool
-	signingLogger  Logger
+	signingLogger  contract.Logger
 )
 
 // SetSigningLogger installs a package-level logger used by
 // ConfigureSigning to report signing-key diagnostics. Nil disables
 // logging. Safe to call concurrently.
-func SetSigningLogger(l Logger) {
+func SetSigningLogger(l contract.Logger) {
 	signingMu.Lock()
 	defer signingMu.Unlock()
 	signingLogger = l

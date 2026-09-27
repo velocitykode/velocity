@@ -68,6 +68,10 @@ func (r *panicReportRecorder) reports() ([]error, []*problem.ErrorContext) {
 type quietAsyncLogger struct{}
 
 func (quietAsyncLogger) Error(string, ...any) {}
+func (quietAsyncLogger) Debug(string, ...any) {}
+func (quietAsyncLogger) Info(string, ...any)  {}
+func (quietAsyncLogger) Warn(string, ...any)  {}
+func (quietAsyncLogger) Fatal(string, ...any) {}
 
 // getInvoice serves one JSON GET /invoices/7 through h.
 func getInvoice(h http.Handler) *httptest.ResponseRecorder {

@@ -34,6 +34,10 @@ func (l *fakeLogger) Error(msg string, kvs ...any) {
 	l.msgs = append(l.msgs, "ERROR "+msg)
 }
 
+func (*fakeLogger) Debug(string, ...any) {}
+func (*fakeLogger) Info(string, ...any)  {}
+func (*fakeLogger) Fatal(string, ...any) {}
+
 // TestManager_SetLogger_StoresLogger verifies SetLogger wires a logger
 // that Transaction can reach without racing.
 func TestManager_SetLogger_StoresLogger(t *testing.T) {

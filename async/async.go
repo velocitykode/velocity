@@ -9,13 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
-
-// Logger is the logging interface for the async package.
-type Logger interface {
-	Error(msg string, kvs ...any)
-}
 
 // PanicError is the typed recovered-panic error surfaced by GoWithRecoverE
 // and the async helpers. It is a re-export of internal/panicerr.Error so
@@ -29,14 +25,22 @@ func FromRecovered(r any) error { return panicerr.FromRecovered(r) }
 
 var (
 	loggerMu sync.RWMutex
-	logger   Logger = &stdLogger{}
+	logger   contract.Logger = &stdLogger{}
 
 	panicHook atomic.Pointer[func(any)]
 )
 
+// stdLogger is the package logger until SetLogger replaces it: it writes
+// through the standard library log package.
 type stdLogger struct{}
 
+func (stdLogger) Debug(msg string, kvs ...any) { log.Print("[DEBUG] " + msg + fmtKVs(kvs)) }
+func (stdLogger) Info(msg string, kvs ...any)  { log.Print("[INFO] " + msg + fmtKVs(kvs)) }
+func (stdLogger) Warn(msg string, kvs ...any)  { log.Print("[WARN] " + msg + fmtKVs(kvs)) }
 func (stdLogger) Error(msg string, kvs ...any) { log.Print("[ERROR] " + msg + fmtKVs(kvs)) }
+
+// Fatal logs at error level; library code never exits the process.
+func (stdLogger) Fatal(msg string, kvs ...any) { log.Print("[ERROR] " + msg + fmtKVs(kvs)) }
 
 func fmtKVs(kvs []any) string {
 	if len(kvs) == 0 {
@@ -50,23 +54,22 @@ func fmtKVs(kvs []any) string {
 }
 
 // SetLogger sets the package-level logger for panic recovery.
-func SetLogger(l Logger) {
+func SetLogger(l contract.Logger) {
 	loggerMu.Lock()
 	defer loggerMu.Unlock()
 	logger = l
 }
 
 // GetLogger returns the current package-level logger. Safe for concurrent
-// reads. Named GetLogger (not Logger) because the package already exports a
-// Logger interface type, and Go disallows a function and type sharing a name.
+// reads.
 //
 // Callers can use the returned logger to emit messages tagged with the same
 // sink the async package uses for panic logs.
-func GetLogger() Logger {
+func GetLogger() contract.Logger {
 	return getLogger()
 }
 
-func getLogger() Logger {
+func getLogger() contract.Logger {
 	loggerMu.RLock()
 	defer loggerMu.RUnlock()
 	return logger
@@ -105,7 +108,7 @@ func runPanicHook(p any) {
 // Extra key/value pairs (e.g. "name", "<callsite>") are appended after the
 // canonical "panic" / "stack" fields. debug.Stack() is invoked exactly once
 // per recovery so the formatted backtrace cost is paid only on the slow path.
-func logRecoveredPanic(l Logger, p any, kvs ...any) {
+func logRecoveredPanic(l contract.Logger, p any, kvs ...any) {
 	if l == nil {
 		l = getLogger()
 	}
@@ -343,7 +346,7 @@ func GoWithRecoverE(fn func(), recoverFn func(*PanicError)) {
 // the supplied logger with structured fields (`name`, `panic`). If l is nil,
 // the package logger is used. Convenient for adopters that already carry a
 // scoped logger and want panics tagged with a callsite name.
-func GoWithLogger(l Logger, name string, fn func()) {
+func GoWithLogger(l contract.Logger, name string, fn func()) {
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {

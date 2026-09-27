@@ -45,7 +45,7 @@ type Gateway struct {
 	grpcEndpoint string
 	dialOptions  []grpc.DialOption
 	running      bool
-	logger       log.Logger
+	logger       contract.Logger
 
 	// HTTP server timeout/header bounds applied to httpServer in Build().
 	// Defaulted in NewGateway() to the conservative package constants so a
@@ -243,7 +243,7 @@ func GatewayWithMuxOption(opt runtime.ServeMuxOption) GatewayOption {
 }
 
 // GatewayWithLogger sets the logger for the HTTP gateway
-func GatewayWithLogger(logger log.Logger) GatewayOption {
+func GatewayWithLogger(logger contract.Logger) GatewayOption {
 	return func(g *Gateway) {
 		g.logger = logger
 	}

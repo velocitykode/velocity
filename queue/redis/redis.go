@@ -18,6 +18,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -60,10 +61,10 @@ type RedisDriver struct {
 	// JobID logs at most once per distinct job type.
 	nonIdentifiableWarned sync.Map // keyed by job type string
 
-	logger atomic.Value // holds redisLoggerHolder{Logger}
+	logger atomic.Value // holds redisLoggerHolder{contract.Logger}
 }
 
-type redisLoggerHolder struct{ Logger queue.Logger }
+type redisLoggerHolder struct{ Logger contract.Logger }
 
 type poppedAttemptsKey struct {
 	typ reflect.Type
@@ -156,11 +157,13 @@ func warnIfInsecure(host, password string, tlsEnabled bool) {
 
 // SetLogger installs a logger for Redis-driver operational advisories. Nil
 // disables logging. Safe to call concurrently.
-func (r *RedisDriver) SetLogger(l queue.Logger) {
+func (r *RedisDriver) SetLogger(l contract.Logger) {
 	r.logger.Store(redisLoggerHolder{Logger: l})
 }
 
-func (r *RedisDriver) log() queue.Logger {
+var _ contract.LoggerAware = (*RedisDriver)(nil)
+
+func (r *RedisDriver) log() contract.Logger {
 	v := r.logger.Load()
 	if v == nil {
 		return nil

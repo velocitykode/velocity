@@ -23,29 +23,16 @@ import (
 // unreasonable number of goroutines on mis-typed configuration.
 const MaxWorkerConcurrency = 10_000
 
-// Logger is the minimal logging interface used by queue internals
-// (workers, memory driver, signing). The framework's log.Logger satisfies
-// this shape; keeping the contract local lets queue/ remain a log-free leaf.
-type Logger interface {
-	Info(msg string, kvs ...any)
-	Warn(msg string, kvs ...any)
-	Error(msg string, kvs ...any)
-}
-
-// WorkerLogger is the consumer-facing alias used by WithWorkerLogger.
-// Identical to Logger so that worker code, fallback impls, and external
-// adapters share one method set (Info/Warn/Error). The framework's
-// *log.Logger satisfies it directly.
-type WorkerLogger = Logger
-
 // nullLogger is an explicit silent sink. It is only installed when a caller
 // explicitly opts in via WithWorkerLogger(nullLogger{}); the implicit fallback
 // in NewWorker uses stderrLogger so that worker errors are never invisible.
 type nullLogger struct{}
 
+func (nullLogger) Debug(string, ...any) {}
 func (nullLogger) Info(string, ...any)  {}
 func (nullLogger) Warn(string, ...any)  {}
 func (nullLogger) Error(string, ...any) {}
+func (nullLogger) Fatal(string, ...any) {}
 
 // stderrFallback holds the io.Writer used by stderrLogger and the
 // construction warning. It is wrapped in an atomic.Value so test code that
@@ -63,15 +50,19 @@ func stderrFallbackWriter() io.Writer {
 }
 
 // stderrLogger is the implicit fallback installed by NewWorker when no
-// WorkerLogger option is supplied. It writes structured key/value lines to
-// stderrFallback so that operators always see worker errors even when no
+// WithWorkerLogger option is supplied. It writes structured key/value lines
+// to stderrFallback so that operators always see worker errors even when no
 // framework logger has been wired. Library code printing to stderr on
 // catastrophic-silent-loss paths is preferable to dropping jobs in silence.
 type stderrLogger struct{}
 
+func (stderrLogger) Debug(msg string, kvs ...any) { writeStderr("DEBUG", msg, kvs) }
 func (stderrLogger) Info(msg string, kvs ...any)  { writeStderr("INFO", msg, kvs) }
 func (stderrLogger) Warn(msg string, kvs ...any)  { writeStderr("WARN", msg, kvs) }
 func (stderrLogger) Error(msg string, kvs ...any) { writeStderr("ERROR", msg, kvs) }
+
+// Fatal logs at error level; library code never exits the process.
+func (stderrLogger) Fatal(msg string, kvs ...any) { writeStderr("ERROR", msg, kvs) }
 
 // stderrWriteMu serializes writeStderr emission so concurrent pump goroutines
 // cannot interleave bytes within a single line. os.Stderr offers per-syscall
@@ -144,7 +135,7 @@ type Worker struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
-	logger      WorkerLogger
+	logger      contract.Logger
 
 	// mu guards eventDispatcher. The setter is exposed publicly via
 	// SetEventDispatcher and may be called concurrently with pump goroutines
@@ -232,7 +223,7 @@ func WithBackoff(strategy BackoffStrategy) Option {
 // installs stderrLogger as the implicit fallback and emits a per-construction
 // warning to stderr, so internal worker errors are never invisible. Pass
 // WithWorkerLogger(nullLogger{}) to opt into silence explicitly.
-func WithWorkerLogger(l WorkerLogger) Option {
+func WithWorkerLogger(l contract.Logger) Option {
 	return func(w *Worker) {
 		w.logger = l
 	}

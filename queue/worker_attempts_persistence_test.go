@@ -63,6 +63,8 @@ func (c *captureLogger) record(level, msg string, kvs []any) {
 func (c *captureLogger) Info(msg string, kvs ...any)  { c.record("INFO", msg, kvs) }
 func (c *captureLogger) Warn(msg string, kvs ...any)  { c.record("WARN", msg, kvs) }
 func (c *captureLogger) Error(msg string, kvs ...any) { c.record("ERROR", msg, kvs) }
+func (*captureLogger) Debug(string, ...any)           {}
+func (*captureLogger) Fatal(string, ...any)           {}
 
 func (c *captureLogger) countContaining(needle string) int {
 	c.mu.Lock()

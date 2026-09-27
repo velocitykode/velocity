@@ -318,17 +318,6 @@ type Scheme interface {
 	SetUserStore(userStore UserStore)
 }
 
-// Logger is the minimal logging interface the auth package uses for
-// operational events (authentication failures, authorization denials,
-// bcrypt cost clamping). The framework's log.Logger satisfies this
-// interface; keeping the contract local avoids importing log/ and
-// preserves auth's leaf status for log-adjacent packages.
-type Logger interface {
-	Info(msg string, kvs ...any)
-	Warn(msg string, kvs ...any)
-	Error(msg string, kvs ...any)
-}
-
 // Manager manages multiple authentication schemes
 type Manager struct {
 	schemes       map[string]Scheme
@@ -340,7 +329,7 @@ type Manager struct {
 	// logger is stored atomically so middleware request paths can read
 	// the current logger without contending with the RWMutex protecting
 	// the scheme/user store maps.
-	logger atomic.Value // holds authLoggerHolder{Logger}
+	logger atomic.Value // holds authLoggerHolder{contract.Logger}
 
 	// loggerMu serialises SetLogger against the logger hand-off in
 	// RegisterScheme, so a scheme registered while SetLogger runs ends
@@ -400,8 +389,9 @@ type authEventDispatcherHolder struct {
 	fn func(ctx context.Context, event any) error
 }
 
-// authLoggerHolder wraps a Logger so atomic.Value stores a single type.
-type authLoggerHolder struct{ Logger }
+// authLoggerHolder wraps a contract.Logger so atomic.Value stores a single
+// type.
+type authLoggerHolder struct{ contract.Logger }
 
 // NewManager creates a new auth manager
 func NewManager() *Manager {
@@ -418,7 +408,7 @@ func NewManager() *Manager {
 // ServerSessionStoreReceiver, the store is propagated immediately so
 // registration order does not matter. The same applies to the
 // trusted-proxies list and TrustedProxiesReceiver, and to the logger
-// and LoggerReceiver.
+// and contract.LoggerAware.
 func (m *Manager) RegisterScheme(name string, scheme Scheme) {
 	m.mu.Lock()
 	m.schemes[name] = scheme
@@ -429,7 +419,7 @@ func (m *Manager) RegisterScheme(name string, scheme Scheme) {
 	rotator := m.csrfRotator
 	m.mu.Unlock()
 
-	if r, ok := scheme.(LoggerReceiver); ok {
+	if r, ok := scheme.(contract.LoggerAware); ok {
 		m.loggerMu.Lock()
 		if l := m.log(); l != nil {
 			r.SetLogger(l)
@@ -696,23 +686,15 @@ func (m *Manager) SetHasher(h Hasher) {
 	}
 }
 
-// LoggerReceiver is the optional capability interface implemented by
-// schemes that log their own operational events (the session scheme's
-// save, revival and teardown warnings). Manager.SetLogger propagates the
-// logger to every registered scheme satisfying it, and RegisterScheme
-// hands the current logger to a scheme registered later.
-type LoggerReceiver interface {
-	SetLogger(l Logger)
-}
-
 // SetLogger installs a logger for auth operational events (authentication
 // required denials, authorization rejections, hasher configuration warnings).
 // Nil disables logging. Safe to call concurrently.
 //
-// Every registered scheme implementing LoggerReceiver is notified
-// immediately, nil included; schemes registered later inherit a non-nil
-// logger at registration time (see RegisterScheme).
-func (m *Manager) SetLogger(l Logger) {
+// Every registered scheme implementing contract.LoggerAware (the session
+// scheme's save, revival and teardown warnings) is notified immediately,
+// nil included; schemes registered later inherit a non-nil logger at
+// registration time (see RegisterScheme).
+func (m *Manager) SetLogger(l contract.Logger) {
 	m.loggerMu.Lock()
 	defer m.loggerMu.Unlock()
 
@@ -720,9 +702,9 @@ func (m *Manager) SetLogger(l Logger) {
 
 	m.mu.RLock()
 	hasher := m.hasher
-	receivers := make([]LoggerReceiver, 0, len(m.schemes))
+	receivers := make([]contract.LoggerAware, 0, len(m.schemes))
 	for _, g := range m.schemes {
-		if r, ok := g.(LoggerReceiver); ok {
+		if r, ok := g.(contract.LoggerAware); ok {
 			receivers = append(receivers, r)
 		}
 	}
@@ -736,8 +718,10 @@ func (m *Manager) SetLogger(l Logger) {
 	}
 }
 
+var _ contract.LoggerAware = (*Manager)(nil)
+
 // log returns the installed logger, or nil when SetLogger has not been called.
-func (m *Manager) log() Logger {
+func (m *Manager) log() contract.Logger {
 	v := m.logger.Load()
 	if v == nil {
 		return nil

@@ -33,6 +33,11 @@ func (c *captureLogger) Error(msg string, kvs ...any) {
 	c.entries = append(c.entries, capturedEntry{msg: msg, kvs: cp})
 }
 
+func (*captureLogger) Debug(string, ...any) {}
+func (*captureLogger) Info(string, ...any)  {}
+func (*captureLogger) Warn(string, ...any)  {}
+func (*captureLogger) Fatal(string, ...any) {}
+
 func (c *captureLogger) snapshot() []capturedEntry {
 	c.mu.Lock()
 	defer c.mu.Unlock()

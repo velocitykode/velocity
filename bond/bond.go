@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // Errors
@@ -66,14 +68,6 @@ type SSRConfig struct {
 	ForbidPrivateTarget bool
 }
 
-// Logger is the minimal logging interface Bond uses for operational
-// warnings. It matches the shape of log.Logger so callers can wire the
-// framework logger directly via SetLogger.
-type Logger interface {
-	Warn(msg string, kvs ...any)
-	Error(msg string, kvs ...any)
-}
-
 // Bond is the main Inertia handler
 type Bond struct {
 	mu             sync.RWMutex
@@ -81,7 +75,7 @@ type Bond struct {
 	version        string
 	containerID    string
 	encryptHistory bool
-	logger         Logger
+	logger         contract.Logger
 	encryptor      interface {
 		Encrypt(string) (string, error)
 		Decrypt(string) (string, error)
@@ -119,11 +113,13 @@ func (b *Bond) SetEncryptor(enc interface {
 // SetLogger wires a logger for operational warnings. When unset, Bond
 // silently swallows non-fatal errors like response-buffer flush
 // failures (which almost always indicate a closed client connection).
-func (b *Bond) SetLogger(l Logger) {
+func (b *Bond) SetLogger(l contract.Logger) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.logger = l
 }
+
+var _ contract.LoggerAware = (*Bond)(nil)
 
 // New creates a new Bond instance
 func New(config Config) (*Bond, error) {

@@ -14,17 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/websocket"
 )
-
-// Logger is the minimal logging interface used by the broadcast WebSocket
-// driver. The framework's log.Logger satisfies this interface; keeping the
-// contract local keeps broadcast/ free of a log/ dependency.
-type Logger interface {
-	Info(msg string, kvs ...any)
-	Warn(msg string, kvs ...any)
-	Error(msg string, kvs ...any)
-}
 
 // ChannelAuthorizer checks if a WebSocket client is allowed to join a channel.
 // Must be set for private- and presence- channels to be accessible.
@@ -93,7 +85,7 @@ type WebSocketDriver struct {
 	// logger is stored via atomic.Value so drop-path logging can read it
 	// without contending with the channel-membership lock held by
 	// Broadcast/BroadcastExcept.
-	logger atomic.Value // holds loggerHolder{Logger}
+	logger atomic.Value // holds loggerHolder{contract.Logger}
 
 	// opaqueSeed is a process-local 32-byte random key used to derive opaque
 	// per-(channel, socket) identifiers returned by GetClients. The seed is
@@ -117,18 +109,21 @@ type WebSocketDriver struct {
 	clientEventBuckets map[string]*clientEventBucket
 }
 
-// loggerHolder wraps a Logger so atomic.Value stores a single concrete type.
-type loggerHolder struct{ Logger }
+// loggerHolder wraps a contract.Logger so atomic.Value stores a single
+// concrete type.
+type loggerHolder struct{ contract.Logger }
 
 // SetLogger installs a logger for operational events (e.g. dropped broadcast
 // messages when no onDrop callback is configured). Nil disables logging.
 // Safe to call concurrently.
-func (d *WebSocketDriver) SetLogger(l Logger) {
+func (d *WebSocketDriver) SetLogger(l contract.Logger) {
 	d.logger.Store(loggerHolder{Logger: l})
 }
 
+var _ contract.LoggerAware = (*WebSocketDriver)(nil)
+
 // log returns the installed logger, or nil when SetLogger has not been called.
-func (d *WebSocketDriver) log() Logger {
+func (d *WebSocketDriver) log() contract.Logger {
 	v := d.logger.Load()
 	if v == nil {
 		return nil

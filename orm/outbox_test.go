@@ -886,6 +886,9 @@ type testLogger struct{}
 
 func (testLogger) Warn(_ string, _ ...any)  {}
 func (testLogger) Error(_ string, _ ...any) {}
+func (testLogger) Debug(string, ...any)     {}
+func (testLogger) Info(string, ...any)      {}
+func (testLogger) Fatal(string, ...any)     {}
 
 func contains(s, sub string) bool {
 	return len(sub) == 0 || (len(s) >= len(sub) && stringIndex(s, sub) >= 0)

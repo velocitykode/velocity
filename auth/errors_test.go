@@ -147,6 +147,9 @@ func (l *warnRecorder) Warn(msg string, _ ...any) {
 	l.mu.Unlock()
 }
 
+func (*warnRecorder) Debug(string, ...any) {}
+func (*warnRecorder) Fatal(string, ...any) {}
+
 // TestManager_RenderUnauthenticated drives the render rule body through
 // the bare net/http render context.
 func TestManager_RenderUnauthenticated(t *testing.T) {

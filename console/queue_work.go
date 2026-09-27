@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/prism"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/queue"
 )
 
@@ -17,12 +18,11 @@ type QueueWorkOptions struct {
 	Queue   string
 	Tries   int
 	Timeout int
-	// Logger is the WorkerLogger that internal worker errors are routed to.
-	// When nil, the worker falls back to stderr and emits a per-construction
-	// warning. Wire the framework's log.Logger (the interface returned by
-	// log.NewLogger) here so worker errors flow through the configured log
-	// driver.
-	Logger queue.WorkerLogger
+	// Logger is the logger internal worker errors are routed to. When nil,
+	// the worker falls back to stderr and emits a per-construction warning.
+	// Wire the application's logger (Services.Log) here so worker errors
+	// flow through the configured log driver.
+	Logger contract.Logger
 	// Dispatcher receives the worker's job lifecycle events (job.processing,
 	// job.processed, job.retrying, job.failed). When nil, the worker fires no
 	// events. Wire the application's event dispatcher here so listeners see

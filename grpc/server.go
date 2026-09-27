@@ -53,7 +53,7 @@ type Server struct {
 	// running, which toggles off on stop.
 	served        bool
 	serverOptions []grpc.ServerOption
-	logger        log.Logger
+	logger        contract.Logger
 
 	// startTime records when the server last started serving; zero when the
 	// server has not started or has already emitted its ServerStopped event.
@@ -254,7 +254,7 @@ func WithoutDefaultRecovery() ServerOption {
 }
 
 // WithLogger sets the logger for the gRPC server
-func WithLogger(logger log.Logger) ServerOption {
+func WithLogger(logger contract.Logger) ServerOption {
 	return func(s *Server) {
 		s.logger = logger
 	}

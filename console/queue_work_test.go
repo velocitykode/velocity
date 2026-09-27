@@ -61,6 +61,8 @@ type quietWorkerLogger struct{}
 func (quietWorkerLogger) Info(string, ...any)  {}
 func (quietWorkerLogger) Warn(string, ...any)  {}
 func (quietWorkerLogger) Error(string, ...any) {}
+func (quietWorkerLogger) Debug(string, ...any) {}
+func (quietWorkerLogger) Fatal(string, ...any) {}
 
 // TestNewQueueWorker_WiresDispatcher asserts the worker queue work runs
 // fires its job lifecycle events into opts.Dispatcher: a job that fails

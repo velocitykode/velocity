@@ -581,7 +581,7 @@ type SessionScheme struct {
 	encryptor      crypto.Encryptor
 	mu             sync.RWMutex
 	serverStore    auth.ServerSessionStore
-	logger         auth.Logger
+	logger         contract.Logger
 	trustedProxies []*net.IPNet
 	// attemptFloor is the wall-clock floor for Attempt; zero falls back
 	// to auth.DefaultAttemptFloor. Set via SetAttemptFloor or seeded
@@ -829,17 +829,17 @@ func (g *SessionScheme) getTrustedProxies() []*net.IPNet {
 // (store errors, a session cookie too large to send, a refused revival,
 // a queued write that touched the response body). Nil disables logging.
 //
-// Manager.SetLogger propagates to every registered scheme via the
-// auth.LoggerReceiver interface, and Manager.RegisterScheme hands the
-// manager's logger to a scheme registered later, so a bootstrapped app
-// logs through its framework logger without calling this directly.
-func (g *SessionScheme) SetLogger(l auth.Logger) {
+// Manager.SetLogger propagates to every registered scheme implementing
+// contract.LoggerAware, and Manager.RegisterScheme hands the manager's
+// logger to a scheme registered later, so a bootstrapped app logs through
+// its framework logger without calling this directly.
+func (g *SessionScheme) SetLogger(l contract.Logger) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.logger = l
 }
 
-var _ auth.LoggerReceiver = (*SessionScheme)(nil)
+var _ contract.LoggerAware = (*SessionScheme)(nil)
 
 // getServerStore returns the installed server-side session store, or nil
 // when none has been configured.

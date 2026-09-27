@@ -16,15 +16,6 @@ import (
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
-// Logger is the minimal logging interface used by the WebSocket server.
-// The framework's log.Logger satisfies this shape; the package stays
-// decoupled from the log/ package to preserve its leaf status.
-type Logger interface {
-	Info(msg string, kvs ...any)
-	Warn(msg string, kvs ...any)
-	Error(msg string, kvs ...any)
-}
-
 // sanitizeForLog strips control characters and newlines from a string for safe logging.
 func sanitizeForLog(s string) string {
 	var b strings.Builder
@@ -104,7 +95,7 @@ type Server struct {
 	// logger is stored in an atomic.Value so it can be read from paths
 	// that already hold s.mu (e.g. JoinGroup) without risking deadlock
 	// via re-entrant locking.
-	logger atomic.Value // holds loggerHolder{Logger}
+	logger atomic.Value // holds loggerHolder{contract.Logger}
 
 	// recoveredPanics counts how many times callWithRecover has caught a
 	// panic in a single handler dispatch. Exposed via RecoveredPanics for
@@ -112,8 +103,9 @@ type Server struct {
 	recoveredPanics atomic.Uint64
 }
 
-// loggerHolder wraps a Logger so atomic.Value stores a single concrete type.
-type loggerHolder struct{ Logger }
+// loggerHolder wraps a contract.Logger so atomic.Value stores a single
+// concrete type.
+type loggerHolder struct{ contract.Logger }
 
 // broadcastJob carries a broadcast message together with the client snapshot
 // taken under s.mu on the run-loop goroutine. The fan-out (the actual sends)
@@ -127,13 +119,15 @@ type broadcastJob struct {
 // SetLogger installs a logger for operational events (connects, disconnects,
 // rate-limit violations, recovered panics). Nil disables logging. Safe to
 // call concurrently.
-func (s *Server) SetLogger(l Logger) {
+func (s *Server) SetLogger(l contract.Logger) {
 	s.logger.Store(loggerHolder{Logger: l})
 }
 
+var _ contract.LoggerAware = (*Server)(nil)
+
 // log returns the installed logger, or nil when SetLogger has not been called
 // (or was called with nil).
-func (s *Server) log() Logger {
+func (s *Server) log() contract.Logger {
 	v := s.logger.Load()
 	if v == nil {
 		return nil

@@ -31,6 +31,9 @@ func (l *warnLog) Warn(msg string, _ ...any) {
 	l.lines = append(l.lines, msg)
 }
 
+func (*warnLog) Debug(string, ...any) {}
+func (*warnLog) Fatal(string, ...any) {}
+
 func (l *warnLog) contains(s string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()

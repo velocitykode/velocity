@@ -38,6 +38,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // OutboxTableName is the canonical outbox table name. Callers must apply the
@@ -546,13 +548,6 @@ type RelayCallbacks struct {
 	OnEvent func(ctx context.Context, payload any, payloadType, idempotencyKey string) error
 }
 
-// RelayLogger receives relay diagnostics. The interface matches the orm
-// eventLogger so an *log.Logger satisfies it.
-type RelayLogger interface {
-	Warn(msg string, kvs ...any)
-	Error(msg string, kvs ...any)
-}
-
 // Relay drains the outbox table and dispatches rows via the configured
 // callbacks. Multiple relays may run against the same table concurrently;
 // row claim uses lease + atomic CAS so only one relay handles a row at a
@@ -561,7 +556,7 @@ type Relay struct {
 	mgr       *Manager
 	cfg       RelayConfig
 	callbacks RelayCallbacks
-	logger    RelayLogger
+	logger    contract.Logger
 
 	mu       sync.Mutex
 	running  bool
@@ -620,12 +615,16 @@ func NewRelay(mgr *Manager, callbacks RelayCallbacks, cfg RelayConfig) *Relay {
 	}
 }
 
-// SetLogger installs an optional logger.
-func (r *Relay) SetLogger(l RelayLogger) {
+// SetLogger installs an optional logger for relay diagnostics. Nil
+// disables logging. Call it before Start: the relay loop reads the logger
+// without the lock.
+func (r *Relay) SetLogger(l contract.Logger) {
 	r.mu.Lock()
 	r.logger = l
 	r.mu.Unlock()
 }
+
+var _ contract.LoggerAware = (*Relay)(nil)
 
 // ID returns the relay's RelayID, useful for tests and observability.
 func (r *Relay) ID() string { return r.cfg.RelayID }

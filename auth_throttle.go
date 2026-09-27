@@ -326,7 +326,7 @@ func configuredLoginThrottleDecay() time.Duration {
 	return defaultLoginThrottleDecay
 }
 
-func installLoginThrottler(manager *auth.Manager, cm cache.CacheManager, log installerLogger) {
+func installLoginThrottler(manager *auth.Manager, cm cache.CacheManager, log contract.Logger) {
 	if manager == nil || cm == nil {
 		return
 	}

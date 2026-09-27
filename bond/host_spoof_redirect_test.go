@@ -44,6 +44,9 @@ func (l *captureLogger) Warn(msg string, _ ...any) {
 }
 
 func (l *captureLogger) Error(string, ...any) {}
+func (*captureLogger) Debug(string, ...any)   {}
+func (*captureLogger) Info(string, ...any)    {}
+func (*captureLogger) Fatal(string, ...any)   {}
 
 // resetHostFallbackLatch resets the process-wide warning latch so tests
 // that exercise the fallback path can each observe the warning. We must

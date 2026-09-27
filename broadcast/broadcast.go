@@ -8,6 +8,7 @@ import (
 	"log"
 	"sync"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 )
 
@@ -60,10 +61,10 @@ type BroadcastManager struct {
 	// warning fires only for the latter.
 	customAuthorizer bool
 
-	// logger is an optional one-arg sink for one-time configuration
-	// warnings. nil means fall back to the stdlib log package. Guarded by
-	// mu like the rest of the manager state.
-	logger func(string)
+	// logger receives one-time configuration warnings. nil means fall back
+	// to the stdlib log package. Guarded by mu like the rest of the manager
+	// state.
+	logger contract.Logger
 
 	// noSecretWarned ensures the "authorizer without auth secret" warning
 	// is emitted at most once for the life of the manager, so a hot
@@ -339,17 +340,19 @@ func (b *BroadcastManager) SetAuthorizer(fn Authorizer) {
 	}
 }
 
-// SetLogger installs an optional one-argument sink for one-time configuration
-// warnings. Passing nil restores the stdlib log fallback. It is safe to call
-// concurrently with the rest of the manager API.
-func (b *BroadcastManager) SetLogger(fn func(string)) {
+// SetLogger installs an optional logger for one-time configuration warnings,
+// written at warn level. Passing nil restores the stdlib log fallback. It is
+// safe to call concurrently with the rest of the manager API.
+func (b *BroadcastManager) SetLogger(l contract.Logger) {
 	b.mu.Lock()
-	b.logger = fn
+	b.logger = l
 	b.mu.Unlock()
 }
 
+var _ contract.LoggerAware = (*BroadcastManager)(nil)
+
 // warnAuthorizerWithoutSecret emits the authorizer-without-secret warning at
-// most once. The log sink is read under b.mu so a concurrent SetLogger is
+// most once. The logger is read under b.mu so a concurrent SetLogger is
 // observed safely; the stdlib log package is the nil-safe fallback.
 func (b *BroadcastManager) warnAuthorizerWithoutSecret() {
 	b.noSecretWarned.Do(func() {
@@ -357,10 +360,10 @@ func (b *BroadcastManager) warnAuthorizerWithoutSecret() {
 			"private/presence channels will be authorized without a socket-binding HMAC. " +
 			"Call SetAuthSecret to bind the authenticated user to the WebSocket connection."
 		b.mu.RLock()
-		sink := b.logger
+		logger := b.logger
 		b.mu.RUnlock()
-		if sink != nil {
-			sink(msg)
+		if logger != nil {
+			logger.Warn(msg)
 			return
 		}
 		log.Print(msg)

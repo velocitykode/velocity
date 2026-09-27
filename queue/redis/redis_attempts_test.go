@@ -44,6 +44,9 @@ func (l *redisCaptureLogger) Warn(msg string, _ ...any) {
 	l.messages = append(l.messages, msg)
 }
 
+func (*redisCaptureLogger) Debug(string, ...any) {}
+func (*redisCaptureLogger) Fatal(string, ...any) {}
+
 func (l *redisCaptureLogger) countContaining(needle string) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()

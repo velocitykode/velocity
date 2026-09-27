@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -35,6 +36,9 @@ func (l *kvLog) Warn(msg string, kvs ...any) {
 	l.entries = append(l.entries, kvEntry{msg: msg, kvs: fields})
 }
 
+func (*kvLog) Debug(string, ...any) {}
+func (*kvLog) Fatal(string, ...any) {}
+
 // find returns the first warning whose message contains s.
 func (l *kvLog) find(s string) (kvEntry, bool) {
 	l.mu.Lock()
@@ -48,7 +52,7 @@ func (l *kvLog) find(s string) (kvEntry, bool) {
 }
 
 // schemeLogger reads the logger the scheme holds.
-func schemeLogger(g *SessionScheme) auth.Logger {
+func schemeLogger(g *SessionScheme) contract.Logger {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.logger

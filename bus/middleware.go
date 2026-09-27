@@ -3,6 +3,7 @@ package bus
 import (
 	"reflect"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/pipeline"
 )
 
@@ -11,11 +12,10 @@ func Middleware(fn func(cmd Command, next func(Command) error) error) pipeline.S
 	return pipeline.Pipe[Command](fn)
 }
 
-// LoggingMiddleware returns middleware that logs command dispatch.
-// The logger interface matches the common pattern used in the framework.
-func LoggingMiddleware(logger interface {
-	Info(msg string, kvs ...any)
-}) pipeline.Stage[Command] {
+// LoggingMiddleware returns middleware that logs command dispatch through
+// logger at info level: one line when a command is dispatched and one when
+// it completes or fails.
+func LoggingMiddleware(logger contract.Logger) pipeline.Stage[Command] {
 	return Middleware(func(cmd Command, next func(Command) error) error {
 		logger.Info("Dispatching command", "type", formatType(cmd))
 		err := next(cmd)

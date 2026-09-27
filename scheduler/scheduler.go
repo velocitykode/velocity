@@ -18,9 +18,9 @@ import (
 // methods used through app.Services and router.Context for job scheduling
 // and lifecycle management.
 //
-// Configuration methods that return *Scheduler for chaining (SetTimezone,
-// SetLogger, MaintenanceMode, Before, After) are intentionally excluded --
-// they are only called on the concrete type during bootstrap.
+// Configuration methods (SetTimezone, MaintenanceMode, Before and After,
+// which return *Scheduler for chaining, and SetLogger) are intentionally
+// excluded -- they are only called on the concrete type during bootstrap.
 type TaskScheduler interface {
 	Add(job *Job) *Job
 	Call(callback func()) *Job
@@ -72,7 +72,7 @@ type Scheduler struct {
 
 	// logger is stored via atomic.Value so the Run/runDueJobs hot paths
 	// can read it lock-free and SetLogger doesn't contend with s.mu.
-	logger atomic.Value // holds schedLoggerHolder{Logger}
+	logger atomic.Value // holds schedLoggerHolder{contract.Logger}
 
 	eventDispatcher func(ctx context.Context, event interface{}) error
 	runWg           sync.WaitGroup // tracks in-flight job goroutines
@@ -116,8 +116,9 @@ type Scheduler struct {
 	shutdownGrace time.Duration
 }
 
-// schedLoggerHolder wraps a Logger so atomic.Value stores a single type.
-type schedLoggerHolder struct{ Logger }
+// schedLoggerHolder wraps a contract.Logger so atomic.Value stores a single
+// type.
+type schedLoggerHolder struct{ contract.Logger }
 
 // SetEventDispatcher sets the function used to dispatch events.
 func (s *Scheduler) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
@@ -148,28 +149,17 @@ func (s *Scheduler) dispatchEvent(ctx context.Context, event interface{}) {
 	fn(ctx, event)
 }
 
-// Logger is the minimal logging interface used by the scheduler. The
-// framework's log.Logger satisfies this shape; keeping the contract local
-// allows scheduler/ to remain a log-free leaf. Warn was added when the
-// distributed-Locker wiring needed to distinguish quiet contention
-// (Debug) from backend outages (Warn); see logAcquireFailure.
-type Logger interface {
-	Info(msg string, keysAndValues ...interface{})
-	Warn(msg string, keysAndValues ...interface{})
-	Error(msg string, keysAndValues ...interface{})
-	Debug(msg string, keysAndValues ...interface{})
-}
-
 // nullLogger is the silent default when SetLogger has not been called.
 // It is deliberately inert so the scheduler never emits log output
 // through stdlib log, all diagnostic logging flows through the
 // framework logger installed at boot.
 type nullLogger struct{}
 
-func (nullLogger) Info(string, ...interface{})  {}
-func (nullLogger) Warn(string, ...interface{})  {}
-func (nullLogger) Error(string, ...interface{}) {}
-func (nullLogger) Debug(string, ...interface{}) {}
+func (nullLogger) Info(string, ...any)  {}
+func (nullLogger) Warn(string, ...any)  {}
+func (nullLogger) Error(string, ...any) {}
+func (nullLogger) Debug(string, ...any) {}
+func (nullLogger) Fatal(string, ...any) {}
 
 // New creates a new scheduler instance
 func New() *Scheduler {
@@ -219,7 +209,7 @@ func (s *Scheduler) Locker() Locker {
 }
 
 // log returns the installed logger. Always non-nil after New().
-func (s *Scheduler) log() Logger {
+func (s *Scheduler) log() contract.Logger {
 	v := s.logger.Load()
 	if v == nil {
 		return nullLogger{}
@@ -264,15 +254,18 @@ func (s *Scheduler) Timezone() *time.Location {
 	return s.timezone
 }
 
-// SetLogger sets a custom logger
-func (s *Scheduler) SetLogger(logger Logger) *Scheduler {
+// SetLogger sets the logger for scheduler diagnostics (start and stop,
+// recovered panics, lock-acquire failures, job runs). Nil restores the
+// silent default. Safe to call concurrently.
+func (s *Scheduler) SetLogger(logger contract.Logger) {
 	if logger == nil {
 		s.logger.Store(schedLoggerHolder{Logger: nullLogger{}})
 	} else {
 		s.logger.Store(schedLoggerHolder{Logger: logger})
 	}
-	return s
 }
+
+var _ contract.LoggerAware = (*Scheduler)(nil)
 
 // MaintenanceMode enables or disables maintenance mode
 func (s *Scheduler) MaintenanceMode(enabled bool) *Scheduler {
@@ -818,7 +811,7 @@ func (s *Scheduler) Jobs() []*Job {
 //
 // The kind argument names which guard (OnOneServer or
 // WithoutOverlapping) failed so the log line is actionable.
-func logAcquireFailure(log Logger, kind, jobName, key string, err error) {
+func logAcquireFailure(log contract.Logger, kind, jobName, key string, err error) {
 	if errors.Is(err, ErrLockHeld) {
 		log.Debug(
 			"Skipping job: distributed lock held",

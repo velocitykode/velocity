@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/orm/drivers"
 	"github.com/velocitykode/velocity/trace"
@@ -113,7 +114,7 @@ type Manager struct {
 	txEventBus events.Dispatcher
 	// logger receives warnings about runtime conditions (transaction
 	// rollback failures, recovered panics). nil until SetLogger is called.
-	logger eventLogger
+	logger contract.Logger
 }
 
 // NewManager creates a new ORM Manager with a connected database driver.
@@ -967,22 +968,16 @@ func flushBufferedEntry(ctx context.Context, entry events.BufferedEvent, bus eve
 	return nil
 }
 
-// eventLogger is the minimal logger contract the manager uses to report
-// runtime conditions (e.g. failed rollback). It matches the shape of
-// log.Logger without importing the package, keeping orm a leaf dependency.
-type eventLogger interface {
-	Warn(msg string, kvs ...any)
-	Error(msg string, kvs ...any)
-}
-
 // SetLogger installs a logger that receives warnings about recovered
-// transaction panics and failed rollbacks. Callers may pass any value
-// satisfying the Warn/Error shape (typically log.Logger).
-func (m *Manager) SetLogger(logger eventLogger) {
+// transaction panics and failed rollbacks. Nil disables logging. Safe to
+// call concurrently.
+func (m *Manager) SetLogger(logger contract.Logger) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.logger = logger
 }
+
+var _ contract.LoggerAware = (*Manager)(nil)
 
 // dispatchEvent dispatches an event if a dispatcher is configured. ctx
 // reaches every listener so trace IDs and request-scoped values flow

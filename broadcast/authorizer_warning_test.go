@@ -6,6 +6,16 @@ import (
 	"testing"
 )
 
+// warnSink is a contract.Logger that hands each warn-level message to the
+// func and drops every other level.
+type warnSink func(msg string)
+
+func (s warnSink) Warn(msg string, _ ...any) { s(msg) }
+func (warnSink) Debug(string, ...any)        {}
+func (warnSink) Info(string, ...any)         {}
+func (warnSink) Error(string, ...any)        {}
+func (warnSink) Fatal(string, ...any)        {}
+
 // TestSetAuthorizer_WarnsWithoutSecret verifies the fail-loud behaviour for the
 // authorizer-without-verifier misconfiguration: installing a non-deny
 // authorizer while no auth secret is configured emits a one-time warning, and
@@ -49,11 +59,11 @@ func TestSetAuthorizer_WarnsWithoutSecret(t *testing.T) {
 
 			var mu sync.Mutex
 			var msgs []string
-			b.SetLogger(func(msg string) {
+			b.SetLogger(warnSink(func(msg string) {
 				mu.Lock()
 				msgs = append(msgs, msg)
 				mu.Unlock()
-			})
+			}))
 
 			tt.configure(b)
 
@@ -108,11 +118,11 @@ func TestSetAuthSecret_WarnsWhenClearedWithCustomAuthorizer(t *testing.T) {
 
 			var mu sync.Mutex
 			var msgs []string
-			b.SetLogger(func(msg string) {
+			b.SetLogger(warnSink(func(msg string) {
 				mu.Lock()
 				msgs = append(msgs, msg)
 				mu.Unlock()
-			})
+			}))
 
 			tt.configure(b)
 
@@ -136,7 +146,7 @@ func TestSetAuthorizer_WarnsAtMostOnce(t *testing.T) {
 	b := New(NewMockDriver())
 
 	var count int
-	b.SetLogger(func(string) { count++ })
+	b.SetLogger(warnSink(func(string) { count++ }))
 
 	allow := func(channel string, user interface{}) bool { return true }
 	for i := 0; i < 5; i++ {
@@ -159,7 +169,7 @@ func TestSetAuthorizer_WarnConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			b.SetLogger(func(string) {})
+			b.SetLogger(warnSink(func(string) {}))
 			b.SetAuthorizer(allow)
 			b.SetAuthSecret([]byte("k"))
 		}()

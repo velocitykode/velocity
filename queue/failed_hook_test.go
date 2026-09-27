@@ -176,3 +176,6 @@ func (l hookPanicLogger) Error(msg string, _ ...any) {
 		l.errors.Add(1)
 	}
 }
+
+func (hookPanicLogger) Debug(string, ...any) {}
+func (hookPanicLogger) Fatal(string, ...any) {}

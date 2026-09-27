@@ -38,6 +38,19 @@ type ShutdownAware interface {
 	Shutdown(ctx context.Context) error
 }
 
+// LoggerAware is the uniform interface for types that write operational
+// log lines (warnings, recovered panics, failures they cannot return)
+// through a Logger. Every framework type with a logger seam implements it,
+// so one Logger (normally the app's Services.Log) can be handed to each of
+// them the same way.
+//
+// A nil Logger restores the type's no-logger behaviour. Each
+// implementation documents that behaviour and whether SetLogger may run
+// while the value is in use.
+type LoggerAware interface {
+	SetLogger(l Logger)
+}
+
 // AuthManager defines the contract for authorization checks.
 // Implemented by *auth.Manager.
 type AuthManager interface {

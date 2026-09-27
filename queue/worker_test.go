@@ -1007,7 +1007,7 @@ func TestWorker_ShutdownCancelledJobNotRetriedOrFailed(t *testing.T) {
 	}
 }
 
-// recordingLogger captures WorkerLogger calls for assertion. Safe for
+// recordingLogger captures worker logger calls for assertion. Safe for
 // concurrent use; pump goroutines and the test goroutine both call into
 // it.
 type recordingLogger struct {
@@ -1034,6 +1034,9 @@ func (r *recordingLogger) Error(msg string, _ ...any) {
 	r.errs = append(r.errs, msg)
 	r.mu.Unlock()
 }
+
+func (*recordingLogger) Debug(string, ...any) {}
+func (*recordingLogger) Fatal(string, ...any) {}
 
 func (r *recordingLogger) warnCount(substr string) int {
 	r.mu.Lock()

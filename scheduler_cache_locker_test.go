@@ -187,9 +187,8 @@ func TestCacheLocker_ReleaseIsIdempotent(t *testing.T) {
 	}
 }
 
-// captureLogger collects Warn calls for assertion. Implements
-// installerLogger via the structural Warn(string, ...any) shape; no
-// dependency on the log package.
+// captureLogger is a contract.Logger that collects Warn calls for
+// assertion and drops every other level.
 type captureLogger struct {
 	mu    sync.Mutex
 	warns []capturedWarn
@@ -205,6 +204,11 @@ func (c *captureLogger) Warn(msg string, kvs ...any) {
 	defer c.mu.Unlock()
 	c.warns = append(c.warns, capturedWarn{msg: msg, kvs: append([]any(nil), kvs...)})
 }
+
+func (*captureLogger) Debug(string, ...any) {}
+func (*captureLogger) Info(string, ...any)  {}
+func (*captureLogger) Error(string, ...any) {}
+func (*captureLogger) Fatal(string, ...any) {}
 
 func (c *captureLogger) Warns() []capturedWarn {
 	c.mu.Lock()
@@ -361,7 +365,7 @@ func TestInstallSchedulerLocker_DatabaseDriverFallsBackToInMemory(t *testing.T) 
 }
 
 // TestInstallSchedulerLocker_NilLoggerIsSafe verifies that a nil
-// installerLogger argument does not panic on the WARN paths -- the
+// logger argument does not panic on the WARN paths -- the
 // installer must remain robust against callers that have not yet
 // constructed a logger (early bootstrap, test harnesses).
 func TestInstallSchedulerLocker_NilLoggerIsSafe(t *testing.T) {

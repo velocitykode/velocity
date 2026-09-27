@@ -23,6 +23,9 @@ func (l *captureLogger) Warn(msg string, kvs ...any) {
 	l.warns = append(l.warns, msg)
 }
 
+func (*captureLogger) Debug(string, ...any) {}
+func (*captureLogger) Fatal(string, ...any) {}
+
 func (l *captureLogger) warnCount() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()

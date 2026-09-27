@@ -46,6 +46,8 @@ type quietLogger struct{}
 func (quietLogger) Info(string, ...any)  {}
 func (quietLogger) Warn(string, ...any)  {}
 func (quietLogger) Error(string, ...any) {}
+func (quietLogger) Debug(string, ...any) {}
+func (quietLogger) Fatal(string, ...any) {}
 
 // TestRedisDriver_JobFailedMarkedWhenHookReported asserts that on the redis
 // driver, which fails a job through Failed and runs the job's hook on the

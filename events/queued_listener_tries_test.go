@@ -11,13 +11,15 @@ import (
 	"github.com/velocitykode/velocity/queue"
 )
 
-// silentWorkerLogger is a no-op queue.WorkerLogger so the worker's retry /
+// silentWorkerLogger is a no-op worker logger so the worker's retry /
 // failure lines do not spam the test output.
 type silentWorkerLogger struct{}
 
 func (silentWorkerLogger) Info(string, ...any)  {}
 func (silentWorkerLogger) Warn(string, ...any)  {}
 func (silentWorkerLogger) Error(string, ...any) {}
+func (silentWorkerLogger) Debug(string, ...any) {}
+func (silentWorkerLogger) Fatal(string, ...any) {}
 
 // failingTriesListener is a QueuedListener whose Handle always errors. The
 // atomic counter records how many times the worker invoked it so the test can

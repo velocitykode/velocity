@@ -9,14 +9,14 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
-	"github.com/velocitykode/velocity/log"
 )
 
 // LoggingConfig configures the logging interceptor
 type LoggingConfig struct {
 	// Logger is the logger to use. Defaults to the global logger.
-	Logger log.Logger
+	Logger contract.Logger
 
 	// LogPayloads enables logging of request/response payloads
 	LogPayloads bool
@@ -41,7 +41,7 @@ type LoggingConfig struct {
 type LoggingOption func(*LoggingConfig)
 
 // WithLoggingLogger sets a custom logger
-func WithLoggingLogger(logger log.Logger) LoggingOption {
+func WithLoggingLogger(logger contract.Logger) LoggingOption {
 	return func(c *LoggingConfig) {
 		c.Logger = logger
 	}

@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 const minSecureBcryptCost = 10
@@ -27,7 +29,7 @@ type BcryptHasher struct {
 	cost          int
 	requestedCost int  // original value passed to NewBcryptHasher / SetCost
 	clampedAtInit bool // true when the constructor had to raise cost to the secure minimum
-	logger        Logger
+	logger        contract.Logger
 	mu            sync.RWMutex
 }
 
@@ -64,7 +66,7 @@ func clampBcryptCost(cost int) (int, bool) {
 // now (and the pending flag cleared) so the event is surfaced through the
 // framework logger rather than being lost before wiring completed. Nil
 // disables logging.
-func (h *BcryptHasher) SetLogger(l Logger) {
+func (h *BcryptHasher) SetLogger(l contract.Logger) {
 	h.mu.Lock()
 	h.logger = l
 	pending := h.clampedAtInit && l != nil
@@ -79,6 +81,8 @@ func (h *BcryptHasher) SetLogger(l Logger) {
 		l.Warn("auth: bcrypt cost below secure minimum, clamped", "requested", requested, "minimum", minSecureBcryptCost, "using", effective)
 	}
 }
+
+var _ contract.LoggerAware = (*BcryptHasher)(nil)
 
 // Hash hashes a password using bcrypt
 func (h *BcryptHasher) Hash(password string) (string, error) {

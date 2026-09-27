@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -82,7 +83,7 @@ type MemoryDriver struct {
 	// path can read it without acquiring the main lock (the goroutine
 	// that observes a panic may be fired under arbitrary locking
 	// conditions).
-	logger atomic.Value // holds memLoggerHolder{Logger}
+	logger atomic.Value // holds memLoggerHolder{contract.Logger}
 }
 
 // memReservation holds a wrapper leased to a worker via PopCtxReserved
@@ -105,17 +106,20 @@ var (
 	_ DedupeAwarePusher = (*MemoryDriver)(nil)
 )
 
-// memLoggerHolder wraps a Logger so atomic.Value stores a single concrete type.
-type memLoggerHolder struct{ Logger }
+// memLoggerHolder wraps a contract.Logger so atomic.Value stores a single
+// concrete type.
+type memLoggerHolder struct{ contract.Logger }
 
 // SetLogger installs a logger for operational events (shutdown-time
 // panic recovery). Nil disables logging. Safe to call concurrently.
-func (m *MemoryDriver) SetLogger(l Logger) {
+func (m *MemoryDriver) SetLogger(l contract.Logger) {
 	m.logger.Store(memLoggerHolder{Logger: l})
 }
 
+var _ contract.LoggerAware = (*MemoryDriver)(nil)
+
 // log returns the installed logger, or nil when SetLogger has not been called.
-func (m *MemoryDriver) log() Logger {
+func (m *MemoryDriver) log() contract.Logger {
 	v := m.logger.Load()
 	if v == nil {
 		return nil

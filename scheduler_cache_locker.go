@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/cache"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/scheduler"
 )
 
@@ -166,14 +167,6 @@ type lockCapable interface {
 	RestoreLock(key string, owner string) cache.Lock
 }
 
-// installerLogger is the narrow log surface installSchedulerLocker
-// uses to emit the fallback WARN. Implemented by *log.Logger. Defining
-// it locally keeps this file's import set unchanged and lets tests
-// inject a capture logger without depending on the log package.
-type installerLogger interface {
-	Warn(msg string, kvs ...any)
-}
-
 // installSchedulerLocker is called by velocity.New after both cache and
 // scheduler are constructed. It decides which Locker the scheduler will
 // use for WithoutOverlapping() and OnOneServer() contests:
@@ -203,7 +196,7 @@ type installerLogger interface {
 // Pass-through helper centralises the capability decision; future
 // drivers that grow Lock support only need to satisfy the lockCapable
 // interface and no changes here are required.
-func installSchedulerLocker(sched *scheduler.Scheduler, cm cache.CacheManager, driver string, log installerLogger) {
+func installSchedulerLocker(sched *scheduler.Scheduler, cm cache.CacheManager, driver string, log contract.Logger) {
 	if sched == nil || cm == nil {
 		return
 	}

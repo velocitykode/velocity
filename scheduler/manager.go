@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -16,11 +17,12 @@ type Manager struct {
 
 	// logger is stored atomically so recover() paths in RunAll can read
 	// it without acquiring m.mu (some callers may already hold it).
-	logger atomic.Value // holds mgrLoggerHolder{Logger}
+	logger atomic.Value // holds mgrLoggerHolder{contract.Logger}
 }
 
-// mgrLoggerHolder wraps a Logger so atomic.Value stores a single type.
-type mgrLoggerHolder struct{ Logger }
+// mgrLoggerHolder wraps a contract.Logger so atomic.Value stores a single
+// type.
+type mgrLoggerHolder struct{ contract.Logger }
 
 // NewManager creates a new scheduler manager
 func NewManager() *Manager {
@@ -34,7 +36,7 @@ func NewManager() *Manager {
 // from individual schedulers running under RunAll, wait panics). The same
 // logger is also propagated to every Scheduler the Manager owns so child
 // schedulers log through the same pipeline. Nil disables logging.
-func (m *Manager) SetLogger(l Logger) {
+func (m *Manager) SetLogger(l contract.Logger) {
 	m.logger.Store(mgrLoggerHolder{Logger: l})
 
 	m.mu.RLock()
@@ -49,8 +51,10 @@ func (m *Manager) SetLogger(l Logger) {
 	}
 }
 
+var _ contract.LoggerAware = (*Manager)(nil)
+
 // log returns the installed logger, or nil when SetLogger has not been called.
-func (m *Manager) log() Logger {
+func (m *Manager) log() contract.Logger {
 	v := m.logger.Load()
 	if v == nil {
 		return nil
