@@ -340,7 +340,11 @@ func (c *CSRF) writeXSRFCookieForSession(ctx context.Context, w http.ResponseWri
 		token string
 		err   error
 	)
-	if state := tokenStateFromContext(ctx); state != nil && state.csrf == c {
+	state := tokenStateFromContext(ctx)
+	if state != nil && state.csrf != c {
+		state = nil
+	}
+	if state != nil {
 		// Route through the request-scoped cache, keyed on sessionID.
 		// The cache already holds the per-response masked form, so no
 		// further masking here.
@@ -369,13 +373,35 @@ func (c *CSRF) writeXSRFCookieForSession(ctx context.Context, w http.ResponseWri
 	// URL-encode so axios-style clients can echo the value verbatim in
 	// X-XSRF-TOKEN without double-encoding. Not HttpOnly: SPAs must read
 	// this cookie.
-	cookie := c.config.CookiePolicy.Cookie(cookieName, url.QueryEscape(token), maxAge, false)
+	cookieFor := func(token string) *http.Cookie {
+		return c.config.CookiePolicy.Cookie(cookieName, url.QueryEscape(token), maxAge, false)
+	}
+	cookie := cookieFor(token)
 	// The safe-method bootstrap names a token the store may keep in the
 	// request's session: write it only once that session is saved, so a
 	// failed save never leaves the client a token nobody holds.
-	if r != nil && c.config.QueueAfterSessionSave != nil &&
-		c.config.QueueAfterSessionSave(r, func(w http.ResponseWriter) { http.SetCookie(w, cookie) }) {
-		return
+	if r != nil && c.config.QueueAfterSessionSave != nil {
+		write := func(w http.ResponseWriter) { http.SetCookie(w, cookie) }
+		if state != nil {
+			// Take the value at delivery from the request cache: a
+			// rotation that kept the session id after this write was
+			// queued replaced the token the cache holds for sessionID
+			// (see RotateToken), and the cookie must carry that one, not
+			// the token read before the handler ran. Without a rotation
+			// the cache returns the bytes read above. When the cache
+			// moved to another session (a sign-in or recall replaced
+			// this one, or a rotation retired sessionID), nothing is
+			// written: the token read above is no longer held, and
+			// loading here would mint one for an id the request left.
+			write = func(w http.ResponseWriter) {
+				if token, ok := state.cachedFor(sessionID); ok {
+					http.SetCookie(w, cookieFor(token))
+				}
+			}
+		}
+		if c.config.QueueAfterSessionSave(r, write) {
+			return
+		}
 	}
 	// Not queued: no session save follows (write now), or the session
 	// save and its delivery are over. The response is then committed or
@@ -816,6 +842,13 @@ func (c *CSRF) RotateToken(ctx context.Context, oldID, newID string) error {
 	}
 	if err := c.config.Store.Set(ctx, newID, token); err != nil {
 		return fmt.Errorf("velocity/csrf: RotateToken: store set: %w", err)
+	}
+	// The request cache ctx carries (the scheme's rotation context and a
+	// handler's request context derive from the request) may hold the
+	// token this rotation replaced, keyed on an id the rotation kept or
+	// retired: point it at the new token.
+	if state := tokenStateFromContext(ctx); state != nil && state.csrf == c {
+		state.replaceAfterRotation(oldID, newID, token)
 	}
 	return nil
 }

@@ -58,6 +58,23 @@ func recallCSRFStack(t *testing.T) (*SessionScheme, csrf.Store, http.Handler) {
 		}
 		return ctx.String(http.StatusOK, tok)
 	}))
+	// A handler that rotates the token of the session it is served under
+	// without replacing the session, writes the cookie and renders it.
+	r.Get("/rotate-same", requireUser(func(ctx *router.Context) error {
+		id, err := cfg.SessionIDResolver(ctx.Request)
+		if err != nil {
+			return err
+		}
+		if err := c.RotateToken(ctx.Request.Context(), id, id); err != nil {
+			return err
+		}
+		c.WriteXSRFCookie(ctx.Request.Context(), ctx.Response, id)
+		tok, err := csrf.TokenForRequest(ctx.Request)
+		if err != nil {
+			return err
+		}
+		return ctx.String(http.StatusOK, tok)
+	}))
 	r.Post("/submit", requireUser(func(ctx *router.Context) error {
 		return ctx.String(http.StatusOK, "accepted")
 	}))
@@ -124,5 +141,75 @@ func TestCSRFRotation_RememberRevivalRendersTheRotatedToken(t *testing.T) {
 	h.ServeHTTP(pw, post)
 	if pw.Code != http.StatusOK {
 		t.Fatalf("POST with the rendered token after the revival: %d %s, want 200", pw.Code, pw.Body.String())
+	}
+}
+
+// A signed-in request whose handler rotates the token in place (same
+// session id) and writes the cookie carries the new token in every
+// XSRF-TOKEN line and in the page, and the next submit presenting it is
+// accepted. The bootstrap cookie queued before the handler ran does not
+// restore the replaced token.
+func TestCSRFRotation_SameSessionRotationWritesTheNewToken(t *testing.T) {
+	scheme, store, h := recallCSRFStack(t)
+	remember := mintRememberCookie(t, scheme)
+
+	revive := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	revive.AddCookie(remember)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, revive)
+	var sessionCookie *http.Cookie
+	for _, c := range rw.Result().Cookies() {
+		if c.Name == "vel_session" {
+			sessionCookie = c
+		}
+	}
+	if rw.Code != http.StatusOK || sessionCookie == nil {
+		t.Fatalf("premise: revival %d, session cookie %v", rw.Code, sessionCookie)
+	}
+	id := decryptSessionID(t, scheme.encryptor, sessionCookie.Value)
+
+	req := httptest.NewRequest(http.MethodGet, "/rotate-same", nil)
+	req.AddCookie(&http.Cookie{Name: "vel_session", Value: sessionCookie.Value})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /rotate-same: %d %s", w.Code, w.Body.String())
+	}
+	rendered := w.Body.String()
+
+	stored, err := store.Get(context.Background(), id)
+	if err != nil || stored == "" {
+		t.Fatalf("no token stored for session %q: %v", id, err)
+	}
+	if csrf.UnmaskToken(rendered) != stored {
+		t.Fatal("the rendered token is not the token the rotation stored")
+	}
+	var xsrf []string
+	for _, line := range w.Header().Values("Set-Cookie") {
+		c, err := http.ParseSetCookie(line)
+		if err != nil {
+			t.Fatalf("parse %q: %v", line, err)
+		}
+		if c.Name == "XSRF-TOKEN" {
+			v, _ := url.QueryUnescape(c.Value)
+			xsrf = append(xsrf, v)
+		}
+	}
+	if len(xsrf) == 0 {
+		t.Fatal("no XSRF-TOKEN written")
+	}
+	for i, v := range xsrf {
+		if v != rendered {
+			t.Fatalf("XSRF-TOKEN line %d of %d = %q, want the rendered token %q", i+1, len(xsrf), v, rendered)
+		}
+	}
+
+	post := httptest.NewRequest(http.MethodPost, "/submit", strings.NewReader(""))
+	post.AddCookie(&http.Cookie{Name: "vel_session", Value: sessionCookie.Value})
+	post.Header.Set("X-CSRF-Token", xsrf[len(xsrf)-1])
+	pw := httptest.NewRecorder()
+	h.ServeHTTP(pw, post)
+	if pw.Code != http.StatusOK {
+		t.Fatalf("POST with the cookie the browser keeps: %d %s, want 200", pw.Code, pw.Body.String())
 	}
 }

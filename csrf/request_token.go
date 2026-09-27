@@ -92,6 +92,42 @@ func (s *requestTokenState) tokenFor(ctx context.Context, sessionID string) (str
 	return masked, nil
 }
 
+// cachedFor returns the cached emission-form token when the cache holds a
+// successful load for sessionID, without loading. It reports false once
+// the cache moved on (the session was replaced, or a rotation retired
+// sessionID), so a caller never mints a token for an id the request left.
+func (s *requestTokenState) cachedFor(sessionID string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.loaded || s.sessionID != sessionID || s.err != nil || s.token == "" {
+		return "", false
+	}
+	return s.token, true
+}
+
+// replaceAfterRotation records the token a successful rotation stored for
+// newID. When the cache holds the token of oldID or newID (or nothing yet),
+// it now holds newID's new token in this request's emission form, so the
+// cookie written after the rotation, a queued bootstrap cookie delivered
+// later and every later read carry the token the store holds. A rotation
+// that keeps the id (oldID == newID) is covered the same way: keyed on the
+// id alone, the cache would otherwise keep serving the replaced token. A
+// cache loaded for an unrelated session is left alone.
+func (s *requestTokenState) replaceAfterRotation(oldID, newID, token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loaded && s.sessionID != oldID && s.sessionID != newID {
+		return
+	}
+	masked, err := MaskToken(token)
+	if err != nil {
+		// Drop the entry: the next read loads the stored token again.
+		s.loaded, s.sessionID, s.token, s.err = false, "", "", nil
+		return
+	}
+	s.loaded, s.sessionID, s.token, s.err = true, newID, masked, nil
+}
+
 // withTokenState attaches a new requestTokenState to ctx, carrying the
 // CSRF instance handle so package-level TokenForRequest(r) can resolve
 // the token without the caller threading the *CSRF reference itself.
