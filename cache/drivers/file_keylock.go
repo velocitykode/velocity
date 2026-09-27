@@ -55,14 +55,22 @@ func (s *FileStore) lockStripe(ctx context.Context, stripe, what string) (func()
 
 // lockStripeWithin is lockStripe waiting at most wait for another holder.
 // The first attempt is always made, so a wait of zero or less takes a
-// free lock and reports a held one as the timeout error.
+// free lock and reports a held one as the timeout error. No further
+// attempt is made once wait has passed, and each pause between attempts
+// is clipped to the time left.
 func (s *FileStore) lockStripeWithin(ctx context.Context, stripe, what string, wait time.Duration) (func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	deadline := time.Now().Add(wait)
+	timedOut := func() error {
+		return fmt.Errorf("velocity/cache: %s write lock held for over %v: %w", what, wait, ErrLockTimeout)
+	}
 	pause := time.Millisecond
-	for {
+	for first := true; ; first = false {
+		if !first && !time.Now().Before(deadline) {
+			return nil, timedOut()
+		}
 		unlock, busy, err := s.flockStripe(stripe)
 		if err != nil {
 			return nil, err
@@ -73,10 +81,11 @@ func (s *FileStore) lockStripeWithin(ctx context.Context, stripe, what string, w
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("velocity/cache: %s write lock held for over %v: %w", what, wait, ErrLockTimeout)
+		left := time.Until(deadline)
+		if left <= 0 {
+			return nil, timedOut()
 		}
-		timer := time.NewTimer(pause)
+		timer := time.NewTimer(min(pause, left))
 		select {
 		case <-ctx.Done():
 			timer.Stop()

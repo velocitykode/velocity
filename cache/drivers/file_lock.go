@@ -65,8 +65,10 @@ func (md fileLockMetadata) held(now time.Time) bool {
 //
 // The stripe is shared with the cache writes of the keys that hash to
 // it, so an acquisition by Get (and so Run) waits, up to fileKeyLockWait,
-// while such a write holds it. Block bounds that wait by the time it has
-// left, so it never acquires after its timeout.
+// while such a write holds it. Block bounds that stripe wait by the time
+// it has left. The retry interval between Block's own attempts is
+// unchanged, so when the holder releases in between, an acquisition can
+// still land up to one retry interval after the timeout.
 type FileLock struct {
 	store *fileLockStore
 	key   string
@@ -285,7 +287,9 @@ func (l *FileLock) Run(ctx context.Context, callback func()) error {
 // ctx.Err() if ctx is cancelled before acquisition. An attempt waits for
 // the key's stripe only for the time Block has left, so a cache write
 // holding the stripe past the timeout ends in ErrLockTimeout and the
-// callback does not run.
+// callback does not run. A lock record released between two attempts can
+// still be taken by the next attempt, up to one retry interval after the
+// timeout.
 func (l *FileLock) Block(ctx context.Context, timeout time.Duration, callback func()) error {
 	return blockLock(ctx, l.getBefore, l.Release, timeout, callback)
 }
