@@ -21,7 +21,8 @@ var eventNameCache sync.Map // reflect.Type -> string
 // For strings, returns the string as-is.
 // For other types, derives the name from the type using camelToDot conversion
 // (e.g., UserRegistered -> user.registered).
-// Used by DefaultDispatcher and middleware where dot-notation is expected.
+// Used by every dispatcher, the middleware and FakeDispatcher, so an event
+// resolves to one name everywhere.
 func resolveEventName(event interface{}) string {
 	if e, ok := event.(contract.Event); ok {
 		return e.Name()
@@ -40,28 +41,6 @@ func resolveEventName(event interface{}) string {
 	return name
 }
 
-// resolveEventNameRaw extracts the event name without case conversion.
-// For types implementing contract.Event, returns Name().
-// For strings, returns the string as-is.
-// For other types, returns the raw type name (e.g., "NamedType").
-// Used by FakeDispatcher where raw type names are expected.
-func resolveEventNameRaw(event interface{}) string {
-	if e, ok := event.(contract.Event); ok {
-		return e.Name()
-	}
-
-	if s, ok := event.(string); ok {
-		return s
-	}
-
-	return reflectTypeName(event)
-}
-
-// reflectTypeName returns the short type name of a value, dereferencing pointers.
-func reflectTypeName(v interface{}) string {
-	return reflectTypeNameFromType(reflect.TypeOf(v))
-}
-
 // reflectTypeNameFromType returns the short type name for a reflect.Type,
 // dereferencing pointers.
 func reflectTypeNameFromType(t reflect.Type) string {
@@ -76,7 +55,8 @@ func reflectTypeNameFromType(t reflect.Type) string {
 }
 
 // resolveTypeName returns the fully-qualified type name of a value,
-// dereferencing pointers. Used by FakeDispatcher assertion methods.
+// dereferencing pointers. FakeDispatcher's assertions use it for keys that
+// are not names.
 func resolveTypeName(v interface{}) string {
 	t := reflect.TypeOf(v)
 	if t.Kind() == reflect.Ptr {

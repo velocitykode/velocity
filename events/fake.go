@@ -7,78 +7,43 @@ import (
 	"time"
 )
 
-// FakeDispatcher is a fake event dispatcher for testing
+// FakeDispatcher is a fake event dispatcher for testing. It records every
+// dispatched event instead of running listeners (until StopFaking), and it
+// resolves which listeners an event reaches, and which recorded events an
+// assertion names, exactly as DefaultDispatcher does.
 type FakeDispatcher struct {
-	mu           sync.RWMutex
-	events       []interface{}
-	listeners    map[string][]listenerEntry
-	listenerByID map[int]string
-	nextID       int
-	shouldFake   bool
+	mu         sync.RWMutex
+	events     []interface{}
+	shouldFake bool
+
+	// registry holds the listeners. It is a DefaultDispatcher so Listen,
+	// Off, Flush, HasListeners, GetListeners and the listeners run after
+	// StopFaking follow the real dispatcher's resolution: the same names,
+	// patterns and keys. It has its own lock, never held while a listener
+	// runs.
+	registry *DefaultDispatcher
 }
 
 // NewFakeDispatcher creates a new fake dispatcher
 func NewFakeDispatcher() *FakeDispatcher {
 	return &FakeDispatcher{
-		events:       make([]interface{}, 0),
-		listeners:    make(map[string][]listenerEntry),
-		listenerByID: make(map[int]string),
-		shouldFake:   true,
+		events:     make([]interface{}, 0),
+		shouldFake: true,
+		registry:   NewDispatcher(),
 	}
 }
 
-// Listen registers a listener (but won't execute in fake mode).
-// Returns a listener ID that can be used with Off() to unregister.
-func (f *FakeDispatcher) Listen(events interface{}, listener Listener) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.nextID++
-	id := f.nextID
-
-	var eventNames []string
-	switch e := events.(type) {
-	case string:
-		eventNames = []string{e}
-	case []string:
-		eventNames = e
-	default:
-		eventNames = []string{f.getEventName(e)}
-	}
-
-	for _, event := range eventNames {
-		entry := listenerEntry{id: id, listener: listener}
-		f.listeners[event] = append(f.listeners[event], entry)
-		f.listenerByID[id] = event
-	}
-
-	return id
+// Listen registers a listener under key, as DefaultDispatcher.Listen does.
+// While faking, listeners are recorded but not run. Returns a listener ID
+// that can be used with Off() to unregister.
+func (f *FakeDispatcher) Listen(key interface{}, listener Listener) int {
+	return f.registry.Listen(key, listener)
 }
 
 // Off removes a listener by its ID.
 // Returns true if the listener was found and removed, false otherwise.
 func (f *FakeDispatcher) Off(id int) bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	eventName, exists := f.listenerByID[id]
-	if !exists {
-		return false
-	}
-
-	entries := f.listeners[eventName]
-	for i, entry := range entries {
-		if entry.id == id {
-			f.listeners[eventName] = append(entries[:i], entries[i+1:]...)
-			if len(f.listeners[eventName]) == 0 {
-				delete(f.listeners, eventName)
-			}
-			delete(f.listenerByID, id)
-			return true
-		}
-	}
-
-	return false
+	return f.registry.Off(id)
 }
 
 // Subscribe registers an event subscriber
@@ -138,18 +103,9 @@ func (f *FakeDispatcher) Until(ctx context.Context, event interface{}) (interfac
 	return nil, nil
 }
 
-// Flush removes all listeners for an event
+// Flush removes all listeners for an event, as DefaultDispatcher.Flush does.
 func (f *FakeDispatcher) Flush(event string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	// Remove listener ID mappings
-	if entries, ok := f.listeners[event]; ok {
-		for _, entry := range entries {
-			delete(f.listenerByID, entry.id)
-		}
-	}
-	delete(f.listeners, event)
+	f.registry.Flush(event)
 }
 
 // Forget removes specific listeners
@@ -157,80 +113,90 @@ func (f *FakeDispatcher) Forget(event string) {
 	f.Flush(event)
 }
 
-// HasListeners checks if an event has listeners
+// HasListeners checks if an event has listeners, as
+// DefaultDispatcher.HasListeners does.
 func (f *FakeDispatcher) HasListeners(event interface{}) bool {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-
-	eventName := f.getEventName(event)
-	_, ok := f.listeners[eventName]
-	return ok
+	return f.registry.HasListeners(event)
 }
 
-// GetListeners returns all listeners for an event
+// GetListeners returns all listeners for an event, as
+// DefaultDispatcher.GetListeners does.
 func (f *FakeDispatcher) GetListeners(event interface{}) []Listener {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-
-	eventName := f.getEventName(event)
-	entries := f.listeners[eventName]
-	listeners := make([]Listener, len(entries))
-	for i, entry := range entries {
-		listeners[i] = entry.listener
-	}
-	return listeners
+	return f.registry.GetListeners(event)
 }
 
-// countMatchingEvents returns the number of dispatched events matching the given type.
-// Caller must hold at least an RLock on f.mu.
-func (f *FakeDispatcher) countMatchingEvents(eventType interface{}) (string, int) {
-	eventTypeName := resolveTypeName(eventType)
+// recordedMatcher returns how an assertion names key and the predicate that
+// selects the recorded events it names. A string key selects the events a
+// listener registered under that key would receive: the name, or the
+// pattern, matched against each event's resolved name. Any other key
+// selects events of its Go type, pointers dereferenced.
+func recordedMatcher(key interface{}) (string, func(event interface{}) bool) {
+	if pattern, ok := key.(string); ok {
+		return pattern, func(event interface{}) bool {
+			return matchesPattern(resolveEventName(event), pattern)
+		}
+	}
+	typeName := resolveTypeName(key)
+	return typeName, func(event interface{}) bool {
+		return resolveTypeName(event) == typeName
+	}
+}
+
+// countMatchingEvents returns how key is named and the number of recorded
+// events it selects. Caller must hold at least an RLock on f.mu.
+func (f *FakeDispatcher) countMatchingEvents(key interface{}) (string, int) {
+	name, matches := recordedMatcher(key)
 	count := 0
 	for _, event := range f.events {
-		if resolveTypeName(event) == eventTypeName {
+		if matches(event) {
 			count++
 		}
 	}
-	return eventTypeName, count
+	return name, count
 }
 
-// AssertDispatched asserts that an event was dispatched
-func (f *FakeDispatcher) AssertDispatched(eventType interface{}, callback func(interface{}) bool) error {
+// AssertDispatched asserts that an event key selects was dispatched and, when
+// callback is non-nil, that callback accepts one of them. A string key
+// selects events by name (or pattern) as a listener registered under it
+// would; any other value selects events of its Go type.
+func (f *FakeDispatcher) AssertDispatched(key interface{}, callback func(interface{}) bool) error {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	eventTypeName := resolveTypeName(eventType)
+	name, matches := recordedMatcher(key)
 	for _, event := range f.events {
-		if resolveTypeName(event) == eventTypeName {
+		if matches(event) {
 			if callback == nil || callback(event) {
 				return nil
 			}
 		}
 	}
 
-	return fmt.Errorf("event %s was not dispatched", eventTypeName)
+	return fmt.Errorf("event %s was not dispatched", name)
 }
 
-// AssertDispatchedTimes asserts an event was dispatched n times
-func (f *FakeDispatcher) AssertDispatchedTimes(eventType interface{}, times int) error {
+// AssertDispatchedTimes asserts that events key selects were dispatched
+// exactly times times. Keys select as in AssertDispatched.
+func (f *FakeDispatcher) AssertDispatchedTimes(key interface{}, times int) error {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	eventTypeName, count := f.countMatchingEvents(eventType)
+	name, count := f.countMatchingEvents(key)
 	if count != times {
-		return fmt.Errorf("event %s was dispatched %d times, expected %d", eventTypeName, count, times)
+		return fmt.Errorf("event %s was dispatched %d times, expected %d", name, count, times)
 	}
 	return nil
 }
 
-// AssertNotDispatched asserts that an event was not dispatched
-func (f *FakeDispatcher) AssertNotDispatched(eventType interface{}) error {
+// AssertNotDispatched asserts that no event key selects was dispatched.
+// Keys select as in AssertDispatched.
+func (f *FakeDispatcher) AssertNotDispatched(key interface{}) error {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	eventTypeName, count := f.countMatchingEvents(eventType)
+	name, count := f.countMatchingEvents(key)
 	if count > 0 {
-		return fmt.Errorf("event %s was dispatched but should not have been", eventTypeName)
+		return fmt.Errorf("event %s was dispatched but should not have been", name)
 	}
 	return nil
 }
@@ -280,32 +246,15 @@ func (f *FakeDispatcher) StartFaking() {
 
 // executeListeners executes listeners for an event (when not faking).
 //
-// Acquires its own RLock to snapshot the listener slice, then releases the
-// lock before invoking listener bodies. Holding the lock across listener
-// execution would deadlock any listener that re-enters the dispatcher
-// (AssertDispatched, follow-up Dispatch, etc.).
+// The registry resolves the listeners under its own lock and releases it
+// before any listener body runs, so a listener that re-enters the
+// dispatcher (AssertDispatched, a follow-up Dispatch, Listen) does not
+// deadlock.
 func (f *FakeDispatcher) executeListeners(ctx context.Context, event interface{}) error {
-	f.mu.RLock()
-	eventName := f.getEventName(event)
-	entries := f.listeners[eventName]
-	listeners := make([]Listener, len(entries))
-	for i, entry := range entries {
-		listeners[i] = entry.listener
-	}
-	f.mu.RUnlock()
-
-	for _, listener := range listeners {
+	for _, listener := range f.registry.getListenersForEvent(event) {
 		if err := listener.Handle(ctx, event); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-// getEventName extracts the event name without camelToDot conversion.
-// FakeDispatcher preserves raw type names for non-Event/non-string types
-// (e.g., "NamedType" stays as "NamedType"), unlike DefaultDispatcher
-// which converts to dot notation (e.g., "named.type").
-func (f *FakeDispatcher) getEventName(event interface{}) string {
-	return resolveEventNameRaw(event)
 }

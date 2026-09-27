@@ -278,35 +278,25 @@ func TestFakeDispatcherFullCoverage(t *testing.T) {
 	fake.executeListeners(context.Background(), "error.event")
 }
 
-// Test FakeDispatcher getEventName paths
+// Test the names FakeDispatcher resolves events to: the same names
+// DefaultDispatcher routes them by.
 func TestFakeGetEventNamePaths(t *testing.T) {
-	fake := NewFakeDispatcher()
-
-	// Test with pointer to Event
-	event := &UserRegistered{UserID: 1}
-	name := fake.getEventName(event)
-	if name != "user.registered" {
-		t.Errorf("Expected user.registered, got %s", name)
-	}
-
-	// Test with non-pointer struct
-	name = fake.getEventName(UserRegistered{UserID: 2})
-	if name != "user.registered" {
-		t.Errorf("Expected user.registered for non-pointer, got %s", name)
-	}
-
-	// Test with string
-	name = fake.getEventName("string.event")
-	if name != "string.event" {
-		t.Errorf("Expected string.event, got %s", name)
-	}
-
-	// Test with other type
 	type NamedType struct{}
-	namedValue := NamedType{}
-	name = fake.getEventName(namedValue)
-	if name != "NamedType" {
-		t.Errorf("Expected NamedType, got %s", name)
+	tests := []struct {
+		event interface{}
+		name  string
+	}{
+		{&UserRegistered{UserID: 1}, "user.registered"},
+		{UserRegistered{UserID: 2}, "user.registered"},
+		{"string.event", "string.event"},
+		{NamedType{}, "named.type"},
+	}
+	for _, tt := range tests {
+		fake := NewFakeDispatcher()
+		fake.Listen(tt.name, &TestListener{})
+		if !fake.HasListeners(tt.event) {
+			t.Errorf("FakeDispatcher does not resolve %T to %q", tt.event, tt.name)
+		}
 	}
 }
 
@@ -366,17 +356,17 @@ func TestFakeDispatcherAssertMethods(t *testing.T) {
 		t.Errorf("Should pass for non-dispatched event: %v", err)
 	}
 
-	// Test with string type for coverage
+	// A string key names events; it does not select every string event.
 	fake3 := NewFakeDispatcher()
 	fake3.Dispatch(context.Background(), "string.event")
-	err = fake3.AssertDispatched("string", nil)
+	err = fake3.AssertDispatched("string.event", nil)
 	if err != nil {
 		t.Errorf("Should find string event: %v", err)
 	}
 
 	err = fake3.AssertNotDispatched("string")
-	if err == nil {
-		t.Error("Should fail when string type was dispatched")
+	if err != nil {
+		t.Errorf("Nothing was dispatched under the name string: %v", err)
 	}
 }
 
