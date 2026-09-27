@@ -3,8 +3,10 @@
 package drivers
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -186,5 +188,51 @@ func TestFileLock_ExpiredLockIsReacquirable(t *testing.T) {
 	}
 	if !second.Release(ctx) {
 		t.Fatal("second holder Release failed")
+	}
+}
+
+// A record that exists but cannot be read leaves the lock state unknown:
+// Get reports the failure and leaves a live holder's record untouched,
+// never treating it as a free lock. The record is made write-only, so
+// only the read fails and a caller that ignored the failure could still
+// overwrite it.
+func TestFileLock_UnreadableRecordIsAnErrorNotAFreeLock(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a file whatever its mode")
+	}
+	stores := newSharedFileStores(t, 2)
+	ctx := context.Background()
+
+	holder := stores[0].Lock("unreadable", time.Minute).(*FileLock)
+	if !holder.Get(ctx) {
+		t.Fatal("holder Get failed")
+	}
+	path := holder.store.pathFor(holder.key)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the holder's record: %v", err)
+	}
+	if err := os.Chmod(path, 0o200); err != nil {
+		t.Fatalf("make the record write-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, cacheFileMode) })
+
+	got, err := stores[1].Lock("unreadable", time.Minute).(*FileLock).GetWithErr(ctx)
+	if got || err == nil {
+		t.Fatalf("Get over an unreadable record = (%v, %v); want (false, non-nil error)", got, err)
+	}
+
+	if err := os.Chmod(path, cacheFileMode); err != nil {
+		t.Fatalf("restore the record's mode: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the record after the failed Get: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("record changed by the failed Get: before %s, after %s", before, after)
+	}
+	if !holder.Release(ctx) {
+		t.Fatal("holder Release failed after the failed Get")
 	}
 }

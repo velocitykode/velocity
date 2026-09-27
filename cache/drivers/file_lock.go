@@ -25,7 +25,16 @@ var _ contract.CacheLock = (*FileLock)(nil)
 
 // fileLockMetadata is the record of a held lock: its owner and when the
 // hold ends. The record is the lock: a key whose record is missing,
-// unreadable, without an owner, or past ExpiresAt is free.
+// unparseable, without an owner, or past ExpiresAt is free. A record that
+// exists but cannot be read leaves the state unknown, so an operation on
+// it fails instead of treating the lock as free.
+//
+// An unparseable record is one whose writer stopped partway: the record
+// is only read and written under the key's guard, so a reader never sees
+// a write in progress, and a write that fails or a writer that crashes
+// between the truncation and the write leaves it empty or cut short. Its
+// TTL cannot be read, so treating it as held would keep the key locked
+// until a ForceRelease; it is free instead, as it always was.
 type fileLockMetadata struct {
 	Owner     string     `json:"owner"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
@@ -90,18 +99,22 @@ func (s *fileLockStore) guard(ctx context.Context, key string) (func(), error) {
 }
 
 // readMetadata reads the record at path. ok is false when the file is
-// missing or unparseable, which means the lock is free. The caller holds
-// the key's guard.
-func (s *fileLockStore) readMetadata(path string) (fileLockMetadata, bool) {
+// missing or unparseable, which means the lock is free. Any other read
+// failure is returned as err: the record may name a live holder, so the
+// caller must not treat the lock as free. The caller holds the key's
+// guard.
+func (s *fileLockStore) readMetadata(path string) (md fileLockMetadata, ok bool, err error) {
 	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fileLockMetadata{}, false, nil
+	}
 	if err != nil {
-		return fileLockMetadata{}, false
+		return fileLockMetadata{}, false, err
 	}
-	var md fileLockMetadata
 	if err := json.Unmarshal(data, &md); err != nil {
-		return fileLockMetadata{}, false
+		return fileLockMetadata{}, false, nil
 	}
-	return md, true
+	return md, true, nil
 }
 
 // writeMetadata replaces the record at path. The caller holds the key's
@@ -141,11 +154,12 @@ func (l *FileLock) Get(ctx context.Context) bool {
 
 // GetWithErr is the error-returning variant. The bool reports whether
 // the lock was acquired; the error is non-nil on backend failure
-// (cannot read or write the lock record, the key's guard held for over
-// fileKeyLockWait) or when the lock was constructed with a non-positive
-// TTL (ErrInvalidLockTTL). Contention, including a second Get on a lock
-// this instance already holds, is reported as (false, nil), as is a ctx
-// cancelled before the lock was taken.
+// (the lock record exists but cannot be read, or cannot be written; the
+// key's guard held for over fileKeyLockWait) or when the lock was
+// constructed with a non-positive TTL (ErrInvalidLockTTL). A record that
+// cannot be read is left untouched. Contention, including a second Get
+// on a lock this instance already holds, is reported as (false, nil), as
+// is a ctx cancelled before the lock was taken.
 //
 // A zero/negative TTL is rejected: without expiry, a holder process
 // that crashes between Get and Release would pin the lock forever.
@@ -171,9 +185,12 @@ func (l *FileLock) GetWithErr(ctx context.Context) (bool, error) {
 
 	path := l.store.pathFor(l.key)
 	now := time.Now()
-	md, ok := l.store.readMetadata(path)
+	md, ok, err := l.store.readMetadata(path)
 	if hook := l.store.cache.lockStepHook; hook != nil {
 		hook("record-read")
+	}
+	if err != nil {
+		return false, fmt.Errorf("velocity/cache: read lock metadata: %w", err)
 	}
 	if ok && md.held(now) {
 		return false, nil
@@ -186,8 +203,10 @@ func (l *FileLock) GetWithErr(ctx context.Context) (bool, error) {
 }
 
 // Release releases the lock only if the current instance is the owner:
-// the record names this owner. Returns true if released. A lock restored
-// with RestoreLock releases the lock its owner ID holds.
+// the record names this owner. Returns true if released; false when the
+// record names another owner, is gone, or cannot be read (ownership is
+// then unknown and the record is left in place). A lock restored with
+// RestoreLock releases the lock its owner ID holds.
 func (l *FileLock) Release(ctx context.Context) bool {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
@@ -201,8 +220,8 @@ func (l *FileLock) Release(ctx context.Context) bool {
 	defer unlock()
 
 	path := l.store.pathFor(l.key)
-	md, ok := l.store.readMetadata(path)
-	if !ok || md.Owner != l.owner {
+	md, ok, err := l.store.readMetadata(path)
+	if err != nil || !ok || md.Owner != l.owner {
 		return false
 	}
 	return l.store.removeMetadata(path) == nil
