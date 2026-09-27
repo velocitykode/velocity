@@ -28,17 +28,14 @@ func (s *FileStore) readLiveItemLocked(path string) (item fileCacheItem, ok bool
 	return item, true
 }
 
-// writeItemLocked writes item to path in place, as PutCtx does. Caller
-// holds s.mu and the key's write lock.
+// writeItemLocked replaces the item at path whole (replaceFile), as
+// PutCtx does. Caller holds s.mu and the key's write lock.
 func (s *FileStore) writeItemLocked(path string, item fileCacheItem) error {
 	data, err := json.Marshal(item)
 	if err != nil {
 		return fmt.Errorf("velocity/cache: failed to marshal cache item: %w", err)
 	}
-	if err := os.WriteFile(path, data, cacheFileMode); err != nil {
-		return fmt.Errorf("velocity/cache: failed to write cache file: %w", err)
-	}
-	return nil
+	return replaceFile(path, data)
 }
 
 // CompareAndSwapCtx implements contract.CacheSwapper. The file store is a

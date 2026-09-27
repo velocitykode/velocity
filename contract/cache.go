@@ -174,10 +174,10 @@ type CacheReplacer interface {
 //     (Put, Add, Forever, Forget, Increment, the swap and the set
 //     operations), so it is atomic against those writes from every
 //     process sharing the cache directory on one host. Flush and the
-//     expiry sweep do not take it. A read does not take it either, and a
-//     write replaces the file in place, so a read from another process
-//     that overlaps a write can miss the entry. Where flock is missing
-//     (Windows) the swap returns an error.
+//     expiry sweep do not take it. A read does not need it: every write
+//     lands whole, through a temp file renamed over the entry, so a read
+//     in any process sees the old value or the new one, never a partial
+//     one. Where flock is missing (Windows) the swap returns an error.
 //
 // Values that do not compare equal to themselves are outside the swap's
 // comparison domain: a NaN, a non-nil func, and a value holding either. A

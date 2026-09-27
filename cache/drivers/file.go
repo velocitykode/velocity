@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,15 +30,106 @@ func newAddOwnerID() string {
 const DefaultFileCleanupInterval = 5 * time.Minute
 
 // fileUnreadableGrace is how long an unreadable file (corrupt, legacy-format,
-// or mid-write) must have been untouched before cleanup will purge it. Writes
-// in this package are not atomic across instances/processes -- a plain Put
-// truncates-then-writes, and AddCtx's O_EXCL create leaves a zero-byte file
-// until its payload is flushed -- so a freshly-modified unreadable file may be
-// an in-flight write by another FileStore instance or process sharing the
+// or an AddCtx create on a filesystem without hard links, whose O_EXCL file
+// is empty until its payload lands) or a write's temp file must have been
+// untouched before cleanup will purge it. A freshly-modified one may be an
+// in-flight write by another FileStore instance or process sharing the
 // path. Purging only files older than this grace avoids deleting such live
 // writes while still self-healing genuinely corrupt/legacy/crashed entries.
 // The grace dwarfs any real write window yet keeps cleanup reasonably prompt.
 const fileUnreadableGrace = time.Minute
+
+// fileTempMarker marks a write's temp file: <entry name>.tmp-<random>, in
+// the entry's shard directory. Every write of an item is written whole to
+// a temp file and then renamed over (or, for AddCtx, hard-linked to) the
+// entry name, so a read in any process sees the old item or the new one,
+// never a partial file. Entry names are hex hashes and never contain the
+// marker; the sweep and Flush treat temp files as in-flight writes, never
+// as entries (see isTempFile).
+const fileTempMarker = ".tmp-"
+
+// isTempFile reports whether path is a write's temp file.
+func isTempFile(path string) bool {
+	return strings.Contains(filepath.Base(path), fileTempMarker)
+}
+
+// writeTempFile writes data whole to a new temp file beside path and
+// returns its name. The caller renames or links it into place and removes
+// it on failure.
+func writeTempFile(path string, data []byte) (string, error) {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+fileTempMarker+"*")
+	if err != nil {
+		return "", fmt.Errorf("velocity/cache: failed to create temp cache file: %w", err)
+	}
+	tmp := f.Name()
+	_, werr := f.Write(data)
+	cerr := f.Close()
+	if werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Chmod(tmp, cacheFileMode)
+	}
+	if werr != nil {
+		_ = os.Remove(tmp)
+		return "", fmt.Errorf("velocity/cache: failed to write cache file: %w", werr)
+	}
+	return tmp, nil
+}
+
+// replaceFile makes data the content of path in one step: written whole to
+// a temp file in the same directory, then renamed over path. A reader in
+// any process opens either the previous file or the new one.
+func replaceFile(path string, data []byte) error {
+	tmp, err := writeTempFile(path, data)
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("velocity/cache: failed to write cache file: %w", err)
+	}
+	return nil
+}
+
+// createFileExclusive creates path with data only when path does not
+// exist, in one step: written whole to a temp file, then hard-linked to
+// path, which the kernel refuses when path exists, so exactly one creator
+// wins and no reader ever sees the file partly written. created is false
+// when path already exists. On a filesystem without hard links it falls
+// back to an O_EXCL create followed by the write, whose file is empty
+// until the payload lands (the zero-byte marker AddCtx honours).
+func createFileExclusive(path string, data []byte) (created bool, err error) {
+	tmp, err := writeTempFile(path, data)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = os.Remove(tmp) }()
+	lerr := os.Link(tmp, path)
+	if lerr == nil {
+		return true, nil
+	}
+	if errors.Is(lerr, fs.ErrExist) {
+		return false, nil
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, cacheFileMode)
+	if errors.Is(err, fs.ErrExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("velocity/cache: failed to create cache file: %w", err)
+	}
+	_, werr := f.Write(data)
+	cerr := f.Close()
+	if werr != nil {
+		_ = os.Remove(path)
+		return false, fmt.Errorf("velocity/cache: failed to write cache file: %w", werr)
+	}
+	if cerr != nil {
+		return false, fmt.Errorf("velocity/cache: failed to close cache file: %w", cerr)
+	}
+	return true, nil
+}
 
 // cacheFileMode / cacheDirMode are the secret-tier permissions used for
 // every file the FileStore writes. Cached values may carry session
@@ -253,6 +345,15 @@ func (s *FileStore) sweepExpired() {
 			s.walkHook()
 		}
 
+		// A write's temp file is not an entry: an in-flight write until
+		// the grace has passed, a crashed one's leftover after it.
+		if isTempFile(path) {
+			if time.Since(info.ModTime()) > fileUnreadableGrace {
+				candidates = append(candidates, path)
+			}
+			return nil
+		}
+
 		// Read file to check expiration
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -261,11 +362,11 @@ func (s *FileStore) sweepExpired() {
 
 		var item fileCacheItem
 		if err := json.Unmarshal(data, &item); err != nil {
-			// Unreadable: corrupt, partially written, a legacy
-			// on-disk schema from before the value-encoding change, or
-			// an in-flight write by another instance/process sharing
-			// this path (a non-atomic Put mid-write, or an AddCtx
-			// O_EXCL zero-byte file before its payload lands). GetCtx
+			// Unreadable: corrupt, a legacy on-disk schema from before
+			// the value-encoding change, or an in-flight AddCtx create
+			// by another instance/process sharing this path on a
+			// filesystem without hard links (an O_EXCL zero-byte file
+			// before its payload lands; see createFileExclusive). GetCtx
 			// can never serve it, so purge it to avoid leaking the
 			// file forever -- but only once it is older than the grace
 			// window, so a live concurrent write is never deleted.
@@ -299,6 +400,13 @@ func (s *FileStore) sweepExpired() {
 func (s *FileStore) removeIfEligible(path string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if isTempFile(path) {
+		if info, err := os.Stat(path); err == nil && time.Since(info.ModTime()) > fileUnreadableGrace {
+			os.Remove(path)
+		}
+		return
+	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -466,8 +574,8 @@ func (s *FileStore) PutCtx(ctx context.Context, key string, value interface{}, t
 
 	// Write to file
 	path := s.getCacheFilePath(key)
-	if err := os.WriteFile(path, data, cacheFileMode); err != nil {
-		return fmt.Errorf("velocity/cache: failed to write cache file: %w", err)
+	if err := replaceFile(path, data); err != nil {
+		return err
 	}
 
 	return nil
@@ -494,8 +602,10 @@ func (s *FileStore) Put(key string, value interface{}, ttl time.Duration) error 
 //   - Every write of the key, from any FileStore over the same directory,
 //     holds the key's write lock (lockKeyForWrite) where flock exists.
 //   - Same-process goroutines serialize on the FileStore write mutex.
-//   - Cross-process / cross-instance contention is gated by os.O_EXCL
-//     for the create path (kernel-enforced single creator) and by an
+//   - Cross-process / cross-instance contention is gated by a hard link
+//     of the fully written temp file onto the entry name (or os.O_EXCL
+//     where links are unsupported) for the create path (kernel-enforced
+//     single creator, see createFileExclusive) and by an
 //     advisory flock(2) under the existing per-key lock infrastructure
 //     for the expired-entry takeover path.
 //
@@ -504,7 +614,7 @@ func (s *FileStore) Put(key string, value interface{}, ttl time.Duration) error 
 // degrading to last-writer-wins. There is no safe non-flock fallback
 // that preserves the SETNX contract; operators that need cross-process
 // single-flight on Windows should use the Redis driver. The fresh-key
-// create path is still O_EXCL-protected on every platform.
+// create path is still link/O_EXCL-protected on every platform.
 func (s *FileStore) AddCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error) {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
@@ -538,22 +648,13 @@ func (s *FileStore) AddCtx(ctx context.Context, key string, value interface{}, t
 		return false, fmt.Errorf("velocity/cache: failed to marshal cache item: %w", err)
 	}
 
-	// Atomic create-if-absent. O_EXCL is enforced by the kernel; the
-	// two-process race that prior best-effort code could lose is closed
-	// for the fresh-key path.
-	if f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, cacheFileMode); err == nil {
-		_, werr := f.Write(data)
-		cerr := f.Close()
-		if werr != nil {
-			_ = os.Remove(path)
-			return false, fmt.Errorf("velocity/cache: failed to write cache file: %w", werr)
-		}
-		if cerr != nil {
-			return false, fmt.Errorf("velocity/cache: failed to close cache file: %w", cerr)
-		}
+	// Atomic create-if-absent: the kernel refuses the hard link (or the
+	// O_EXCL create on a filesystem without links) when the entry
+	// exists, so exactly one creator wins the fresh-key path.
+	if created, err := createFileExclusive(path, data); err != nil {
+		return false, err
+	} else if created {
 		return true, nil
-	} else if !errors.Is(err, fs.ErrExist) {
-		return false, fmt.Errorf("velocity/cache: failed to create cache file: %w", err)
 	}
 
 	// File exists. Read it under the same process mutex; if still
@@ -564,7 +665,8 @@ func (s *FileStore) AddCtx(ctx context.Context, key string, value interface{}, t
 	// avoid the lost-update window.
 	if existing, rerr := os.ReadFile(path); rerr == nil {
 		// A zero-byte file means another instance just won the O_EXCL
-		// create above and has not flushed its payload yet. The kernel
+		// create (the fallback of createFileExclusive on a filesystem
+		// without hard links) and has not flushed its payload yet. The kernel
 		// has already elected that creator the SETNX winner; we must
 		// refuse insertion here. Falling through would race the
 		// takeover path against a live creator and let both callers
@@ -630,8 +732,8 @@ func (s *FileStore) AddCtx(ctx context.Context, key string, value interface{}, t
 		}
 	}
 
-	if werr := os.WriteFile(path, data, cacheFileMode); werr != nil {
-		return false, fmt.Errorf("velocity/cache: failed to write cache file: %w", werr)
+	if werr := replaceFile(path, data); werr != nil {
+		return false, werr
 	}
 	return true, nil
 }
@@ -680,8 +782,8 @@ func (s *FileStore) ForeverCtx(ctx context.Context, key string, value interface{
 
 	// Write to file
 	path := s.getCacheFilePath(key)
-	if err := os.WriteFile(path, data, cacheFileMode); err != nil {
-		return fmt.Errorf("velocity/cache: failed to write cache file: %w", err)
+	if err := replaceFile(path, data); err != nil {
+		return err
 	}
 
 	return nil
@@ -758,6 +860,12 @@ func (s *FileStore) FlushCtx(ctx context.Context) error {
 		if !info.IsDir() {
 			if s.walkHook != nil {
 				s.walkHook()
+			}
+			// A write's temp file is an in-flight write, not an entry:
+			// removing it would fail that write's rename. Only a crashed
+			// write's leftover (older than the grace) goes.
+			if isTempFile(path) && time.Since(info.ModTime()) <= fileUnreadableGrace {
+				return nil
 			}
 			paths = append(paths, path)
 		}
@@ -863,7 +971,7 @@ func (s *FileStore) IncrementCtx(ctx context.Context, key string, value int64) (
 		return 0, err
 	}
 
-	if err := os.WriteFile(path, data, cacheFileMode); err != nil {
+	if err := replaceFile(path, data); err != nil {
 		return 0, err
 	}
 
