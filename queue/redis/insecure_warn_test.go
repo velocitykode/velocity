@@ -1,26 +1,22 @@
 package redis
 
 import (
-	"bytes"
 	"context"
-	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
 
+	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 	"github.com/velocitykode/velocity/queue"
 )
 
-// captureSlog swaps the default slog logger for one writing to the returned
-// buffer and restores the original when the test ends.
-func captureSlog(t *testing.T) *bytes.Buffer {
+// captureWarnings redirects the fallback logger, where a driver without a
+// logger writes its startup warnings, to the returned output until the test
+// ends.
+func captureWarnings(t *testing.T) *fallbacklogtest.Output {
 	t.Helper()
-	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	return &buf
+	return fallbacklogtest.Capture(t)
 }
 
 func TestIsLoopbackHost(t *testing.T) {
@@ -66,8 +62,8 @@ func TestWarnIfInsecure(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			buf := captureSlog(t)
-			warnIfInsecure(tt.host, tt.password, tt.tlsEnabled)
+			buf := captureWarnings(t)
+			warnIfInsecure(nil, tt.host, tt.password, tt.tlsEnabled)
 			out := buf.String()
 			if got := strings.Contains(out, "without TLS"); got != tt.wantTLSWarn {
 				t.Errorf("TLS warning present = %v, want %v; log output:\n%s", got, tt.wantTLSWarn, out)
@@ -88,7 +84,7 @@ func TestNewRedisDriver_LoopbackSilent(t *testing.T) {
 	}
 	defer mr.Close()
 
-	buf := captureSlog(t)
+	buf := captureWarnings(t)
 	driver, err := NewRedisDriver(queue.RedisConfig{
 		Host: mr.Host(),
 		Port: mr.Port(),

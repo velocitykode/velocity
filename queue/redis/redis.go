@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"reflect"
 	"strconv"
@@ -19,6 +18,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -29,7 +29,7 @@ import (
 // queue/standard) wires the "redis" factory.
 func init() {
 	queue.Drivers().Register("redis", func(_ context.Context, cfg queue.QueueConfig) (queue.Driver, error) {
-		return NewRedisDriver(cfg.Redis)
+		return newRedisDriver(cfg.Redis, cfg.Logger)
 	})
 }
 
@@ -78,8 +78,17 @@ func New(cfg queue.RedisConfig) (queue.Driver, error) {
 	return NewRedisDriver(cfg)
 }
 
-// NewRedisDriver creates a new Redis queue driver.
+// NewRedisDriver creates a new Redis queue driver. It has no logger until
+// SetLogger installs one: its startup warnings and advisories go to the
+// framework's standalone fallback logger. Built through queue.NewQueue, it
+// logs through QueueConfig.Logger from construction on.
 func NewRedisDriver(config queue.RedisConfig) (*RedisDriver, error) {
+	return newRedisDriver(config, nil)
+}
+
+// newRedisDriver builds the driver with logger installed before its
+// startup warnings are written; nil leaves it on the fallback logger.
+func newRedisDriver(config queue.RedisConfig, logger contract.Logger) (*RedisDriver, error) {
 	db, err := strconv.Atoi(config.DB)
 	if err != nil {
 		db = 0
@@ -111,16 +120,19 @@ func NewRedisDriver(config queue.RedisConfig) (*RedisDriver, error) {
 	// AUTH password and job payloads) in cleartext, and without a password
 	// anyone who can reach the host can read and inject jobs. Warn loudly
 	// at startup; do not refuse to boot, since the operator may secure the
-	// link elsewhere (VPC, tunnel). The driver's SetLogger seam is only
-	// installed after construction, so this goes through slog like the
-	// cache driver's startup warnings.
-	warnIfInsecure(config.Host, config.Password, config.TLS)
+	// link elsewhere (VPC, tunnel). The warning goes to the logger the
+	// driver is built with, or the fallback logger without one.
+	warnIfInsecure(logger, config.Host, config.Password, config.TLS)
 
-	return &RedisDriver{
+	r := &RedisDriver{
 		client: client,
 		ctx:    ctx,
 		config: config,
-	}, nil
+	}
+	if logger != nil {
+		r.SetLogger(logger)
+	}
+	return r, nil
 }
 
 // isLoopbackHost reports whether host clearly names the local machine:
@@ -135,20 +147,22 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// warnIfInsecure logs a startup warning when the driver connects to a
-// non-loopback host with TLS disabled or with no password.
-func warnIfInsecure(host, password string, tlsEnabled bool) {
+// warnIfInsecure logs a startup warning through logger (the fallback
+// logger when nil) when the driver connects to a non-loopback host with TLS
+// disabled or with no password.
+func warnIfInsecure(logger contract.Logger, host, password string, tlsEnabled bool) {
 	if isLoopbackHost(host) {
 		return
 	}
+	logger = fallbacklog.Resolve(logger)
 	if !tlsEnabled {
-		slog.Default().Warn(
+		logger.Warn(
 			"velocity/queue: redis driver connecting to non-loopback host without TLS; traffic (including the password and job payloads) is sent in cleartext. Set REDIS_TLS=true or RedisConfig.TLS.",
 			"host", host,
 		)
 	}
 	if password == "" {
-		slog.Default().Warn(
+		logger.Warn(
 			"velocity/queue: redis driver connecting to non-loopback host without a password; anyone who can reach the host can read and inject jobs. Set QUEUE_REDIS_PASSWORD or RedisConfig.Password.",
 			"host", host,
 		)
@@ -156,19 +170,22 @@ func warnIfInsecure(host, password string, tlsEnabled bool) {
 }
 
 // SetLogger installs a logger for Redis-driver operational advisories. Nil
-// disables logging. Safe to call concurrently.
+// restores the default, the framework's standalone fallback logger, which
+// writes warnings and errors to standard error. Safe to call concurrently.
 func (r *RedisDriver) SetLogger(l contract.Logger) {
 	r.logger.Store(redisLoggerHolder{Logger: l})
 }
 
 var _ contract.LoggerAware = (*RedisDriver)(nil)
 
+// log returns the installed logger, or the fallback logger when none is
+// installed.
 func (r *RedisDriver) log() contract.Logger {
 	v := r.logger.Load()
 	if v == nil {
-		return nil
+		return fallbacklog.Logger{}
 	}
-	return v.(redisLoggerHolder).Logger
+	return fallbacklog.Resolve(v.(redisLoggerHolder).Logger)
 }
 
 func (r *RedisDriver) warnIfNonIdentifiable(job queue.Job) {
@@ -179,11 +196,9 @@ func (r *RedisDriver) warnIfNonIdentifiable(job queue.Job) {
 	if _, loaded := r.nonIdentifiableWarned.LoadOrStore(typ, struct{}{}); loaded {
 		return
 	}
-	if logger := r.log(); logger != nil {
-		logger.Warn("velocity/queue: job type does not implement Identifiable; MaxAttempts cannot be enforced reliably across redelivery. Implement queue.Identifiable.JobID() to fix.",
-			"type", typ,
-		)
-	}
+	r.log().Warn("velocity/queue: job type does not implement Identifiable; MaxAttempts cannot be enforced reliably across redelivery. Implement queue.Identifiable.JobID() to fix.",
+		"type", typ,
+	)
 }
 
 func (r *RedisDriver) rememberPoppedAttempts(job queue.Job, attempts int) {

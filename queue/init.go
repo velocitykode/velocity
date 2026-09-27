@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/driverregistry"
 )
 
@@ -22,6 +23,12 @@ type QueueConfig struct {
 	// DBDriver specifies the database driver name ("postgres", "mysql", "sqlite").
 	// Required when Driver is "database".
 	DBDriver string
+
+	// Logger receives the driver's warnings, from construction on: a
+	// driver factory may write startup warnings through it, and NewQueue
+	// installs it on a driver implementing contract.LoggerAware. Nil leaves
+	// the driver on the framework's standalone fallback logger.
+	Logger contract.Logger
 }
 
 // Validate checks the QueueConfig for structural problems before NewQueue
@@ -105,6 +112,11 @@ func NewQueueWithContext(ctx context.Context, config QueueConfig) (Driver, error
 	d, err := drivers.Resolve(ctx, driver, config)
 	if err != nil {
 		return nil, fmt.Errorf("velocity/queue: %w", err)
+	}
+	if config.Logger != nil {
+		if la, ok := d.(contract.LoggerAware); ok {
+			la.SetLogger(config.Logger)
+		}
 	}
 	return d, nil
 }

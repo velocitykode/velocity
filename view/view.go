@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/bond"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -180,6 +181,17 @@ func (e *Engine) SetSharePropsFunc(fn SharePropsFunc) {
 func (e *Engine) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	e.bond.SetEventDispatcher(fn)
 }
+
+// SetLogger hands l to the Bond the engine renders through, for its
+// operational warnings (the redirect-allowlist fallback warning, response
+// flush failures). Nil restores the Bond's default, the framework's
+// standalone fallback logger. velocity.New hands the engine the app logger.
+// Safe to call while the engine serves requests.
+func (e *Engine) SetLogger(l contract.Logger) {
+	e.bond.SetLogger(l)
+}
+
+var _ contract.LoggerAware = (*Engine)(nil)
 
 // Redirect performs an SPA redirect (for internal navigation).
 func (e *Engine) Redirect(w http.ResponseWriter, r *http.Request, url string) {
