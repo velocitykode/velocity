@@ -123,7 +123,7 @@ func (b *observerBinding) active() StatementObserver {
 // control-flow sentinels rather than a statement failure. driver.ErrSkip means
 // "this execution path declined, fall back to another one" (the prepared-
 // statement path then runs and reports its own event), and driver.ErrBadConn
-// means "retry on a fresh connection". Reporting either as query.failed would
+// means "retry on a fresh connection". Reporting either as orm.query.failed would
 // fabricate failures for statements that go on to succeed.
 func isControlErr(err error) bool {
 	return errors.Is(err, driver.ErrSkip) || errors.Is(err, driver.ErrBadConn)

@@ -288,7 +288,7 @@ func wireInstanceEvents(a *App) {
 // holds now, read once:
 //
 //   - the dispatcher's failure-report bridge, which reports every
-//     contract.FailureEvent dispatch (job.failed, scheduled.failed, ...).
+//     contract.FailureEvent dispatch (queue.job.failed, scheduler.task.failed, ...).
 //     Wired on the dispatcher itself (not the dispatch closure) so every
 //     dispatch path is covered: service-fired events, registry components,
 //     and app code calling Services.Events.Dispatch directly. Optional
@@ -352,7 +352,7 @@ func buildFailureReporter(h contract.ErrorHandler) func(ctx context.Context, eve
 // listener and event types, and returns TryReport's answer, whether the
 // report was actually handled. The queue worker reads that answer
 // (events.EventListenerJob.FailureReported): a failure this did not report
-// is reported by the job.failed event's bridge instead. It returns nil (no
+// is reported by the queue.job.failed event's bridge instead. It returns nil (no
 // reporter, so the hook reports nothing) when h is nil.
 func buildQueuedListenerReporter(h contract.ErrorHandler) events.FailureReporter {
 	if h == nil {
@@ -389,7 +389,7 @@ func eventWiringCandidates(a *App) []any {
 //
 // The closure never reads a.Services.Events when it dispatches: services
 // dispatch from goroutines a module Start may have launched (a queue push
-// firing job.queued, a scheduler tick, an ORM event), and a later module
+// firing queue.job.queued, a scheduler tick, an ORM event), and a later module
 // Start assigning Services.Events would otherwise be an unsynchronized
 // write against those reads. wireInstanceEvents re-runs at each lifecycle
 // point that can change the field, so a replaced dispatcher is what later

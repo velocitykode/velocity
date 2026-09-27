@@ -23,7 +23,7 @@ type JobQueued struct {
 
 // Name returns the event name
 func (e *JobQueued) Name() string {
-	return "job.queued"
+	return "queue.job.queued"
 }
 
 // JobProcessing is dispatched when a worker starts processing a job
@@ -38,7 +38,7 @@ type JobProcessing struct {
 
 // Name returns the event name
 func (e *JobProcessing) Name() string {
-	return "job.processing"
+	return "queue.job.started"
 }
 
 // JobProcessed is dispatched when a job completes successfully
@@ -54,7 +54,7 @@ type JobProcessed struct {
 
 // Name returns the event name
 func (e *JobProcessed) Name() string {
-	return "job.processed"
+	return "queue.job.completed"
 }
 
 // JobFailed is dispatched when a job fails
@@ -78,7 +78,7 @@ type JobFailed struct {
 
 // Name returns the event name
 func (e *JobFailed) Name() string {
-	return "job.failed"
+	return "queue.job.failed"
 }
 
 // FailureError implements contract.FailureEvent: a permanently failed job
@@ -117,7 +117,7 @@ type JobRetrying struct {
 
 // Name returns the event name
 func (e *JobRetrying) Name() string {
-	return "job.retrying"
+	return "queue.job.retried"
 }
 
 // dispatchJobQueued dispatches a JobQueued event

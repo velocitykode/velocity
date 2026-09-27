@@ -15,9 +15,9 @@ func TestSchedulerEventNames(t *testing.T) {
 		event    interface{ Name() string }
 		expected string
 	}{
-		{"ScheduledTaskStarting", &ScheduledTaskStarting{}, "scheduled.starting"},
-		{"ScheduledTaskFinished", &ScheduledTaskFinished{}, "scheduled.finished"},
-		{"ScheduledTaskFailed", &ScheduledTaskFailed{}, "scheduled.failed"},
+		{"ScheduledTaskStarting", &ScheduledTaskStarting{}, "scheduler.task.started"},
+		{"ScheduledTaskFinished", &ScheduledTaskFinished{}, "scheduler.task.completed"},
+		{"ScheduledTaskFailed", &ScheduledTaskFailed{}, "scheduler.task.failed"},
 	}
 
 	for _, tt := range tests {
@@ -231,8 +231,8 @@ func TestScheduledTaskStartingEventFields(t *testing.T) {
 		ParentID: "parent-789",
 	}
 
-	if e.Name() != "scheduled.starting" {
-		t.Errorf("Name() = %q, want %q", e.Name(), "scheduled.starting")
+	if e.Name() != "scheduler.task.started" {
+		t.Errorf("Name() = %q, want %q", e.Name(), "scheduler.task.started")
 	}
 	if e.TaskName != "daily-backup" {
 		t.Errorf("TaskName = %q, want %q", e.TaskName, "daily-backup")
@@ -249,8 +249,8 @@ func TestScheduledTaskFinishedEventFields(t *testing.T) {
 		ParentID:   "",
 	}
 
-	if e.Name() != "scheduled.finished" {
-		t.Errorf("Name() = %q, want %q", e.Name(), "scheduled.finished")
+	if e.Name() != "scheduler.task.completed" {
+		t.Errorf("Name() = %q, want %q", e.Name(), "scheduler.task.completed")
 	}
 	if e.DurationMs != 1500 {
 		t.Errorf("DurationMs = %d, want 1500", e.DurationMs)
@@ -268,8 +268,8 @@ func TestScheduledTaskFailedEventFields(t *testing.T) {
 		ParentID:   "parent-err",
 	}
 
-	if e.Name() != "scheduled.failed" {
-		t.Errorf("Name() = %q, want %q", e.Name(), "scheduled.failed")
+	if e.Name() != "scheduler.task.failed" {
+		t.Errorf("Name() = %q, want %q", e.Name(), "scheduler.task.failed")
 	}
 	if e.Error != "template error" {
 		t.Errorf("Error = %q, want %q", e.Error, "template error")

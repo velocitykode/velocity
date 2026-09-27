@@ -10,11 +10,11 @@ import (
 )
 
 // TestEventInterface_TxRecover ensures TxRecover satisfies the Event
-// interface and returns the documented "orm.tx_recover" name.
+// interface and returns the documented "orm.transaction.recovered" name.
 func TestEventInterface_TxRecover(t *testing.T) {
 	var e contract.Event = &TxRecover{}
-	if got := e.Name(); got != "orm.tx_recover" {
-		t.Fatalf("TxRecover.Name = %q, want %q", got, "orm.tx_recover")
+	if got := e.Name(); got != "orm.transaction.recovered" {
+		t.Fatalf("TxRecover.Name = %q, want %q", got, "orm.transaction.recovered")
 	}
 }
 
@@ -63,8 +63,8 @@ func TestManager_SetLogger_StoresLogger(t *testing.T) {
 	if captured == nil {
 		t.Fatal("typed dispatcher did not receive TxRecover event")
 	}
-	if captured.Name() != "orm.tx_recover" {
-		t.Errorf("TxRecover.Name = %q, want %q", captured.Name(), "orm.tx_recover")
+	if captured.Name() != "orm.transaction.recovered" {
+		t.Errorf("TxRecover.Name = %q, want %q", captured.Name(), "orm.transaction.recovered")
 	}
 }
 

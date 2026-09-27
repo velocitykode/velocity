@@ -23,7 +23,7 @@ type RequestSent struct {
 
 // Name returns the event name
 func (e *RequestSent) Name() string {
-	return "http.request.sent"
+	return "httpclient.request.completed"
 }
 
 // RequestFailed is dispatched when an HTTP request fails
@@ -40,7 +40,7 @@ type RequestFailed struct {
 
 // Name returns the event name
 func (e *RequestFailed) Name() string {
-	return "http.request.failed"
+	return "httpclient.request.failed"
 }
 
 // dispatchRequestSent dispatches a RequestSent event

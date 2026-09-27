@@ -70,11 +70,11 @@ func TestFailureBridge_BackgroundFailuresReachReporters(t *testing.T) {
 	if rec.errs[0].Error() != "smtp exploded" {
 		t.Errorf("first reported error = %q, want %q", rec.errs[0].Error(), "smtp exploded")
 	}
-	if got := rec.exCtx[0].Extra["event"]; got != "job.failed" {
-		t.Errorf("first report event extra = %v, want job.failed", got)
+	if got := rec.exCtx[0].Extra["event"]; got != "queue.job.failed" {
+		t.Errorf("first report event extra = %v, want queue.job.failed", got)
 	}
-	if got := rec.exCtx[1].Extra["event"]; got != "scheduled.failed" {
-		t.Errorf("second report event extra = %v, want scheduled.failed", got)
+	if got := rec.exCtx[1].Extra["event"]; got != "scheduler.task.failed" {
+		t.Errorf("second report event extra = %v, want scheduler.task.failed", got)
 	}
 
 	// Caller-owned failure: NOT bridged. Request errors reach Report

@@ -121,7 +121,7 @@ func TestDispatch_FailureBridgeRunsBeforeListeners(t *testing.T) {
 		order = append(order, "report")
 		mu.Unlock()
 	})
-	d.Listen("events.async_failed", listenerFn(func(_ context.Context, _ interface{}) error {
+	d.Listen("events.listener.failed", listenerFn(func(_ context.Context, _ interface{}) error {
 		mu.Lock()
 		order = append(order, "listener")
 		mu.Unlock()
@@ -139,7 +139,7 @@ func TestDispatch_FailureBridgeRunsBeforeListeners(t *testing.T) {
 }
 
 // otherFailed is a second FailureEvent type with its own event name, so a
-// listener registered on events.async_failed can dispatch it without
+// listener registered on events.listener.failed can dispatch it without
 // re-triggering itself.
 type otherFailed struct{ err string }
 
@@ -258,7 +258,7 @@ func TestDispatchAsync_WithQueue_ReportsOnce(t *testing.T) {
 
 	// Need a queued listener so the queue path is exercised; the report
 	// must still happen exactly once at dispatch, independent of listeners.
-	d.Listen("events.async_failed", listenerFn(func(_ context.Context, _ interface{}) error { return nil }))
+	d.Listen("events.listener.failed", listenerFn(func(_ context.Context, _ interface{}) error { return nil }))
 	if err := d.DispatchAsync(context.Background(), &AsyncFailed{Error: "boom"}); err != nil {
 		t.Fatalf("DispatchAsync: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestListener_DistinctFailureEventWithReceivedCtx_IsReported(t *testing.T) {
 	d.SetFailureReporter(rec.fn())
 
 	nested := &otherFailed{err: "terminal"}
-	d.Listen("events.async_failed", listenerFn(func(ctx context.Context, _ interface{}) error {
+	d.Listen("events.listener.failed", listenerFn(func(ctx context.Context, _ interface{}) error {
 		// Listener observes a terminal failure of its own and dispatches a
 		// DIFFERENT failure event using the ctx it was handed (which carries
 		// the marker for the OUTER event). It must not be swallowed.
@@ -365,7 +365,7 @@ func TestListener_SameFailureEventWithReceivedCtx_NotReReported(t *testing.T) {
 
 	outer := &AsyncFailed{Error: "boom"}
 	var redispatched bool
-	d.Listen("events.async_failed", listenerFn(func(ctx context.Context, ev interface{}) error {
+	d.Listen("events.listener.failed", listenerFn(func(ctx context.Context, ev interface{}) error {
 		if redispatched {
 			return nil // break the listener loop; the bridge already proved its point
 		}

@@ -211,7 +211,7 @@ func TestInstrumentation_TxBranchEmitsEvents(t *testing.T) {
 	}
 }
 
-// TestInstrumentation_QueryFailedFires locks in that query.failed reaches the
+// TestInstrumentation_QueryFailedFires locks in that orm.query.failed reaches the
 // dispatcher at all: before instrumentation moved into the driver, QueryFailed
 // was declared but never constructed, and failing statements were reported as
 // successes with a zero row count.

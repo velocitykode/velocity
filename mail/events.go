@@ -21,7 +21,7 @@ type MailSent struct {
 
 // Name returns the event name
 func (e *MailSent) Name() string {
-	return "mail.sent"
+	return "mail.completed"
 }
 
 // MailFailed is dispatched when an email fails to send

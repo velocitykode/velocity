@@ -4,7 +4,7 @@ import "testing"
 
 // BenchmarkBusDispatch measures the hot path with no middleware and no event
 // dispatcher set: the composed chain is read lock-free and the command type
-// name is never computed (it is only needed to label command.* events).
+// name is never computed (it is only needed to label bus.command.* events).
 func BenchmarkBusDispatch(b *testing.B) {
 	bus := New()
 	Register(bus, func(cmd createUser) error {

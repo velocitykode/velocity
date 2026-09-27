@@ -95,7 +95,7 @@ type deleteOnPopDriver struct {
 }
 
 // runUntilJobFailed pushes job onto d, runs a single-attempt worker with a
-// dispatcher until it dispatches one job.failed event, stops the worker and
+// dispatcher until it dispatches one queue.job.failed event, stops the worker and
 // returns that event.
 func runUntilJobFailed(t *testing.T, d Driver, job Job) *JobFailed {
 	t.Helper()
@@ -123,20 +123,20 @@ func runUntilJobFailed(t *testing.T, d Driver, job Job) *JobFailed {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(failed) > 0
-	}, 5*time.Second, "worker dispatches job.failed")
+	}, 5*time.Second, "worker dispatches queue.job.failed")
 	w.Stop()
 
 	mu.Lock()
 	defer mu.Unlock()
 	if len(failed) != 1 {
-		t.Fatalf("job.failed dispatched %d times, want 1", len(failed))
+		t.Fatalf("queue.job.failed dispatched %d times, want 1", len(failed))
 	}
 	return failed[0]
 }
 
 // TestWorker_JobFailedCarriesFailureMarkedWhenHookReported asserts every
 // driver runs the job's Failed hook exactly once on a terminal failure (the
-// database driver on the instance it rehydrated), and the job.failed event
+// database driver on the instance it rehydrated), and the queue.job.failed event
 // carries the job's own error, marked reported exactly when that hook
 // reported it: a self-reporting job is marked on the memory reservation
 // path, a delete-on-pop driver and the database driver, and a job that does

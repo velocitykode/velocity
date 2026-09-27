@@ -28,7 +28,7 @@ type ScheduledTaskStarting struct {
 
 // Name returns the event name
 func (e *ScheduledTaskStarting) Name() string {
-	return "scheduled.starting"
+	return "scheduler.task.started"
 }
 
 // ScheduledTaskFinished is dispatched when a scheduled task completes successfully
@@ -43,7 +43,7 @@ type ScheduledTaskFinished struct {
 
 // Name returns the event name
 func (e *ScheduledTaskFinished) Name() string {
-	return "scheduled.finished"
+	return "scheduler.task.completed"
 }
 
 // ScheduledTaskFailed is dispatched when a scheduled task fails
@@ -59,7 +59,7 @@ type ScheduledTaskFailed struct {
 
 // Name returns the event name
 func (e *ScheduledTaskFailed) Name() string {
-	return "scheduled.failed"
+	return "scheduler.task.failed"
 }
 
 // FailureError implements contract.FailureEvent: a failed scheduled task

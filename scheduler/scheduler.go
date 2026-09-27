@@ -324,7 +324,7 @@ func (s *Scheduler) Call(callback func()) *Job {
 
 // CallE creates a new job that executes an error-returning closure. Unlike
 // Call (whose closure has no error return), the returned err feeds the
-// OnFailure callbacks and the scheduled.failed event, so per-task error
+// OnFailure callbacks and the scheduler.task.failed event, so per-task error
 // alerting works without forcing the closure to panic. Naming follows the
 // same heuristic as Call.
 func (s *Scheduler) CallE(callback func() error) *Job {
@@ -352,7 +352,7 @@ func (s *Scheduler) Named(name string, callback func()) *Job {
 
 // NamedE is the error-returning sibling of Named. Combines an explicit
 // name (suitable for WithoutOverlapping) with an error-returning closure
-// whose returned err feeds OnFailure and scheduled.failed.
+// whose returned err feeds OnFailure and scheduler.task.failed.
 func (s *Scheduler) NamedE(name string, callback func() error) *Job {
 	job := &Job{
 		name:         name,
@@ -619,7 +619,7 @@ func (s *Scheduler) runDueJobs() {
 	// (runDueJobs is driven by Run's select loop). A bare panic in one
 	// would kill the whole scheduler, so each is isolated; there is no
 	// per-job context here, so a panic is logged rather than dispatched
-	// as scheduled.failed.
+	// as scheduler.task.failed.
 	onCallbackPanic := func(err error) {
 		s.log().Error("velocity/scheduler: scheduler-level callback panicked", "error", err)
 	}

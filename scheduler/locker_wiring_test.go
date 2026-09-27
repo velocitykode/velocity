@@ -178,7 +178,7 @@ func TestRunDueJobs_LockReleasedOnPanic(t *testing.T) {
 	s := New()
 	s.SetLocker(shared)
 	// A job whose callback panics. Job.Run's internal recover catches
-	// the panic and dispatches scheduled.failed; the test verifies the
+	// the panic and dispatches scheduler.task.failed; the test verifies the
 	// WithoutOverlapping lock is released on the way out. If it leaked
 	// the Acquire below would fail until the (default 24h) TTL elapses.
 	s.Named("flaky.job", func() {

@@ -383,7 +383,7 @@ func (w *Worker) processJob() error {
 	// carries.
 	jobCtx = trace.StartSpan(jobCtx, trace.Parent{TraceID: producerTC.TraceID, SpanID: producerTC.SpanID})
 
-	// Dispatch job.processing event
+	// Dispatch queue.job.started event
 	dispatchJobProcessing(w.dispatchEvent, jobCtx, jobType, w.queueName)
 	startTime := time.Now()
 
@@ -815,7 +815,7 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 			// Ownership confirmed and the failure recorded; only the
 			// job's Failed hook panicked. Log it and run the side
 			// effects below as for a clean record, so the batch and the
-			// job.failed event still see this failure.
+			// queue.job.failed event still see this failure.
 			w.logger.Error("Job Failed hook panicked after the failure was recorded",
 				"type", jobType,
 				"queue", w.queueName,
@@ -877,7 +877,7 @@ func (w *Worker) failJob(ctx context.Context, job Job, jobType string, err error
 	dispatchJobFailed(w.dispatchEvent, ctx, jobType, w.queueName, failureForEvent(job, err), duration)
 }
 
-// failureForEvent returns the error the job.failed event carries for a job
+// failureForEvent returns the error the queue.job.failed event carries for a job
 // the driver has just failed: err marked reported (contract.MarkReported)
 // when the driver's call ran the job's Failed hook and the hook reported
 // err itself (see FailureSelfReporter), so the dispatcher's failure-report

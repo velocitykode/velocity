@@ -12,16 +12,16 @@ import (
 // contract.Event facet and returns the documented event name.
 func TestEventInterface_QueryExecuted(t *testing.T) {
 	var e contract.Event = &QueryExecuted{}
-	if got := e.Name(); got != "query.executed" {
-		t.Fatalf("QueryExecuted.Name = %q, want %q", got, "query.executed")
+	if got := e.Name(); got != "orm.query.completed" {
+		t.Fatalf("QueryExecuted.Name = %q, want %q", got, "orm.query.completed")
 	}
 }
 
 // TestEventInterface_QueryFailed ensures QueryFailed satisfies Event.
 func TestEventInterface_QueryFailed(t *testing.T) {
 	var e contract.Event = &QueryFailed{}
-	if got := e.Name(); got != "query.failed" {
-		t.Fatalf("QueryFailed.Name = %q, want %q", got, "query.failed")
+	if got := e.Name(); got != "orm.query.failed" {
+		t.Fatalf("QueryFailed.Name = %q, want %q", got, "orm.query.failed")
 	}
 }
 
@@ -56,8 +56,8 @@ func TestManager_SetEventDispatcher_ReceivesEvent(t *testing.T) {
 	if !ok {
 		t.Fatalf("received event is not *QueryExecuted: %T", received)
 	}
-	if q.Name() != "query.executed" {
-		t.Errorf("Name = %q, want %q", q.Name(), "query.executed")
+	if q.Name() != "orm.query.completed" {
+		t.Errorf("Name = %q, want %q", q.Name(), "orm.query.completed")
 	}
 }
 

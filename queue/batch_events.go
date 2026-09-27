@@ -11,7 +11,7 @@ type BatchCreated struct {
 }
 
 // Name returns the event name
-func (e *BatchCreated) Name() string { return "batch.created" }
+func (e *BatchCreated) Name() string { return "queue.batch.created" }
 
 // BatchJobCompleted is dispatched when a job in a batch completes successfully
 type BatchJobCompleted struct {
@@ -23,7 +23,7 @@ type BatchJobCompleted struct {
 }
 
 // Name returns the event name
-func (e *BatchJobCompleted) Name() string { return "batch.job.completed" }
+func (e *BatchJobCompleted) Name() string { return "queue.batch.job.completed" }
 
 // BatchJobFailed is dispatched when a job in a batch fails
 type BatchJobFailed struct {
@@ -35,7 +35,7 @@ type BatchJobFailed struct {
 }
 
 // Name returns the event name
-func (e *BatchJobFailed) Name() string { return "batch.job.failed" }
+func (e *BatchJobFailed) Name() string { return "queue.batch.job.failed" }
 
 // BatchCompleted is dispatched when all jobs in a batch have been processed
 type BatchCompleted struct {
@@ -48,7 +48,7 @@ type BatchCompleted struct {
 }
 
 // Name returns the event name
-func (e *BatchCompleted) Name() string { return "batch.completed" }
+func (e *BatchCompleted) Name() string { return "queue.batch.completed" }
 
 // BatchCancelled is dispatched when a batch is cancelled
 type BatchCancelled struct {
@@ -58,4 +58,4 @@ type BatchCancelled struct {
 }
 
 // Name returns the event name
-func (e *BatchCancelled) Name() string { return "batch.cancelled" }
+func (e *BatchCancelled) Name() string { return "queue.batch.cancelled" }

@@ -211,7 +211,7 @@ type RetryDecider interface {
 // event listener's does. The worker asks FailureReported right after the
 // driver's terminal-failure call, which runs the hook on drivers that call
 // it: true means the hook's report reached the error reporters, so the
-// worker marks the error its job.failed event carries as reported
+// worker marks the error its queue.job.failed event carries as reported
 // (contract.MarkReported) and the dispatcher's failure-report bridge does
 // not report the failure a second time. FailureReported must describe the
 // most recent Failed call only; a job whose hook did not run (a driver that

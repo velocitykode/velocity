@@ -481,8 +481,8 @@ func TestTypedEvent_OnEventDispatchError(t *testing.T) {
 
 	r.dispatchInstanceEvent(context.Background(), &RequestStarted{RequestID: "abc"})
 
-	if seenName != "request.started" {
-		t.Errorf("event.Name = %q, want request.started", seenName)
+	if seenName != "router.request.started" {
+		t.Errorf("event.Name = %q, want router.request.started", seenName)
 	}
 }
 

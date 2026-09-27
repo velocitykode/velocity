@@ -116,7 +116,7 @@ func TestStore_EmitsQueryEvents(t *testing.T) {
 }
 
 // TestStore_EmitsQueryFailed covers the failure side of the same path: a
-// statement against a missing table must surface as query.failed rather than
+// statement against a missing table must surface as orm.query.failed rather than
 // as a zero-row success.
 func TestStore_EmitsQueryFailed(t *testing.T) {
 	m := newManager(t) // no users table on this connection

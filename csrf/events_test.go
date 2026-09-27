@@ -34,7 +34,7 @@ func TestSessionMissing_DispatchedWhenNoSession(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *SessionMissing, got %T", events[0])
 	}
-	if evt.Name() != "csrf.session_missing" {
+	if evt.Name() != "csrf.session.missed" {
 		t.Errorf("unexpected event name: %s", evt.Name())
 	}
 	if evt.Path != "/submit" || evt.Method != "POST" {
@@ -62,7 +62,7 @@ func TestSessionMissing_NotDispatchedWithSession(t *testing.T) {
 }
 
 // Every unsafe request without a session is rejected with 419 and reported
-// once as csrf.session_missing, whether it carried a token, a garbled one or
+// once as csrf.session.missed, whether it carried a token, a garbled one or
 // none. A request with a session but no token is rejected without the event.
 func TestSessionMissing_ReportsEveryRejectedSessionlessRequest(t *testing.T) {
 	c, err := NewE(testConfig())
@@ -116,12 +116,12 @@ func TestSessionMissing_ReportsEveryRejectedSessionlessRequest(t *testing.T) {
 			defer mu.Unlock()
 			got := 0
 			for _, n := range names {
-				if n == "csrf.session_missing" {
+				if n == "csrf.session.missed" {
 					got++
 				}
 			}
 			if got != tc.wantEvent || len(names) != tc.wantEvent {
-				t.Errorf("events = %v, want %d csrf.session_missing", names, tc.wantEvent)
+				t.Errorf("events = %v, want %d csrf.session.missed", names, tc.wantEvent)
 			}
 		})
 	}

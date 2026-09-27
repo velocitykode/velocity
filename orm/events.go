@@ -51,7 +51,7 @@ type QueryExecuted struct {
 
 // Name returns the canonical event name.
 func (e *QueryExecuted) Name() string {
-	return "query.executed"
+	return "orm.query.completed"
 }
 
 // QueryFailed is dispatched when a database query fails, on the same
@@ -80,7 +80,7 @@ type QueryFailed struct {
 
 // Name returns the canonical event name.
 func (e *QueryFailed) Name() string {
-	return "query.failed"
+	return "orm.query.failed"
 }
 
 // TxRecover is dispatched when the Manager.Transaction helper recovers from
@@ -96,7 +96,7 @@ type TxRecover struct {
 
 // Name returns the canonical event name.
 func (e *TxRecover) Name() string {
-	return "orm.tx_recover"
+	return "orm.transaction.recovered"
 }
 
 // TransactionExecuted is dispatched at the end of a Manager.Transaction body,
@@ -117,7 +117,7 @@ type TransactionExecuted struct {
 
 // Name returns the canonical event name.
 func (e *TransactionExecuted) Name() string {
-	return "transaction.executed"
+	return "orm.transaction.completed"
 }
 
 // txStatementCounterKey scopes a per-tx atomic counter onto the ctx that the

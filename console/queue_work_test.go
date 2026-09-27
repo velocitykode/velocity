@@ -66,7 +66,7 @@ func (quietWorkerLogger) Fatal(string, ...any) {}
 
 // TestNewQueueWorker_WiresDispatcher asserts the worker queue work runs
 // fires its job lifecycle events into opts.Dispatcher: a job that fails
-// on its only attempt produces job.processing then job.failed carrying the
+// on its only attempt produces queue.job.started then queue.job.failed carrying the
 // job's error.
 func TestNewQueueWorker_WiresDispatcher(t *testing.T) {
 	driver := queue.NewMemoryDriver()
@@ -103,15 +103,15 @@ func TestNewQueueWorker_WiresDispatcher(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return failed != nil
-	}, 5*time.Second, "worker dispatches job.failed")
+	}, 5*time.Second, "worker dispatches queue.job.failed")
 	w.Stop()
 
 	mu.Lock()
 	defer mu.Unlock()
-	if want := []string{"job.processing", "job.failed"}; !slices.Equal(names, want) {
+	if want := []string{"queue.job.started", "queue.job.failed"}; !slices.Equal(names, want) {
 		t.Errorf("dispatched events = %v, want %v", names, want)
 	}
 	if failed.Error != "work job exploded" || failed.Queue != "work" {
-		t.Errorf("job.failed = {Error: %q, Queue: %q}, want {%q, %q}", failed.Error, failed.Queue, "work job exploded", "work")
+		t.Errorf("queue.job.failed = {Error: %q, Queue: %q}, want {%q, %q}", failed.Error, failed.Queue, "work job exploded", "work")
 	}
 }

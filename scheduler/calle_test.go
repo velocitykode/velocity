@@ -12,7 +12,7 @@ import (
 
 // TestJob_CallE_FiresOnFailureForReturnedError covers item 6: a closure
 // registered via CallE that returns a non-nil error must trigger OnFailure
-// (and dispatch scheduled.failed) without requiring the closure to panic.
+// (and dispatch scheduler.task.failed) without requiring the closure to panic.
 // Pre-fix the only path setting err was the panic-recover branch, so
 // OnFailure was unreachable for normal-error returns.
 func TestJob_CallE_FiresOnFailureForReturnedError(t *testing.T) {
@@ -49,7 +49,7 @@ func TestJob_CallE_FiresOnFailureForReturnedError(t *testing.T) {
 		}
 	})
 
-	t.Run("scheduled.failed dispatched exactly once", func(t *testing.T) {
+	t.Run("scheduler.task.failed dispatched exactly once", func(t *testing.T) {
 		s := New()
 
 		var (
@@ -118,7 +118,7 @@ func TestJob_CallE_FiresOnFailureForReturnedError(t *testing.T) {
 
 	t.Run("panic still flows through OnFailure once", func(t *testing.T) {
 		// Regression: the panic-recover branch in CallE must still dispatch
-		// scheduled.failed exactly once and feed OnFailure. This locks in
+		// scheduler.task.failed exactly once and feed OnFailure. This locks in
 		// the eager-dispatch behaviour from item 7c (panic_dispatch_test.go).
 		s := New()
 		var (
@@ -151,7 +151,7 @@ func TestJob_CallE_FiresOnFailureForReturnedError(t *testing.T) {
 			}
 		}
 		if failed != 1 {
-			t.Errorf("scheduled.failed dispatched %d times, want 1", failed)
+			t.Errorf("scheduler.task.failed dispatched %d times, want 1", failed)
 		}
 	})
 

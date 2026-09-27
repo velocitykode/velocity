@@ -46,8 +46,8 @@ func (c *testEventCollector) findEvent(predicate func(interface{}) bool) interfa
 
 func TestQueryExecutedName(t *testing.T) {
 	event := &QueryExecuted{}
-	if got := event.Name(); got != "query.executed" {
-		t.Errorf("QueryExecuted.Name() = %v, want %v", got, "query.executed")
+	if got := event.Name(); got != "orm.query.completed" {
+		t.Errorf("QueryExecuted.Name() = %v, want %v", got, "orm.query.completed")
 	}
 }
 

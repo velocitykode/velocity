@@ -21,7 +21,7 @@ type AsyncDispatcher struct {
 }
 
 // AsyncFailed is dispatched when a listener invoked through the async
-// dispatcher panics or returns an error. Applications can Listen("events.async_failed")
+// dispatcher panics or returns an error. Applications can Listen("events.listener.failed")
 // to observe async failures (e.g. for alerting or metrics).
 type AsyncFailed struct {
 	Context      context.Context
@@ -31,7 +31,7 @@ type AsyncFailed struct {
 }
 
 // Name returns the event name.
-func (e *AsyncFailed) Name() string { return "events.async_failed" }
+func (e *AsyncFailed) Name() string { return "events.listener.failed" }
 
 // FailureError implements contract.FailureEvent: a listener that panicked
 // or errored on an async goroutine has no caller observing the failure, so
@@ -58,7 +58,7 @@ func (a *AsyncDispatcher) SetFailureSink(fn func(event interface{}) error) {
 }
 
 // Push processes an event asynchronously in a panic-safe goroutine. Panics
-// from the listener are recovered and surfaced as an events.async_failed event
+// from the listener are recovered and surfaced as an events.listener.failed event
 // via the configured failure sink.
 //
 // Context semantics: the ctx passed to the listener is derived from the

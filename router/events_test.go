@@ -338,10 +338,10 @@ func TestEventNames(t *testing.T) {
 		event    interface{ Name() string }
 		expected string
 	}{
-		{&RequestStarted{}, "request.started"},
-		{&RequestRouted{}, "request.routed"},
-		{&RequestHandled{}, "request.handled"},
-		{&RequestFailed{}, "request.failed"},
+		{&RequestStarted{}, "router.request.started"},
+		{&RequestRouted{}, "router.request.routed"},
+		{&RequestHandled{}, "router.request.completed"},
+		{&RequestFailed{}, "router.request.failed"},
 	}
 
 	for _, tt := range tests {

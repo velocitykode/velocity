@@ -10,7 +10,7 @@ import (
 // the most recent Failed call: true only when the installed reporter says
 // it reported the failure; false with no reporter installed, a nil error, a
 // reporter that declined the failure, and a reporter that panicked, so the
-// worker's job.failed bridge reports those failures.
+// worker's queue.job.failed bridge reports those failures.
 func TestEventListenerJob_FailureReported(t *testing.T) {
 	defer setFailureReporter(nil)
 	boom := errors.New("listener exploded")

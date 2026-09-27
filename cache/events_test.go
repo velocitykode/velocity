@@ -79,7 +79,7 @@ func TestCacheEventNames(t *testing.T) {
 		expected string
 	}{
 		{&CacheHit{}, "cache.hit"},
-		{&CacheMiss{}, "cache.miss"},
+		{&CacheMiss{}, "cache.missed"},
 		{&CacheWritten{}, "cache.written"},
 		{&CacheForgotten{}, "cache.forgotten"},
 		{&CacheOperationFailed{}, "cache.operation.failed"},

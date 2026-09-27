@@ -159,14 +159,14 @@ func TestNew_ModuleStartSwapsEventsWhileServiceDispatches(t *testing.T) {
 		reached func(t *testing.T, fake *events.FakeDispatcher)
 	}{
 		{
-			name: "queue push (job.queued)",
+			name: "queue push (queue.job.queued)",
 			fire: func(s *app.Services) func() {
 				return func() {
 					_ = s.Queue.PushCtx(context.Background(), &fakeQueueJob{name: "loop"})
 				}
 			},
 			reached: func(t *testing.T, fake *events.FakeDispatcher) {
-				waitForEvent[*queue.JobQueued](t, fake, "job.queued")
+				waitForEvent[*queue.JobQueued](t, fake, "queue.job.queued")
 			},
 		},
 		{
@@ -365,7 +365,7 @@ func TestEventDispatcherSwap_ReachedAfterEachRewirePoint(t *testing.T) {
 			}
 
 			if n := countEvents[*queue.JobQueued](to); n == 0 {
-				t.Error("queue push: job.queued did not reach the swapped-in dispatcher")
+				t.Error("queue push: queue.job.queued did not reach the swapped-in dispatcher")
 			}
 			if n := countEvents[*queue.BatchCreated](to); n == 0 {
 				t.Error("batch global hook: batch created did not reach the swapped-in dispatcher")
@@ -542,7 +542,7 @@ func TestBootstrap_RouterAsyncDeliverySurvivesRewire(t *testing.T) {
 			select {
 			case <-want.started:
 			case <-time.After(5 * time.Second):
-				t.Fatal("request.started never reached the app's current dispatcher")
+				t.Fatal("router.request.started never reached the app's current dispatcher")
 			}
 			select {
 			case <-served:
@@ -552,7 +552,7 @@ func TestBootstrap_RouterAsyncDeliverySurvivesRewire(t *testing.T) {
 			release()
 
 			if n := countEvents[*router.RequestStarted](configured); n != 0 {
-				t.Errorf("target the callback configured received %d request.started after bootstrap", n)
+				t.Errorf("target the callback configured received %d router.request.started after bootstrap", n)
 			}
 		})
 	}
@@ -658,10 +658,10 @@ func TestBootstrap_EventsSwapReachedByLaterCallbacks(t *testing.T) {
 		t.Fatalf("PushCtx: %v", pushErr)
 	}
 	if n := countEvents[*queue.JobQueued](to); n != 1 {
-		t.Errorf("swapped-in dispatcher recorded %d job.queued from the Schedule callback, want 1", n)
+		t.Errorf("swapped-in dispatcher recorded %d queue.job.queued from the Schedule callback, want 1", n)
 	}
 	if n := countEvents[*queue.JobQueued](original); n != 0 {
-		t.Errorf("replaced dispatcher recorded %d job.queued from the Schedule callback, want 0", n)
+		t.Errorf("replaced dispatcher recorded %d queue.job.queued from the Schedule callback, want 0", n)
 	}
 }
 
@@ -707,6 +707,6 @@ func TestBootstrap_ClearingStaysStickyForConsumersAddedLater(t *testing.T) {
 		t.Fatalf("ShutdownEventDispatcher: %v", err)
 	}
 	if n := countEvents[*router.RequestStarted](old); n != 0 {
-		t.Errorf("old dispatcher received %d request.started through the router pool configured after clearing", n)
+		t.Errorf("old dispatcher received %d router.request.started through the router pool configured after clearing", n)
 	}
 }

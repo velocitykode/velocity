@@ -194,7 +194,7 @@ func (j *EventListenerJob) MaxAttempts() int {
 // e.g. in tests that exercise the queue path standalone -- the call becomes
 // a documented no-op rather than a silent one (it is still observable via
 // the test's assertion on the original Handle error). Whether the reporter
-// reported it is recorded for FailureReported, so the worker's job.failed
+// reported it is recorded for FailureReported, so the worker's queue.job.failed
 // event reports the failure only when this did not.
 func (j *EventListenerJob) Failed(err error) {
 	var reported uint32
@@ -207,7 +207,7 @@ func (j *EventListenerJob) Failed(err error) {
 // FailureReported reports whether the installed FailureReporter reported
 // the most recent Failed call's error. It implements
 // queue.FailureSelfReporter: the queue worker, after the driver has run
-// Failed, marks the error its job.failed event carries as reported when
+// Failed, marks the error its queue.job.failed event carries as reported when
 // this is true, so the dispatcher's failure-report bridge does not report
 // the failure a second time. It is false when no reporter is installed,
 // when the reporter declined the failure (the error handler's report gate
@@ -601,7 +601,7 @@ func EventJobFactory(data []byte) (queue.Job, error) {
 // so a silently dropped security / audit listener becomes visible to the
 // configured reporters (sentry, log, etc). It returns whether it reported
 // the failure: false when it had nowhere to report it or the error
-// handler's report gate dropped it, so the queue worker's job.failed event
+// handler's report gate dropped it, so the queue worker's queue.job.failed event
 // reports the failure instead (see EventListenerJob.FailureReported).
 type FailureReporter func(job *EventListenerJob, err error) bool
 
@@ -773,7 +773,7 @@ func setFailureReporter(fn FailureReporter) {
 // sink cannot take down the queue worker. It returns whether the reporter
 // reported the failure: false when none is installed, err is nil, the
 // reporter declined it, or the reporter panicked, so the worker's
-// job.failed bridge still reports it.
+// queue.job.failed bridge still reports it.
 func reportFailure(job *EventListenerJob, err error) (reported bool) {
 	failureReporterMu.RLock()
 	fn := failureReporter
@@ -981,5 +981,5 @@ func (d *StoppablePropagationDispatcher) processListener(ctx context.Context, ev
 }
 
 // Conformance: a queued listener's Failed hook reports its own terminal
-// failure, so the worker's job.failed event must not report it again.
+// failure, so the worker's queue.job.failed event must not report it again.
 var _ queue.FailureSelfReporter = (*EventListenerJob)(nil)

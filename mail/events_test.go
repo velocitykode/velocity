@@ -15,7 +15,7 @@ func TestEventNames(t *testing.T) {
 		event    interface{ Name() string }
 		expected string
 	}{
-		{"MailSent", &MailSent{}, "mail.sent"},
+		{"MailSent", &MailSent{}, "mail.completed"},
 		{"MailFailed", &MailFailed{}, "mail.failed"},
 	}
 
@@ -207,8 +207,8 @@ func TestMailSentEventFields(t *testing.T) {
 		ParentID:   "parent-def",
 	}
 
-	if e.Name() != "mail.sent" {
-		t.Errorf("Name() = %q, want %q", e.Name(), "mail.sent")
+	if e.Name() != "mail.completed" {
+		t.Errorf("Name() = %q, want %q", e.Name(), "mail.completed")
 	}
 	if len(e.To) != 2 {
 		t.Errorf("To has %d recipients, want 2", len(e.To))

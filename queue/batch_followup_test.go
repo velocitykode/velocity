@@ -189,7 +189,7 @@ func TestBatch_CrossProcess_BatchCompletedEventDispatched(t *testing.T) {
 	SetGlobalEventDispatcher(func(ctx context.Context, event interface{}) error {
 		type namer interface{ Name() string }
 		if e, ok := event.(namer); ok {
-			if e.Name() == "batch.completed" {
+			if e.Name() == "queue.batch.completed" {
 				observed.Add(1)
 				observedName.Store(e.Name())
 			}
@@ -200,7 +200,7 @@ func TestBatch_CrossProcess_BatchCompletedEventDispatched(t *testing.T) {
 
 	jobsDriver := newMemoryDriver()
 	// Note: no WithEventDispatcher, no Then/Catch/Finally - the global
-	// dispatcher must STILL receive batch.completed when the last
+	// dispatcher must STILL receive queue.batch.completed when the last
 	// IncrementSuccess wins the CAS.
 	batch, err := NewBatch(&testBatchJob{}).Dispatch(context.Background(), jobsDriver)
 	if err != nil {
@@ -210,8 +210,8 @@ func TestBatch_CrossProcess_BatchCompletedEventDispatched(t *testing.T) {
 	batch.recordSuccess(context.Background())
 
 	testsync.Eventually(t, func() bool { return observed.Load() >= 1 }, 2*time.Second,
-		"global dispatcher observes batch.completed")
-	if v, _ := observedName.Load().(string); v != "batch.completed" {
+		"global dispatcher observes queue.batch.completed")
+	if v, _ := observedName.Load().(string); v != "queue.batch.completed" {
 		t.Errorf("observed event name: %q", v)
 	}
 }
@@ -480,7 +480,7 @@ func TestBatch_GlobalEventDispatcher_RoutesAllBatchEvents(t *testing.T) {
 	batch.recordFailure(context.Background(), &stringError{"boom"})
 
 	testsync.Eventually(t, func() bool {
-		want := []string{"batch.created", "batch.job.completed", "batch.job.failed", "batch.completed"}
+		want := []string{"queue.batch.created", "queue.batch.job.completed", "queue.batch.job.failed", "queue.batch.completed"}
 		for _, name := range want {
 			if _, ok := seen.Load(name); !ok {
 				return false

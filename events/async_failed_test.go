@@ -31,7 +31,7 @@ func (e fmtErrType) Error() string { return string(e) }
 func fmtErr(s string) error { return fmtErrType(s) }
 
 // TestAsyncDispatcher_PanicRecovered covers Task 6b: listener panics must be
-// recovered and surfaced as an events.async_failed event through the
+// recovered and surfaced as an events.listener.failed event through the
 // configured failure sink.
 func TestAsyncDispatcher_PanicRecovered(t *testing.T) {
 	a := NewAsyncDispatcher()
@@ -64,8 +64,8 @@ func TestAsyncDispatcher_PanicRecovered(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 AsyncFailed, got %d", len(events))
 	}
-	if events[0].Name() != "events.async_failed" {
-		t.Errorf("event Name = %q, want events.async_failed", events[0].Name())
+	if events[0].Name() != "events.listener.failed" {
+		t.Errorf("event Name = %q, want events.listener.failed", events[0].Name())
 	}
 	if !strings.Contains(events[0].Error, "boom") {
 		t.Errorf("error field = %q, want substring 'boom'", events[0].Error)

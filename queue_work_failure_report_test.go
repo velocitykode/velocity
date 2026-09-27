@@ -109,7 +109,7 @@ func init() {
 	})
 }
 
-// jobFailedWatch counts job.failed events delivered to listeners. The
+// jobFailedWatch counts queue.job.failed events delivered to listeners. The
 // dispatcher runs the failure-report bridge before listeners, so a delivery
 // means the bridge has already had its say for that event.
 type jobFailedWatch struct{ n atomic.Int32 }
@@ -270,10 +270,10 @@ func runStockWorker(t *testing.T, q queue.Driver, opts console.QueueWorkOptions,
 // TestQueueWork_PermanentFailureReportedOnce asserts how often a job the
 // stock queue worker fails permanently is reported, on the memory, redis
 // and database drivers. With the dispatcher wired: a plain job once,
-// through the job.failed event's failure-report bridge, a job error
+// through the queue.job.failed event's failure-report bridge, a job error
 // carrying a client-error status included; a queued listener once,
 // through its own Failed hook (the report carries the listener type),
-// with the bridge skipping the job.failed event that follows; a queued
+// with the bridge skipping the queue.job.failed event that follows; a queued
 // listener whose error the handler's report gate drops (a client-error
 // status) once, through the bridge's text error, because the hook did not
 // report it. Without a dispatcher: a queued listener once, through its
@@ -296,12 +296,12 @@ func TestQueueWork_PermanentFailureReportedOnce(t *testing.T) {
 		{
 			name: "memory: plain job, dispatcher", queue: memoryQueue,
 			job:        func(*testing.T) queue.Job { return &permanentFailureJob{ID: "p1"} },
-			dispatcher: true, wantReports: 1, wantErr: "plain job exploded", wantEvent: "job.failed", wantJobFailedN: 1,
+			dispatcher: true, wantReports: 1, wantErr: "plain job exploded", wantEvent: "queue.job.failed", wantJobFailedN: 1,
 		},
 		{
 			name: "memory: plain job with a client-error status, dispatcher", queue: memoryQueue,
 			job:        func(*testing.T) queue.Job { return &clientStatusJob{ID: "c1"} },
-			dispatcher: true, wantReports: 1, wantErr: contract.NewHTTPError(404, "upstream record gone").Error(), wantEvent: "job.failed", wantJobFailedN: 1,
+			dispatcher: true, wantReports: 1, wantErr: contract.NewHTTPError(404, "upstream record gone").Error(), wantEvent: "queue.job.failed", wantJobFailedN: 1,
 		},
 		{
 			name: "memory: queued listener, dispatcher", queue: memoryQueue, job: explodingListenerJob,
@@ -313,7 +313,7 @@ func TestQueueWork_PermanentFailureReportedOnce(t *testing.T) {
 		},
 		{
 			name: "memory: queued listener with a client-error status, dispatcher", queue: memoryQueue, job: clientStatusListenerJob,
-			dispatcher: true, wantReports: 1, wantErr: listener404, wantEvent: "job.failed", wantJobFailedN: 1,
+			dispatcher: true, wantReports: 1, wantErr: listener404, wantEvent: "queue.job.failed", wantJobFailedN: 1,
 		},
 		{
 			name: "memory: queued listener with a client-error status, no dispatcher", queue: memoryQueue, job: clientStatusListenerJob,
@@ -329,12 +329,12 @@ func TestQueueWork_PermanentFailureReportedOnce(t *testing.T) {
 		},
 		{
 			name: "redis: queued listener with a client-error status, dispatcher", queue: redisQueue, job: clientStatusListenerJob,
-			dispatcher: true, wantReports: 1, wantErr: listener404, wantEvent: "job.failed", wantJobFailedN: 1,
+			dispatcher: true, wantReports: 1, wantErr: listener404, wantEvent: "queue.job.failed", wantJobFailedN: 1,
 		},
 		{
 			name: "database: plain job, dispatcher", queue: databaseQueue,
 			job:        func(*testing.T) queue.Job { return &permanentFailureJob{ID: "d1"} },
-			dispatcher: true, wantReports: 1, wantErr: "plain job exploded", wantEvent: "job.failed", wantJobFailedN: 1,
+			dispatcher: true, wantReports: 1, wantErr: "plain job exploded", wantEvent: "queue.job.failed", wantJobFailedN: 1,
 		},
 		{
 			name: "database: queued listener, dispatcher", queue: databaseQueue, job: explodingListenerJob,
@@ -346,7 +346,7 @@ func TestQueueWork_PermanentFailureReportedOnce(t *testing.T) {
 		},
 		{
 			name: "database: queued listener with a client-error status, dispatcher", queue: databaseQueue, job: clientStatusListenerJob,
-			dispatcher: true, wantReports: 1, wantErr: listener404, wantEvent: "job.failed", wantJobFailedN: 1,
+			dispatcher: true, wantReports: 1, wantErr: listener404, wantEvent: "queue.job.failed", wantJobFailedN: 1,
 		},
 	}
 	for _, tt := range tests {
@@ -359,7 +359,7 @@ func TestQueueWork_PermanentFailureReportedOnce(t *testing.T) {
 			reports := &failureReports{}
 			reports.add(app)
 			watch := &jobFailedWatch{}
-			app.Services.Events.Listen("job.failed", watch)
+			app.Services.Events.Listen("queue.job.failed", watch)
 			q := tt.queue(t, app)
 
 			opts := queueWorkOptions(app, console.QueueWorkOptions{Tries: 1})
@@ -377,7 +377,7 @@ func TestQueueWork_PermanentFailureReportedOnce(t *testing.T) {
 				t.Fatalf("failure reported %d times, want %d (errors %v)", n, tt.wantReports, reports.errs)
 			}
 			if got := watch.n.Load(); got != tt.wantJobFailedN {
-				t.Errorf("job.failed delivered %d times, want %d", got, tt.wantJobFailedN)
+				t.Errorf("queue.job.failed delivered %d times, want %d", got, tt.wantJobFailedN)
 			}
 			if tt.wantReports == 0 {
 				return
@@ -433,7 +433,7 @@ func (m *errorsReplaceModule) Shutdown(context.Context) error { return nil }
 // module's Start, or from the Errors callback. The stock worker's failed
 // queued listener is reported once, on the replacement, through the
 // listener's hook (the report carries listener_type), and a failed plain
-// job once more, on the replacement, through the job.failed bridge; the
+// job once more, on the replacement, through the queue.job.failed bridge; the
 // handler New built reports nothing.
 func TestQueueWork_ListenerFailureReachesReplacedHandler(t *testing.T) {
 	tests := []struct {
@@ -472,7 +472,7 @@ func TestQueueWork_ListenerFailureReachesReplacedHandler(t *testing.T) {
 				t.Fatalf("Services.Errors after Bootstrap is %T, not the replacement", a.Services.Errors)
 			}
 			watch := &jobFailedWatch{}
-			a.Services.Events.Listen("job.failed", watch)
+			a.Services.Events.Listen("queue.job.failed", watch)
 			opts := queueWorkOptions(a, console.QueueWorkOptions{Tries: 1})
 
 			runStockWorker(t, a.Queue, opts, explodingListenerJob(t), func() bool { return watch.n.Load() == 1 })
@@ -487,8 +487,8 @@ func TestQueueWork_ListenerFailureReachesReplacedHandler(t *testing.T) {
 			if n := replacement.count(); n != 2 {
 				t.Fatalf("replacement handler made %d reports after the plain job, want 2 (errors %v)", n, replacement.errs)
 			}
-			if got, _ := replacement.ctxs[1].Extra["event"].(string); got != "job.failed" {
-				t.Errorf("plain job report Extra[event] = %q, want job.failed", got)
+			if got, _ := replacement.ctxs[1].Extra["event"].(string); got != "queue.job.failed" {
+				t.Errorf("plain job report Extra[event] = %q, want queue.job.failed", got)
 			}
 			if n := original.count(); n != 0 {
 				t.Errorf("original handler reported %d times, want 0 (errors %v)", n, original.errs)
@@ -605,7 +605,7 @@ func (contextPanicQueuedListener) Async() bool { return true }
 // TestQueueWork_ListenerReportThatPanicsIsReportedByBridge asserts a queued
 // listener failure whose report the error handler abandons (the error's
 // Context panics before any reporter runs) is not taken as reported: the
-// stock worker leaves the job.failed event's error unmarked, and the
+// stock worker leaves the queue.job.failed event's error unmarked, and the
 // failure-report bridge reports it once, as the event's text error, which
 // has no Context to panic.
 func TestQueueWork_ListenerReportThatPanicsIsReportedByBridge(t *testing.T) {
@@ -617,7 +617,7 @@ func TestQueueWork_ListenerReportThatPanicsIsReportedByBridge(t *testing.T) {
 	reports := &failureReports{}
 	reports.add(a)
 	watch := &jobFailedWatch{}
-	a.Services.Events.Listen("job.failed", watch)
+	a.Services.Events.Listen("queue.job.failed", watch)
 
 	runStockWorker(t, a.Queue, queueWorkOptions(a, console.QueueWorkOptions{Tries: 1}),
 		queuedListenerJob(t, "velocity.contextPanicQueuedListener", contextPanicQueuedListener{}),
@@ -633,8 +633,8 @@ func TestQueueWork_ListenerReportThatPanicsIsReportedByBridge(t *testing.T) {
 		t.Errorf("reported error %T is Contextual, want the bridge's text error", reports.errs[0])
 	}
 	extra := reports.ctxs[0].Extra
-	if got, _ := extra["event"].(string); got != "job.failed" {
-		t.Errorf("report Extra[event] = %q, want job.failed", got)
+	if got, _ := extra["event"].(string); got != "queue.job.failed" {
+		t.Errorf("report Extra[event] = %q, want queue.job.failed", got)
 	}
 	if _, ok := extra["listener_type"]; ok {
 		t.Errorf("report carries listener_type, want the bridge's report (extra %v)", extra)
@@ -651,7 +651,7 @@ func TestQueueWorkOptions_DispatcherFollowsEvents(t *testing.T) {
 	}
 	defer app.Shutdown(context.Background())
 	watch := &jobFailedWatch{}
-	app.Services.Events.Listen("job.failed", watch)
+	app.Services.Events.Listen("queue.job.failed", watch)
 	opts := queueWorkOptions(app, console.QueueWorkOptions{Queue: "emails"})
 	if opts.Queue != "emails" || opts.Logger == nil || opts.Dispatcher == nil {
 		t.Fatalf("options = {Queue: %q, Logger: %v, Dispatcher set: %v}, want emails, the app logger and a dispatcher", opts.Queue, opts.Logger, opts.Dispatcher != nil)
@@ -660,7 +660,7 @@ func TestQueueWorkOptions_DispatcherFollowsEvents(t *testing.T) {
 		t.Fatalf("dispatch: %v", err)
 	}
 	if watch.n.Load() != 1 {
-		t.Errorf("job.failed delivered %d times through the dispatcher, want 1", watch.n.Load())
+		t.Errorf("queue.job.failed delivered %d times through the dispatcher, want 1", watch.n.Load())
 	}
 
 	quiet, err := NewTestApp(WithoutEvents())

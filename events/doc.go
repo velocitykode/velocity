@@ -1,6 +1,29 @@
 // Package events implements the framework's event dispatcher with
 // synchronous, asynchronous, and queue-backed listener execution.
 //
+// # Event names
+//
+// Every framework event implements contract.Event, and its name follows one
+// rule: dot-separated segments of lowercase letters, read as subsystem,
+// subject, verb.
+//
+//   - The subsystem is the package that emits the event: auth, bond, bus,
+//     cache, crypto, csrf, events, grpc, httpclient, mail, notification,
+//     orm, queue, router or scheduler.
+//   - The subject is zero or more nouns naming what the event is about
+//     (request, query, transaction, job, batch, task, command, session). It
+//     is left out when the subsystem is itself the subject (cache.hit,
+//     mail.failed).
+//   - The verb is one past-tense verb. A run of work names its stages with
+//     started when it begins, completed when it ends and failed when it
+//     ends in an error, never with a synonym such as handled, processed,
+//     finished, executed or sent. Any other event names what happened:
+//     routed, queued, retried, created, cancelled, stopped, recovered, hit,
+//     missed, written, forgotten, decrypted or needed.
+//
+// For example router.request.completed, queue.job.failed,
+// scheduler.task.started and cache.missed.
+//
 // # Listening
 //
 // Listen takes a key that says which events reach the listener:

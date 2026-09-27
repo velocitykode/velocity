@@ -99,7 +99,7 @@ func handCraftLegacyCBC(t *testing.T, d *AESDriver, plaintext []byte) string {
 }
 
 // TestV0LegacyRoundTrip_CBC confirms that a hand-crafted pre-sweep payload
-// decrypts, fires the crypto.legacy_decrypt event exactly once per WARN
+// decrypts, fires the crypto.legacy.payload.decrypted event exactly once per WARN
 // (sync.Once gate), and dispatches the event on every legacy decrypt so
 // operators can count the stream.
 func TestV0LegacyRoundTrip_CBC(t *testing.T) {
@@ -143,7 +143,7 @@ func TestV0LegacyRoundTrip_CBC(t *testing.T) {
 	if count != 2 {
 		t.Fatalf("expected 2 legacy_decrypt events across 2 calls, got %d", count)
 	}
-	if seen[0] != "crypto.legacy_decrypt" {
+	if seen[0] != "crypto.legacy.payload.decrypted" {
 		t.Fatalf("unexpected event name: %q", seen[0])
 	}
 }

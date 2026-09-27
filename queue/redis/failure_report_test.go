@@ -51,7 +51,7 @@ func (quietLogger) Fatal(string, ...any) {}
 
 // TestRedisDriver_JobFailedMarkedWhenHookReported asserts that on the redis
 // driver, which fails a job through Failed and runs the job's hook on the
-// instance the worker popped, the job.failed event carries the job's own
+// instance the worker popped, the queue.job.failed event carries the job's own
 // error marked reported when the hook reported it, so the failure-report
 // bridge does not report the failure a second time.
 func TestRedisDriver_JobFailedMarkedWhenHookReported(t *testing.T) {
@@ -91,13 +91,13 @@ func TestRedisDriver_JobFailedMarkedWhenHookReported(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(failed) > 0
-	}, 5*time.Second, "worker dispatches job.failed")
+	}, 5*time.Second, "worker dispatches queue.job.failed")
 	w.Stop()
 
 	mu.Lock()
 	defer mu.Unlock()
 	if len(failed) != 1 {
-		t.Fatalf("job.failed dispatched %d times, want 1", len(failed))
+		t.Fatalf("queue.job.failed dispatched %d times, want 1", len(failed))
 	}
 	if !errors.Is(failed[0].Err, errRedisSelfReported) {
 		t.Errorf("Err = %v, want the job's own error", failed[0].Err)

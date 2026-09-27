@@ -15,8 +15,8 @@ func TestEventNames(t *testing.T) {
 		event    interface{ Name() string }
 		expected string
 	}{
-		{"RequestSent", &RequestSent{}, "http.request.sent"},
-		{"RequestFailed", &RequestFailed{}, "http.request.failed"},
+		{"RequestSent", &RequestSent{}, "httpclient.request.completed"},
+		{"RequestFailed", &RequestFailed{}, "httpclient.request.failed"},
 	}
 
 	for _, tt := range tests {
@@ -208,8 +208,8 @@ func TestRequestSentEventFields(t *testing.T) {
 		ParentID:     "parent-def",
 	}
 
-	if e.Name() != "http.request.sent" {
-		t.Errorf("Name() = %q, want %q", e.Name(), "http.request.sent")
+	if e.Name() != "httpclient.request.completed" {
+		t.Errorf("Name() = %q, want %q", e.Name(), "httpclient.request.completed")
 	}
 	if e.Method != "PUT" {
 		t.Errorf("Method = %q, want %q", e.Method, "PUT")
@@ -234,8 +234,8 @@ func TestRequestFailedEventFields(t *testing.T) {
 		ParentID:   "",
 	}
 
-	if e.Name() != "http.request.failed" {
-		t.Errorf("Name() = %q, want %q", e.Name(), "http.request.failed")
+	if e.Name() != "httpclient.request.failed" {
+		t.Errorf("Name() = %q, want %q", e.Name(), "httpclient.request.failed")
 	}
 	if e.Error != "server unavailable" {
 		t.Errorf("Error = %q, want %q", e.Error, "server unavailable")

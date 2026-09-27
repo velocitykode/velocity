@@ -34,7 +34,7 @@ type CacheMiss struct {
 
 // Name returns the event name
 func (e *CacheMiss) Name() string {
-	return "cache.miss"
+	return "cache.missed"
 }
 
 // CacheWritten is dispatched when a value is written to the cache

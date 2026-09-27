@@ -401,10 +401,10 @@ func TestBatch_Events(t *testing.T) {
 	defer eventsMu.Unlock()
 
 	expected := map[string]bool{
-		"batch.created":       false,
-		"batch.job.completed": false,
-		"batch.job.failed":    false,
-		"batch.completed":     false,
+		"queue.batch.created":       false,
+		"queue.batch.job.completed": false,
+		"queue.batch.job.failed":    false,
+		"queue.batch.completed":     false,
 	}
 
 	for _, e := range events {
@@ -699,13 +699,13 @@ func TestBatch_CancelledEvent(t *testing.T) {
 
 	found := false
 	for _, e := range events {
-		if e == "batch.cancelled" {
+		if e == "queue.batch.cancelled" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected batch.cancelled event, got %v", events)
+		t.Errorf("expected queue.batch.cancelled event, got %v", events)
 	}
 }
 

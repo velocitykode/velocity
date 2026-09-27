@@ -21,7 +21,7 @@ type RequestStarted struct {
 
 // Name returns the event name
 func (e *RequestStarted) Name() string {
-	return "request.started"
+	return "router.request.started"
 }
 
 // RequestRouted is dispatched after route matching completes
@@ -36,7 +36,7 @@ type RequestRouted struct {
 
 // Name returns the event name
 func (e *RequestRouted) Name() string {
-	return "request.routed"
+	return "router.request.routed"
 }
 
 // RequestHandled is dispatched when an HTTP request completes successfully
@@ -56,7 +56,7 @@ type RequestHandled struct {
 
 // Name returns the event name
 func (e *RequestHandled) Name() string {
-	return "request.handled"
+	return "router.request.completed"
 }
 
 // RequestFailed is dispatched when an HTTP request fails, decided once the
@@ -91,5 +91,5 @@ type RequestFailed struct {
 
 // Name returns the event name
 func (e *RequestFailed) Name() string {
-	return "request.failed"
+	return "router.request.failed"
 }

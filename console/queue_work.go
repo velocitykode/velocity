@@ -23,11 +23,12 @@ type QueueWorkOptions struct {
 	// Wire the application's logger (Services.Log) here so worker errors
 	// flow through the configured log driver.
 	Logger contract.Logger
-	// Dispatcher receives the worker's job lifecycle events (job.processing,
-	// job.processed, job.retrying, job.failed). When nil, the worker fires no
-	// events. Wire the application's event dispatcher here so listeners see
-	// the events and a permanently failed job (job.failed) reaches the error
-	// reporters through the dispatcher's failure-report bridge.
+	// Dispatcher receives the worker's job lifecycle events
+	// (queue.job.started, queue.job.completed, queue.job.retried,
+	// queue.job.failed). When nil, the worker fires no events. Wire the
+	// application's event dispatcher here so listeners see the events and a
+	// permanently failed job (queue.job.failed) reaches the error reporters
+	// through the dispatcher's failure-report bridge.
 	Dispatcher func(ctx context.Context, event interface{}) error
 }
 

@@ -42,7 +42,7 @@
 // All payloads emitted by this package are v1. v0 is accepted on decrypt
 // for one release cycle and will be removed in v2.0. When a v0 payload is
 // decrypted successfully, a one-shot WARN is logged and a
-// crypto.legacy_decrypt event is dispatched so operators can track the
+// crypto.legacy.payload.decrypted event is dispatched so operators can track the
 // rotation window.
 package drivers
 
@@ -381,7 +381,7 @@ func splitVersion(payload string) (version int, envelope string) {
 	return 0, payload
 }
 
-// noteLegacyIfV0 emits the one-shot WARN log and the crypto.legacy_decrypt
+// noteLegacyIfV0 emits the one-shot WARN log and the crypto.legacy.payload.decrypted
 // event the first time a v0 payload successfully decrypts. Only fires once
 // per Encryptor instance regardless of how many v0 payloads flow through.
 func (d *AESDriver) noteLegacyIfV0(version int) {
@@ -408,7 +408,7 @@ type LegacyDecryptEvent struct {
 }
 
 // Name returns the event name.
-func (e *LegacyDecryptEvent) Name() string { return "crypto.legacy_decrypt" }
+func (e *LegacyDecryptEvent) Name() string { return "crypto.legacy.payload.decrypted" }
 
 // GenerateKey generates a new encryption key
 func (d *AESDriver) GenerateKey() (string, error) {

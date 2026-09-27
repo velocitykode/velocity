@@ -21,7 +21,7 @@ type CommandDispatching struct {
 	CommandType string
 }
 
-func (e *CommandDispatching) Name() string { return "command.dispatching" }
+func (e *CommandDispatching) Name() string { return "bus.command.started" }
 
 // CommandCompleted is fired after a command is handled successfully.
 type CommandCompleted struct {
@@ -29,7 +29,7 @@ type CommandCompleted struct {
 	CommandType string
 }
 
-func (e *CommandCompleted) Name() string { return "command.completed" }
+func (e *CommandCompleted) Name() string { return "bus.command.completed" }
 
 // CommandFailed is fired when a command handler returns an error.
 type CommandFailed struct {
@@ -38,7 +38,7 @@ type CommandFailed struct {
 	Error       string
 }
 
-func (e *CommandFailed) Name() string { return "command.failed" }
+func (e *CommandFailed) Name() string { return "bus.command.failed" }
 
 // CommandQueued is fired when a command is pushed to the queue.
 type CommandQueued struct {
@@ -46,7 +46,7 @@ type CommandQueued struct {
 	CommandType string
 }
 
-func (e *CommandQueued) Name() string { return "command.queued" }
+func (e *CommandQueued) Name() string { return "bus.command.queued" }
 
 // Dispatcher is the interface for dispatching commands.
 type Dispatcher interface {
@@ -231,7 +231,7 @@ func (b *Bus) Dispatch(cmd Command) error {
 		return fmt.Errorf("bus: no handler registered for %T", cmd)
 	}
 
-	// The command type name is only needed to label the command.* events, so
+	// The command type name is only needed to label the bus.command.* events, so
 	// only pay for the reflect+String allocation when a dispatcher is set.
 	var cmdType string
 	if dispatchEvent != nil {

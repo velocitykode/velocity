@@ -21,7 +21,7 @@ type NotificationSent struct {
 
 // Name returns the event name.
 func (e *NotificationSent) Name() string {
-	return "notification.sent"
+	return "notification.completed"
 }
 
 // NotificationFailed is dispatched when a notification fails to deliver.

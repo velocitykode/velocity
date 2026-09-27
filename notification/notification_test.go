@@ -438,8 +438,8 @@ func TestChannelRegistry(t *testing.T) {
 
 func TestNotificationEventNames(t *testing.T) {
 	sent := &NotificationSent{}
-	if sent.Name() != "notification.sent" {
-		t.Errorf("expected notification.sent, got %s", sent.Name())
+	if sent.Name() != "notification.completed" {
+		t.Errorf("expected notification.completed, got %s", sent.Name())
 	}
 
 	failed := &NotificationFailed{}

@@ -59,7 +59,7 @@ type CSRF struct {
 	singleUseScopeLogged atomic.Bool
 
 	// eventDispatcher is optional; when set via SetEventDispatcher, the CSRF
-	// instance emits events such as csrf.session_missing.
+	// instance emits events such as csrf.session.missed.
 	eventMu         sync.RWMutex
 	eventDispatcher func(ctx context.Context, event interface{}) error
 }
@@ -662,7 +662,7 @@ func (c *CSRF) getTokenFromRequest(w http.ResponseWriter, r *http.Request) (stri
 // the request. NewE guarantees SessionIDResolver is non-nil; the id always
 // comes from it, never from a raw cookie value, so an unauthenticated
 // attacker cannot mint tokens bound to a self-chosen string. A
-// csrf.session_missing event is dispatched on ErrNoSession so operators
+// csrf.session.missed event is dispatched on ErrNoSession so operators
 // can detect unsafe requests rejected for arriving without a session.
 func (c *CSRF) getSessionID(r *http.Request) (string, error) {
 	id, err := c.config.SessionIDResolver(r)

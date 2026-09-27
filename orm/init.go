@@ -40,7 +40,7 @@ var driverRegistry = driverregistry.New[drivers.Driver, drivers.ConnectionConfig
 // Connect; returning a fully connected handle keeps NewManager free of
 // driver-specific knowledge.
 //
-// Query telemetry (query.executed / query.failed) is emitted from the
+// Query telemetry (orm.query.completed / orm.query.failed) is emitted from the
 // database/sql driver wrapper, so a registered driver inherits it only if it
 // opens its pool through drivers.BaseDriver.OpenAndPing or
 // drivers.OpenInstrumented. A driver that calls sql.Open directly is invisible

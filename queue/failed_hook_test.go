@@ -78,7 +78,7 @@ func TestRunFailedHook(t *testing.T) {
 
 // TestWorker_FailedHookPanicKeepsWorkerRunning asserts a job whose Failed
 // hook panics after the driver recorded its failure does not stop the
-// worker: the job.failed event for it is still dispatched, the driver
+// worker: the queue.job.failed event for it is still dispatched, the driver
 // holds the failed job, and the next job on the queue runs. Covers the
 // memory and database drivers with one worker goroutine.
 func TestWorker_FailedHookPanicKeepsWorkerRunning(t *testing.T) {
@@ -153,7 +153,7 @@ func TestWorker_FailedHookPanicKeepsWorkerRunning(t *testing.T) {
 			mu.Lock()
 			defer mu.Unlock()
 			if len(failed) != 1 || failed[0].Error != errPanickingHookJob.Error() {
-				t.Errorf("job.failed dispatched %d times (%v), want once for the panicking job", len(failed), failed)
+				t.Errorf("queue.job.failed dispatched %d times (%v), want once for the panicking job", len(failed), failed)
 			}
 			if n := tt.failedCount(t, d); n != 1 {
 				t.Errorf("driver holds %d failed jobs, want 1", n)

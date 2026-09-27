@@ -23,5 +23,5 @@ type SessionMissing struct {
 
 // Name returns the event name.
 func (e *SessionMissing) Name() string {
-	return "csrf.session_missing"
+	return "csrf.session.missed"
 }

@@ -32,7 +32,7 @@ type Job struct {
 	callback     func()
 	// errCallback is the error-returning variant of callback. When set, it
 	// takes precedence: Run() invokes errCallback and feeds its returned
-	// error into OnFailure callbacks and the scheduled.failed event. This
+	// error into OnFailure callbacks and the scheduler.task.failed event. This
 	// is the path Scheduler.CallE / Scheduler.NamedE construct.
 	errCallback func() error
 	command     string
@@ -108,7 +108,7 @@ func (j *Job) getDispatch() func(context.Context, interface{}) {
 // its own panic-recovered scope so one misbehaving hook does not skip the
 // remaining hooks or bypass the caller's teardown. A recovered panic is
 // converted to an error via panicerr and handed to onPanic, which decides
-// how to surface it (dispatch scheduled.failed on the job paths, or log at
+// how to surface it (dispatch scheduler.task.failed on the job paths, or log at
 // the scheduler level).
 func runHookIsolated(onPanic func(error), fn func()) {
 	defer func() {
@@ -338,11 +338,11 @@ func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, rele
 	// API itself does not accept a ctx.
 	tctx := trace.StartSpan(context.Background(), trace.Parent{})
 
-	// Dispatch scheduled.starting event
+	// Dispatch scheduler.task.started event
 	dispatchScheduledTaskStarting(j.getDispatch(), tctx, jobName)
 	startTime := time.Now()
 
-	// onHookPanic surfaces a panicking hook as a scheduled.failed event,
+	// onHookPanic surfaces a panicking hook as a scheduler.task.failed event,
 	// matching the legacy per-hook behaviour. Shared by the Before hooks
 	// and the After/OnSuccess/OnFailure hooks run from finishSync.
 	onHookPanic := func(hookErr error) {
@@ -353,7 +353,7 @@ func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, rele
 	// panic-recovered scope so one misbehaving hook does not skip the
 	// remaining hooks (and so the panic does not bypass the deferred
 	// cleanup, which runs anyway). A panicking Before hook is logged
-	// via the scheduled.failed event and treated as a job failure.
+	// via the scheduler.task.failed event and treated as a job failure.
 	for _, callback := range beforeCallbacks {
 		runHookIsolated(onHookPanic, callback)
 	}
@@ -394,7 +394,7 @@ func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, rele
 	switch {
 	case j.errCallback != nil:
 		// Error-returning closure. Capture both panic-recovered errors AND
-		// the closure's returned err so OnFailure / scheduled.failed fire
+		// the closure's returned err so OnFailure / scheduler.task.failed fire
 		// for normal-error paths, not just panics.
 		func() {
 			defer func() {
@@ -407,7 +407,7 @@ func (j *Job) runInternal(ctx context.Context, shutdownGrace time.Duration, rele
 			err = j.errCallback()
 		}()
 	case j.callback != nil:
-		// Execute closure. On panic, dispatch scheduled.failed eagerly so the
+		// Execute closure. On panic, dispatch scheduler.task.failed eagerly so the
 		// event is fired before any later path has the chance to swallow err.
 		func() {
 			defer func() {
@@ -569,7 +569,7 @@ func (j *Job) spawnBackgroundWaiter(
 
 		duration := time.Since(startTime)
 		// Isolate each hook so a panicking After/OnSuccess/OnFailure
-		// callback dispatches scheduled.failed (matching the synchronous
+		// callback dispatches scheduler.task.failed (matching the synchronous
 		// path) without aborting the remaining hooks or the completion
 		// event. Mirrors finishSync's onHookPanic.
 		onHookPanic := func(hookErr error) {

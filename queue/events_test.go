@@ -18,11 +18,11 @@ func TestEventNames(t *testing.T) {
 		event    interface{ Name() string }
 		expected string
 	}{
-		{"JobQueued", &JobQueued{}, "job.queued"},
-		{"JobProcessing", &JobProcessing{}, "job.processing"},
-		{"JobProcessed", &JobProcessed{}, "job.processed"},
-		{"JobFailed", &JobFailed{}, "job.failed"},
-		{"JobRetrying", &JobRetrying{}, "job.retrying"},
+		{"JobQueued", &JobQueued{}, "queue.job.queued"},
+		{"JobProcessing", &JobProcessing{}, "queue.job.started"},
+		{"JobProcessed", &JobProcessed{}, "queue.job.completed"},
+		{"JobFailed", &JobFailed{}, "queue.job.failed"},
+		{"JobRetrying", &JobRetrying{}, "queue.job.retried"},
 	}
 
 	for _, tt := range tests {
@@ -555,8 +555,8 @@ func TestJobQueuedEventFields(t *testing.T) {
 		ParentID: "parent-789",
 	}
 
-	if e.Name() != "job.queued" {
-		t.Errorf("Name() = %q, want %q", e.Name(), "job.queued")
+	if e.Name() != "queue.job.queued" {
+		t.Errorf("Name() = %q, want %q", e.Name(), "queue.job.queued")
 	}
 	if e.JobType != "*queue.EmailJob" {
 		t.Errorf("JobType = %q, want %q", e.JobType, "*queue.EmailJob")
@@ -591,8 +591,8 @@ func TestJobProcessingEventFields(t *testing.T) {
 		ParentID: "parent-ghi",
 	}
 
-	if e.Name() != "job.processing" {
-		t.Errorf("Name() = %q, want %q", e.Name(), "job.processing")
+	if e.Name() != "queue.job.started" {
+		t.Errorf("Name() = %q, want %q", e.Name(), "queue.job.started")
 	}
 	if e.JobType != "*queue.ReportJob" {
 		t.Errorf("JobType = %q, want %q", e.JobType, "*queue.ReportJob")
@@ -613,8 +613,8 @@ func TestJobProcessedEventFields(t *testing.T) {
 		ParentID:   "",
 	}
 
-	if e.Name() != "job.processed" {
-		t.Errorf("Name() = %q, want %q", e.Name(), "job.processed")
+	if e.Name() != "queue.job.completed" {
+		t.Errorf("Name() = %q, want %q", e.Name(), "queue.job.completed")
 	}
 	if e.DurationMs != 1500 {
 		t.Errorf("DurationMs = %d, want 1500", e.DurationMs)
@@ -633,8 +633,8 @@ func TestJobFailedEventFields(t *testing.T) {
 		ParentID:   "parent-fail",
 	}
 
-	if e.Name() != "job.failed" {
-		t.Errorf("Name() = %q, want %q", e.Name(), "job.failed")
+	if e.Name() != "queue.job.failed" {
+		t.Errorf("Name() = %q, want %q", e.Name(), "queue.job.failed")
 	}
 	if e.Error != "payment gateway timeout" {
 		t.Errorf("Error = %q, want %q", e.Error, "payment gateway timeout")
@@ -658,8 +658,8 @@ func TestJobRetryingEventName(t *testing.T) {
 		ParentID:    "parent-retry",
 	}
 
-	if e.Name() != "job.retrying" {
-		t.Errorf("Name() = %q, want %q", e.Name(), "job.retrying")
+	if e.Name() != "queue.job.retried" {
+		t.Errorf("Name() = %q, want %q", e.Name(), "queue.job.retried")
 	}
 	if e.Attempt != 2 {
 		t.Errorf("Attempt = %d, want 2", e.Attempt)

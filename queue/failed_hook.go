@@ -10,7 +10,7 @@ import (
 // A driver calls it once the failure is recorded: the hook is application
 // code, and a panic there must not unwind the worker, which would end the
 // worker loop and skip the job's terminal bookkeeping (batch counters, the
-// job.failed event). A panic comes back as ErrFailedHookPanicked wrapping
+// queue.job.failed event). A panic comes back as ErrFailedHookPanicked wrapping
 // the recovered value (a *panicerr.Error), so the worker can log it and
 // still treat the failure as recorded; nil means the hook returned
 // normally.
