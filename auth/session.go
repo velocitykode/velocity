@@ -29,7 +29,7 @@ var ErrInsecureSessionConfig = errors.New("velocity/auth: insecure session confi
 // framework refuses to boot, in every environment, rather than ship a no-op
 // session cookie. IdleLifetime == 0 is permitted and produces a
 // session-lifetime (no Expires / MaxAge=0) cookie per RFC 6265.
-var ErrInvalidLifetime = errors.New("velocity/auth: session lifetime must be >= 0")
+var ErrInvalidLifetime = errors.New("velocity/auth: invalid session lifetime")
 
 // ErrSessionSealed is returned by Regenerate on a session that was sealed:
 // the request it serves already saved it and delivered its cookie, so an
