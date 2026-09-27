@@ -14,6 +14,7 @@ func TestLogLevel_String(t *testing.T) {
 		{LogLevelInfo, "info"},
 		{LogLevelWarn, "warn"},
 		{LogLevelError, "error"},
+		{LogLevelFatal, "fatal"},
 		{LogLevel(99), ""},
 	}
 	for _, tt := range tests {

@@ -93,11 +93,11 @@ func dirModeFromFileMode(fileMode os.FileMode) os.FileMode {
 // Thread-safe with automatic date-based file rotation and optional retention cleanup.
 type FileLogger struct {
 	path        string
-	days        int         // retention days; 0 means keep forever
-	level       int         // minimum level: 0=debug, 1=info, 2=warn, 3=error, 4=fatal
-	fileMode    os.FileMode // perms applied to new and pre-existing log files
-	dirMode     os.FileMode // perms applied to the containing directory
-	useFileLock bool        // opt-in cross-process advisory locking; see WithFileLock
+	days        int               // retention days; 0 means keep forever
+	level       contract.LogLevel // lowest level written; Unset writes every level
+	fileMode    os.FileMode       // perms applied to new and pre-existing log files
+	dirMode     os.FileMode       // perms applied to the containing directory
+	useFileLock bool              // opt-in cross-process advisory locking; see WithFileLock
 	mu          sync.Mutex
 	file        *os.File
 	date        string
@@ -111,9 +111,9 @@ type FileLogger struct {
 
 // NewFileLogger creates a file logger that writes to the specified directory.
 // Log files are named velocity-YYYY-MM-DD.log and rotate daily.
-// days sets retention (0 = keep forever). level sets minimum severity (0=debug .. 4=fatal).
+// days sets retention (0 = keep forever). level sets the lowest severity written.
 // Files default to mode 0o600 inside a 0o700 directory; use WithFileMode to override.
-func NewFileLogger(path string, days int, level int, opts ...FileLoggerOption) *FileLogger {
+func NewFileLogger(path string, days int, level contract.LogLevel, opts ...FileLoggerOption) *FileLogger {
 	f := &FileLogger{
 		path:     path,
 		days:     days,
@@ -266,14 +266,14 @@ func appendPairs(line string, kvs []any) string {
 	return line
 }
 
-// Level returns the configured minimum severity (0=debug .. 4=fatal). A
-// redacting wrapper reads this to skip redaction work for records this
-// logger would discard by level.
-func (f *FileLogger) Level() int { return f.level }
+// Level returns the configured minimum severity. A redacting wrapper reads
+// this to skip redaction work for records this logger would discard by
+// level.
+func (f *FileLogger) Level() contract.LogLevel { return f.level }
 
 // Debug logs a debug-level message to file
 func (f *FileLogger) Debug(msg string, kvs ...any) {
-	if f.level > 0 {
+	if f.level > contract.LogLevelDebug {
 		return
 	}
 	f.log("DEBUG", msg, kvs...)
@@ -281,7 +281,7 @@ func (f *FileLogger) Debug(msg string, kvs ...any) {
 
 // Info logs an info-level message to file
 func (f *FileLogger) Info(msg string, kvs ...any) {
-	if f.level > 1 {
+	if f.level > contract.LogLevelInfo {
 		return
 	}
 	f.log("INFO", msg, kvs...)
@@ -289,7 +289,7 @@ func (f *FileLogger) Info(msg string, kvs ...any) {
 
 // Warn logs a warning-level message to file
 func (f *FileLogger) Warn(msg string, kvs ...any) {
-	if f.level > 2 {
+	if f.level > contract.LogLevelWarn {
 		return
 	}
 	f.log("WARN", msg, kvs...)
@@ -297,7 +297,7 @@ func (f *FileLogger) Warn(msg string, kvs ...any) {
 
 // Error logs an error-level message to file
 func (f *FileLogger) Error(msg string, kvs ...any) {
-	if f.level > 3 {
+	if f.level > contract.LogLevelError {
 		return
 	}
 	f.log("ERROR", msg, kvs...)

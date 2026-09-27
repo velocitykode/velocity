@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/log/drivers"
 	"github.com/velocitykode/velocity/log/file"
@@ -16,7 +17,7 @@ import (
 // shape.
 func TestConsoleLogger_Contract(t *testing.T) {
 	logtest.RunLoggerContractTests(t, func(t *testing.T) log.Logger {
-		return drivers.NewConsoleLogger(0) // debug-and-above
+		return drivers.NewConsoleLogger(contract.LogLevelDebug) // debug-and-above
 	})
 }
 
@@ -25,7 +26,7 @@ func TestConsoleLogger_Contract(t *testing.T) {
 func TestFileLogger_Contract(t *testing.T) {
 	logtest.RunLoggerContractTests(t, func(t *testing.T) log.Logger {
 		path := filepath.Join(t.TempDir(), "contract.log")
-		return file.NewFileLogger(path, 7, 0)
+		return file.NewFileLogger(path, 7, contract.LogLevelDebug)
 	})
 }
 
@@ -47,7 +48,7 @@ func TestStackLogger_Contract(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "stack.log")
 		return log.NewStackLogger(
 			log.NewNullLogger(),
-			file.NewFileLogger(path, 7, 0),
+			file.NewFileLogger(path, 7, contract.LogLevelDebug),
 		)
 	})
 }
@@ -130,3 +131,12 @@ func TestRegistry_StackDriver_Contract(t *testing.T) {
 		return l
 	})
 }
+
+// Every level the log package handles is a contract.LogLevel: the level a
+// driver config names and the level each driver reports.
+var (
+	_ func(map[string]any) contract.LogLevel = log.ExtractLevel
+	_ interface{ Level() contract.LogLevel } = (*drivers.ConsoleLogger)(nil)
+	_ interface{ Level() contract.LogLevel } = (*file.FileLogger)(nil)
+	_ interface{ Level() contract.LogLevel } = (*log.StackLogger)(nil)
+)

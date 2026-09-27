@@ -12,7 +12,7 @@ import (
 
 // ConsoleLogger writes log messages to standard output with timestamps.
 type ConsoleLogger struct {
-	level int // minimum level: 0=debug, 1=info, 2=warn, 3=error, 4=fatal
+	level contract.LogLevel // lowest level written; Unset writes every level
 	out   io.Writer
 	// fields are the key-value pairs With bound, written before each
 	// line's own pairs.
@@ -20,14 +20,14 @@ type ConsoleLogger struct {
 }
 
 // NewConsoleLogger creates a new console logger that outputs to stdout.
-// level sets the minimum severity (0=debug .. 4=fatal).
-func NewConsoleLogger(level int) *ConsoleLogger {
+// level sets the lowest severity written.
+func NewConsoleLogger(level contract.LogLevel) *ConsoleLogger {
 	return &ConsoleLogger{level: level}
 }
 
 // NewConsoleLoggerTo creates a console logger that writes to w instead of
 // stdout. Used when stdout must stay machine-readable (vel routes --json).
-func NewConsoleLoggerTo(w io.Writer, level int) *ConsoleLogger {
+func NewConsoleLoggerTo(w io.Writer, level contract.LogLevel) *ConsoleLogger {
 	return &ConsoleLogger{level: level, out: w}
 }
 
@@ -88,14 +88,14 @@ func (c *ConsoleLogger) With(kvs ...any) contract.Logger {
 	return &ConsoleLogger{level: c.level, out: c.out, fields: append(fields, kvs...)}
 }
 
-// Level returns the configured minimum severity (0=debug .. 4=fatal). A
-// redacting wrapper reads this to skip redaction work for records this
-// logger would discard by level.
-func (c *ConsoleLogger) Level() int { return c.level }
+// Level returns the configured minimum severity. A redacting wrapper reads
+// this to skip redaction work for records this logger would discard by
+// level.
+func (c *ConsoleLogger) Level() contract.LogLevel { return c.level }
 
 // Debug logs a debug-level message to console
 func (c *ConsoleLogger) Debug(msg string, kvs ...any) {
-	if c.level > 0 {
+	if c.level > contract.LogLevelDebug {
 		return
 	}
 	fmt.Fprintln(c.writer(), c.formatMessage("DEBUG", msg, kvs...))
@@ -103,7 +103,7 @@ func (c *ConsoleLogger) Debug(msg string, kvs ...any) {
 
 // Info logs an info-level message to console
 func (c *ConsoleLogger) Info(msg string, kvs ...any) {
-	if c.level > 1 {
+	if c.level > contract.LogLevelInfo {
 		return
 	}
 	fmt.Fprintln(c.writer(), c.formatMessage("INFO", msg, kvs...))
@@ -111,7 +111,7 @@ func (c *ConsoleLogger) Info(msg string, kvs ...any) {
 
 // Warn logs a warning-level message to console
 func (c *ConsoleLogger) Warn(msg string, kvs ...any) {
-	if c.level > 2 {
+	if c.level > contract.LogLevelWarn {
 		return
 	}
 	fmt.Fprintln(c.writer(), c.formatMessage("WARN", msg, kvs...))
@@ -119,7 +119,7 @@ func (c *ConsoleLogger) Warn(msg string, kvs ...any) {
 
 // Error logs an error-level message to console
 func (c *ConsoleLogger) Error(msg string, kvs ...any) {
-	if c.level > 3 {
+	if c.level > contract.LogLevelError {
 		return
 	}
 	fmt.Fprintln(c.writer(), c.formatMessage("ERROR", msg, kvs...))

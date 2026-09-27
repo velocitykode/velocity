@@ -139,8 +139,9 @@ type RequestUserIdentifier interface {
 // stored in the rule.
 type ErrorMatcher func(err error) bool
 
-// LogLevel is the level a reported error is logged at. The zero value
-// leaves the choice to the reporter.
+// LogLevel is the severity of a log line: the level a reported error is
+// logged at, and the lowest level a log driver writes. The zero value
+// leaves the choice to the reporter; a driver given it writes every level.
 type LogLevel int
 
 // Log levels, lowest to highest.
@@ -150,6 +151,7 @@ const (
 	LogLevelInfo
 	LogLevelWarn
 	LogLevelError
+	LogLevelFatal
 )
 
 // String returns the level name, or "" for LogLevelUnset and unknown
@@ -164,6 +166,8 @@ func (l LogLevel) String() string {
 		return "warn"
 	case LogLevelError:
 		return "error"
+	case LogLevelFatal:
+		return "fatal"
 	default:
 		return ""
 	}

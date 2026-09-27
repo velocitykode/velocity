@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/driverregistry"
 	"github.com/velocitykode/velocity/log/drivers"
 )
@@ -78,17 +79,17 @@ func init() {
 }
 
 // ExtractLevel pulls a "level" string from a driver config map and returns
-// its numeric value, defaulting to DEBUG when absent or unrecognised. It is
-// exported so leaf driver packages (log/file, log/stack) derive the same
-// level the root drivers do.
-func ExtractLevel(config map[string]any) int {
+// it as a contract.LogLevel, defaulting to contract.LogLevelDebug when
+// absent or unrecognised. It is exported so leaf driver packages
+// (log/file, log/stack) derive the same level the root drivers do.
+func ExtractLevel(config map[string]any) contract.LogLevel {
 	if config == nil {
-		return int(DEBUG)
+		return contract.LogLevelDebug
 	}
 	if l, ok := config["level"].(string); ok {
 		return parseLevel(l)
 	}
-	return int(DEBUG)
+	return contract.LogLevelDebug
 }
 
 // WrapWithRedactors layers the default redactor chain on top of a

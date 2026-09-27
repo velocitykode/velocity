@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // TestFileLock_ConcurrentProcesses spins up two child processes that both
@@ -18,7 +20,7 @@ func TestFileLock_MultiProcess(t *testing.T) {
 	if os.Getenv("VELOCITY_LOCK_CHILD") == "1" {
 		// Child mode: write many locked records to the shared file.
 		dir := os.Getenv("VELOCITY_LOCK_DIR")
-		logger := NewFileLogger(dir, 0, 0, WithFileLock())
+		logger := NewFileLogger(dir, 0, contract.LogLevelDebug, WithFileLock())
 		defer logger.Shutdown(context.TODO())
 		for i := 0; i < 200; i++ {
 			logger.Info("child record", "pid", os.Getpid(), "i", i)

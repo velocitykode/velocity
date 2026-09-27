@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // Manager handles multiple logger channels for advanced logging scenarios.
@@ -286,22 +288,20 @@ func (s *StackLogger) With(kvs ...any) Logger {
 // threshold is therefore the minimum of its children's thresholds.
 //
 // If ANY child does not expose a level, that child's emit-floor is unknown and
-// it might emit the record, so the stack reports DEBUG (the lowest severity) to
-// disable gating and preserve always-redact for that child. An empty stack
-// reports DEBUG for the same conservative reason.
-func (s *StackLogger) Level() int {
-	min := -1
+// it might emit the record, so the stack reports contract.LogLevelDebug (the
+// lowest severity) to disable gating and preserve always-redact for that
+// child. An empty stack reports contract.LogLevelDebug for the same
+// conservative reason.
+func (s *StackLogger) Level() contract.LogLevel {
+	min, found := contract.LogLevelDebug, false
 	for _, l := range s.loggers {
 		lv, ok := l.(leveler)
 		if !ok {
-			return int(DEBUG)
+			return contract.LogLevelDebug
 		}
-		if min == -1 || lv.Level() < min {
-			min = lv.Level()
+		if !found || lv.Level() < min {
+			min, found = lv.Level(), true
 		}
-	}
-	if min == -1 {
-		return int(DEBUG)
 	}
 	return min
 }

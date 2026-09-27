@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // Redactor mutates a single string immediately before it is handed to
@@ -404,12 +406,12 @@ type redactingLogger struct {
 }
 
 // leveler is the optional interface a wrapped Logger implements to report
-// its active minimum severity (0=debug .. 4=fatal). redactingLogger reads
+// its active minimum severity. redactingLogger reads
 // it fresh on every call rather than caching at construction, so a driver
 // that adjusts its level at runtime stays correct. The lookup is a plain
 // field read on the built-in drivers, so gating is effectively free.
 type leveler interface {
-	Level() int
+	Level() contract.LogLevel
 }
 
 // WithRedactors wraps logger so every Debug/Info/Warn/Error/Fatal call
@@ -446,12 +448,13 @@ func WithRedactors(logger Logger, redactors ...Redactor) Logger {
 //
 // The comparison mirrors each driver's own guard: a driver discards when
 // its threshold exceeds the call's severity (e.g. console Debug returns
-// early when level > DEBUG), which is precisely callLevel < threshold.
-func (r *redactingLogger) suppressed(callLevel Level) bool {
+// early when its level is above contract.LogLevelDebug), which is precisely
+// callLevel < threshold.
+func (r *redactingLogger) suppressed(callLevel contract.LogLevel) bool {
 	if r.level == nil {
 		return false
 	}
-	return int(callLevel) < r.level.Level()
+	return callLevel < r.level.Level()
 }
 
 // redact applies the chain to msg and every kv pair, returning the
@@ -482,7 +485,7 @@ func (r *redactingLogger) redact(msg string, kvs []any) (string, []any) {
 }
 
 func (r *redactingLogger) Debug(msg string, kvs ...any) {
-	if r.suppressed(DEBUG) {
+	if r.suppressed(contract.LogLevelDebug) {
 		return
 	}
 	m, k := r.redact(msg, kvs)
@@ -490,7 +493,7 @@ func (r *redactingLogger) Debug(msg string, kvs ...any) {
 }
 
 func (r *redactingLogger) Info(msg string, kvs ...any) {
-	if r.suppressed(INFO) {
+	if r.suppressed(contract.LogLevelInfo) {
 		return
 	}
 	m, k := r.redact(msg, kvs)
@@ -498,7 +501,7 @@ func (r *redactingLogger) Info(msg string, kvs ...any) {
 }
 
 func (r *redactingLogger) Warn(msg string, kvs ...any) {
-	if r.suppressed(WARN) {
+	if r.suppressed(contract.LogLevelWarn) {
 		return
 	}
 	m, k := r.redact(msg, kvs)
@@ -506,7 +509,7 @@ func (r *redactingLogger) Warn(msg string, kvs ...any) {
 }
 
 func (r *redactingLogger) Error(msg string, kvs ...any) {
-	if r.suppressed(ERROR) {
+	if r.suppressed(contract.LogLevelError) {
 		return
 	}
 	m, k := r.redact(msg, kvs)

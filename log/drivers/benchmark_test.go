@@ -2,10 +2,12 @@ package drivers
 
 import (
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func BenchmarkConsoleLogger_Info(b *testing.B) {
-	logger := NewConsoleLogger(0)
+	logger := NewConsoleLogger(contract.LogLevelDebug)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -14,7 +16,7 @@ func BenchmarkConsoleLogger_Info(b *testing.B) {
 }
 
 func BenchmarkConsoleLogger_Parallel(b *testing.B) {
-	logger := NewConsoleLogger(0)
+	logger := NewConsoleLogger(contract.LogLevelDebug)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {

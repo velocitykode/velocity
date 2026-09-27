@@ -772,10 +772,10 @@ func (s *shutdownCapture) Shutdown(_ context.Context) error {
 // inner logger - exactly what the gate tests want to observe.
 type leveledCapturingLogger struct {
 	capturingLogger
-	lvl int
+	lvl contract.LogLevel
 }
 
-func (l *leveledCapturingLogger) Level() int { return l.lvl }
+func (l *leveledCapturingLogger) Level() contract.LogLevel { return l.lvl }
 
 // countingRedactor records how many times Redact was invoked so a test can
 // prove the wrapper performed zero redaction work for a gated record. It
@@ -791,7 +791,7 @@ func (c *countingRedactor) Redact(s string) string {
 // a wrapper whose inner logger is at INFO performs no redaction work and
 // does not reach the inner logger.
 func TestRedactingLogger_BelowLevelSkipsRedaction(t *testing.T) {
-	inner := &leveledCapturingLogger{lvl: int(INFO)}
+	inner := &leveledCapturingLogger{lvl: contract.LogLevelInfo}
 	counter := &countingRedactor{}
 	wrapped := WithRedactors(inner, counter)
 
@@ -813,7 +813,7 @@ func TestRedactingLogger_AtOrAboveLevelByteIdentical(t *testing.T) {
 	args := []any{"token", "eyJ0.eyJ1.sig_value", "user_id", 42}
 
 	// Gated wrapper: inner logger sits at INFO.
-	gatedInner := &leveledCapturingLogger{lvl: int(INFO)}
+	gatedInner := &leveledCapturingLogger{lvl: contract.LogLevelInfo}
 	gated := WithRedactors(gatedInner, HeaderRedactor(), JWTRedactor())
 
 	// Reference wrapper: plain capturingLogger exposes no level, so gating
@@ -841,7 +841,7 @@ func TestRedactingLogger_AtOrAboveLevelByteIdentical(t *testing.T) {
 // even when the inner level suppresses every lower severity, Fatal still
 // reaches the inner logger with its content redacted.
 func TestRedactingLogger_FatalAlwaysRedacts(t *testing.T) {
-	inner := &leveledCapturingLogger{lvl: int(FATAL)}
+	inner := &leveledCapturingLogger{lvl: contract.LogLevelFatal}
 	wrapped := WithRedactors(inner, HeaderRedactor())
 
 	wrapped.Fatal("Authorization: Bearer secret")
@@ -873,7 +873,7 @@ func TestRedactingLogger_NoLevelGatingDisabled(t *testing.T) {
 // that the inner INFO-level logger would discard. With the level gate it
 // should perform no redaction (no regex passes, no per-kv Sprintf).
 func BenchmarkRedactingLogger_BelowLevel(b *testing.B) {
-	inner := &leveledCapturingLogger{lvl: int(INFO)}
+	inner := &leveledCapturingLogger{lvl: contract.LogLevelInfo}
 	wrapped := WithRedactors(inner, BuildDefaultRedactors())
 
 	b.ReportAllocs()
@@ -888,8 +888,8 @@ func BenchmarkRedactingLogger_BelowLevel(b *testing.B) {
 // call against a stack of INFO-level children performs no redaction and
 // reaches none of the children.
 func TestRedactingLogger_StackBelowLevelSkipsRedaction(t *testing.T) {
-	c1 := &leveledCapturingLogger{lvl: int(INFO)}
-	c2 := &leveledCapturingLogger{lvl: int(INFO)}
+	c1 := &leveledCapturingLogger{lvl: contract.LogLevelInfo}
+	c2 := &leveledCapturingLogger{lvl: contract.LogLevelInfo}
 	stack := NewStackLogger(c1, c2)
 	counter := &countingRedactor{}
 	wrapped := WithRedactors(stack, counter)
@@ -908,8 +908,8 @@ func TestRedactingLogger_StackBelowLevelSkipsRedaction(t *testing.T) {
 // minimum of its children: a record below the lowest child level is gated,
 // while one at that level still fans out.
 func TestRedactingLogger_StackLevelIsMinChild(t *testing.T) {
-	info := &leveledCapturingLogger{lvl: int(INFO)}
-	warn := &leveledCapturingLogger{lvl: int(WARN)}
+	info := &leveledCapturingLogger{lvl: contract.LogLevelInfo}
+	warn := &leveledCapturingLogger{lvl: contract.LogLevelWarn}
 	stack := NewStackLogger(info, warn)
 	counter := &countingRedactor{}
 	wrapped := WithRedactors(stack, counter)
@@ -934,7 +934,7 @@ func TestRedactingLogger_StackLevelIsMinChild(t *testing.T) {
 // even one child that does not expose a level disables gating entirely, so
 // redaction always runs (the conservative always-redact path).
 func TestRedactingLogger_StackUnknownChildDisablesGate(t *testing.T) {
-	leveled := &leveledCapturingLogger{lvl: int(INFO)}
+	leveled := &leveledCapturingLogger{lvl: contract.LogLevelInfo}
 	plain := &capturingLogger{} // no Level() method
 	stack := NewStackLogger(leveled, plain)
 	counter := &countingRedactor{}
@@ -952,8 +952,8 @@ func TestRedactingLogger_StackUnknownChildDisablesGate(t *testing.T) {
 // perform no redaction (no regex passes, no per-kv Sprintf).
 func BenchmarkRedactingLogger_StackBelowLevel(b *testing.B) {
 	stack := NewStackLogger(
-		&leveledCapturingLogger{lvl: int(INFO)},
-		&leveledCapturingLogger{lvl: int(INFO)},
+		&leveledCapturingLogger{lvl: contract.LogLevelInfo},
+		&leveledCapturingLogger{lvl: contract.LogLevelInfo},
 	)
 	wrapped := WithRedactors(stack, BuildDefaultRedactors())
 

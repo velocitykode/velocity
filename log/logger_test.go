@@ -229,13 +229,27 @@ func (m *mockShutdowner) Shutdown(_ context.Context) error {
 	return nil
 }
 
-func TestLoggerLevels(t *testing.T) {
-	levels := []Level{DEBUG, INFO, WARN, ERROR, FATAL}
-	expected := []int{0, 1, 2, 3, 4}
-
-	for i, level := range levels {
-		if int(level) != expected[i] {
-			t.Errorf("Level %d = %d, want %d", i, level, expected[i])
+// The log package's levels are contract.LogLevel values: a level name in
+// a driver config resolves to the contract level of the same name, and an
+// absent or unknown one to contract.LogLevelDebug.
+func TestExtractLevel_ReturnsContractLevels(t *testing.T) {
+	tests := []struct {
+		config map[string]any
+		want   contract.LogLevel
+	}{
+		{config: nil, want: contract.LogLevelDebug},
+		{config: map[string]any{}, want: contract.LogLevelDebug},
+		{config: map[string]any{"level": "debug"}, want: contract.LogLevelDebug},
+		{config: map[string]any{"level": "info"}, want: contract.LogLevelInfo},
+		{config: map[string]any{"level": "WARN"}, want: contract.LogLevelWarn},
+		{config: map[string]any{"level": "warning"}, want: contract.LogLevelWarn},
+		{config: map[string]any{"level": "error"}, want: contract.LogLevelError},
+		{config: map[string]any{"level": "fatal"}, want: contract.LogLevelFatal},
+		{config: map[string]any{"level": "verbose"}, want: contract.LogLevelDebug},
+	}
+	for _, tt := range tests {
+		if got := ExtractLevel(tt.config); got != tt.want {
+			t.Errorf("ExtractLevel(%v) = %v, want %v", tt.config, got, tt.want)
 		}
 	}
 }

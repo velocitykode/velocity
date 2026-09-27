@@ -7,12 +7,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func TestFileLogger_BasicLogging(t *testing.T) {
 	tempDir := t.TempDir()
 
-	logger := NewFileLogger(tempDir, 0, 0)
+	logger := NewFileLogger(tempDir, 0, contract.LogLevelDebug)
 	defer logger.Shutdown(context.Background())
 
 	logger.Info("test message", "key", "value")
@@ -41,7 +43,7 @@ func TestFileLogger_BasicLogging(t *testing.T) {
 func TestFileLogger_LevelFiltering(t *testing.T) {
 	tempDir := t.TempDir()
 
-	logger := NewFileLogger(tempDir, 0, 2) // warn and above
+	logger := NewFileLogger(tempDir, 0, contract.LogLevelWarn) // warn and above
 	defer logger.Shutdown(context.Background())
 
 	logger.Debug("debug message")
@@ -75,7 +77,7 @@ func TestFileLogger_LevelFiltering(t *testing.T) {
 func TestFileLogger_Rotation(t *testing.T) {
 	tempDir := t.TempDir()
 
-	logger := NewFileLogger(tempDir, 0, 0)
+	logger := NewFileLogger(tempDir, 0, contract.LogLevelDebug)
 	defer logger.Shutdown(context.Background())
 
 	logger.Info("message before rotation")
@@ -112,7 +114,7 @@ func TestFileLogger_RetentionCleanup(t *testing.T) {
 		}
 	}
 
-	logger := NewFileLogger(tempDir, 7, 0) // 7 day retention
+	logger := NewFileLogger(tempDir, 7, contract.LogLevelDebug) // 7 day retention
 	defer logger.Shutdown(context.Background())
 
 	logger.cleanup()
@@ -129,7 +131,7 @@ func TestFileLogger_RetentionCleanup(t *testing.T) {
 func TestFileLogger_ConcurrentWrites(t *testing.T) {
 	tempDir := t.TempDir()
 
-	logger := NewFileLogger(tempDir, 0, 0)
+	logger := NewFileLogger(tempDir, 0, contract.LogLevelDebug)
 	defer logger.Shutdown(context.Background())
 
 	done := make(chan bool)
@@ -163,7 +165,7 @@ func TestFileLogger_ConcurrentWrites(t *testing.T) {
 func TestFileLogger_ShutdownThenLog(t *testing.T) {
 	tempDir := t.TempDir()
 
-	logger := NewFileLogger(tempDir, 0, 0)
+	logger := NewFileLogger(tempDir, 0, contract.LogLevelDebug)
 	logger.Info("before shutdown")
 
 	if err := logger.Shutdown(context.Background()); err != nil {
@@ -189,7 +191,7 @@ func TestFileLogger_ShutdownThenLog(t *testing.T) {
 func TestFileLogger_FileMode(t *testing.T) {
 	tempDir := t.TempDir()
 
-	logger := NewFileLogger(tempDir, 0, 0)
+	logger := NewFileLogger(tempDir, 0, contract.LogLevelDebug)
 	defer logger.Shutdown(context.Background())
 
 	logger.Info("mode test")
@@ -210,7 +212,7 @@ func TestFileLogger_FileMode(t *testing.T) {
 func TestFileLogger_CustomFileMode(t *testing.T) {
 	tempDir := t.TempDir()
 
-	logger := NewFileLogger(tempDir, 0, 0, WithFileMode(0o644))
+	logger := NewFileLogger(tempDir, 0, contract.LogLevelDebug, WithFileMode(0o644))
 	defer logger.Shutdown(context.Background())
 
 	logger.Info("custom mode test")
@@ -232,7 +234,7 @@ func TestFileLogger_DirMode(t *testing.T) {
 	tempDir := t.TempDir()
 	logDir := filepath.Join(tempDir, "logs")
 
-	logger := NewFileLogger(logDir, 0, 0)
+	logger := NewFileLogger(logDir, 0, contract.LogLevelDebug)
 	defer logger.Shutdown(context.Background())
 
 	logger.Info("dir mode test")
@@ -258,7 +260,7 @@ func TestFileLogger_ChmodExistingFile(t *testing.T) {
 		t.Fatalf("Failed to pre-create log file: %v", err)
 	}
 
-	logger := NewFileLogger(tempDir, 0, 0)
+	logger := NewFileLogger(tempDir, 0, contract.LogLevelDebug)
 	defer logger.Shutdown(context.Background())
 
 	logger.Info("tighten perms")
@@ -282,7 +284,7 @@ func TestFileLogger_ChmodExistingDir(t *testing.T) {
 		t.Fatalf("Failed to pre-create log dir: %v", err)
 	}
 
-	logger := NewFileLogger(logDir, 0, 0)
+	logger := NewFileLogger(logDir, 0, contract.LogLevelDebug)
 	defer logger.Shutdown(context.Background())
 
 	logger.Info("tighten dir perms")
@@ -320,7 +322,7 @@ func TestDirModeFromFileMode(t *testing.T) {
 // before each line's own, and its Shutdown leaves the file open.
 func TestFileLogger_With(t *testing.T) {
 	dir := t.TempDir()
-	parent := NewFileLogger(dir, 0, 0)
+	parent := NewFileLogger(dir, 0, contract.LogLevelDebug)
 	defer parent.Shutdown(context.Background())
 	child := parent.With("request_id", "r1")
 

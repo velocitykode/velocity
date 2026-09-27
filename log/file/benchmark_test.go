@@ -2,11 +2,13 @@ package file
 
 import (
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func BenchmarkFileLogger_Info(b *testing.B) {
 	tempDir := b.TempDir()
-	logger := NewFileLogger(tempDir, 0, 0)
+	logger := NewFileLogger(tempDir, 0, contract.LogLevelDebug)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -16,7 +18,7 @@ func BenchmarkFileLogger_Info(b *testing.B) {
 
 func BenchmarkFileLogger_Parallel(b *testing.B) {
 	tempDir := b.TempDir()
-	logger := NewFileLogger(tempDir, 0, 0)
+	logger := NewFileLogger(tempDir, 0, contract.LogLevelDebug)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {

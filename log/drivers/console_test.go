@@ -6,17 +6,19 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func TestNewConsoleLogger(t *testing.T) {
-	logger := NewConsoleLogger(0)
+	logger := NewConsoleLogger(contract.LogLevelDebug)
 	if logger == nil {
-		t.Error("NewConsoleLogger(0) returned nil")
+		t.Error("NewConsoleLogger(contract.LogLevelDebug) returned nil")
 	}
 }
 
 func TestConsoleLogger_formatMessage(t *testing.T) {
-	logger := NewConsoleLogger(0)
+	logger := NewConsoleLogger(contract.LogLevelDebug)
 
 	tests := []struct {
 		name     string
@@ -61,7 +63,7 @@ func TestConsoleLogger_formatMessage(t *testing.T) {
 }
 
 func TestConsoleLogger_LogMethods(t *testing.T) {
-	logger := NewConsoleLogger(0)
+	logger := NewConsoleLogger(contract.LogLevelDebug)
 
 	// Capture stdout
 	old := os.Stdout
@@ -110,7 +112,7 @@ func TestConsoleLogger_LogMethods(t *testing.T) {
 }
 
 func TestConsoleLogger_ConcurrentWrites(t *testing.T) {
-	logger := NewConsoleLogger(0)
+	logger := NewConsoleLogger(contract.LogLevelDebug)
 
 	// Capture stdout
 	old := os.Stdout
@@ -163,7 +165,7 @@ func TestConsoleLogger_ConcurrentWrites(t *testing.T) {
 // substitutes \x0d / \x0a hex escapes so a single log call still
 // produces exactly one line.
 func TestConsoleLogger_SanitisesCRLFInValue(t *testing.T) {
-	logger := NewConsoleLogger(0)
+	logger := NewConsoleLogger(contract.LogLevelDebug)
 	line := logger.formatMessage("INFO", "not found",
 		"url", "/vulnpath\r\n[2026-01-01] FATAL: Database deleted")
 
@@ -182,7 +184,7 @@ func TestConsoleLogger_SanitisesCRLFInValue(t *testing.T) {
 // so a dev watching stdout cannot have their terminal driven by an
 // attacker-controlled URL.
 func TestConsoleLogger_SanitisesANSIEscape(t *testing.T) {
-	logger := NewConsoleLogger(0)
+	logger := NewConsoleLogger(contract.LogLevelDebug)
 	line := logger.formatMessage("INFO", "request",
 		"url", "/path\x1b[2J")
 
@@ -197,7 +199,7 @@ func TestConsoleLogger_SanitisesANSIEscape(t *testing.T) {
 // TestConsoleLogger_SanitisesKey: same as the file driver test;
 // CRLF in a kv key must be escaped or it forges a log line.
 func TestConsoleLogger_SanitisesKey(t *testing.T) {
-	logger := NewConsoleLogger(0)
+	logger := NewConsoleLogger(contract.LogLevelDebug)
 	line := logger.formatMessage("INFO", "test", "tainted\nkey", "value")
 
 	if strings.Contains(line, "\n") {
@@ -211,7 +213,7 @@ func TestConsoleLogger_SanitisesKey(t *testing.T) {
 // TestConsoleLogger_SanitisesMessage covers the msg path, where
 // err.Error() is typically interpolated.
 func TestConsoleLogger_SanitisesMessage(t *testing.T) {
-	logger := NewConsoleLogger(0)
+	logger := NewConsoleLogger(contract.LogLevelDebug)
 	line := logger.formatMessage("ERROR", "decode failed: /api/users\r\n[FORGED] FATAL: db down")
 
 	if strings.Contains(line, "\r") || strings.Contains(line, "\n") {
@@ -226,7 +228,7 @@ func TestConsoleLogger_SanitisesMessage(t *testing.T) {
 // carve-out: TAB (0x09) is the sole sub-0x20 byte that passes
 // through, so structured text logs remain readable.
 func TestConsoleLogger_PreservesTab(t *testing.T) {
-	logger := NewConsoleLogger(0)
+	logger := NewConsoleLogger(contract.LogLevelDebug)
 	line := logger.formatMessage("INFO", "col1\tcol2", "a", "b\tc")
 
 	if !strings.Contains(line, "col1\tcol2") {
@@ -239,7 +241,7 @@ func TestConsoleLogger_PreservesTab(t *testing.T) {
 
 func TestConsoleLogger_LevelFiltering(t *testing.T) {
 	// Level 1 = info: should suppress debug
-	logger := NewConsoleLogger(1)
+	logger := NewConsoleLogger(contract.LogLevelInfo)
 
 	old := os.Stdout
 	r, w, _ := os.Pipe()

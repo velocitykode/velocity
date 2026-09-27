@@ -12,17 +12,6 @@ type Shutdowner interface {
 	Shutdown(ctx context.Context) error
 }
 
-// Level represents the severity of a log message
-type Level int
-
-const (
-	DEBUG Level = iota
-	INFO
-	WARN
-	ERROR
-	FATAL
-)
-
 // Logger is the interface every log implementation satisfies: the
 // framework's logging contract, contract.Logger, itself.
 //
@@ -58,18 +47,19 @@ func NewLoggerWithContext(ctx context.Context, config LogConfig) (Logger, error)
 	return driverRegistry.Resolve(ctx, driver, config)
 }
 
-// parseLevel converts a level string to its numeric value.
-func parseLevel(s string) int {
+// parseLevel converts a level name to its contract.LogLevel, defaulting to
+// contract.LogLevelDebug for an unrecognised name.
+func parseLevel(s string) contract.LogLevel {
 	switch strings.ToLower(s) {
 	case "info":
-		return int(INFO)
+		return contract.LogLevelInfo
 	case "warn", "warning":
-		return int(WARN)
+		return contract.LogLevelWarn
 	case "error":
-		return int(ERROR)
+		return contract.LogLevelError
 	case "fatal":
-		return int(FATAL)
+		return contract.LogLevelFatal
 	default:
-		return int(DEBUG)
+		return contract.LogLevelDebug
 	}
 }

@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func TestNewConsoleLoggerTo_WritesToInjectedWriter(t *testing.T) {
 	var buf bytes.Buffer
-	c := NewConsoleLoggerTo(&buf, 0)
+	c := NewConsoleLoggerTo(&buf, contract.LogLevelDebug)
 
 	c.Debug("dbg")
 	c.Info("inf")
@@ -25,7 +27,7 @@ func TestNewConsoleLoggerTo_WritesToInjectedWriter(t *testing.T) {
 
 func TestNewConsoleLoggerTo_RespectsLevel(t *testing.T) {
 	var buf bytes.Buffer
-	c := NewConsoleLoggerTo(&buf, 2)
+	c := NewConsoleLoggerTo(&buf, contract.LogLevelWarn)
 
 	c.Debug("dbg")
 	c.Info("inf")
@@ -44,7 +46,7 @@ func TestNewConsoleLoggerTo_RespectsLevel(t *testing.T) {
 // to the same writer at the same level, and leaves its parent unchanged.
 func TestConsoleLogger_With(t *testing.T) {
 	var buf bytes.Buffer
-	parent := NewConsoleLoggerTo(&buf, 1)
+	parent := NewConsoleLoggerTo(&buf, contract.LogLevelInfo)
 	child := parent.With("request_id", "r1").With("job_id", "j1", "dangling")
 
 	child.Debug("dropped")
