@@ -3,11 +3,11 @@ package orm
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
 // TxCallback is the signature for callbacks registered against a
@@ -185,10 +185,37 @@ func (c *TxCallbacks) setDispatcher(fn func(*TxRecover)) {
 // txRecoverDispatcherKey is the ctx slot Manager.Save uses to make its
 // TxRecover dispatcher reachable from registerModelAfterCommit's
 // auto-commit (no-Transaction) branch. Without this slot the inline
-// runCallbackSafe call would receive nil dispatcher + nil logger and
-// a panic in the AfterCommit hook would only land on os.Stderr - the
-// observability sink wired to *Manager would never see it.
+// runCallbackSafe call would receive a nil dispatcher and the
+// observability sink wired to *Manager would never see a hook panic.
 type txRecoverDispatcherKey struct{}
+
+// txRecoverLoggerKey is the ctx slot Manager.Save uses to make its logger
+// reachable from the same auto-commit branch, so a hook panic there is
+// written through the manager's logger like one a Transaction drains.
+type txRecoverLoggerKey struct{}
+
+// withTxRecoverLogger attaches logger to ctx for the inline AfterCommit
+// path. A nil logger leaves ctx unchanged.
+func withTxRecoverLogger(ctx context.Context, logger contract.Logger) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if logger == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, txRecoverLoggerKey{}, logger)
+}
+
+// lookupTxRecoverLogger returns the logger attached to ctx by
+// withTxRecoverLogger, or nil (runCallbackSafe then writes through the
+// fallback logger).
+func lookupTxRecoverLogger(ctx context.Context) contract.Logger {
+	if ctx == nil {
+		return nil
+	}
+	l, _ := ctx.Value(txRecoverLoggerKey{}).(contract.Logger)
+	return l
+}
 
 // withTxRecoverDispatcher attaches dispatch to ctx so the inline
 // AfterCommit-on-auto-commit path can route a hook panic through the
@@ -336,18 +363,15 @@ func (c *TxCallbacks) runCommitFailure(ctx context.Context, logger contract.Logg
 }
 
 // runCallbackSafe executes fn under a recover. Errors and panics are
-// surfaced through three sinks (in order of preference):
+// surfaced through two sinks:
 //
-//  1. The configured logger (fakeLogger.Error / log.Logger.Error)
-//     receives a structured "tx callback panicked" entry.
+//  1. The logger receives a structured "tx callback panicked" error
+//     entry (a returned error is a "tx callback returned error" warn
+//     entry). A nil logger means the framework's standalone fallback
+//     logger, so the failure is never silently swallowed.
 //  2. The dispatcher (Manager event dispatcher, when wired) receives
 //     a TxRecover event with Cause="callback_panic" so observability
-//     pipelines correlate the failure even when no logger is set.
-//  3. When BOTH logger and dispatcher are nil, a one-line panic notice
-//     is written to os.Stderr so the failure is never silently
-//     swallowed. This is the last-resort sink and is only reached
-//     when the Manager is constructed without a logger and without
-//     an event dispatcher (typically only in tests).
+//     pipelines correlate the failure.
 //
 // By the time runCallbackSafe is called, the surrounding transaction
 // has already committed, rolled back, or commit-failed, so unwinding
@@ -362,28 +386,20 @@ func (c *TxCallbacks) runCommitFailure(ctx context.Context, logger contract.Logg
 // keeps callback panic logs symmetric with goroutine panic logs
 // elsewhere in the framework.
 func runCallbackSafe(ctx context.Context, fn TxCallback, phase string, logger contract.Logger, dispatcher func(*TxRecover)) {
+	logger = fallbacklog.Resolve(logger)
 	defer func() {
 		if p := recover(); p != nil {
-			wrapped := async.FromRecovered(p)
-			if logger != nil {
-				logger.Error("velocity/orm: tx callback panicked",
-					"phase", phase, "error", wrapped)
-			}
+			logger.Error("velocity/orm: tx callback panicked",
+				"phase", phase, "error", async.FromRecovered(p))
 			if dispatcher != nil {
 				dispatcher(&TxRecover{
 					Cause:      "callback_panic",
 					PanicValue: fmt.Sprintf("%s: %v", phase, p),
 				})
 			}
-			if logger == nil && dispatcher == nil {
-				// Last-resort sink: at least one observer must see the
-				// panic. Stderr is universally available and never
-				// silenced by the framework.
-				fmt.Fprintf(os.Stderr, "velocity/orm: tx callback panicked phase=%s error=%v\n", phase, wrapped)
-			}
 		}
 	}()
-	if err := fn(ctx); err != nil && logger != nil {
+	if err := fn(ctx); err != nil {
 		logger.Warn("velocity/orm: tx callback returned error",
 			"phase", phase, "error", err.Error())
 	}
@@ -635,15 +651,14 @@ func registerModelAfterCommit(ctx context.Context, model any) {
 		// contract is uniform; skip AfterRollback (the implicit
 		// auto-commit cannot roll back).
 		//
-		// Plumb the Manager's TxRecover dispatcher via ctx so a hook
-		// panic surfaces a TxRecover event identical to the
-		// in-Transaction path. Without this the inline branch would
-		// silently drop panics to os.Stderr only.
+		// Plumb the Manager's TxRecover dispatcher and logger via ctx
+		// so a hook panic surfaces a TxRecover event and a log line
+		// identical to the in-Transaction path.
 		if hasCommit {
 			dispatcher := lookupTxRecoverDispatcher(ctx)
 			runCallbackSafe(ctx, func(c context.Context) error {
 				return commitHook.AfterCommit(c)
-			}, "after_commit_inline", nil, dispatcher)
+			}, "after_commit_inline", lookupTxRecoverLogger(ctx), dispatcher)
 		}
 		return
 	}

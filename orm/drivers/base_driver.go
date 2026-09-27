@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/velocitykode/velocity/contract"
 )
@@ -20,10 +21,15 @@ type BaseDriver struct {
 	// attaches itself via SetStatementObserver.
 	binding *observerBinding
 	// logger receives every executed statement when Config.LogQueries is
-	// set. Nil (the default) writes the statement to stdout through
-	// defaultQueryLogger instead, so behavior is unchanged out of the box.
-	logger contract.Logger
+	// set. Unset or nil (the default) writes the statement to stdout
+	// through defaultQueryLogger instead. Held atomically so SetLogger can
+	// run while the driver executes statements.
+	logger atomic.Value // holds queryLoggerHolder
 }
+
+// queryLoggerHolder wraps the query logger so atomic.Value always stores
+// one concrete type, nil logger included.
+type queryLoggerHolder struct{ contract.Logger }
 
 // defaultQueryLogger writes the executed statement to stdout, preserving the
 // historical fmt.Printf format used when LogQueries is enabled.
@@ -34,10 +40,9 @@ func defaultQueryLogger(query string, argCount int) {
 // SetLogger installs the logger executed statements are written to when
 // Config.LogQueries is true: one debug line per statement with the
 // statement and its argument count, never the argument values. Nil restores
-// the stdout default. Call it before the driver runs queries: the query
-// path reads it without a lock.
+// the stdout default. Safe to call while the driver runs queries.
 func (b *BaseDriver) SetLogger(l contract.Logger) {
-	b.logger = l
+	b.logger.Store(queryLoggerHolder{Logger: l})
 }
 
 var _ contract.LoggerAware = (*BaseDriver)(nil)
@@ -48,8 +53,8 @@ func (b *BaseDriver) logQuery(query string, argCount int) {
 	if !b.Config.LogQueries {
 		return
 	}
-	if l := b.logger; l != nil {
-		l.Debug("velocity/orm: query executed", "query", query, "arg_count", argCount)
+	if h, _ := b.logger.Load().(queryLoggerHolder); h.Logger != nil {
+		h.Debug("velocity/orm: query executed", "query", query, "arg_count", argCount)
 		return
 	}
 	defaultQueryLogger(query, argCount)

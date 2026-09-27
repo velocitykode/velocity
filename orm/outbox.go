@@ -37,9 +37,11 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
 // OutboxTableName is the canonical outbox table name. Callers must apply the
@@ -236,9 +238,7 @@ func (m *Manager) TransactionWithOutbox(ctx context.Context, fn func(tx *sql.Tx,
 	if err != nil {
 		return err
 	}
-	m.mu.RLock()
-	logger := m.logger
-	m.mu.RUnlock()
+	logger := m.log()
 
 	tx, err := driver.BeginTx(ctx, nil)
 	if err != nil {
@@ -251,9 +251,7 @@ func (m *Manager) TransactionWithOutbox(ctx context.Context, fn func(tx *sql.Tx,
 	defer func() {
 		if r := recover(); r != nil {
 			if rbErr := tx.Rollback(); rbErr != nil {
-				if logger != nil {
-					logger.Error("velocity/orm: rollback failed after panic in outbox tx", "error", rbErr, "panic", fmt.Sprint(r))
-				}
+				logger.Error("velocity/orm: rollback failed after panic in outbox tx", "error", rbErr, "panic", fmt.Sprint(r))
 				m.dispatchEvent(ctx, &TxRecover{
 					Cause:       "panic",
 					PanicValue:  fmt.Sprint(r),
@@ -270,9 +268,7 @@ func (m *Manager) TransactionWithOutbox(ctx context.Context, fn func(tx *sql.Tx,
 
 	if err := fn(tx, pendingFor(p, driverName)); err != nil {
 		if rbErr := tx.Rollback(); rbErr != nil {
-			if logger != nil {
-				logger.Error("velocity/orm: rollback failed in outbox tx", "error", rbErr, "original_error", err)
-			}
+			logger.Error("velocity/orm: rollback failed in outbox tx", "error", rbErr, "original_error", err)
 			m.dispatchEvent(ctx, &TxRecover{
 				Cause:       "error",
 				OriginalErr: err.Error(),
@@ -556,7 +552,9 @@ type Relay struct {
 	mgr       *Manager
 	cfg       RelayConfig
 	callbacks RelayCallbacks
-	logger    contract.Logger
+	// logger holds the relay's own logger (see SetLogger), read
+	// atomically by the relay loop and its workers.
+	logger atomic.Value // holds relayLoggerHolder
 
 	mu       sync.Mutex
 	running  bool
@@ -615,13 +613,28 @@ func NewRelay(mgr *Manager, callbacks RelayCallbacks, cfg RelayConfig) *Relay {
 	}
 }
 
-// SetLogger installs an optional logger for relay diagnostics. Nil
-// disables logging. Call it before Start: the relay loop reads the logger
-// without the lock.
+// relayLoggerHolder wraps the relay logger so atomic.Value always stores
+// one concrete type, nil logger included.
+type relayLoggerHolder struct{ contract.Logger }
+
+// SetLogger installs the logger for relay diagnostics. Without one, or
+// with nil, the relay writes through its manager's logger (see
+// Manager.SetLogger), which is the framework's standalone fallback logger
+// when the manager has none. Safe to call while the relay runs.
 func (r *Relay) SetLogger(l contract.Logger) {
-	r.mu.Lock()
-	r.logger = l
-	r.mu.Unlock()
+	r.logger.Store(relayLoggerHolder{Logger: l})
+}
+
+// log returns the relay's own logger, else its manager's logger, else the
+// framework's standalone fallback logger.
+func (r *Relay) log() contract.Logger {
+	if h, _ := r.logger.Load().(relayLoggerHolder); h.Logger != nil {
+		return h.Logger
+	}
+	if r.mgr != nil {
+		return r.mgr.log()
+	}
+	return fallbacklog.Logger{}
 }
 
 var _ contract.LoggerAware = (*Relay)(nil)
@@ -663,9 +676,7 @@ func (r *Relay) Start(ctx context.Context) error {
 		defer close(r.doneCh)
 		defer func() {
 			if rec := recover(); rec != nil {
-				if r.logger != nil {
-					r.logger.Error("velocity/orm: relay loop panic", "panic", fmt.Sprint(rec))
-				}
+				r.log().Error("velocity/orm: relay loop panic", "panic", fmt.Sprint(rec))
 			}
 		}()
 		r.loop(loopCtx)
@@ -765,9 +776,7 @@ func (r *Relay) loop(ctx context.Context) {
 func (r *Relay) tick(ctx context.Context, sem chan struct{}) {
 	rows, err := r.claimBatch(ctx)
 	if err != nil {
-		if r.logger != nil {
-			r.logger.Warn("velocity/orm: relay claim batch failed", "error", err)
-		}
+		r.log().Warn("velocity/orm: relay claim batch failed", "error", err)
 		return
 	}
 	for i, row := range rows {
@@ -796,9 +805,7 @@ func (r *Relay) tick(ctx context.Context, sem chan struct{}) {
 			defer func() { <-sem }()
 			defer func() {
 				if rec := recover(); rec != nil {
-					if r.logger != nil {
-						r.logger.Error("velocity/orm: relay worker panic", "panic", fmt.Sprint(rec), "row_id", row.ID)
-					}
+					r.log().Error("velocity/orm: relay worker panic", "panic", fmt.Sprint(rec), "row_id", row.ID)
 					_ = r.recordFailure(r.writebackCtx(), row, fmt.Errorf("panic: %v", rec))
 				}
 				if row.PartitionKey != "" {
@@ -883,9 +890,7 @@ func (r *Relay) claimBatch(ctx context.Context) ([]outboxRow, error) {
 			if part != "" {
 				r.activePart.Delete(part)
 			}
-			if r.logger != nil {
-				r.logger.Warn("velocity/orm: relay claim row failed", "error", err, "row_id", id)
-			}
+			r.log().Warn("velocity/orm: relay claim row failed", "error", err, "row_id", id)
 			continue
 		}
 		if !ok {
@@ -1011,8 +1016,8 @@ func (r *Relay) dispatch(ctx context.Context, row outboxRow) {
 		_ = r.recordFailure(ctx, row, err)
 		return
 	}
-	if err := r.recordSuccess(ctx, row); err != nil && r.logger != nil {
-		r.logger.Warn("velocity/orm: relay record success failed", "error", err, "row_id", row.ID)
+	if err := r.recordSuccess(ctx, row); err != nil {
+		r.log().Warn("velocity/orm: relay record success failed", "error", err, "row_id", row.ID)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/events"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/orm/drivers"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -113,7 +114,8 @@ type Manager struct {
 	// through the matching method on the underlying dispatcher.
 	txEventBus events.Dispatcher
 	// logger receives warnings about runtime conditions (transaction
-	// rollback failures, recovered panics). nil until SetLogger is called.
+	// rollback failures, recovered panics). nil until SetLogger is called;
+	// log() then answers the framework's standalone fallback logger.
 	logger contract.Logger
 }
 
@@ -223,12 +225,18 @@ func (m *Manager) Connection(name string) (drivers.Driver, error) {
 }
 
 // AddConnection registers a named database connection. Statements executed
-// against it dispatch through this manager's event dispatcher.
+// against it dispatch through this manager's event dispatcher, and the
+// manager's logger, once SetLogger installed one, becomes the driver's
+// query logger.
 func (m *Manager) AddConnection(name string, driver drivers.Driver) {
 	m.attachStatementObserver(driver)
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.connections[name] = driver
+	logger := m.logger
+	m.mu.Unlock()
+	if la, ok := driver.(contract.LoggerAware); ok && logger != nil {
+		la.SetLogger(logger)
+	}
 }
 
 // Introspector returns the schema introspector for the default connection.
@@ -422,7 +430,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		return err
 	}
 	m.mu.RLock()
-	logger := m.logger
+	logger := fallbacklog.Resolve(m.logger)
 	rawDispatcher := m.rawEventDispatcher
 	bus := m.txEventBus
 	m.mu.RUnlock()
@@ -620,12 +628,10 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 			// cannot leak side effects.
 			dropAfterCommit()
 			if rbErr := doRollback(); rbErr != nil {
-				// Surface rollback failure through the configured logger
-				// when available; otherwise fire a typed event so callers
-				// with a dispatcher wired up still observe the failure.
-				if logger != nil {
-					logger.Error("velocity/orm: rollback failed after panic", "error", rbErr, "panic", fmt.Sprint(p))
-				}
+				// Surface the rollback failure through the logger (the
+				// fallback logger without one), and fire a typed event so
+				// callers with a dispatcher wired up observe it too.
+				logger.Error("velocity/orm: rollback failed after panic", "error", rbErr, "panic", fmt.Sprint(p))
 				m.dispatchEvent(ctx, &TxRecover{
 					Cause:       "panic",
 					PanicValue:  fmt.Sprint(p),
@@ -646,9 +652,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		buffer.Drop()
 		dropAfterCommit()
 		if rbErr := doRollback(); rbErr != nil {
-			if logger != nil {
-				logger.Error("velocity/orm: rollback failed", "error", rbErr, "original_error", err)
-			}
+			logger.Error("velocity/orm: rollback failed", "error", rbErr, "original_error", err)
 			m.dispatchEvent(ctx, &TxRecover{
 				Cause:       "error",
 				OriginalErr: err.Error(),
@@ -767,13 +771,8 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 		// knows to distrust. Say so once, at the only point where the
 		// final count is known.
 		if dropped := p.dropped.Load(); dropped > 0 {
-			m.mu.RLock()
-			logger := m.logger
-			m.mu.RUnlock()
-			if logger != nil {
-				logger.Warn("velocity/orm: query events dropped; listeners could not keep up with the query rate",
-					"dropped", dropped, "queue_size", queryEventQueueSize)
-			}
+			m.log().Warn("velocity/orm: query events dropped; listeners could not keep up with the query rate",
+				"dropped", dropped, "queue_size", queryEventQueueSize)
 		}
 	}
 
@@ -955,12 +954,37 @@ func flushBufferedEntry(ctx context.Context, entry events.BufferedEvent, bus eve
 }
 
 // SetLogger installs a logger that receives warnings about recovered
-// transaction panics and failed rollbacks. Nil disables logging. Safe to
-// call concurrently.
+// transaction panics and failed rollbacks, and hands it to every
+// connection's driver that takes one (contract.LoggerAware) as the query
+// logger ManagerConfig.LogQueries writes to; AddConnection hands it to a
+// connection added later. Nil restores the defaults: the framework's
+// standalone fallback logger for the manager, stdout for the query log.
+// Safe to call concurrently, and while the connections run queries.
 func (m *Manager) SetLogger(logger contract.Logger) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.logger = logger
+	receivers := make([]contract.LoggerAware, 0, 1+len(m.connections))
+	if la, ok := m.defaultDriver.(contract.LoggerAware); ok {
+		receivers = append(receivers, la)
+	}
+	for _, d := range m.connections {
+		if la, ok := d.(contract.LoggerAware); ok {
+			receivers = append(receivers, la)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, r := range receivers {
+		r.SetLogger(logger)
+	}
+}
+
+// log returns the installed logger, or the framework's standalone fallback
+// logger when none is installed.
+func (m *Manager) log() contract.Logger {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return fallbacklog.Resolve(m.logger)
 }
 
 var _ contract.LoggerAware = (*Manager)(nil)

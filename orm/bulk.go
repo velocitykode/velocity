@@ -184,7 +184,7 @@ func dispatchBulkAfterCommit(ctx context.Context, hook BulkAfterCommitHook, ids 
 		dispatcher := lookupTxRecoverDispatcher(ctx)
 		runCallbackSafe(ctx, func(c context.Context) error {
 			return hook.BulkAfterCommit(c, ids, op)
-		}, "bulk_after_commit_inline", nil, dispatcher)
+		}, "bulk_after_commit_inline", lookupTxRecoverLogger(ctx), dispatcher)
 		return
 	}
 	cbs.OnCommit(func(c context.Context) error {

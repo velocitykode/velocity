@@ -1174,12 +1174,13 @@ func Save[T any](ctx context.Context, m *Manager, model *T) error {
 	if tx, ok := TxFromContext(ctx); ok {
 		drv = &txDriver{Driver: drv, tx: tx}
 	}
-	// Stamp the Manager's TxRecover dispatcher onto ctx so an inline
-	// AfterCommit-hook panic surfaces a TxRecover event identical to
-	// the in-Transaction path. Without this, a panic in an
-	// AfterCommit hook fired through the auto-commit branch would
-	// only land on os.Stderr.
+	// Stamp the Manager's TxRecover dispatcher and logger onto ctx so an
+	// inline AfterCommit-hook panic surfaces a TxRecover event and a log
+	// line identical to the in-Transaction path. Without this, a panic
+	// in an AfterCommit hook fired through the auto-commit branch would
+	// reach neither sink wired to the Manager.
 	ctx = withTxRecoverDispatcher(ctx, func(ev *TxRecover) { m.dispatchEvent(ctx, ev) })
+	ctx = withTxRecoverLogger(ctx, m.log())
 	return saveWithDriver(ctx, drv, model)
 }
 
