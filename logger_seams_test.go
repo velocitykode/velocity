@@ -23,6 +23,7 @@ import (
 	queueredis "github.com/velocitykode/velocity/queue/redis"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/scheduler"
+	"github.com/velocitykode/velocity/view"
 	"github.com/velocitykode/velocity/websocket"
 )
 
@@ -43,6 +44,10 @@ func newLoggerSeamApp(t *testing.T) contract.Logger {
 // compiles only while each one does.
 func TestAppLog_PassesToEveryLoggerAwareType(t *testing.T) {
 	log := newLoggerSeamApp(t)
+	engine, err := view.NewEngine(view.Config{})
+	if err != nil {
+		t.Fatalf("view.NewEngine: %v", err)
+	}
 	seams := []struct {
 		name string
 		seam contract.LoggerAware
@@ -53,6 +58,7 @@ func TestAppLog_PassesToEveryLoggerAwareType(t *testing.T) {
 		{"schemes.SessionScheme", &schemes.SessionScheme{}},
 		{"websocket.Server", &websocket.Server{}},
 		{"bond.Bond", &bond.Bond{}},
+		{"view.Engine", engine},
 		{"scheduler.Scheduler", scheduler.New()},
 		{"scheduler.Manager", scheduler.NewManager()},
 		{"queue.MemoryDriver", &queue.MemoryDriver{}},
@@ -88,6 +94,7 @@ func TestAppLog_PassesToEveryLoggerOption(t *testing.T) {
 		{"async.SetLogger", func() { async.SetLogger(log) }},
 		{"async.GoWithLogger", func() { async.GoWithLogger(log, "logger-seam", func() { close(done) }); <-done }},
 		{"queue.SetSigningLogger", func() { queue.SetSigningLogger(log) }},
+		{"queue.QueueConfig.Logger", func() { _ = queue.QueueConfig{Logger: log} }},
 		{"queue.WithWorkerLogger", func() { _ = queue.WithWorkerLogger(log) }},
 		{"console.QueueWorkOptions.Logger", func() { _ = console.QueueWorkOptions{Logger: log} }},
 		{"bus.LoggingMiddleware", func() { _ = bus.LoggingMiddleware(log) }},

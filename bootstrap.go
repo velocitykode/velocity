@@ -203,7 +203,8 @@ func (a *App) runBootstrap() error {
 // gets the dispatcher set on its instance; subsystems that don't implement
 // the contract are skipped silently (e.g. when a feature is disabled). It
 // also (re)installs the background failure reporters on the current error
-// handler (see wireFailureReporters).
+// handler (see wireFailureReporters) and hands the app logger out (see
+// wireInstanceLoggers).
 //
 // The closure it hands out is bound to the dispatcher a.Services.Events
 // holds now (see buildEventDispatch), so it runs, unconditionally, at every
@@ -232,6 +233,8 @@ func wireInstanceEvents(a *App) {
 	// The failure reporters follow the error handler, not the dispatcher,
 	// so they are (re)installed whether or not events are enabled.
 	wireFailureReporters(a)
+	// The app logger goes out at the same boundaries, events or not.
+	wireInstanceLoggers(a)
 
 	dispatch := buildEventDispatch(a)
 	if dispatch == nil && !a.eventsWired {

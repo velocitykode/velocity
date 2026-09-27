@@ -260,6 +260,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	eventqueue.InitializeQueueIntegration(nil, nil, nil)
 	queue.SetSigningLogger(nil)
 	queue.SetPayloadEncryptor(nil)
+	// Put the async package back on its standalone fallback logger so it
+	// does not keep writing to the logger closed below.
+	releaseAsyncLogger()
 
 	// 6. Close cache connections
 	if a.Cache != nil {

@@ -807,6 +807,10 @@ func New(opts ...Option) (*App, error) {
 	// 17. Initialize validator
 	a.Validator = validation.NewValidator()
 
+	// The sweep below also hands a.Log to the async package (see
+	// wireInstanceLoggers); a failed New puts it back on its fallback.
+	cleanups = append(cleanups, releaseAsyncLogger)
+
 	// Wire event dispatchers into service instances
 	wireInstanceEvents(a)
 

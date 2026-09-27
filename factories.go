@@ -301,16 +301,13 @@ func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey strin
 		},
 		DB:       db,
 		DBDriver: dbDriver,
+		// The driver logs through the framework logger from construction
+		// on (the redis driver's startup warnings included); NewQueue
+		// installs it on a driver implementing contract.LoggerAware.
+		Logger: logger,
 	})
 	if err != nil {
 		return nil, err
-	}
-
-	// The memory driver wants a logger so worker diagnostics route through
-	// the framework log; setting it here keeps the registry factories
-	// dependency-free.
-	if mem, ok := d.(*queue.MemoryDriver); ok {
-		mem.SetLogger(logger)
 	}
 
 	// C-03 follow-up: when the operator picks the database queue driver,
