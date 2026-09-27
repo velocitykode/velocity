@@ -78,9 +78,9 @@ func statusCodeOf(err error) codes.Code {
 	return codes.Unknown
 }
 
-// dispatchRequestCompleted dispatches the end of a unary call:
-// RequestFailed when the handler returned an error, RequestCompleted
-// otherwise.
+// dispatchRequestCompleted dispatches the end of a unary call: RequestFailed
+// when the handler returned an error, then RequestCompleted, the terminal
+// event of every call.
 func dispatchRequestCompleted(ctx context.Context, method string, start time.Time, err error, dispatcher grpcevents.EventDispatchFunc) {
 	if dispatcher == nil {
 		return
@@ -109,7 +109,6 @@ func dispatchRequestCompleted(ctx context.Context, method string, start time.Tim
 			UserID:     userID,
 			TeamID:     teamID,
 		})
-		return
 	}
 	dispatchEvent(ctx, dispatcher, &grpcevents.RequestCompleted{
 		EventMeta:  meta,

@@ -35,6 +35,10 @@
 // of an event's JSON form, so a framework event decodes back into its type
 // when a queued listener in another process receives it.
 //
+// HTTP requests and gRPC calls and streams follow one lifecycle: started
+// when the work begins, failed when it fails, then completed, the terminal
+// event every request, call and stream gets whatever its outcome.
+//
 // # Listening
 //
 // Listen takes a key that says which events reach the listener. Listening

@@ -41,8 +41,13 @@ func (e *RequestRouted) Name() string {
 	return "router.request.routed"
 }
 
-// RequestHandled is dispatched when an HTTP request completes successfully.
-// Its At is when the request ended and Duration how long it took.
+// RequestHandled is the terminal event of every HTTP request the router
+// answers, whatever the outcome: it records the status the response went
+// out with, a 500 included. A request that failed dispatches RequestFailed
+// first, then RequestHandled. The one exception is a panic a Timeout
+// handler goroutine recovers after the 503 went out: its RequestFailed
+// follows the request's RequestHandled. Its At is when the request ended
+// and Duration how long it took.
 type RequestHandled struct {
 	contract.EventMeta
 	RequestID    string
@@ -75,7 +80,8 @@ func (e *RequestHandled) Name() string {
 // when nothing was written. A contract.Handled value dispatches its cause
 // under the same rule, and a bare contract.ErrResponseWritten dispatches
 // nothing, except inside the value of a recovered panic, which always
-// dispatches. Its At is when the failure was decided and Duration how long the request had run
+// dispatches. RequestHandled, the terminal event, follows it. Its At is
+// when the failure was decided and Duration how long the request had run
 // by then (zero for the panic a Timeout handler goroutine recovers after
 // the 503, which the router reports without the request's start).
 type RequestFailed struct {

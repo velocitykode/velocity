@@ -84,7 +84,8 @@ func dispatchStreamStarted(ctx context.Context, method string, start time.Time, 
 }
 
 // dispatchStreamCompleted dispatches the end of a stream: StreamFailed when
-// the handler returned an error, StreamCompleted otherwise.
+// the handler returned an error, then StreamCompleted, the terminal event
+// of every stream.
 func dispatchStreamCompleted(ctx context.Context, method string, start time.Time, err error, dispatcher grpcevents.EventDispatchFunc) {
 	if dispatcher == nil {
 		return
@@ -93,6 +94,7 @@ func dispatchStreamCompleted(ctx context.Context, method string, start time.Time
 	meta := eventmeta.Current(ctx)
 	duration := meta.At.Sub(start)
 	protocol := detectProtocol(ctx)
+	code := statusCodeOf(err)
 
 	var userID, teamID uint
 	if claims := ClaimsFromContext(ctx); claims != nil {
@@ -102,22 +104,23 @@ func dispatchStreamCompleted(ctx context.Context, method string, start time.Time
 
 	if err != nil {
 		dispatchEvent(ctx, dispatcher, &grpcevents.StreamFailed{
-			EventMeta: meta,
-			Method:    method,
-			Protocol:  protocol,
-			Duration:  duration,
-			Err:       err,
-			UserID:    userID,
-			TeamID:    teamID,
+			EventMeta:  meta,
+			Method:     method,
+			Protocol:   protocol,
+			Duration:   duration,
+			StatusCode: code,
+			Err:        err,
+			UserID:     userID,
+			TeamID:     teamID,
 		})
-		return
 	}
 	dispatchEvent(ctx, dispatcher, &grpcevents.StreamCompleted{
-		EventMeta: meta,
-		Method:    method,
-		Protocol:  protocol,
-		Duration:  duration,
-		UserID:    userID,
-		TeamID:    teamID,
+		EventMeta:  meta,
+		Method:     method,
+		Protocol:   protocol,
+		Duration:   duration,
+		StatusCode: code,
+		UserID:     userID,
+		TeamID:     teamID,
 	})
 }

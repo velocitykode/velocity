@@ -42,9 +42,11 @@ func (e *RequestStarted) Name() string {
 	return "grpc.request.started"
 }
 
-// RequestCompleted is dispatched when a gRPC request completes
-// successfully. Its At is when the call ended and Duration how long it
-// took.
+// RequestCompleted is the terminal event of every gRPC request, whatever
+// the outcome: it records the status the call ended with. A request that
+// failed dispatches RequestFailed first, then RequestCompleted, as the
+// router does for HTTP. Its At is when the call ended and Duration how
+// long it took.
 type RequestCompleted struct {
 	contract.EventMeta
 	Method     string
@@ -60,8 +62,8 @@ func (e *RequestCompleted) Name() string {
 	return "grpc.request.completed"
 }
 
-// RequestFailed is dispatched when a gRPC request fails. Its At is when the
-// call ended and Duration how long it took.
+// RequestFailed is dispatched when a gRPC request's handler returns an
+// error, before the request's RequestCompleted.
 type RequestFailed struct {
 	contract.EventMeta
 	Method     string
@@ -116,13 +118,16 @@ func (e *StreamStarted) Name() string {
 	return "grpc.stream.started"
 }
 
-// StreamCompleted is dispatched when a gRPC stream completes. Its At is
-// when the stream ended and Duration how long it was open.
+// StreamCompleted is the terminal event of every gRPC stream, whatever the
+// outcome. A stream that failed dispatches StreamFailed first, then
+// StreamCompleted. Its At is when the stream ended and Duration how long it
+// was open.
 type StreamCompleted struct {
 	contract.EventMeta
 	Method       string
 	Protocol     Protocol // "grpc" or "http"
 	Duration     time.Duration
+	StatusCode   codes.Code
 	MessagesSent int
 	MessagesRecv int
 	UserID       uint
@@ -134,13 +139,14 @@ func (e *StreamCompleted) Name() string {
 	return "grpc.stream.completed"
 }
 
-// StreamFailed is dispatched when a gRPC stream fails. Its At is when the
-// stream ended and Duration how long it was open.
+// StreamFailed is dispatched when a gRPC stream's handler returns an error,
+// before the stream's StreamCompleted.
 type StreamFailed struct {
 	contract.EventMeta
 	Method       string
 	Protocol     Protocol // "grpc" or "http"
 	Duration     time.Duration
+	StatusCode   codes.Code
 	Err          error
 	MessagesSent int
 	MessagesRecv int

@@ -758,8 +758,8 @@ func (r *VelocityRouterV2) dispatchRequestRouted(req *http.Request, meta request
 	})
 }
 
-// dispatchRequestHandled dispatches RequestHandled with the status rw went
-// out with.
+// dispatchRequestHandled dispatches RequestHandled, the terminal event of
+// every answered request, with the status rw went out with.
 func (r *VelocityRouterV2) dispatchRequestHandled(req *http.Request, rw *responseWriter, meta requestMeta, route string) {
 	now := time.Now()
 	r.dispatchInstanceEvent(req.Context(), &RequestHandled{
