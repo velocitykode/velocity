@@ -1026,8 +1026,8 @@ func (a *App) UseOutboxRelay(r *orm.Relay) *App {
 // session.ServerStore over it: the session's data lives in the same record
 // the scheme's revocation checks read, and the cookie carries only the id.
 // A cache that cannot back it (no default store, or one without the
-// replace and set operations) fails New; there is no fallback to the
-// cookie store.
+// compare-and-swap and set operations) fails New; there is no fallback to
+// the cookie store.
 func sessionStoreFromConfig(cfg auth.SessionConfig, caches contract.CacheManager) ([]schemes.SessionSchemeOption, auth.ServerSessionStore, error) {
 	if cfg.Store != auth.SessionStoreServer {
 		return nil, nil, nil

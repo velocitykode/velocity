@@ -54,6 +54,23 @@ func TestCacheSessionStore_RedisContract(t *testing.T) {
 	})
 }
 
+// TestCacheSessionStore_FileContract runs the authtest spec against the
+// cache-backed ServerSessionStore over the file cache driver.
+func TestCacheSessionStore_FileContract(t *testing.T) {
+	authtest.RunServerSessionStoreContractTests(t, func(t *testing.T) auth.ServerSessionStore {
+		backend, err := drivers.NewFileStore("sessions", t.TempDir())
+		if err != nil {
+			t.Fatalf("NewFileStore: %v", err)
+		}
+		t.Cleanup(func() { _ = backend.Shutdown(context.Background()) })
+		store, err := session.NewCacheStore(backend)
+		if err != nil {
+			t.Fatalf("NewCacheStore: %v", err)
+		}
+		return store
+	})
+}
+
 // TestNoopLoginThrottler_Contract runs the authtest spec against the
 // default no-op throttler.
 func TestNoopLoginThrottler_Contract(t *testing.T) {

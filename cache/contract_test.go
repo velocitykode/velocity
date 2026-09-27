@@ -93,6 +93,26 @@ func TestFileStore_LockerContract(t *testing.T) {
 	})
 }
 
+// TestFileStore_SwapperContract runs the CacheSwapper spec against
+// FileStore.
+func TestFileStore_SwapperContract(t *testing.T) {
+	cachetest.RunSwapperContractTests(t, func(t *testing.T) cachetest.SwapperStore {
+		s := mustFileStore(t, t.TempDir())
+		t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
+		return s
+	}, nil)
+}
+
+// TestFileStore_SetStoreContract runs the CacheSetStore spec against
+// FileStore.
+func TestFileStore_SetStoreContract(t *testing.T) {
+	cachetest.RunSetStoreContractTests(t, func(t *testing.T) cachetest.SetStore {
+		s := mustFileStore(t, t.TempDir())
+		t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
+		return s
+	}, nil)
+}
+
 // Redis store contract tests live in the cache/redis leaf package
 // (cache/redis/contract_test.go) so the cache core test binary does not
 // pull in the go-redis dependency.

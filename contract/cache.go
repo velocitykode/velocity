@@ -169,6 +169,15 @@ type CacheReplacer interface {
 //     produces, where a struct reads back as a map and a number as
 //     float64. Stored values a read cannot tell apart, such as two
 //     integers that round to the same float64, match each other.
+//   - file (serializing): the redis equality. The swap holds a per-key
+//     flock that every write of the key through the file driver takes
+//     (Put, Add, Forever, Forget, Increment, the swap and the set
+//     operations), so it is atomic against those writes from every
+//     process sharing the cache directory on one host. Flush and the
+//     expiry sweep do not take it. A read does not take it either, and a
+//     write replaces the file in place, so a read from another process
+//     that overlaps a write can miss the entry. Where flock is missing
+//     (Windows) the swap returns an error.
 //
 // Values that do not compare equal to themselves are outside the swap's
 // comparison domain: a NaN, a non-nil func, and a value holding either. A
@@ -210,6 +219,12 @@ type CacheSwapper interface {
 // set is kept forever (a later positive ttl does not reinstate one).
 // SetRemoveCtx removes members; removing the last member may delete the
 // key. SetMembersCtx returns the live members, nil when the key is absent.
+//
+// The memory driver keeps the set as a map[string]struct{} under the store
+// mutex, redis as a native set, and the file driver as the sorted members
+// under the same per-key flock its compare-and-swap takes (see
+// CacheSwapper). A read (GetCtx) of a set key returns the
+// map[string]struct{} on the memory and file drivers.
 type CacheSetStore interface {
 	SetAddCtx(ctx context.Context, key string, ttl time.Duration, members ...string) error
 	SetRemoveCtx(ctx context.Context, key string, members ...string) error

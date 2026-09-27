@@ -40,9 +40,11 @@ type Lock = contract.CacheLock
 // The FileLock assertion lives in file_lock.go under the unix build tag,
 // alongside the type it asserts.
 var (
-	_ contract.CacheStore = (*MemoryStore)(nil)
-	_ contract.CacheStore = (*FileStore)(nil)
-	_ contract.CacheLock  = (*MemoryLock)(nil)
+	_ contract.CacheStore    = (*MemoryStore)(nil)
+	_ contract.CacheStore    = (*FileStore)(nil)
+	_ contract.CacheSwapper  = (*FileStore)(nil)
+	_ contract.CacheSetStore = (*FileStore)(nil)
+	_ contract.CacheLock     = (*MemoryLock)(nil)
 )
 
 // Locker is implemented by stores that support locking.

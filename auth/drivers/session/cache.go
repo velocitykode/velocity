@@ -41,8 +41,8 @@ var (
 	// ErrCacheStoreUnsupported is returned by NewCacheStore when the cache
 	// backend lacks the contract.CacheSwapper or contract.CacheSetStore
 	// capability. Without them the store cannot make record writes and the
-	// user index atomic, which is the point of this driver; the memory and
-	// redis cache drivers implement both.
+	// user index atomic, which is the point of this driver; the memory,
+	// file and redis cache drivers implement both.
 	ErrCacheStoreUnsupported = errors.New("velocity/auth/session: cache backend lacks compare-and-swap or set operations")
 
 	// errRecordContended is returned when a record kept changing under a
@@ -79,7 +79,8 @@ const recordWriteAttempts = 32
 //   - Touch and UpdateData read a record, change it and write it back
 //     through contract.CacheSwapper, which lands only while the record
 //     still holds exactly the bytes that were read (one Lua script on
-//     redis, the store mutex on the memory driver). A write made after
+//     redis, the store mutex on the memory driver, a per-key flock on the
+//     file driver). A write made after
 //     the read, by any instance, makes the swap fail and the change is
 //     applied again to the record as it now is, so no write is ever
 //     replaced by one computed from an earlier read (a Touch keeps the
@@ -100,8 +101,8 @@ type CacheStore struct {
 }
 
 // NewCacheStore builds a CacheStore over backend. The backend must
-// implement contract.CacheSwapper and contract.CacheSetStore (the memory
-// and redis cache drivers do); ErrCacheStoreUnsupported is returned
+// implement contract.CacheSwapper and contract.CacheSetStore (the memory,
+// file and redis cache drivers do); ErrCacheStoreUnsupported is returned
 // otherwise so a misconfigured deployment fails at boot, not at the first
 // revocation. Pass the manager's default store:
 //

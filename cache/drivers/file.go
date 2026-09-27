@@ -83,9 +83,38 @@ type FileStore struct {
 // strings is a raw 0x00-framed payload rather than valid JSON. It is therefore
 // typed []byte (encoded as base64 in the item JSON) instead of json.RawMessage,
 // which would reject the non-JSON framed bytes on marshal.
+//
+// A string set (SetAddCtx) is stored in Members, sorted, with Value empty.
+// No other write stores an empty Value (MarshalValue of any value yields
+// at least one byte), so a read tells a set from a value by Members alone.
 type fileCacheItem struct {
 	Value      []byte     `json:"value"`
 	Expiration *time.Time `json:"expiration,omitempty"`
+	Members    []string   `json:"members,omitempty"`
+}
+
+// isSet reports whether the item holds a string set.
+func (item fileCacheItem) isSet() bool {
+	return len(item.Value) == 0 && len(item.Members) > 0
+}
+
+// live reports whether the item has not expired.
+func (item fileCacheItem) live() bool {
+	return item.Expiration == nil || time.Now().Before(*item.Expiration)
+}
+
+// value returns what a read of the item returns: a set reads back as a
+// map[string]struct{} of its members (the form the memory driver stores),
+// anything else as UnmarshalValue decodes it.
+func (item fileCacheItem) value() (interface{}, error) {
+	if item.isSet() {
+		set := make(map[string]struct{}, len(item.Members))
+		for _, m := range item.Members {
+			set[m] = struct{}{}
+		}
+		return set, nil
+	}
+	return UnmarshalValue(item.Value)
 }
 
 // FileOption configures a FileStore at construction time.
@@ -207,8 +236,17 @@ func (s *FileStore) cleanupExpired() {
 // observation and the removal.
 func (s *FileStore) sweepExpired() {
 	var candidates []string
+	keyLocks := s.keyLockDir()
 	filepath.Walk(s.path, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			if path == keyLocks {
+				// The key write-lock files are not cache entries and
+				// must never be removed (see lockKeyForWrite).
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if s.walkHook != nil {
@@ -306,6 +344,25 @@ func (s *FileStore) prefixedKey(key string) string {
 	return PrefixKey(s.prefix, key)
 }
 
+// keyLockDir is the directory of the key write-lock files.
+func (s *FileStore) keyLockDir() string {
+	return filepath.Join(s.path, "locks", "keys")
+}
+
+// lockKeyForPlainWrite takes key's write lock for a write whose contract
+// holds within one process without it (Put, Add, Forever, Forget,
+// Increment): where the platform has no flock the write proceeds under the
+// store mutex alone, as it always has. Taking the lock is what makes a
+// CompareAndSwapCtx or a set update from another process atomic against
+// these writes.
+func (s *FileStore) lockKeyForPlainWrite(ctx context.Context, key string) (func(), error) {
+	unlock, err := s.lockKeyForWrite(ctx, key)
+	if errors.Is(err, ErrLockNotSupported) {
+		return func() {}, nil
+	}
+	return unlock, err
+}
+
 // GetCtx retrieves a value from the cache. The file store performs only
 // local disk I/O that is not cancellable through context, so ctx is
 // honoured as a pre-flight cancellation check but otherwise unused.
@@ -333,8 +390,8 @@ func (s *FileStore) GetCtx(ctx context.Context, key string) (interface{}, bool) 
 		return nil, false
 	}
 
-	// Unmarshal the actual value (decoding the base64 string envelope when present)
-	value, err := UnmarshalValue(item.Value)
+	// Decode the value (a set reads back as its member map).
+	value, err := item.value()
 	if err != nil {
 		return nil, false
 	}
@@ -376,6 +433,11 @@ func (s *FileStore) PutCtx(ctx context.Context, key string, value interface{}, t
 			return err
 		}
 	}
+	unlock, err := s.lockKeyForPlainWrite(ctx, key)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -429,6 +491,8 @@ func (s *FileStore) Put(key string, value interface{}, ttl time.Duration) error 
 //
 // Atomicity is layered:
 //
+//   - Every write of the key, from any FileStore over the same directory,
+//     holds the key's write lock (lockKeyForWrite) where flock exists.
 //   - Same-process goroutines serialize on the FileStore write mutex.
 //   - Cross-process / cross-instance contention is gated by os.O_EXCL
 //     for the create path (kernel-enforced single creator) and by an
@@ -447,6 +511,11 @@ func (s *FileStore) AddCtx(ctx context.Context, key string, value interface{}, t
 			return false, err
 		}
 	}
+	unlock, err := s.lockKeyForPlainWrite(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -581,6 +650,11 @@ func (s *FileStore) ForeverCtx(ctx context.Context, key string, value interface{
 			return err
 		}
 	}
+	unlock, err := s.lockKeyForPlainWrite(ctx, key)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -627,11 +701,16 @@ func (s *FileStore) ForgetCtx(ctx context.Context, key string) error {
 			return err
 		}
 	}
+	unlock, err := s.lockKeyForPlainWrite(ctx, key)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	path := s.getCacheFilePath(key)
-	err := os.Remove(path)
+	err = os.Remove(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -660,8 +739,10 @@ func (s *FileStore) FlushCtx(ctx context.Context) error {
 		}
 	}
 
-	// Collect every file path lock-free.
+	// Collect every file path lock-free. The key write-lock files are not
+	// cache entries and are never removed (see lockKeyForWrite).
 	var paths []string
+	keyLocks := s.keyLockDir()
 	err := filepath.Walk(s.path, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			// Entries can vanish mid-walk now that concurrent ops (expired
@@ -670,6 +751,9 @@ func (s *FileStore) FlushCtx(ctx context.Context) error {
 				return nil
 			}
 			return err
+		}
+		if info.IsDir() && path == keyLocks {
+			return filepath.SkipDir
 		}
 		if !info.IsDir() {
 			if s.walkHook != nil {
@@ -712,6 +796,11 @@ func (s *FileStore) IncrementCtx(ctx context.Context, key string, value int64) (
 			return 0, err
 		}
 	}
+	unlock, err := s.lockKeyForPlainWrite(ctx, key)
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

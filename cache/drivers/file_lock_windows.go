@@ -2,7 +2,10 @@
 
 package drivers
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // ensureLockStore on non-unix platforms returns ErrLockNotSupported so
 // callers fall through Manager.Lock's nil branch. File-based flock(2)
@@ -24,4 +27,14 @@ func (s *FileStore) Lock(key string, ttl ...time.Duration) Lock {
 // RestoreLock returns nil on non-unix platforms.
 func (s *FileStore) RestoreLock(key string, owner string) Lock {
 	return nil
+}
+
+// lockKeyForWrite on non-unix platforms returns ErrLockNotSupported: there
+// is no flock(2) to serialize writes of a key across processes. The plain
+// writes (Put, Add, Forever, Forget, Increment) proceed under the store
+// mutex alone, as they always have; CompareAndSwapCtx and the set
+// operations, whose contracts need the cross-process lock, return the
+// error.
+func (s *FileStore) lockKeyForWrite(ctx context.Context, key string) (func(), error) {
+	return nil, ErrLockNotSupported
 }

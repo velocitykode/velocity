@@ -32,6 +32,14 @@ func sharedBackends() []backendFactory {
 			t.Cleanup(func() { _ = b.Shutdown(context.Background()) })
 			return b
 		}},
+		{name: "file", new: func(t *testing.T) contract.Cache {
+			b, err := drivers.NewFileStore("sessions", t.TempDir())
+			if err != nil {
+				t.Fatalf("NewFileStore: %v", err)
+			}
+			t.Cleanup(func() { _ = b.Shutdown(context.Background()) })
+			return b
+		}},
 		{name: "redis", new: func(t *testing.T) contract.Cache {
 			mr := miniredis.RunT(t)
 			b, err := cacheredis.NewRedisStore(context.Background(), "sessions", mr.Host(), mr.Server().Addr().Port, "", 0, false)
@@ -87,16 +95,84 @@ func TestNewCacheStore_NilBackend(t *testing.T) {
 }
 
 // TestNewCacheStore_UnsupportedBackend proves a backend without the
-// compare-and-swap/set capabilities is refused at construction: the file cache
-// driver implements neither.
+// compare-and-swap/set capabilities is refused at construction.
 func TestNewCacheStore_UnsupportedBackend(t *testing.T) {
 	fs, err := drivers.NewFileStore("sessions", t.TempDir())
 	if err != nil {
 		t.Fatalf("NewFileStore: %v", err)
 	}
 	t.Cleanup(func() { _ = fs.Shutdown(context.Background()) })
-	if _, err := NewCacheStore(fs); !errors.Is(err, ErrCacheStoreUnsupported) {
+	// Only the base cache methods: the capabilities are hidden.
+	plain := struct{ contract.Cache }{fs}
+	if _, err := NewCacheStore(plain); !errors.Is(err, ErrCacheStoreUnsupported) {
 		t.Fatalf("expected ErrCacheStoreUnsupported, got %v", err)
+	}
+}
+
+// TestNewCacheStore_FileBackend: the file cache driver holds session
+// records, and two FileStore instances over one directory (two processes
+// sharing a cache path) share them the way two replicas share one Redis.
+func TestNewCacheStore_FileBackend(t *testing.T) {
+	dir := t.TempDir()
+	newInstance := func() *CacheStore {
+		fs, err := drivers.NewFileStore("sessions", dir)
+		if err != nil {
+			t.Fatalf("NewFileStore: %v", err)
+		}
+		t.Cleanup(func() { _ = fs.Shutdown(context.Background()) })
+		return newCacheStore(t, fs)
+	}
+	a, b := newInstance(), newInstance()
+	ctx := context.Background()
+	const n = 20
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			inst, other := a, b
+			if i%2 == 1 {
+				inst, other = b, a
+			}
+			id := fmt.Sprintf("f-%d", i)
+			if err := inst.Put(ctx, cacheSession(id, "u")); err != nil {
+				t.Errorf("Put %s: %v", id, err)
+				return
+			}
+			for j := 0; j < 5; j++ {
+				err := other.UpdateData(ctx, id, func(data map[string]any) (map[string]any, error) {
+					count, _ := data["count"].(float64)
+					data["count"] = count + 1
+					return data, nil
+				}, time.Now(), time.Now().Add(time.Hour))
+				if err != nil {
+					t.Errorf("UpdateData %s: %v", id, err)
+				}
+				if err := inst.Touch(ctx, id, time.Now(), time.Now().Add(time.Hour)); err != nil {
+					t.Errorf("Touch %s: %v", id, err)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("f-%d", i)
+		got, err := b.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get %s: %v", id, err)
+		}
+		if got.Data["count"] != float64(5) {
+			t.Fatalf("%s count = %v, want 5 (an update was lost)", id, got.Data["count"])
+		}
+	}
+	if got := listedIDs(t, a, "u"); len(got) != n {
+		t.Fatalf("listed %d sessions, want %d", len(got), n)
+	}
+	if err := b.DeleteAllForUser(ctx, "u"); err != nil {
+		t.Fatalf("DeleteAllForUser: %v", err)
+	}
+	if _, err := a.Get(ctx, "f-0"); !errors.Is(err, auth.ErrSessionNotFound) {
+		t.Fatalf("revoked session still accepted on the other instance: %v", err)
 	}
 }
 
