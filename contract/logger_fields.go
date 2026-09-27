@@ -13,32 +13,34 @@ func BindFields(l Logger, kvs ...any) Logger {
 	if l == nil {
 		return nil
 	}
-	return boundLogger{next: l, fields: appendPairs(nil, kvs)}
+	return &boundLogger{next: l, fields: appendPairs(nil, kvs)}
 }
 
-// boundLogger writes through next with fields before each line's pairs.
+// boundLogger writes through next with fields before each line's pairs. It
+// is used by pointer so a bound logger compares by identity, like the
+// driver loggers, instead of panicking on its slice field.
 type boundLogger struct {
 	next   Logger
 	fields []any
 }
 
-func (b boundLogger) Debug(msg string, kvs ...any) { b.next.Debug(msg, b.line(kvs)...) }
-func (b boundLogger) Info(msg string, kvs ...any)  { b.next.Info(msg, b.line(kvs)...) }
-func (b boundLogger) Warn(msg string, kvs ...any)  { b.next.Warn(msg, b.line(kvs)...) }
-func (b boundLogger) Error(msg string, kvs ...any) { b.next.Error(msg, b.line(kvs)...) }
-func (b boundLogger) Fatal(msg string, kvs ...any) { b.next.Fatal(msg, b.line(kvs)...) }
+func (b *boundLogger) Debug(msg string, kvs ...any) { b.next.Debug(msg, b.line(kvs)...) }
+func (b *boundLogger) Info(msg string, kvs ...any)  { b.next.Info(msg, b.line(kvs)...) }
+func (b *boundLogger) Warn(msg string, kvs ...any)  { b.next.Warn(msg, b.line(kvs)...) }
+func (b *boundLogger) Error(msg string, kvs ...any) { b.next.Error(msg, b.line(kvs)...) }
+func (b *boundLogger) Fatal(msg string, kvs ...any) { b.next.Fatal(msg, b.line(kvs)...) }
 
 // With binds kvs after the pairs b already carries.
-func (b boundLogger) With(kvs ...any) Logger {
+func (b *boundLogger) With(kvs ...any) Logger {
 	fields := make([]any, 0, len(b.fields)+len(kvs))
 	fields = append(fields, b.fields...)
-	return boundLogger{next: b.next, fields: appendPairs(fields, kvs)}
+	return &boundLogger{next: b.next, fields: appendPairs(fields, kvs)}
 }
 
 // line returns the bound pairs followed by kvs in a new slice, so the
 // logger written through may keep or change it without touching the
 // bound pairs.
-func (b boundLogger) line(kvs []any) []any {
+func (b *boundLogger) line(kvs []any) []any {
 	out := make([]any, 0, len(b.fields)+len(kvs))
 	out = append(out, b.fields...)
 	return append(out, kvs...)

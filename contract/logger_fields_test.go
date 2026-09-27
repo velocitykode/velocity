@@ -68,6 +68,17 @@ func TestBindFields_LineSliceIsACopy(t *testing.T) {
 	}
 }
 
+// A bound logger compares by identity: comparing two never panics.
+func TestBindFields_Comparable(t *testing.T) {
+	var lines [][]any
+	a := BindFields(pairsLogger{lines: &lines}, "k", "v")
+	b := BindFields(pairsLogger{lines: &lines}, "k", "v")
+	held := []Logger{a}
+	if held[0] != a || a == b || a.With("x", 1) == a {
+		t.Error("bound loggers do not compare by identity")
+	}
+}
+
 func TestBindFields_Nil(t *testing.T) {
 	if BindFields(nil, "k", "v") != nil {
 		t.Error("BindFields(nil) != nil")
