@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"reflect"
 	"sync"
 )
@@ -109,33 +107,6 @@ func MorphStrict() bool {
 	morphStrictMode.mu.RLock()
 	defer morphStrictMode.mu.RUnlock()
 	return morphStrictMode.strict
-}
-
-// morphWarn holds the io.Writer that non-strict eager-load uses to surface
-// unknown-type warnings. Tests inject a buffer via SetMorphWarnWriter so
-// they do not race on the os.Stderr global across packages under -race.
-var morphWarn = struct {
-	mu sync.RWMutex
-	w  io.Writer
-}{w: os.Stderr}
-
-// SetMorphWarnWriter swaps the writer used for non-strict morph warnings.
-// Pass nil to silence warnings entirely. Returns the previous writer so
-// tests can restore it via t.Cleanup.
-func SetMorphWarnWriter(w io.Writer) (previous io.Writer) {
-	morphWarn.mu.Lock()
-	defer morphWarn.mu.Unlock()
-	previous = morphWarn.w
-	morphWarn.w = w
-	return previous
-}
-
-// morphWarnWriter returns the configured writer for non-strict morph
-// warnings, or nil when warnings are silenced.
-func morphWarnWriter() io.Writer {
-	morphWarn.mu.RLock()
-	defer morphWarn.mu.RUnlock()
-	return morphWarn.w
 }
 
 // Resolve loads the model row identified by m.TypeName and m.ID, sets it on

@@ -972,8 +972,9 @@ func flushBufferedEntry(ctx context.Context, entry events.BufferedEvent, bus eve
 // transaction panics and failed rollbacks, and hands it to every
 // connection's driver that takes one (contract.LoggerAware) as the query
 // logger ManagerConfig.LogQueries writes to; AddConnection hands it to a
-// connection added later. Nil restores the defaults: the framework's
-// standalone fallback logger for the manager, stdout for the query log.
+// connection added later. Nil restores the default, the framework's
+// standalone fallback logger, for both (it drops the query log's debug
+// lines).
 // Safe to call concurrently, and while the connections run queries.
 func (m *Manager) SetLogger(logger contract.Logger) {
 	m.mu.Lock()
@@ -1000,6 +1001,15 @@ func (m *Manager) log() contract.Logger {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return fallbacklog.Resolve(m.logger)
+}
+
+// Logger returns the logger the manager writes through: the one SetLogger
+// installed, or the framework's standalone fallback logger. Code that
+// reports a failure of work it ran against the manager (the validation
+// package's database rules) writes it here, so it lands where the
+// manager's own lines do. Safe to call concurrently with SetLogger.
+func (m *Manager) Logger() contract.Logger {
+	return m.log()
 }
 
 var _ contract.LoggerAware = (*Manager)(nil)

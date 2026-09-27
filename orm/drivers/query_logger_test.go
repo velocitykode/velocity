@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 )
 
 type queryLogEntry struct {
@@ -114,29 +115,33 @@ func TestSQLiteDriverSetLogger_WritesStatementsAtDebug(t *testing.T) {
 	}
 }
 
-// Without a logger (never set, or reset with nil) a statement goes to
-// stdout in the historical format; with LogQueries off nothing is written.
+// Without a logger (never set, or reset with nil) a statement goes to the
+// framework's standalone fallback logger, which drops debug lines: nothing
+// reaches stdout or standard error, whether LogQueries is on or off.
 func TestBaseDriverLogQuery_WithoutLogger(t *testing.T) {
 	tests := []struct {
 		name       string
 		logQueries bool
 		reset      bool
-		want       string
 	}{
-		{name: "never set", logQueries: true, want: "SQL: SELECT 1\nArgs: [2 params]\n"},
-		{name: "reset to nil", logQueries: true, reset: true, want: "SQL: SELECT 1\nArgs: [2 params]\n"},
-		{name: "query logging off", logQueries: false, want: ""},
+		{name: "never set", logQueries: true},
+		{name: "reset to nil", logQueries: true, reset: true},
+		{name: "query logging off", logQueries: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			fallback := fallbacklogtest.Capture(t)
 			b := &BaseDriver{Config: ConnectionConfig{LogQueries: tt.logQueries}}
 			log := &queryLog{}
 			if tt.reset {
 				b.SetLogger(log)
 				b.SetLogger(nil)
 			}
-			if got := captureStdout(t, func() { b.logQuery("SELECT 1", 2) }); got != tt.want {
-				t.Errorf("stdout = %q, want %q", got, tt.want)
+			if got := captureStdout(t, func() { b.logQuery("SELECT 1", 2) }); got != "" {
+				t.Errorf("stdout = %q, want nothing", got)
+			}
+			if got := fallback.String(); got != "" {
+				t.Errorf("fallback = %q, want nothing", got)
 			}
 			if n := len(log.all()); n != 0 {
 				t.Errorf("logger got %d entries after reset, want 0", n)

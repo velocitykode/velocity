@@ -49,7 +49,7 @@ that cannot import `app`).
 | `DB_MAX_IDLE_CONNS` | `config.go` | `10` | no | none | |
 | `DB_MAX_OPEN_CONNS` | `config.go` | `100` | no | none | |
 | `DB_CONN_MAX_LIFETIME` | `config.go` | `3600s` | no | none | seconds |
-| `DB_LOG_QUERIES` | `config.go` | `false` | no | logs every SQL statement if enabled | one debug line per statement through the app logger (statement and argument count, never the argument values), so it shows only at `LOG_LEVEL=debug`; an ORM manager used without the app writes to stdout |
+| `DB_LOG_QUERIES` | `config.go` | `false` | no | logs every SQL statement if enabled | one debug line per statement through the app logger (statement and argument count, never the argument values), so it shows only at `LOG_LEVEL=debug`; an ORM manager used without a logger writes none |
 | `DB_SLOW_QUERY_THRESHOLD` | `config.go` | `0` | no | none | duration syntax |
 
 ### Timestamp storage contract

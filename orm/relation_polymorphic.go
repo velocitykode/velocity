@@ -6,7 +6,10 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/orm/drivers"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // polymorphicMeta holds parsed metadata about a polymorphic relation field.
@@ -66,6 +69,15 @@ func findPolymorphicField(modelType reflect.Type, name string) (reflect.StructFi
 		}
 	}
 	return reflect.StructField{}, 0, false
+}
+
+// log returns the logger of the manager the query was built from, or the
+// framework's standalone fallback logger for a detached query.
+func (q *Query[T]) log() contract.Logger {
+	if q.mgr != nil {
+		return q.mgr.log()
+	}
+	return fallbacklog.Logger{}
 }
 
 // resolvePolymorphicMeta extracts polymorphic metadata for a named preload.
@@ -133,13 +145,13 @@ func (q *Query[T]) loadPolymorphic(ctx context.Context, models *[]T, meta *polym
 			if MorphStrict() {
 				return fmt.Errorf("orm: polymorphic relation %q: unknown morph type %q - call orm.RegisterMorph(%q, reflect.TypeOf(YourModel{})) at startup", meta.fieldName, tName, tName)
 			}
-			// Non-strict (default): log a warning and skip rows of this
-			// type so a single drifted row cannot crash a list view.
-			// Affected rows keep Resolved=nil and the caller can detect
-			// the unresolved morph via Morph.IsZero/TypeName checks.
-			if w := morphWarnWriter(); w != nil {
-				fmt.Fprintf(w, "orm: polymorphic relation %q: unknown morph type %q - skipping %d row(s); call orm.RegisterMorph(%q, reflect.TypeOf(YourModel{})) at startup or SetMorphStrict(true) to fail fast\n", meta.fieldName, tName, len(items), tName)
-			}
+			// Non-strict (default): log a warning through the query's
+			// manager logger and skip rows of this type so a single
+			// drifted row cannot crash a list view. Affected rows keep
+			// Resolved=nil and the caller can detect the unresolved morph
+			// via Morph.IsZero/TypeName checks.
+			q.log().With(trace.LogFields(ctx)...).Warn("velocity/orm: polymorphic relation has rows of an unknown morph type; skipping them. Register the type with orm.RegisterMorph at startup, or call SetMorphStrict(true) to fail fast",
+				"relation", meta.fieldName, "morph_type", tName, "rows", len(items))
 			continue
 		}
 		// Deduplicate IDs while keeping a mapping from id -> []modelIdx.

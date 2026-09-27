@@ -10,7 +10,10 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
+	logdrivers "github.com/velocitykode/velocity/log/drivers"
 	"github.com/velocitykode/velocity/orm/drivers"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // --- Test models for polymorphic ---
@@ -413,12 +416,11 @@ func TestPolymorphic_UnknownTypeName_NonStrict_LogsAndSkips(t *testing.T) {
 	defer ResetMorphRegistry()
 	RegisterMorph("comment", reflect.TypeOf(MComment{}))
 
-	// Inject an in-memory writer for the morph warning so the assertion is
-	// race-free (the previous version reassigned os.Stderr globally, which
-	// races across packages under -race) and so test output stays clean.
-	var captured strings.Builder
-	prev := SetMorphWarnWriter(&captured)
-	t.Cleanup(func() { SetMorphWarnWriter(prev) })
+	// The warning goes through the manager's logger, never the fallback
+	// logger or standard error.
+	fallback := fallbacklogtest.Capture(t)
+	captured := &fallbacklogtest.Output{}
+	manager.SetLogger(logdrivers.NewConsoleLoggerTo(captured, 0))
 
 	// Default (non-strict) mode.
 	if MorphStrict() {
@@ -457,8 +459,15 @@ func TestPolymorphic_UnknownTypeName_NonStrict_LogsAndSkips(t *testing.T) {
 	if unresolved != 2 {
 		t.Errorf("expected 2 unresolved rows, got %d", unresolved)
 	}
-	if !strings.Contains(captured.String(), "unknown_type") {
-		t.Errorf("expected morph warn writer to mention skipped type, got: %q", captured.String())
+	const warning = "WARN: velocity/orm: polymorphic relation has rows of an unknown morph type"
+	if got := strings.Count(captured.String(), warning); got != 1 {
+		t.Errorf("manager logger warn lines = %d, want 1: %q", got, captured.String())
+	}
+	if !strings.Contains(captured.String(), "morph_type=unknown_type") || !strings.Contains(captured.String(), "rows=2") {
+		t.Errorf("expected the warning to name the skipped type and row count, got: %q", captured.String())
+	}
+	if s := fallback.String(); s != "" {
+		t.Errorf("fallback got %q, want nothing", s)
 	}
 }
 
@@ -657,4 +666,29 @@ func (d *countingDriver) Grammar() drivers.QueryGrammar { return d.inner.Grammar
 func (d *countingDriver) DriverName() string            { return d.inner.DriverName() }
 func (d *countingDriver) OperatorRegistry() map[string]drivers.OperatorSpec {
 	return d.inner.OperatorRegistry()
+}
+
+// The non-strict unknown-morph warning carries the request, trace and span
+// ids of the ctx the query ran under.
+func TestPolymorphic_UnknownTypeWarningCarriesTheRequestIDs(t *testing.T) {
+	manager := setupPolymorphicTables(t)
+	defer manager.Shutdown(context.Background())
+	if _, err := manager.DB().Exec(`INSERT INTO morph_audit_logs (id, action, resource_type, resource_id, created_at, updated_at) VALUES
+		(1, 'create', 'unknown_type', 99, '2024-01-01', '2024-01-01')`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	SetDefault(manager)
+	defer ResetDefault()
+	ResetMorphRegistry()
+	defer ResetMorphRegistry()
+	captured := &fallbacklogtest.Output{}
+	manager.SetLogger(logdrivers.NewConsoleLoggerTo(captured, 0))
+	ctx := trace.WithTrace(trace.WithRequestID(context.Background(), "req-morph-1"), "4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7")
+
+	if _, err := (MorphAudit{}).With("Resource").Get(ctx); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if want := "request_id=req-morph-1 trace_id=4bf92f3577b34da6a3ce929d0e0e4736 span_id=00f067aa0ba902b7"; !strings.Contains(captured.String(), want) {
+		t.Errorf("warning %q does not carry %q", captured.String(), want)
+	}
 }
