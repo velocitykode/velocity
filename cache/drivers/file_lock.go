@@ -68,12 +68,13 @@ func (md fileLockMetadata) held(now time.Time) bool {
 // while such a write holds it. Block's timeout is a retry budget, not a
 // hard deadline. Block limits the stripe wait inside each attempt to the
 // time it has left, so a stripe still held when that budget is spent
-// ends the attempt: a cache write holding the stripe past the timeout
-// ends in ErrLockTimeout and the callback does not run. Block pauses
-// 100ms between its own attempts, so a lock record released between two
-// attempts can be taken by the next one: nominally up to one retry
-// interval after the timeout, later under scheduling or filesystem
-// delays. This stripe bound applies to the lock's own Block; the generic
+// ends the attempt: a cache write still holding the stripe when Block's
+// last attempt runs ends it in ErrLockTimeout, and the callback does not
+// run. Block pauses 100ms between its own attempts and its last attempt
+// runs after the final pause, so a lock record or stripe freed during
+// that pause can still be taken: nominally up to one retry interval
+// after the timeout, later under scheduling or filesystem delays. This
+// stripe bound applies to the lock's own Block; the generic
 // BlockLock helper probes through Get, which keeps the fileKeyLockWait
 // stripe wait.
 type FileLock struct {
@@ -296,12 +297,12 @@ func (l *FileLock) Run(ctx context.Context, callback func()) error {
 // callback under the lock. Returns ErrLockTimeout on timeout, or
 // ctx.Err() if ctx is cancelled before acquisition. The timeout is a
 // retry budget, not a hard deadline. An attempt waits for the key's
-// stripe only for the time Block has left, so a stripe still held when
-// that budget is spent ends the attempt: a cache write holding the
-// stripe past the timeout ends in ErrLockTimeout and the callback does
-// not run. A lock record released between two attempts can be taken by
-// the next attempt: nominally up to one retry interval after the
-// timeout, later under scheduling or filesystem delays.
+// stripe only for the time Block has left, so a cache write still
+// holding the stripe when the last attempt runs ends Block in
+// ErrLockTimeout and the callback does not run. The last attempt runs
+// after the final 100ms pause, so a lock record or stripe freed during
+// that pause can still be taken: nominally up to one retry interval
+// after the timeout, later under scheduling or filesystem delays.
 func (l *FileLock) Block(ctx context.Context, timeout time.Duration, callback func()) error {
 	return blockLock(ctx, l.getBefore, l.Release, timeout, callback)
 }

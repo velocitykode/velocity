@@ -238,10 +238,10 @@ func TestFileLock_UnreadableRecordIsAnErrorNotAFreeLock(t *testing.T) {
 	}
 }
 
-// Block gives up at its timeout while a cache write on another instance
-// holds the key's stripe, and never runs the callback late: the stripe
-// wait inside an acquisition attempt is bounded by the time Block has
-// left.
+// Block ends in ErrLockTimeout, without running the callback, while a
+// cache write on another instance holds the key's stripe through its last
+// attempt: the stripe wait inside an attempt is bounded by the time Block
+// has left.
 func TestFileLock_BlockTimesOutWhileTheKeyStripeIsHeld(t *testing.T) {
 	stores := newSharedFileStores(t, 2)
 	ctx := context.Background()
@@ -282,10 +282,11 @@ func TestFileLock_BlockTimesOutWhileTheKeyStripeIsHeld(t *testing.T) {
 	if ran.Load() {
 		t.Fatal("Block ran the callback after its timeout")
 	}
-	// A loose bound: it catches a stripe wait limited by some budget other
-	// than Block's timeout (which would still time out, but late) while
-	// leaving ample room for scheduler pauses, and stays well under the
-	// 10s watchdog.
+	// A loose bound, well under the 10s watchdog: it catches a stripe wait
+	// limited by a wrong budget longer than about 2s (such a Block still
+	// times out, but late). A budget of 10s or more is caught above, since
+	// the watchdog frees the stripe and Block acquires. A correct Block
+	// fails it only on a stall of nearly 2s.
 	if elapsed > 2*time.Second {
 		t.Fatalf("Block returned after %v; want within 2s of a 50ms timeout", elapsed)
 	}

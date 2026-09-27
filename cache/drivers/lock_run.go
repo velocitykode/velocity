@@ -30,9 +30,13 @@ func RunLock(ctx context.Context, l lockRunner, callback func()) error {
 
 // BlockLock polls for the lock up to timeout (every 100ms) then runs the
 // callback under the lock. Returns ErrLockTimeout on timeout, or ctx.Err()
-// if ctx is cancelled before acquisition. The lock is released even if the
-// callback panics; the panic propagates. A nil ctx is tolerated (no
-// cancellation, plain sleep between retries).
+// if ctx is cancelled before acquisition. The timeout is a retry budget,
+// not a hard deadline: the last attempt runs after the final pause and can
+// take a lock freed during it, and an attempt that itself waits (a
+// FileLock's Get waits for its key's stripe) is not cut short by the
+// timeout. The lock is released even if the callback panics; the panic
+// propagates. A nil ctx is tolerated (no cancellation, plain sleep between
+// retries).
 func BlockLock(ctx context.Context, l lockRunner, timeout time.Duration, callback func()) error {
 	return blockLock(ctx, func(ctx context.Context, _ time.Time) bool { return l.Get(ctx) }, l.Release, timeout, callback)
 }
