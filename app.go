@@ -409,9 +409,11 @@ func New(opts ...Option) (*App, error) {
 			a.config.CSRF.Store = stores.NewSessionBagStore(csrfSessionBag, consumedLifetime)
 		}
 		// The XSRF-TOKEN cookie a safe request bootstraps follows the
-		// session save, like the cookies of a sign-in.
+		// session save, like the cookies of a sign-in, and is dropped
+		// when a sign-in or remember-me recall later in the request
+		// replaced the session it names (the transition writes its own).
 		if a.config.CSRF.QueueAfterSessionSave == nil {
-			a.config.CSRF.QueueAfterSessionSave = schemes.QueueAfterSessionSave
+			a.config.CSRF.QueueAfterSessionSave = schemes.QueueSessionBoundWrite
 		}
 	} else if a.config.CSRF.SessionIDResolver == nil {
 		a.config.CSRF.SessionIDResolver = func(r *http.Request) (string, error) {

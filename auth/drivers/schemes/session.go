@@ -125,12 +125,21 @@ type afterSaveWrite struct {
 	// write; the seam runs it when the save fails.
 	undo func()
 	// transition is the authentication transition that queued a sign-in's
-	// credential write, or 0 for a write bound to no transition (the
-	// XSRF-TOKEN a safe request bootstraps). A later transition of the
-	// same request supersedes it: a remember-me sign-in followed by a
-	// logout, or by another sign-in, must not have its credentials
+	// credential write, the transition in effect when a session-bound
+	// write was queued (see sessionBound), or 0 for a write bound to no
+	// transition. A later transition of the same request supersedes a
+	// credential or session-bound write: a remember-me sign-in followed by
+	// a logout, or by another sign-in, must not have its credentials
 	// delivered by the save that persists what came after.
 	transition uint64
+	// sessionBound marks a write queued through QueueSessionBoundWrite
+	// (the XSRF-TOKEN a safe request bootstraps): it names state of the
+	// session the request was served under when it was queued, so a later
+	// transition that replaced that session supersedes it even when it
+	// was queued before any transition (transition 0). Its id is never
+	// saved, and the transition queues the writes of the session that
+	// replaced it.
+	sessionBound bool
 }
 
 // errSessionSaved refuses a sign-in the request attempts after its session
@@ -167,16 +176,22 @@ func (h *sessionHolder) isSealed() bool {
 	return h.sealed
 }
 
-// queueAfterSave appends write, bound to no transition, to the writes the
-// seam runs after the session save, and reports whether it did: false once
-// the queue is closed (see queueClosed).
-func (h *sessionHolder) queueAfterSave(write func(w http.ResponseWriter)) bool {
+// queueAfterSave appends write to the writes the seam runs after the
+// session save, and reports whether it did: false once the queue is closed
+// (see queueClosed). A sessionBound write is bound to the transition in
+// effect, so a later one supersedes it; any other is bound to no
+// transition.
+func (h *sessionHolder) queueAfterSave(write func(w http.ResponseWriter), sessionBound bool) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.queueClosed {
 		return false
 	}
-	h.afterSave = append(h.afterSave, afterSaveWrite{write: write})
+	e := afterSaveWrite{write: write, sessionBound: sessionBound}
+	if sessionBound {
+		e.transition = h.transition
+	}
+	h.afterSave = append(h.afterSave, e)
 	return true
 }
 
@@ -267,7 +282,8 @@ func (h *sessionHolder) takeAfterSave(sessionEnded bool) queuedWrites {
 		if e.undo != nil {
 			q.undo = append(q.undo, e.undo)
 		}
-		if sessionEnded || (e.transition != 0 && e.transition != h.transition) {
+		superseded := (e.transition != 0 || e.sessionBound) && e.transition != h.transition
+		if sessionEnded || superseded {
 			continue
 		}
 		if e.settle != nil {
@@ -295,7 +311,9 @@ func (h *sessionHolder) takeAfterSave(sessionEnded bool) queuedWrites {
 //
 // A write queued while the queued writes are delivered (from inside one of
 // them) runs as part of that delivery. A failed save, or a save that ended
-// the session, drops write.
+// the session, drops write. A sign-in or logout later in the request does
+// not: write is bound to the request, not to the session it was served
+// under when write was queued (see QueueSessionBoundWrite).
 //
 // write gets the response's headers only, before they are sent: its
 // Header() is the response's header map, so http.SetCookie and header
@@ -327,6 +345,26 @@ func (h *sessionHolder) takeAfterSave(sessionEnded bool) queuedWrites {
 // writes are accepted and never saved, Invalidate is not a Logout (it
 // retires nothing), and an explicit Save still writes.
 func QueueAfterSessionSave(r *http.Request, write func(w http.ResponseWriter)) bool {
+	return queueBehindSave(r, write, false)
+}
+
+// QueueSessionBoundWrite is QueueAfterSessionSave for a write that names
+// state of the session r is served under when it is called, such as the
+// XSRF-TOKEN cookie a safe request bootstraps: besides the cases that drop
+// a QueueAfterSessionSave write, a sign-in, remember-me recall or logout
+// that replaces the session later in the request drops it. The replaced
+// session's id is never saved, so a cookie naming it would name nothing
+// the client holds, and the transition queues the writes of the session
+// that replaced it (a sign-in or recall writes its own XSRF-TOKEN). It
+// reports false in the same cases as QueueAfterSessionSave. velocity.New
+// wires it as the CSRF middleware's csrf.Config.QueueAfterSessionSave.
+func QueueSessionBoundWrite(r *http.Request, write func(w http.ResponseWriter)) bool {
+	return queueBehindSave(r, write, true)
+}
+
+// queueBehindSave queues write on r's session holder (see
+// QueueAfterSessionSave and QueueSessionBoundWrite).
+func queueBehindSave(r *http.Request, write func(w http.ResponseWriter), sessionBound bool) bool {
 	if r == nil || write == nil {
 		return false
 	}
@@ -334,7 +372,7 @@ func QueueAfterSessionSave(r *http.Request, write func(w http.ResponseWriter)) b
 	if !ok || holder == nil || holder.getResponseWriter() == nil {
 		return false
 	}
-	return holder.queueAfterSave(write)
+	return holder.queueAfterSave(write, sessionBound)
 }
 
 // seamHolder returns r's session holder when r runs inside

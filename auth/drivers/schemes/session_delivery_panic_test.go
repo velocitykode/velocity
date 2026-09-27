@@ -140,7 +140,7 @@ func TestCommitStandalone_PanicDuringDeliveryStillEndsADeletedSession(t *testing
 			if laterRan {
 				t.Fatal("a write queued after the panicking one ran")
 			}
-			if holder.queueAfterSave(func(http.ResponseWriter) {}) {
+			if holder.queueAfterSave(func(http.ResponseWriter) {}, false) {
 				t.Fatal("a write queued after the panic was accepted, but no delivery will run it")
 			}
 			if replaySignsIn(a, captured) {

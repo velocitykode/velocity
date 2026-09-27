@@ -156,9 +156,12 @@ type Config struct {
 	// the request has no session save to follow, and the cookie is then
 	// written at once unless the response is already committed. A failed
 	// save drops the write, so the client never holds a token kept in a
-	// session that was not saved. write gets the response's headers only.
-	// velocity.New sets it together with the session-held Store; nil
-	// writes at once.
+	// session that was not saved, and so does a sign-in or remember-me
+	// recall that replaces the session later in the request (it writes
+	// the XSRF-TOKEN of the session that replaced it, so a response
+	// carries one). write gets the response's headers only. velocity.New
+	// sets it (schemes.QueueSessionBoundWrite) together with the
+	// session-held Store; nil writes at once.
 	QueueAfterSessionSave func(r *http.Request, write func(w http.ResponseWriter)) bool
 
 	// Exception handling

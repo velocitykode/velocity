@@ -304,11 +304,11 @@ func (c *CSRF) WriteXSRFCookie(ctx context.Context, w http.ResponseWriter, sessi
 	if c == nil || c.config == nil || w == nil || sessionID == "" {
 		return
 	}
-	// Post-rotation write: no request in hand, so we cannot route
-	// through the request-scoped cache. This call site does not
-	// observe the drift surface the cache exists to close (it runs
-	// once after RotateToken, not paired with a sharePropsFunc read),
-	// so a direct GetToken is fine.
+	// Post-rotation write: no request in hand. When ctx carries this
+	// instance's request-scoped cache (the scheme passes a context
+	// derived from the request), the token comes from it, so the cookie
+	// carries the same bytes as the page the request renders for the
+	// rotated session.
 	c.writeXSRFCookieForSession(ctx, w, nil, sessionID)
 }
 
@@ -317,12 +317,12 @@ func (c *CSRF) WriteXSRFCookie(ctx context.Context, w http.ResponseWriter, sessi
 // (post-rotation). The cookie is built by Config.CookiePolicy. Both opt-out guards
 // (WriteXSRFCookie=false, SingleUse=true) are applied here.
 //
-// When r is non-nil and the request carries a TokenForRequest cache
-// (attached by the CSRF middleware), the token lookup goes through the
-// cache so the cookie value and any downstream TokenForRequest reader
-// (sharePropsFunc, template helper) agree byte-for-byte. When r is nil
-// (post-rotation WriteXSRFCookie call site), the token is read with
-// GetToken under ctx.
+// When ctx carries this instance's TokenForRequest cache (attached by the
+// CSRF middleware; the scheme's post-rotation context derives from the
+// request), the token lookup goes through the cache for sessionID so the
+// cookie value and any TokenForRequest reader for the same session
+// (sharePropsFunc, template helper) agree byte-for-byte. Otherwise the
+// token is read with GetToken under ctx and masked here.
 func (c *CSRF) writeXSRFCookieForSession(ctx context.Context, w http.ResponseWriter, r *http.Request, sessionID string) {
 	if !c.config.WriteXSRFCookie {
 		return
@@ -340,13 +340,11 @@ func (c *CSRF) writeXSRFCookieForSession(ctx context.Context, w http.ResponseWri
 		token string
 		err   error
 	)
-	if r != nil {
-		// Route through the request-scoped cache. The session id
-		// argument is implied (TokenForRequest resolves it from the
-		// same SessionIDResolver), so the (sessionID, cached token)
-		// pair stays internally consistent. The cache already holds
-		// the per-response masked form, so no further masking here.
-		token, err = TokenForRequest(r)
+	if state := tokenStateFromContext(ctx); state != nil && state.csrf == c {
+		// Route through the request-scoped cache, keyed on sessionID.
+		// The cache already holds the per-response masked form, so no
+		// further masking here.
+		token, err = state.tokenFor(ctx, sessionID)
 	} else {
 		token, err = c.GetToken(ctx, sessionID)
 		if err == nil && token != "" {

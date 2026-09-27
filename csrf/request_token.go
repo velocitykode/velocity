@@ -24,13 +24,21 @@ type tokenStateKey struct{}
 // page.props.csrf_token), but the field set is small and the mutex
 // cost is negligible compared to the Store.Get round-trip it elides.
 //
-// The lazy-load pattern is "compute once, succeed or remember the
-// failure": once loaded=true, subsequent calls return the cached
-// (token, err) pair verbatim. This guarantees byte-identical tokens
-// across every reader on the same request. A transient store failure
-// returns the same error on every subsequent call within the request,
-// which is the desired behaviour: callers see one stable signal per
-// request rather than a flaky pair where the second read drifts.
+// The lazy-load pattern is "compute once per session, succeed or
+// remember the failure": once loaded=true, subsequent calls for the same
+// session id return the cached (token, err) pair verbatim. This
+// guarantees byte-identical tokens across every reader on the same
+// request. A transient store failure returns the same error on every
+// subsequent call within the request, which is the desired behaviour:
+// callers see one stable signal per request rather than a flaky pair
+// where the second read drifts.
+//
+// The cache follows the session the request is served under: sessionID
+// is the id the cached pair was loaded for, and a read that resolves a
+// different id (a sign-in or remember-me recall regenerated the session
+// after an earlier read) loads again. Otherwise the page a recall
+// renders would carry the token of the session the recall replaced,
+// which the store no longer holds, and the first submit would 419.
 //
 // token holds the EMISSION form: the stored token wrapped in this
 // request's mask (see MaskToken). Masking once at load time, rather
@@ -40,10 +48,48 @@ type tokenStateKey struct{}
 type requestTokenState struct {
 	csrf *CSRF
 
-	mu     sync.Mutex
-	loaded bool
-	token  string
-	err    error
+	mu        sync.Mutex
+	loaded    bool
+	sessionID string
+	token     string
+	err       error
+}
+
+// tokenFor returns the masked token for sessionID, from the cache when it
+// was loaded for sessionID, else loaded through c.GetToken under ctx and
+// cached. An empty sessionID caches the "no session, no token" answer.
+func (s *requestTokenState) tokenFor(ctx context.Context, sessionID string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loaded && s.sessionID == sessionID {
+		return s.token, s.err
+	}
+	s.loaded, s.sessionID, s.token, s.err = true, sessionID, "", nil
+
+	if sessionID == "" {
+		return "", nil
+	}
+	c := s.csrf
+	if c == nil || c.config == nil {
+		s.err = ErrNoStore
+		return "", s.err
+	}
+	token, err := c.GetToken(ctx, sessionID)
+	if err != nil {
+		s.err = err
+		return "", err
+	}
+	// Cache the masked emission form, not the raw stored token: every
+	// reader on this request (cookie write, meta tag, props) must emit
+	// the same bytes, and those bytes must differ from every other
+	// response's emission of the same stored token.
+	masked, err := MaskToken(token)
+	if err != nil {
+		s.err = err
+		return "", err
+	}
+	s.token = masked
+	return masked, nil
 }
 
 // withTokenState attaches a new requestTokenState to ctx, carrying the
@@ -128,6 +174,11 @@ var ErrNoTokenState = errors.New("velocity/csrf: no request-scoped CSRF state on
 //     subsequent TokenForRequest call within this request so callers
 //     see a stable signal.
 //
+// The session id is resolved on every call and the cache is keyed on it:
+// when a sign-in or a remember-me recall regenerated the session after an
+// earlier read, the next read returns the token of the new session (see
+// requestTokenState).
+//
 // Safe to call any number of times. Concurrent fan-out on the same
 // request is supported via an internal mutex.
 //
@@ -141,47 +192,19 @@ func TokenForRequest(r *http.Request) (string, error) {
 	if state == nil {
 		return "", ErrNoTokenState
 	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.loaded {
-		return state.token, state.err
-	}
-	state.loaded = true
-
 	c := state.csrf
 	if c == nil || c.config == nil {
-		state.err = ErrNoStore
-		return "", state.err
+		return "", ErrNoStore
 	}
-
+	// Resolve on every read: the cache is keyed on the session id, so a
+	// session regenerated earlier in the request (a sign-in or recall)
+	// loads the token of the session the response is now served under.
+	// An anonymous request (no session yet) caches the empty answer.
 	sessionID, err := c.getSessionIDQuiet(r)
 	if err != nil {
-		// Anonymous request, no session yet, no token to mint.
-		// Return empty + nil per the documented contract. Cache the
-		// outcome so a second reader (e.g. the bond shared props
-		// function later in the same request) sees the same "no
-		// token yet" answer instead of paying the same resolver call.
-		state.token = ""
-		state.err = nil
-		return "", nil
+		sessionID = ""
 	}
-
-	token, err := c.GetToken(r.Context(), sessionID)
-	if err != nil {
-		state.err = err
-		return "", err
-	}
-	// Cache the masked emission form, not the raw stored token: every
-	// reader on this request (cookie write, meta tag, props) must emit
-	// the same bytes, and those bytes must differ from every other
-	// response's emission of the same stored token.
-	masked, err := MaskToken(token)
-	if err != nil {
-		state.err = err
-		return "", err
-	}
-	state.token = masked
-	return masked, nil
+	return state.tokenFor(r.Context(), sessionID)
 }
 
 // WithCSRFTokenState attaches a request-scoped CSRF token cache to ctx
