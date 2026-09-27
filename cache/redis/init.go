@@ -26,5 +26,5 @@ func init() {
 // standalone use without going through the cache driver registry. It returns
 // the same store the registry path produces, so both routes are equivalent.
 func New(ctx context.Context, cfg cache.StoreConfig) (cache.Store, error) {
-	return NewRedisStore(ctx, cfg.Prefix, cfg.Host, cfg.Port, cfg.Password, cfg.Database, cfg.TLS)
+	return newRedisStore(ctx, cfg.Prefix, cfg.Host, cfg.Port, cfg.Password, cfg.Database, cfg.TLS, cfg.Logger)
 }

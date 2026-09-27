@@ -15,7 +15,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"strings"
 	"time"
@@ -24,6 +23,7 @@ import (
 
 	"github.com/velocitykode/velocity/cache/drivers"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
 // Conformance assertions: the Redis driver satisfies the contract interfaces.
@@ -51,7 +51,18 @@ type RedisStore struct {
 // non-empty, port positive) lives here so third-party cache drivers can
 // register their own factories without StoreConfig.Validate having to know
 // about every driver's required fields.
+//
+// Its startup warnings go through the framework's standalone fallback
+// logger; a store built through the cache registry (New, or a
+// cache.Manager) writes them through StoreConfig.Logger.
 func NewRedisStore(ctx context.Context, prefix string, host string, port int, password string, database int, tlsEnabled bool) (*RedisStore, error) {
+	return newRedisStore(ctx, prefix, host, port, password, database, tlsEnabled, nil)
+}
+
+// newRedisStore is NewRedisStore writing its startup warnings through
+// logger (the fallback logger when nil).
+func newRedisStore(ctx context.Context, prefix string, host string, port int, password string, database int, tlsEnabled bool, logger contract.Logger) (*RedisStore, error) {
+	logger = fallbacklog.Resolve(logger)
 	if host == "" {
 		return nil, fmt.Errorf("velocity/cache: redis driver requires host")
 	}
@@ -85,7 +96,7 @@ func NewRedisStore(ctx context.Context, prefix string, host string, port int, pa
 	// sharing the same Redis instance. Warn loudly at startup so the
 	// operator notices before they ever call Flush in production.
 	if prefix == "" {
-		slog.Default().Warn(
+		logger.Warn(
 			"velocity/cache: redis store configured with empty prefix; Flush is disabled until a prefix is set (see ErrCannotFlushUnprefixed). Set CACHE_PREFIX or per-store Prefix.",
 		)
 	}
@@ -95,7 +106,7 @@ func NewRedisStore(ctx context.Context, prefix string, host string, port int, pa
 	// anyone who can reach the host can read and write the cache. Warn
 	// loudly at startup like the empty-prefix case above; do not refuse to
 	// boot, since the operator may secure the link elsewhere (VPC, tunnel).
-	warnIfInsecure(host, password, tlsEnabled)
+	warnIfInsecure(logger, host, password, tlsEnabled)
 
 	return &RedisStore{
 		client: client,
@@ -115,20 +126,22 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// warnIfInsecure logs a startup warning when the store connects to a
-// non-loopback host with TLS disabled or with no password.
-func warnIfInsecure(host, password string, tlsEnabled bool) {
+// warnIfInsecure logs a startup warning through logger (the fallback
+// logger when nil) when the store connects to a non-loopback host with TLS
+// disabled or with no password.
+func warnIfInsecure(logger contract.Logger, host, password string, tlsEnabled bool) {
 	if isLoopbackHost(host) {
 		return
 	}
+	logger = fallbacklog.Resolve(logger)
 	if !tlsEnabled {
-		slog.Default().Warn(
+		logger.Warn(
 			"velocity/cache: redis store connecting to non-loopback host without TLS; traffic (including the password and cached values) is sent in cleartext. Set REDIS_TLS=true or per-store TLS.",
 			"host", host,
 		)
 	}
 	if password == "" {
-		slog.Default().Warn(
+		logger.Warn(
 			"velocity/cache: redis store connecting to non-loopback host without a password; anyone who can reach the host can read and write cache data. Set REDIS_PASSWORD or per-store Password.",
 			"host", host,
 		)

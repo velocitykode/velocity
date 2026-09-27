@@ -43,7 +43,24 @@ type Manager struct {
 	defaultStore    string
 	config          *Config
 	eventDispatcher func(ctx context.Context, event interface{}) error
+	// logger is handed to each store the manager builds (StoreConfig.Logger).
+	logger contract.Logger
 }
+
+// SetLogger installs the logger the manager hands to every store it builds
+// from then on (StoreConfig.Logger, unless the store's config sets its
+// own), for the store's startup warnings such as the Redis store's
+// cleartext and empty-prefix warnings. A store already built keeps what it
+// was built with. Nil hands nil: the store then writes through the
+// framework's standalone fallback logger. Safe to call concurrently with
+// store lookups.
+func (m *Manager) SetLogger(l contract.Logger) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.logger = l
+}
+
+var _ contract.LoggerAware = (*Manager)(nil)
 
 // SetEventDispatcher sets the function used to dispatch events.
 // This is called by the events package to wire up event dispatching.
@@ -103,6 +120,12 @@ type StoreConfig struct {
 	// with cache.ErrValueTooLarge. 0 (the default) means unlimited.
 	// Ignored by other drivers.
 	MaxValueBytes int64
+	// Logger receives the store's startup warnings (the Redis store's
+	// cleartext, missing-password and empty-prefix warnings). Nil (the
+	// default) takes the Manager's logger (see Manager.SetLogger); a store
+	// with neither writes them through the framework's standalone fallback
+	// logger.
+	Logger contract.Logger
 }
 
 // Validate checks that a driver name is present. Per-driver field validation
@@ -193,6 +216,9 @@ func (m *Manager) createStore(ctx context.Context, name string) (Store, error) {
 		}
 	}
 	resolved.Prefix = prefix
+	if resolved.Logger == nil {
+		resolved.Logger = m.logger
+	}
 
 	store, err := driverRegistry.Resolve(ctx, config.Driver, resolved)
 	if err != nil {

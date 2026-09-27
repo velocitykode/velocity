@@ -212,7 +212,7 @@ and `SESSION_SAME_SITE` (the app's `contract.CookiePolicy`).
 | `CRYPTO_KEY` | `config.go` | falls back to `APP_KEY` | YES | encryption broken; cookies forgeable | rotate every 6 months |
 | `CRYPTO_CIPHER` | `config.go` | `AES-256-GCM` | no | weaker cipher if changed | |
 | `CRYPTO_OLD_KEYS` | `config.go` | empty | only during rotation | none | comma-separated previous keys |
-| `CRYPTO_DEBUG` | `crypto/drivers/aes.go` | `false` | NO | logs key material if enabled | tests only |
+| `CRYPTO_DEBUG` | `crypto/drivers/aes.go` | `false` | NO | decrypt-failure causes in the log (never key bytes or plaintext) | read when the driver is built; each decrypt failure is a debug line (stage, cause) through the app logger, so it shows only at `LOG_LEVEL=debug`; tests and debugging only |
 | `CRYPTO_DISABLE_V0` | `crypto/drivers/aes.go` | `false` | no | rejects v0 ciphertexts on read | |
 
 ## View / Bond

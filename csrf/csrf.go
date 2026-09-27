@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"mime"
 	"net/http"
 	"net/url"
@@ -17,7 +16,9 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf/stores"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/router"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // ErrFormBodyTooLarge is returned by getTokenFromRequest when the
@@ -61,6 +62,11 @@ type CSRF struct {
 	// instance emits events such as csrf.session.missed.
 	eventMu         sync.RWMutex
 	eventDispatcher func(ctx context.Context, event interface{}) error
+
+	// logMu guards logger, which SetLogger may replace while requests
+	// read it.
+	logMu  sync.RWMutex
+	logger contract.Logger
 }
 
 // New creates a new CSRF instance with the given configuration.
@@ -151,6 +157,35 @@ func (c *CSRF) hasEventDispatcher() bool {
 	c.eventMu.RLock()
 	defer c.eventMu.RUnlock()
 	return c.eventDispatcher != nil
+}
+
+// SetLogger installs the logger the CSRF instance writes its warnings and
+// token-store failures to, and hands it to the token store when the store
+// takes one (contract.LoggerAware). No line names a session id. Unset or
+// nil, they go through the framework's standalone fallback logger. Safe to
+// call while requests are served. The store is handed the logger under the
+// same lock, so concurrent calls leave the instance and its store on the
+// same logger.
+func (c *CSRF) SetLogger(l contract.Logger) {
+	c.logMu.Lock()
+	defer c.logMu.Unlock()
+	c.logger = l
+	if c.config != nil {
+		if la, ok := c.config.Store.(contract.LoggerAware); ok {
+			la.SetLogger(l)
+		}
+	}
+}
+
+var _ contract.LoggerAware = (*CSRF)(nil)
+
+// log returns the installed logger, or the fallback logger when none is,
+// bound to the request, trace and span ids ctx carries.
+func (c *CSRF) log(ctx context.Context) contract.Logger {
+	c.logMu.RLock()
+	l := fallbacklog.Resolve(c.logger)
+	c.logMu.RUnlock()
+	return l.With(trace.LogFields(ctx)...)
 }
 
 // dispatchEvent fires an event if a dispatcher is configured. The
@@ -507,11 +542,11 @@ func (c *CSRF) validateToken(w http.ResponseWriter, r *http.Request) error {
 	if c.config.SingleUse {
 		if consumer, ok := c.config.Store.(AtomicConsumer); ok {
 			if consumer.ConsumptionScope() != stores.ConsumedEverywhere && c.singleUseScopeLogged.CompareAndSwap(false, true) {
-				log.Printf("velocity/csrf: WARNING SingleUse is exact per instance only: the Store keeps the record of consumed tokens on the instance that accepted them (ConsumedPerInstance), so a token replayed on another instance can be accepted once there")
+				c.log(ctx).Warn("velocity/csrf: SingleUse is exact per instance only: the Store keeps the record of consumed tokens on the instance that accepted them (ConsumedPerInstance), so a token replayed on another instance can be accepted once there")
 			}
 			consumed, err := consumer.ConsumeIfMatch(ctx, sessionID, requestToken)
 			if err != nil {
-				log.Printf("velocity/csrf: ConsumeIfMatch failed for session %s: %v", sessionID, err)
+				c.log(ctx).Error("velocity/csrf: consume single-use token failed; the request is rejected", "error", err)
 				return ErrTokenInvalid
 			}
 			if !consumed {
@@ -523,7 +558,7 @@ func (c *CSRF) validateToken(w http.ResponseWriter, r *http.Request) error {
 		// under a per-process lock, which makes single use exact per
 		// process only.
 		if c.singleUseScopeLogged.CompareAndSwap(false, true) {
-			log.Printf("velocity/csrf: WARNING SingleUse is exact per process only: the Store does not implement AtomicConsumer, so two processes can each accept the same token once")
+			c.log(ctx).Warn("velocity/csrf: SingleUse is exact per process only: the Store does not implement AtomicConsumer, so two processes can each accept the same token once")
 		}
 		c.singleUseMu.Lock()
 		defer c.singleUseMu.Unlock()
@@ -543,7 +578,7 @@ func (c *CSRF) validateToken(w http.ResponseWriter, r *http.Request) error {
 	// Single-use tokens on a store without AtomicConsumer (per process).
 	if c.config.SingleUse {
 		if err := c.config.Store.Delete(ctx, sessionID); err != nil {
-			log.Printf("velocity/csrf: failed to delete single-use token for session %s: %v", sessionID, err)
+			c.log(ctx).Error("velocity/csrf: delete single-use token failed; the token stays valid until it expires", "error", err)
 		}
 	}
 
@@ -830,7 +865,7 @@ func (c *CSRF) RotateToken(ctx context.Context, oldID, newID string) error {
 	}
 	if oldID != "" && oldID != newID {
 		if err := c.config.Store.Delete(ctx, oldID); err != nil {
-			log.Printf("velocity/csrf: RotateToken: delete old token for session %s failed: %v", oldID, err)
+			c.log(ctx).Error("velocity/csrf: rotate token: delete the old session's token failed; it stays valid until it expires", "error", err)
 		}
 	}
 	token, err := GenerateToken()

@@ -47,7 +47,10 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/orm"
+	"github.com/velocitykode/velocity/trace"
 	"github.com/velocitykode/velocity/validation"
 	"github.com/velocitykode/velocity/validation/internal/dbcheck"
 )
@@ -72,6 +75,41 @@ func countQuery(ctx context.Context, db orm.Database) dbcheck.CountFunc {
 		return n, nil
 	}
 }
+
+// databaseLogger returns the logger a DB-backed rule writes a failed query
+// to: the logger of the database it queries when the database exposes one
+// (an *orm.Manager does; in an app it holds the app logger), else the
+// framework's standalone fallback logger. Each line is bound to the
+// request, trace and span ids ctx carries (see requestLogger).
+func databaseLogger(ctx context.Context, db orm.Database) contract.Logger {
+	var l contract.Logger
+	if src, ok := db.(interface{ Logger() contract.Logger }); ok {
+		l = src.Logger()
+	}
+	return requestLogger{ctx: ctx, logger: fallbacklog.Resolve(l)}
+}
+
+// requestLogger writes each line through logger bound to trace.LogFields
+// of ctx. The fields are read when a line is written, not when the rule is
+// built, so a rule whose query succeeds generates no lazy request or trace
+// id. It holds no mutable state and is safe for concurrent use.
+type requestLogger struct {
+	ctx    context.Context
+	logger contract.Logger
+}
+
+func (l requestLogger) bound() contract.Logger {
+	return l.logger.With(trace.LogFields(l.ctx)...)
+}
+
+func (l requestLogger) Debug(msg string, kvs ...any) { l.bound().Debug(msg, kvs...) }
+func (l requestLogger) Info(msg string, kvs ...any)  { l.bound().Info(msg, kvs...) }
+func (l requestLogger) Warn(msg string, kvs ...any)  { l.bound().Warn(msg, kvs...) }
+func (l requestLogger) Error(msg string, kvs ...any) { l.bound().Error(msg, kvs...) }
+func (l requestLogger) Fatal(msg string, kvs ...any) { l.bound().Fatal(msg, kvs...) }
+
+// With binds kvs after the request fields.
+func (l requestLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
 // UniqueRule returns a RuleHandler that checks database uniqueness.
 //
@@ -112,7 +150,8 @@ func UniqueRule(db orm.Database) validation.RuleHandler {
 // "Unable to validate <field>." message: schema names, table existence,
 // and query text are server-side details that must not surface to a
 // validation error string visible to the client. The underlying error is
-// logged via slog.Default() at ERROR level so operators retain a trail.
+// logged at ERROR level through the database's logger (see databaseLogger)
+// so operators retain a trail.
 //
 // # Best-effort: see UniqueRule for the ToCToU caveat
 //
@@ -126,7 +165,7 @@ func UniqueRuleCtx(ctx context.Context, db orm.Database) validation.RuleHandler 
 	if isNilDatabase(db) {
 		return missingDatabaseRule("unique")
 	}
-	return dbcheck.UniqueRule(db.DriverName(), countQuery(ctx, db))
+	return dbcheck.UniqueRule(db.DriverName(), countQuery(ctx, db), databaseLogger(ctx, db))
 }
 
 // ExistsRule returns a RuleHandler that checks a value exists in the database.
@@ -143,7 +182,8 @@ func ExistsRule(db orm.Database) validation.RuleHandler {
 
 // ExistsRuleCtx is the context-aware variant of ExistsRule. Same semantics
 // as UniqueRuleCtx: the query runs under ctx and raw DB errors are
-// suppressed in the client-visible message but logged via slog.Default().
+// suppressed in the client-visible message but logged through the
+// database's logger.
 func ExistsRuleCtx(ctx context.Context, db orm.Database) validation.RuleHandler {
 	if ctx == nil {
 		ctx = context.Background()
@@ -151,7 +191,7 @@ func ExistsRuleCtx(ctx context.Context, db orm.Database) validation.RuleHandler 
 	if isNilDatabase(db) {
 		return missingDatabaseRule("exists")
 	}
-	return dbcheck.ExistsRule(db.DriverName(), countQuery(ctx, db))
+	return dbcheck.ExistsRule(db.DriverName(), countQuery(ctx, db), databaseLogger(ctx, db))
 }
 
 // isNilDatabase reports whether db carries no database. A nil interface and

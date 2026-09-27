@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"io"
-	"log"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf/stores"
+	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -1816,16 +1816,8 @@ func TestSingleUse_NonAtomicStore_EmitsWarningOnce(t *testing.T) {
 	cfg.Store = store
 	c := New(cfg)
 
-	// Capture log output.
-	var buf bytes.Buffer
-	prevOut := log.Writer()
-	prevFlags := log.Flags()
-	log.SetOutput(&buf)
-	log.SetFlags(0)
-	t.Cleanup(func() {
-		log.SetOutput(prevOut)
-		log.SetFlags(prevFlags)
-	})
+	// The CSRF instance has no logger: capture the fallback logger.
+	buf := fallbacklogtest.Capture(t)
 
 	do := func(tok string) int {
 		req := httptest.NewRequest("POST", "/submit", nil)
@@ -2160,14 +2152,8 @@ func TestSingleUse_WarningNamesHowFarSingleUseReaches(t *testing.T) {
 			cfg.Store = tt.store
 			c := New(cfg)
 
-			var buf bytes.Buffer
-			prevOut, prevFlags := log.Writer(), log.Flags()
-			log.SetOutput(&buf)
-			log.SetFlags(0)
-			t.Cleanup(func() {
-				log.SetOutput(prevOut)
-				log.SetFlags(prevFlags)
-			})
+			// The CSRF instance has no logger: capture the fallback logger.
+			buf := fallbacklogtest.Capture(t)
 
 			for range 2 {
 				token, err := GenerateToken()

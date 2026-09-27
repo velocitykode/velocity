@@ -1,25 +1,14 @@
 package redis
 
 import (
-	"bytes"
 	"context"
-	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
-)
 
-// captureSlog swaps the default slog logger for one writing to the returned
-// buffer and restores the original when the test ends.
-func captureSlog(t *testing.T) *bytes.Buffer {
-	t.Helper()
-	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	return &buf
-}
+	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
+)
 
 func TestIsLoopbackHost(t *testing.T) {
 	tests := []struct {
@@ -64,8 +53,8 @@ func TestWarnIfInsecure(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			buf := captureSlog(t)
-			warnIfInsecure(tt.host, tt.password, tt.tlsEnabled)
+			buf := fallbacklogtest.Capture(t)
+			warnIfInsecure(nil, tt.host, tt.password, tt.tlsEnabled)
 			out := buf.String()
 			if got := strings.Contains(out, "without TLS"); got != tt.wantTLSWarn {
 				t.Errorf("TLS warning present = %v, want %v; log output:\n%s", got, tt.wantTLSWarn, out)
@@ -86,7 +75,7 @@ func TestNewRedisStore_LoopbackSilent(t *testing.T) {
 	}
 	defer mr.Close()
 
-	buf := captureSlog(t)
+	buf := fallbacklogtest.Capture(t)
 	store, err := NewRedisStore(context.Background(), "warncheck", mr.Host(), mr.Server().Addr().Port, "", 0, false)
 	if err != nil {
 		t.Fatalf("NewRedisStore: %v", err)

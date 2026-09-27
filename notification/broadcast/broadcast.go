@@ -3,11 +3,13 @@ package broadcast
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 
 	velbroadcast "github.com/velocitykode/velocity/broadcast"
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/notification"
+	"github.com/velocitykode/velocity/trace"
 )
 
 func init() {
@@ -51,6 +53,32 @@ type BroadcastChannel struct {
 	// time per channel instance so multi-tenant operators see the gap
 	// without spamming the log on every Send.
 	warnedOnce sync.Once
+
+	// logMu guards logger, which SetLogger may replace while Send reads
+	// it.
+	logMu  sync.RWMutex
+	logger contract.Logger
+}
+
+// SetLogger installs the logger the channel writes its warnings to (no
+// authorizer installed, channels an authorizer rejected). The notification
+// manager hands it its own logger. Nil restores the framework's standalone
+// fallback logger. Safe to call while notifications are sent.
+func (c *BroadcastChannel) SetLogger(l contract.Logger) {
+	c.logMu.Lock()
+	defer c.logMu.Unlock()
+	c.logger = l
+}
+
+var _ contract.LoggerAware = (*BroadcastChannel)(nil)
+
+// log returns the installed logger, or the fallback logger when none is,
+// bound to the request, trace and span ids ctx carries.
+func (c *BroadcastChannel) log(ctx context.Context) contract.Logger {
+	c.logMu.RLock()
+	l := fallbacklog.Resolve(c.logger)
+	c.logMu.RUnlock()
+	return l.With(trace.LogFields(ctx)...)
 }
 
 // NewBroadcastChannel creates a new broadcast notification channel.
@@ -75,7 +103,7 @@ func (c *BroadcastChannel) SetAuthorizer(a BroadcastChannelAuthorizer) {
 
 // authorizerOrWarn returns the configured authorizer, or nil after
 // emitting a one-shot WARN line that flags the missing gate.
-func (c *BroadcastChannel) authorizerOrWarn() BroadcastChannelAuthorizer {
+func (c *BroadcastChannel) authorizerOrWarn(ctx context.Context) BroadcastChannelAuthorizer {
 	c.authMu.RLock()
 	a := c.authorizer
 	c.authMu.RUnlock()
@@ -83,8 +111,8 @@ func (c *BroadcastChannel) authorizerOrWarn() BroadcastChannelAuthorizer {
 		return a
 	}
 	c.warnedOnce.Do(func() {
-		slog.Default().Warn(
-			"notification.broadcast: no BroadcastChannelAuthorizer installed; outbound channel names are not authorized against the notifiable",
+		c.log(ctx).Warn(
+			"velocity/notification: broadcast channel has no BroadcastChannelAuthorizer installed; outbound channel names are not authorized against the notifiable",
 		)
 	})
 	return nil
@@ -125,7 +153,7 @@ func (c *BroadcastChannel) Send(ctx context.Context, notifiable interface{}, n n
 	// the only line of defence against a notification author routing
 	// onto a foreign tenant's channel; without it, broadcastMsg.On(...)
 	// has full trust.
-	if auth := c.authorizerOrWarn(); auth != nil {
+	if auth := c.authorizerOrWarn(ctx); auth != nil {
 		filtered := make([]string, 0, len(channels))
 		var denied []string
 		for _, name := range channels {
@@ -138,9 +166,9 @@ func (c *BroadcastChannel) Send(ctx context.Context, notifiable interface{}, n n
 		if len(denied) > 0 {
 			// Visible in the application log so operators can audit
 			// misrouted notifications during onboarding.
-			slog.Default().Warn(
-				"notification.broadcast: authorizer rejected channel(s)",
-				slog.Any("denied", denied),
+			c.log(ctx).Warn(
+				"velocity/notification: broadcast authorizer rejected channels",
+				"denied", denied,
 			)
 		}
 		if len(filtered) == 0 {

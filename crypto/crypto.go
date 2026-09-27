@@ -32,7 +32,7 @@ var (
 	// Callers MUST NOT include the error message in user-visible output;
 	// branch on errors.Is(err, crypto.ErrDecrypt) and log the real cause
 	// server-side. Operators can enable CRYPTO_DEBUG=true to surface the
-	// underlying stage via stdlib log.
+	// underlying stage as a debug line through the driver's logger.
 	ErrDecrypt          = drivers.ErrDecrypt
 	ErrDecryptionFailed = drivers.ErrDecryptionFailed
 	ErrAADMismatch      = drivers.ErrAADMismatch

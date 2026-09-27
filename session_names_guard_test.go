@@ -48,10 +48,13 @@ func walkNonTestGo(t *testing.T, root string, fn func(path string, src []byte)) 
 // falls back to or an ephemeral id it mints.
 func TestCSRFSource_NamesNoSessionFallback(t *testing.T) {
 	removed := regexp.MustCompile(`(?i)fall.?back|ephemeral`)
+	// The framework's standalone fallback logger (internal/fallbacklog) is
+	// a logger, not a session: lines naming it are not offenders.
+	fallbackLogger := regexp.MustCompile(`(?i)fallbacklog|fallback logger`)
 	var offenders []string
 	walkNonTestGo(t, "csrf", func(path string, src []byte) {
 		for i, line := range strings.Split(string(src), "\n") {
-			if removed.MatchString(line) {
+			if removed.MatchString(line) && !fallbackLogger.MatchString(line) {
 				offenders = append(offenders, path+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(line))
 			}
 		}

@@ -61,7 +61,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"strings"
 	"sync"
@@ -70,27 +69,25 @@ import (
 	"golang.org/x/crypto/hkdf"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
-// cryptoDebug controls whether the driver emits per-failure debug lines via
-// stdlib log. Off by default to avoid noise; operators flip CRYPTO_DEBUG=true
-// to trace decrypt errors without exposing them on the wire.
-var cryptoDebug = os.Getenv("CRYPTO_DEBUG") == "true"
-
 // debugDecryptFailure logs the underlying cause of a decrypt failure for
-// operator-side debugging. The public API only ever returns ErrDecrypt to
-// callers (so error messages cannot form a padding-oracle), but operators
-// running with CRYPTO_DEBUG=true can see why a given payload was rejected.
-// Keep the log line free of secret material (no key bytes, no plaintext).
-func debugDecryptFailure(stage string, err error) {
-	if !cryptoDebug {
+// operator-side debugging, at debug level through the driver's logger. The
+// public API only ever returns ErrDecrypt to callers (so error messages
+// cannot form a padding-oracle), but operators who build the driver with
+// CRYPTO_DEBUG=true can see why a given payload was rejected. Off by
+// default to avoid noise. Keep the log line free of secret material (no
+// key bytes, no plaintext).
+func (d *AESDriver) debugDecryptFailure(stage string, err error) {
+	if !d.debugDecrypt {
 		return
 	}
 	if err == nil {
-		log.Printf("velocity/crypto: decrypt failed stage=%s", stage)
+		d.log().Debug("velocity/crypto: decrypt failed", "stage", stage)
 		return
 	}
-	log.Printf("velocity/crypto: decrypt failed stage=%s err=%v", stage, err)
+	d.log().Debug("velocity/crypto: decrypt failed", "stage", stage, "error", err)
 }
 
 // v1Sentinel marks payloads produced by the current (domain-separated MAC)
@@ -112,11 +109,16 @@ type AESDriver struct {
 	// URLs, encrypted DB columns) and want to retire the weaker
 	// MAC-over-base64 surface.
 	v0Disabled bool
+	// debugDecrypt writes the stage and cause of every decrypt failure at
+	// debug level (see debugDecryptFailure). Set via env (CRYPTO_DEBUG=true)
+	// at driver construction; immutable after NewAESDriver returns.
+	debugDecrypt bool
 
 	// Event dispatcher wiring (mirrors the cache/queue/mail pattern).
-	// mu guards eventDispatcher and legacyWarned.
+	// mu guards eventDispatcher and logger.
 	mu              sync.RWMutex
 	eventDispatcher func(ctx context.Context, event interface{}) error
+	logger          contract.Logger
 	legacyWarnOnce  sync.Once
 
 	// gcmOnce builds the AEAD for the primary key exactly once. The key is
@@ -171,6 +173,7 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 		previousKeys: previousKeys,
 		cipher:       strings.ToUpper(cipher),
 		v0Disabled:   os.Getenv("CRYPTO_DISABLE_V0") == "true",
+		debugDecrypt: os.Getenv("CRYPTO_DEBUG") == "true",
 	}
 
 	// Determine required key size. Only AES-128/192/256 are permitted.
@@ -271,6 +274,26 @@ func (d *AESDriver) hasEventDispatcher() bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.eventDispatcher != nil
+}
+
+// SetLogger installs the logger the driver writes its warnings (the first
+// legacy v0 decrypt) and, with CRYPTO_DEBUG=true, its decrypt-failure
+// debug lines to. Unset or nil, they go through the framework's standalone
+// fallback logger, which writes warnings to standard error and drops debug
+// lines. Safe to call while the driver encrypts and decrypts.
+func (d *AESDriver) SetLogger(l contract.Logger) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.logger = l
+}
+
+var _ contract.LoggerAware = (*AESDriver)(nil)
+
+// log returns the installed logger, or the fallback logger when none is.
+func (d *AESDriver) log() contract.Logger {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return fallbacklog.Resolve(d.logger)
 }
 
 // dispatchEvent dispatches an event if a dispatcher is configured.
@@ -376,7 +399,7 @@ func (d *AESDriver) DecryptBytes(payload string) ([]byte, error) {
 		}
 	}
 
-	debugDecryptFailure("decrypt-all-keys", err)
+	d.debugDecryptFailure("decrypt-all-keys", err)
 	return nil, ErrDecrypt
 }
 
@@ -399,7 +422,7 @@ func (d *AESDriver) noteLegacyIfV0(version int) {
 		return
 	}
 	d.legacyWarnOnce.Do(func() {
-		log.Print("velocity/crypto: legacy v0 payload decrypted, rotate before v2.0")
+		d.log().Warn("velocity/crypto: legacy v0 payload decrypted; rotate before v2.0", "cipher", d.cipher)
 	})
 	// Dispatch every time so operators can count/alert on the stream.
 	// The once-per-instance log is about noise, not signal. The event is
@@ -699,14 +722,14 @@ func (d *AESDriver) decryptWithKeys(p *Payload, encKey, hmacKey []byte, version 
 // AAD support entirely).
 //
 // Every failure returns ErrDecrypt (single sentinel). The actual cause is
-// surfaced via debugDecryptFailure(stage, err) for operator-side
+// surfaced via d.debugDecryptFailure(stage, err) for operator-side
 // debugging only. This collapse is deliberate: six distinct error strings
 // reachable from a single payload form a padding-oracle precursor if any
 // caller forwards the error message back to a client.
 func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte, version int, aad []byte) ([]byte, error) {
 	// MAC is required for CBC decryption to ensure integrity
 	if p.MAC == "" {
-		debugDecryptFailure("cbc-mac-missing", nil)
+		d.debugDecryptFailure("cbc-mac-missing", nil)
 		return nil, ErrDecrypt
 	}
 
@@ -715,12 +738,12 @@ func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte, versio
 	// domain-separation prefix; v0 hashes the base64 strings).
 	iv, err := base64.StdEncoding.DecodeString(p.IV)
 	if err != nil {
-		debugDecryptFailure("cbc-iv-decode", err)
+		d.debugDecryptFailure("cbc-iv-decode", err)
 		return nil, ErrDecrypt
 	}
 	ciphertext, err := base64.StdEncoding.DecodeString(p.Value)
 	if err != nil {
-		debugDecryptFailure("cbc-value-decode", err)
+		d.debugDecryptFailure("cbc-value-decode", err)
 		return nil, ErrDecrypt
 	}
 
@@ -734,16 +757,16 @@ func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte, versio
 		// aad is always empty here. Guard anyway so a future caller
 		// cannot silently verify a v0 MAC while believing aad is bound.
 		if len(aad) > 0 {
-			debugDecryptFailure("cbc-v0-aad-unsupported", nil)
+			d.debugDecryptFailure("cbc-v0-aad-unsupported", nil)
 			return nil, ErrDecrypt
 		}
 		expectedMAC = computeLegacyMACWith(p.Value, p.IV, hmacKey)
 	default:
-		debugDecryptFailure("cbc-version-unsupported", nil)
+		d.debugDecryptFailure("cbc-version-unsupported", nil)
 		return nil, ErrDecrypt
 	}
 	if !secureCompare(p.MAC, expectedMAC) {
-		debugDecryptFailure("cbc-mac-mismatch", nil)
+		d.debugDecryptFailure("cbc-mac-mismatch", nil)
 		return nil, ErrDecrypt
 	}
 
@@ -756,18 +779,18 @@ func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte, versio
 	// non-block-aligned ciphertext and still pass MAC verification. The
 	// length checks here close that DoS vector explicitly.
 	if len(iv) != aes.BlockSize {
-		debugDecryptFailure("cbc-iv-length", nil)
+		d.debugDecryptFailure("cbc-iv-length", nil)
 		return nil, ErrDecrypt
 	}
 	if len(ciphertext) == 0 || len(ciphertext)%aes.BlockSize != 0 {
-		debugDecryptFailure("cbc-ct-length", nil)
+		d.debugDecryptFailure("cbc-ct-length", nil)
 		return nil, ErrDecrypt
 	}
 
 	// Create cipher block
 	block, err := aes.NewCipher(encKey)
 	if err != nil {
-		debugDecryptFailure("cbc-new-cipher", err)
+		d.debugDecryptFailure("cbc-new-cipher", err)
 		return nil, ErrDecrypt
 	}
 
@@ -779,7 +802,7 @@ func (d *AESDriver) decryptCBCWithKey(p *Payload, encKey, hmacKey []byte, versio
 	// Remove padding
 	plaintext, err = pkcs7Unpad(plaintext)
 	if err != nil {
-		debugDecryptFailure("cbc-unpad", err)
+		d.debugDecryptFailure("cbc-unpad", err)
 		return nil, ErrDecrypt
 	}
 
@@ -802,19 +825,19 @@ func (d *AESDriver) decryptGCMWithKey(p *Payload, key []byte) ([]byte, error) {
 	// Decode components
 	nonce, err := base64.StdEncoding.DecodeString(p.IV)
 	if err != nil {
-		debugDecryptFailure("gcm-iv-decode", err)
+		d.debugDecryptFailure("gcm-iv-decode", err)
 		return nil, ErrDecrypt
 	}
 
 	ciphertext, err := base64.StdEncoding.DecodeString(p.Value)
 	if err != nil {
-		debugDecryptFailure("gcm-value-decode", err)
+		d.debugDecryptFailure("gcm-value-decode", err)
 		return nil, ErrDecrypt
 	}
 
 	tag, err := base64.StdEncoding.DecodeString(p.Tag)
 	if err != nil {
-		debugDecryptFailure("gcm-tag-decode", err)
+		d.debugDecryptFailure("gcm-tag-decode", err)
 		return nil, ErrDecrypt
 	}
 
@@ -824,12 +847,12 @@ func (d *AESDriver) decryptGCMWithKey(p *Payload, key []byte) ([]byte, error) {
 	// Reuse the cached AEAD when key is the primary key; build otherwise.
 	gcm, err := d.gcmForKey(key)
 	if err != nil {
-		debugDecryptFailure("gcm-new-cipher", err)
+		d.debugDecryptFailure("gcm-new-cipher", err)
 		return nil, ErrDecrypt
 	}
 
 	if len(nonce) != gcm.NonceSize() {
-		debugDecryptFailure("gcm-nonce-length", nil)
+		d.debugDecryptFailure("gcm-nonce-length", nil)
 		return nil, ErrDecrypt
 	}
 
@@ -842,14 +865,14 @@ func (d *AESDriver) decryptGCMWithKey(p *Payload, key []byte) ([]byte, error) {
 	// have come from this package's encrypt path (which always appends a
 	// full tag).
 	if len(ciphertext) < gcm.Overhead() {
-		debugDecryptFailure("gcm-tag-length", nil)
+		d.debugDecryptFailure("gcm-tag-length", nil)
 		return nil, ErrInvalidPayload
 	}
 
 	// Decrypt and verify
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		debugDecryptFailure("gcm-open", err)
+		d.debugDecryptFailure("gcm-open", err)
 		return nil, ErrDecrypt
 	}
 

@@ -16,11 +16,13 @@
 // # Import constraints
 //
 // This package is under validation/internal so only validation and its
-// subpackages may import it. It depends ONLY on the standard library plus
-// contract (which the core validation package already imports), so importing
-// it into core adds no orm or SQL-driver dependency. It must NOT import
-// validation itself, which would create a cycle; the classifier registry in
-// core is reached through the Classifier function parameter the callers pass.
+// subpackages may import it. It depends ONLY on the standard library,
+// contract (which the core validation package already imports) and the
+// framework's standalone fallback logger (itself stdlib plus contract), so
+// importing it into core adds no orm or SQL-driver dependency. It must NOT
+// import validation itself, which would create a cycle; the classifier
+// registry in core is reached through the Classifier function parameter the
+// callers pass.
 //
 // The pure helpers ValidateIdentifier, QuoteIdentifier, Placeholder,
 // ExtractMySQLKeyName, ExtractSQLiteColumn and SelectFields are exported so the
@@ -30,12 +32,12 @@ package dbcheck
 
 import (
 	"fmt"
-	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
 // CountFunc runs a SELECT COUNT(*) query and returns the scanned count. The
@@ -112,9 +114,11 @@ func Placeholder(driver string, n int) string {
 // Raw DB errors are deliberately swallowed and replaced with a generic
 // "Unable to validate <field>." message: schema names, table existence, and
 // query text are server-side details that must not surface to a client-visible
-// validation error string. The underlying error is logged via slog.Default()
-// at ERROR level so operators retain a trail.
-func UniqueRule(driver string, count CountFunc) contract.RuleHandler {
+// validation error string. The underlying error is logged through logger at
+// ERROR level so operators retain a trail; a nil logger writes it through the
+// framework's standalone fallback logger.
+func UniqueRule(driver string, count CountFunc, logger contract.Logger) contract.RuleHandler {
+	logger = fallbacklog.Resolve(logger)
 	return func(field string, value interface{}, params []string, data map[string]interface{}) error {
 		if len(params) < 1 {
 			return fmt.Errorf("unique rule requires at least a table name")
@@ -152,12 +156,12 @@ func UniqueRule(driver string, count CountFunc) contract.RuleHandler {
 
 		n, err := count(query, args...)
 		if err != nil {
-			slog.Default().Error("validation unique rule query failed",
+			logger.Error("velocity/validation: unique rule query failed",
 				"field", field,
 				"table", table,
 				"column", column,
 				"driver", driver,
-				"err", err.Error(),
+				"error", err.Error(),
 			)
 			return fmt.Errorf("Unable to validate %s.", field)
 		}
@@ -175,9 +179,10 @@ func UniqueRule(driver string, count CountFunc) contract.RuleHandler {
 // Parameters, in order: table, column.
 //
 // Same error handling as UniqueRule: the query runs through the count seam and
-// raw DB errors are suppressed in the client-visible message but logged via
-// slog.Default().
-func ExistsRule(driver string, count CountFunc) contract.RuleHandler {
+// raw DB errors are suppressed in the client-visible message but logged
+// through logger (the fallback logger when nil).
+func ExistsRule(driver string, count CountFunc, logger contract.Logger) contract.RuleHandler {
+	logger = fallbacklog.Resolve(logger)
 	return func(field string, value interface{}, params []string, data map[string]interface{}) error {
 		if len(params) < 1 {
 			return fmt.Errorf("exists rule requires at least a table name")
@@ -200,12 +205,12 @@ func ExistsRule(driver string, count CountFunc) contract.RuleHandler {
 
 		n, err := count(query, value)
 		if err != nil {
-			slog.Default().Error("validation exists rule query failed",
+			logger.Error("velocity/validation: exists rule query failed",
 				"field", field,
 				"table", table,
 				"column", column,
 				"driver", driver,
-				"err", err.Error(),
+				"error", err.Error(),
 			)
 			return fmt.Errorf("Unable to validate %s.", field)
 		}

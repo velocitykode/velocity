@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -26,6 +26,7 @@ type Manager struct {
 	channels        map[string]Channel
 	mu              sync.RWMutex
 	eventDispatcher func(ctx context.Context, event interface{}) error
+	logger          contract.Logger
 }
 
 // NewManager creates a new notification manager.
@@ -40,6 +41,42 @@ func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event interfac
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.eventDispatcher = fn
+}
+
+// SetLogger installs the logger the manager writes its own lines to (an
+// event dispatch that failed) and hands it to every channel that takes one
+// (contract.LoggerAware): the channels registered now, and each channel
+// created or set later. Nil restores the framework's standalone fallback
+// logger. Safe to call while notifications are sent. The channels are
+// handed the logger under the manager's lock, as Channel and SetChannel
+// hand it, so concurrent calls leave the manager and every channel on the
+// same logger.
+func (m *Manager) SetLogger(l contract.Logger) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.logger = l
+	for _, ch := range m.channels {
+		if la, ok := ch.(contract.LoggerAware); ok {
+			la.SetLogger(l)
+		}
+	}
+}
+
+var _ contract.LoggerAware = (*Manager)(nil)
+
+// log returns the installed logger, or the fallback logger when none is.
+func (m *Manager) log() contract.Logger {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return fallbacklog.Resolve(m.logger)
+}
+
+// handLogger gives ch the manager's logger when ch takes one. The caller
+// holds m.mu.
+func (m *Manager) handLogger(ch Channel) {
+	if la, ok := ch.(contract.LoggerAware); ok && m.logger != nil {
+		la.SetLogger(m.logger)
+	}
 }
 
 // getEventDispatcher returns the current event dispatcher under the read lock.
@@ -62,7 +99,7 @@ func (m *Manager) dispatchEvent(ctx context.Context, event interface{}) {
 		ctx = context.Background()
 	}
 	if err := dispatch(ctx, event); err != nil {
-		log.Printf("[notification] event dispatch error: %v", err)
+		m.log().Warn("velocity/notification: event dispatch failed", "error", err)
 	}
 }
 
@@ -121,14 +158,17 @@ func (m *Manager) Channel(name string) (Channel, error) {
 		return nil, err
 	}
 
+	m.handLogger(ch)
 	m.channels[name] = ch
 	return ch, nil
 }
 
-// SetChannel explicitly sets a channel driver instance.
+// SetChannel explicitly sets a channel driver instance. A channel that takes
+// a logger is handed the manager's logger when the manager has one.
 func (m *Manager) SetChannel(name string, ch Channel) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.handLogger(ch)
 	m.channels[name] = ch
 }
 

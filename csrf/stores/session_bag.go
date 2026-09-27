@@ -4,13 +4,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
-	"log"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/sessionclock"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // TokenSessionKey is the session bag key the CSRF token lives under.
@@ -85,6 +87,33 @@ type SessionBagStore struct {
 	nextPrune time.Time
 
 	outsideSessionLogged atomic.Bool
+
+	// logMu guards logger, which SetLogger may replace while requests read
+	// it.
+	logMu  sync.RWMutex
+	logger contract.Logger
+}
+
+// SetLogger installs the logger the store writes its warning to (a request
+// that reached the CSRF middleware outside the session middleware). Unset
+// or nil, it goes through the framework's standalone fallback logger. The
+// CSRF instance holding the store hands it its own logger. Safe to call
+// while the store serves requests.
+func (s *SessionBagStore) SetLogger(l contract.Logger) {
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	s.logger = l
+}
+
+var _ contract.LoggerAware = (*SessionBagStore)(nil)
+
+// log returns the installed logger, or the fallback logger when none is,
+// bound to the request, trace and span ids ctx carries.
+func (s *SessionBagStore) log(ctx context.Context) contract.Logger {
+	s.logMu.RLock()
+	l := fallbacklog.Resolve(s.logger)
+	s.logMu.RUnlock()
+	return l.With(trace.LogFields(ctx)...)
 }
 
 // NewSessionBagStore returns a store that keeps tokens in the session
@@ -112,7 +141,7 @@ func (s *SessionBagStore) bag(ctx context.Context, id string) (SessionBag, error
 	}
 	if b == nil {
 		if s.outsideSessionLogged.CompareAndSwap(false, true) {
-			log.Printf("velocity/csrf: WARNING the CSRF token lives in the session, but a request reached the CSRF middleware outside the session middleware; no token is issued or accepted there. Mount the CSRF middleware on the app router")
+			s.log(ctx).Warn("velocity/csrf: the CSRF token lives in the session, but a request reached the CSRF middleware outside the session middleware; no token is issued or accepted there. Mount the CSRF middleware on the app router")
 		}
 		return nil, ErrNoSessionBag
 	}

@@ -12,7 +12,8 @@
 //
 // Across process edges the ids travel as the W3C traceparent header
 // (ParseTraceparent, FormatTraceparent, Propagate) and the request id as
-// X-Request-ID. The package imports only the standard library.
+// X-Request-ID. The package imports only the standard library, the contract
+// leaf and the framework's standalone fallback logger.
 package trace
 
 import (
@@ -21,10 +22,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
 // Context keys for trace information
@@ -162,13 +165,40 @@ func generateHexID(byteLength int) (string, error) {
 }
 
 // warnRandUnavailable emits a single WARN log line covering every
-// fallback that occurs in the lifetime of the process. Spamming the
-// logger on every request would amplify the original failure, so the
-// one-shot is intentional.
+// fallback that occurs in the lifetime of the process, through the
+// package logger (see SetLogger). Spamming the logger on every request
+// would amplify the original failure, so the one-shot is intentional.
 func warnRandUnavailable() {
 	randFallbackWarnOnce.Do(func() {
-		log.Printf("velocity/trace: crypto/rand unavailable; emitting fallback trace markers. APM correlation impossible until entropy restored.")
+		GetLogger().Warn("velocity/trace: crypto/rand unavailable; emitting fallback trace markers. APM correlation is impossible until entropy is restored")
 	})
+}
+
+// logger is the package logger, guarded by loggerMu: SetLogger may run on
+// one goroutine while a request goroutine writes the entropy warning.
+var (
+	loggerMu sync.RWMutex
+	logger   contract.Logger = fallbacklog.Logger{}
+)
+
+// SetLogger installs the logger the package writes its one warning to
+// (crypto/rand unavailable, fallback trace markers in use). Nil restores
+// the framework's standalone fallback logger, which writes it to standard
+// error. The logger is process-wide, like the async package's: an app
+// built by velocity.New hands it the app logger and puts it back on the
+// fallback when the app shuts down. Safe for concurrent use.
+func SetLogger(l contract.Logger) {
+	loggerMu.Lock()
+	defer loggerMu.Unlock()
+	logger = fallbacklog.Resolve(l)
+}
+
+// GetLogger returns the package logger: the one SetLogger installed, or
+// the fallback logger. Safe for concurrent use.
+func GetLogger() contract.Logger {
+	loggerMu.RLock()
+	defer loggerMu.RUnlock()
+	return logger
 }
 
 // WithTrace returns a new context with the given trace ID and span ID.

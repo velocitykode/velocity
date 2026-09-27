@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/driverregistry"
 )
 
@@ -137,4 +138,13 @@ func (cm *checkedMailer) Shutdown(ctx context.Context) error {
 		return sd.Shutdown(ctx)
 	}
 	return nil
+}
+
+// SetLogger forwards to the inner mailer when it takes a logger
+// (contract.LoggerAware), such as the log driver; otherwise it does
+// nothing.
+func (cm *checkedMailer) SetLogger(l contract.Logger) {
+	if la, ok := cm.inner.(contract.LoggerAware); ok {
+		la.SetLogger(l)
+	}
 }

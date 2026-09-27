@@ -3,9 +3,12 @@ package mail
 import (
 	"context"
 	"fmt"
-	stdlog "log"
 	"strings"
 	"sync"
+
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // The log driver registers from the mail root so MAIL_DRIVER=log works with
@@ -20,13 +23,31 @@ func init() {
 // audit log.
 const logDriverMaxEntries = 100
 
-// LogDriver logs emails instead of sending them (for development). The retained
-// log is a bounded ring of the last logDriverMaxEntries entries for dev/test
-// inspection.
+// LogDriver logs emails instead of sending them (for development). Each
+// message is one info line through the driver's logger (the app logger in
+// an app built by velocity.New) naming the sender, the recipients, the
+// subject, the body sizes and the attachment names, never the body. The
+// recipient addresses are key-value values, so the logger's redactors
+// (LOG_REDACT, LOG_REDACT_EMAILS) apply to them. Without a logger the line
+// goes to the framework's standalone fallback logger, which drops info
+// lines. The retained log is a bounded ring of the last logDriverMaxEntries
+// entries for dev/test inspection.
 type LogDriver struct {
-	mu  sync.Mutex
-	log []string
+	mu     sync.Mutex
+	log    []string
+	logger contract.Logger
 }
+
+// SetLogger installs the logger each message's summary is written to. Nil
+// restores the framework's standalone fallback logger. Safe to call while
+// messages are sent.
+func (d *LogDriver) SetLogger(l contract.Logger) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.logger = l
+}
+
+var _ contract.LoggerAware = (*LogDriver)(nil)
 
 // NewLogDriver creates a new log driver.
 func NewLogDriver() *LogDriver {
@@ -38,62 +59,61 @@ func (d *LogDriver) Send(ctx context.Context, msg *Message) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	// parts is the retained entry; kvs is the same summary as log
+	// key-value pairs.
 	var parts []string
+	var kvs []any
 
 	from := msg.GetFrom()
 	if from.Email != "" {
 		parts = append(parts, fmt.Sprintf("From: %s", from.String()))
+		kvs = append(kvs, "from", from.String())
 	}
 
 	to := msg.GetTo()
 	if len(to) > 0 {
-		toAddrs := make([]string, len(to))
-		for i, addr := range to {
-			toAddrs[i] = addr.Email
-		}
-		parts = append(parts, fmt.Sprintf("To: %s", strings.Join(toAddrs, ", ")))
+		toAddrs := strings.Join(addressEmails(to), ", ")
+		parts = append(parts, fmt.Sprintf("To: %s", toAddrs))
+		kvs = append(kvs, "to", toAddrs)
 	}
 
 	cc := msg.GetCC()
 	if len(cc) > 0 {
-		ccAddrs := make([]string, len(cc))
-		for i, addr := range cc {
-			ccAddrs[i] = addr.Email
-		}
-		parts = append(parts, fmt.Sprintf("CC: %s", strings.Join(ccAddrs, ", ")))
+		ccAddrs := strings.Join(addressEmails(cc), ", ")
+		parts = append(parts, fmt.Sprintf("CC: %s", ccAddrs))
+		kvs = append(kvs, "cc", ccAddrs)
 	}
 
 	bcc := msg.GetBCC()
 	if len(bcc) > 0 {
-		bccAddrs := make([]string, len(bcc))
-		for i, addr := range bcc {
-			bccAddrs[i] = addr.Email
-		}
-		parts = append(parts, fmt.Sprintf("BCC: %s", strings.Join(bccAddrs, ", ")))
+		bccAddrs := strings.Join(addressEmails(bcc), ", ")
+		parts = append(parts, fmt.Sprintf("BCC: %s", bccAddrs))
+		kvs = append(kvs, "bcc", bccAddrs)
 	}
 
 	replyTo := msg.GetReplyTo()
 	if len(replyTo) > 0 {
-		replyToAddrs := make([]string, len(replyTo))
-		for i, addr := range replyTo {
-			replyToAddrs[i] = addr.Email
-		}
-		parts = append(parts, fmt.Sprintf("Reply-To: %s", strings.Join(replyToAddrs, ", ")))
+		replyToAddrs := strings.Join(addressEmails(replyTo), ", ")
+		parts = append(parts, fmt.Sprintf("Reply-To: %s", replyToAddrs))
+		kvs = append(kvs, "reply_to", replyToAddrs)
 	}
 
 	subject := msg.GetSubject()
 	if subject != "" {
 		parts = append(parts, fmt.Sprintf("Subject: %s", subject))
+		kvs = append(kvs, "subject", subject)
 	}
 
 	textBody := msg.GetTextBody()
 	if textBody != "" {
 		parts = append(parts, fmt.Sprintf("Text Body: %d bytes", len(textBody)))
+		kvs = append(kvs, "text_bytes", len(textBody))
 	}
 
 	htmlBody := msg.GetHTMLBody()
 	if htmlBody != "" {
 		parts = append(parts, fmt.Sprintf("HTML Body: %d bytes", len(htmlBody)))
+		kvs = append(kvs, "html_bytes", len(htmlBody))
 	}
 
 	attachments := msg.GetAttachments()
@@ -103,6 +123,7 @@ func (d *LogDriver) Send(ctx context.Context, msg *Message) error {
 			attNames[i] = att.Name
 		}
 		parts = append(parts, fmt.Sprintf("Attachments: %s", strings.Join(attNames, ", ")))
+		kvs = append(kvs, "attachments", strings.Join(attNames, ", "))
 	}
 
 	logEntry := strings.Join(parts, " | ")
@@ -112,8 +133,17 @@ func (d *LogDriver) Send(ctx context.Context, msg *Message) error {
 		copy(retained, d.log[len(d.log)-logDriverMaxEntries:])
 		d.log = retained
 	}
-	stdlog.Printf("[MAIL] %s", logEntry)
+	fallbacklog.Resolve(d.logger).With(trace.LogFields(ctx)...).Info("velocity/mail: message logged, not sent (log driver)", kvs...)
 	return nil
+}
+
+// addressEmails returns the email of each address.
+func addressEmails(addrs []Address) []string {
+	emails := make([]string, len(addrs))
+	for i, addr := range addrs {
+		emails[i] = addr.Email
+	}
+	return emails
 }
 
 // GetLog returns all logged emails (for testing).
