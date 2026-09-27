@@ -88,7 +88,7 @@ func TestHandleError_DefaultPathResolvesWithErrorsAs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := NewV2()
 			capture := &logCapture{}
-			r.SetErrorLogger(capture.fn)
+			r.SetLogger(levelLogger{onError: capture.fn})
 			r.Get("/err", func(c *Context) error { return tt.err })
 
 			w := serveErrLogReq(r, "GET", "/err")
@@ -144,7 +144,7 @@ func TestHandleError_PanicWithHTTPErrorValueIs500(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := NewV2()
 			capture := &logCapture{}
-			r.SetErrorLogger(capture.fn)
+			r.SetLogger(levelLogger{onError: capture.fn})
 			r.Get("/panic", func(c *Context) error { panic(tt.value) })
 
 			w := serveErrLogReq(r, "GET", "/panic")

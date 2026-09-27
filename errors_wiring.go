@@ -26,8 +26,8 @@ func installErrorPipeline(a *App) {
 	routerbridge.Install(a.Router,
 		routerbridge.WithHandler(func() contract.ErrorHandler { return a.Services.Errors }),
 		routerbridge.WithUserID(appUserIdentifier{a: a}),
-		// A closure, not a.Log.Error, so a logger swapped after New is used.
-		routerbridge.WithLogger(func(msg string, kvs ...any) { a.Log.Error(msg, kvs...) }),
+		// appLogger, not the a.Log value, so a logger swapped after New is used.
+		routerbridge.WithLogger(appLogger{a: a}),
 	)
 }
 

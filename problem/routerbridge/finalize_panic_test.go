@@ -18,7 +18,7 @@ import (
 // nothing, an unmatched request whose middleware answered nothing) reaches
 // the installed pipeline as a recovered panic: a 500, exactly one report
 // with Recovered set, one RequestFailed with Recovered set, RequestHandled
-// with 500, and no line from the router's own error logger.
+// with 500, and no line from the router's own logger.
 func TestInstall_FinalizeHookPanicIsReported(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -67,7 +67,7 @@ func TestInstall_FinalizeHookPanicIsReported(t *testing.T) {
 			)
 			h.SetDebug(false)
 			r := router.New()
-			r.SetErrorLogger(func(string, ...any) { mu.Lock(); routerLog++; mu.Unlock() })
+			r.SetLogger(levelLogger{onError: func(string, ...any) { mu.Lock(); routerLog++; mu.Unlock() }})
 			Install(r, WithHandler(func() contract.ErrorHandler { return h }))
 			r.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 				mu.Lock()

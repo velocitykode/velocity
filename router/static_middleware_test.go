@@ -271,7 +271,7 @@ func TestStatic_FileServerFailuresReachTheBoundary(t *testing.T) {
 				var errorLines atomic.Int32
 				collector := newTestEventCollector()
 				r := New()
-				r.SetErrorLogger(func(string, ...any) { errorLines.Add(1) })
+				r.SetLogger(levelLogger{onError: func(string, ...any) { errorLines.Add(1) }})
 				r.SetEventDispatcher(collector.dispatch)
 				r.Use(func(next HandlerFunc) HandlerFunc {
 					return func(c *Context) error {

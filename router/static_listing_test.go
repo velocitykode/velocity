@@ -336,7 +336,7 @@ func TestStatic_IndexVanishingMidServeIsNotListed(t *testing.T) {
 	counting := &countingFS{root: http.Dir(dir), indexBudget: 2}
 	r := NewV2()
 	var errorLines atomic.Int32
-	r.SetErrorLogger(func(string, ...any) { errorLines.Add(1) })
+	r.SetLogger(levelLogger{onError: func(string, ...any) { errorLines.Add(1) }})
 	r.Static(dir)
 	r.useStaticRoot(counting)
 

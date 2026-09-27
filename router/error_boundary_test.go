@@ -228,8 +228,7 @@ func TestDefaultErrorHandler_StandaloneMatrix(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := NewV2()
 			errLog, warnLog := &logCapture{}, &logCapture{}
-			r.SetErrorLogger(errLog.fn)
-			r.SetWarnLogger(warnLog.fn)
+			r.SetLogger(levelLogger{onError: errLog.fn, onWarn: warnLog.fn})
 			r.Get("/err", tt.handler)
 
 			req := httptest.NewRequest(http.MethodGet, "/err", nil)
@@ -411,7 +410,7 @@ func TestSetErrorHandler_SeamMatrix(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := NewV2()
 			errLog := &logCapture{}
-			r.SetErrorLogger(errLog.fn)
+			r.SetLogger(levelLogger{onError: errLog.fn})
 			seam := &seamRecorder{body: "seam"}
 			r.SetErrorHandler(seam.fn)
 			for _, mw := range tt.use {
@@ -505,7 +504,7 @@ func TestErrorHandlerMiddleware_HandledPathThroughRouter(t *testing.T) {
 			r := NewV2()
 			r.SetEventDispatcher(collector.dispatch)
 			errLog := &logCapture{}
-			r.SetErrorLogger(errLog.fn)
+			r.SetLogger(levelLogger{onError: errLog.fn})
 			seam := &seamRecorder{}
 			if tt.seam {
 				r.SetErrorHandler(seam.fn)

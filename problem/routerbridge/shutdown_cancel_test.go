@@ -99,8 +99,10 @@ func TestInstall_ServerShutdownCancel(t *testing.T) {
 			var warns, errs int
 			var mu sync.Mutex
 			standalone := router.New()
-			standalone.SetWarnLogger(func(string, ...any) { mu.Lock(); warns++; mu.Unlock() })
-			standalone.SetErrorLogger(func(string, ...any) { mu.Lock(); errs++; mu.Unlock() })
+			standalone.SetLogger(levelLogger{
+				onError: func(string, ...any) { mu.Lock(); errs++; mu.Unlock() },
+				onWarn:  func(string, ...any) { mu.Lock(); warns++; mu.Unlock() },
+			})
 			standalone.Get("/x", tt.handler)
 
 			rec := &recordingReporter{}
@@ -191,8 +193,10 @@ func TestInstall_ServerShutdownCancelAfterTimeout(t *testing.T) {
 				h.SetDebug(false)
 				Install(r, WithHandler(func() contract.ErrorHandler { return h }))
 			} else {
-				r.SetWarnLogger(func(string, ...any) { mu.Lock(); warns++; mu.Unlock() })
-				r.SetErrorLogger(func(string, ...any) { mu.Lock(); errs++; mu.Unlock() })
+				r.SetLogger(levelLogger{
+					onError: func(string, ...any) { mu.Lock(); errs++; mu.Unlock() },
+					onWarn:  func(string, ...any) { mu.Lock(); warns++; mu.Unlock() },
+				})
 			}
 
 			parent, cancel := context.WithCancelCause(context.Background())

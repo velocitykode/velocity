@@ -144,13 +144,15 @@ func TestShutdownEventDispatcher_TimeoutPanicAfterStopIsReported(t *testing.T) {
 		lines  []string
 	)
 	reported := make(chan struct{}, 4)
-	r.SetErrorLogger(func(msg string, kvs ...any) {
-		sinkMu.Lock()
-		lines = append(lines, msg+" "+fmt.Sprint(kvs...))
-		sinkMu.Unlock()
-		reported <- struct{}{}
+	r.SetLogger(levelLogger{
+		onError: func(msg string, kvs ...any) {
+			sinkMu.Lock()
+			lines = append(lines, msg+" "+fmt.Sprint(kvs...))
+			sinkMu.Unlock()
+			reported <- struct{}{}
+		},
+		onWarn: func(string, ...any) {},
 	})
-	r.SetWarnLogger(func(string, ...any) {})
 	r.Use(router.Timeout(50 * time.Millisecond))
 
 	release := make(chan struct{})

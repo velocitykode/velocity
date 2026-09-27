@@ -550,7 +550,7 @@ func serverShutdownError(cause error) *contract.HTTPError {
 // a key or value containing CR or LF is dropped.
 //
 // DefaultErrorHandler does not log; the router's default path logs before
-// calling it (see SetErrorLogger).
+// calling it (see SetLogger).
 func DefaultErrorHandler(c *Context, err error, info ErrorInfo) {
 	if c == nil || c.Response == nil || err == nil {
 		return

@@ -41,7 +41,7 @@ func TestBoundary_PanicCarryingWrittenMarker(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := NewV2()
 			errLog := &logCapture{}
-			r.SetErrorLogger(errLog.fn)
+			r.SetLogger(levelLogger{onError: errLog.fn})
 			var (
 				mu     sync.Mutex
 				failed []*RequestFailed
@@ -269,7 +269,7 @@ func TestFinalize_PanickingHookIsARecoveredPanic(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := NewV2()
 			errLog := &logCapture{}
-			r.SetErrorLogger(errLog.fn)
+			r.SetLogger(levelLogger{onError: errLog.fn})
 			var (
 				mu        sync.Mutex
 				failed    []*RequestFailed
@@ -420,7 +420,7 @@ func TestBoundary_DeepChainMarkers(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := NewV2()
 			errLog := &logCapture{}
-			r.SetErrorLogger(errLog.fn)
+			r.SetLogger(levelLogger{onError: errLog.fn})
 			var (
 				mu     sync.Mutex
 				failed []*RequestFailed
@@ -492,7 +492,7 @@ func TestBoundary_ConsumerRecoveredPanic(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := NewV2()
 			errLog := &logCapture{}
-			r.SetErrorLogger(errLog.fn)
+			r.SetLogger(levelLogger{onError: errLog.fn})
 			var (
 				mu     sync.Mutex
 				failed []*RequestFailed

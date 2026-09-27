@@ -140,17 +140,14 @@ type VelocityRouterV2 struct {
 	// extracted data map with the same DB support.
 	validateDataFn func(c *Context, data map[string]interface{}, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error
 
-	// errorLogger is wired during app init (see SetErrorLogger) so the
-	// default error path logs 500-class handler errors and recovered
-	// panics instead of writing a silent generic 500. Nil means no
+	// logger is wired during app init (see SetLogger) so the default
+	// error path logs 500-class handler errors and recovered panics at
+	// error level, and a request deadline or shutdown cut-off at warn
+	// level, instead of writing a silent generic response. Nil means no
 	// logging (standalone router usage). Suppressed entirely when an
 	// error handler is installed with SetErrorHandler: that handler owns
 	// the whole error pipeline, including logging.
-	errorLogger func(msg string, kvs ...any)
-	// warnLogger is the warn-level counterpart of errorLogger (see
-	// SetWarnLogger), used for a request deadline answered 503. Nil means
-	// no warn-level logging.
-	warnLogger func(msg string, kvs ...any)
+	logger contract.Logger
 
 	// intendedFn is wired during app init to pull the "intended" post-login
 	// URL from the session (auth's unauthenticated render rule stashes it). Lets
@@ -258,45 +255,37 @@ func (r *VelocityRouterV2) SetValidator(fn func(c *Context, rules contract.Valid
 // once fn is installed, and fn must write nothing when info.Committed is
 // true. A nil fn restores DefaultErrorHandler.
 //
-// Like SetValidator and SetErrorLogger, this must be called before
+// Like SetValidator and SetLogger, this must be called before
 // serving begins; it is read per request without synchronization.
 func (r *VelocityRouterV2) SetErrorHandler(fn func(c *Context, err error, info ErrorInfo)) {
 	r.errorHandler = fn
 }
 
-// SetErrorLogger wires the function the default error path uses to log
-// 500-class handler errors and recovered panics. The signature matches
-// log.Logger.Error so the framework can pass its logger straight through.
-// Wired during velocity.New() so the router need not import log.
+// SetLogger wires the logger the default error path writes failed
+// requests to. Wired during velocity.New() so the router need not import
+// log.
 //
 // Logging policy (single owner, no double-logging):
-//   - default path (no SetErrorHandler): exactly one error-level entry per
-//     failed request that resolves to 500 or above, including recovered
-//     panics (with stack) and errors a middleware already rendered with
-//     contract.Handled. 4xx errors are deliberate responses, not
+//   - default path (no SetErrorHandler): exactly one entry per failed
+//     request that resolves to 500 or above, at error level, including
+//     recovered panics (with stack) and errors a middleware already
+//     rendered with contract.Handled; a request whose context deadline
+//     was exceeded (answered 503) or that server shutdown cut off is one
+//     warn-level entry instead. 4xx errors are deliberate responses, not
 //     failures, and are not logged; neither is a client that went away
-//     (context.Canceled with a dead request context). A request deadline
-//     (503) goes to the warn logger instead (see SetWarnLogger).
+//     (context.Canceled with a dead request context).
 //   - error handler installed with SetErrorHandler: default logging is
 //     suppressed; the handler replaces the whole error pipeline
 //     (rendering AND reporting).
 //
-// Like SetValidator, this must be called before serving begins; it is
-// not synchronized for concurrent mutation at runtime.
-func (r *VelocityRouterV2) SetErrorLogger(fn func(msg string, kvs ...any)) {
-	r.errorLogger = fn
+// Nil (the default) means failed requests are not logged. Like
+// SetValidator, this must be called before serving begins; it is not
+// synchronized for concurrent mutation at runtime.
+func (r *VelocityRouterV2) SetLogger(l contract.Logger) {
+	r.logger = l
 }
 
-// SetWarnLogger wires the function the default error path uses to log a
-// request whose context deadline was exceeded (answered 503) at warn
-// level. The signature matches log.Logger.Warn. Nil (the default) means
-// such requests are not logged. Suppressed, like SetErrorLogger, when an
-// error handler is installed with SetErrorHandler.
-//
-// Like SetErrorLogger, this must be called before serving begins.
-func (r *VelocityRouterV2) SetWarnLogger(fn func(msg string, kvs ...any)) {
-	r.warnLogger = fn
-}
+var _ contract.LoggerAware = (*VelocityRouterV2)(nil)
 
 // SetIntendedResolver wires the resolver ctx.Intended uses to pull the
 // post-login "intended" URL from the session. The resolver must read the
@@ -1107,10 +1096,10 @@ func (r *VelocityRouterV2) enrichRequest(req *http.Request, rd *routeData) *http
 // router answers without a matched route: ServicesFromRequest then finds
 // the router's services and servingRouter the router. A router with no
 // services and nothing to report a failure through (no error handler,
-// error logger or event dispatcher) returns req unchanged: nothing needs
+// logger or event dispatcher) returns req unchanged: nothing needs
 // either, and the request costs nothing more.
 func (r *VelocityRouterV2) servedRequest(req *http.Request) *http.Request {
-	if r.services == nil && r.errorHandler == nil && r.errorLogger == nil && r.eventDispatcher == nil {
+	if r.services == nil && r.errorHandler == nil && r.logger == nil && r.eventDispatcher == nil {
 		return req
 	}
 	return req.WithContext(servedContext{Context: req.Context(), services: r.services, router: r})
@@ -1285,7 +1274,7 @@ func (r *VelocityRouterV2) onPanic(ctx *Context, rw *responseWriter, req *http.R
 // set, as onPanic does, then the installed error handler gets err with
 // ErrorInfo.Committed set, so it reports err and renders nothing; with no
 // handler installed, the default path logs it at error level through the
-// error logger. No RequestHandled is dispatched: the request already
+// router's logger. No RequestHandled is dispatched: the request already
 // recorded its answer. c is the Context of the goroutine that panicked,
 // never a pooled one; the request IDs are read from its request's
 // context, whose holders the request shared with every event it
@@ -1411,7 +1400,7 @@ func failureOf(err error, f *errorFacts, rw *responseWriter, committedBefore boo
 // fills in the rest of the ErrorInfo (Committed comes from the router's
 // own response writer) and calls the handler installed with
 // SetErrorHandler, or logs through the default policy (see
-// SetErrorLogger) and writes the DefaultErrorHandler response.
+// SetLogger) and writes the DefaultErrorHandler response.
 //
 // ctx.Response is reset to the router's writer first: every middleware
 // has returned by now, so a writer one of them swapped in is stale.
@@ -1461,16 +1450,10 @@ func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err err
 
 // logDefault emits the single default-path log entry for a failed request
 // at level, the level the resolution chose; f classifies err. No-op when
-// the matching logger is not wired (standalone router).
+// no logger is wired (standalone router) or the resolution logs nothing.
 func (r *VelocityRouterV2) logDefault(ctx *Context, err error, f *errorFacts, info ErrorInfo, level defaultLogLevel) {
-	var fn func(msg string, kvs ...any)
-	switch level {
-	case logError:
-		fn = r.errorLogger
-	case logWarn:
-		fn = r.warnLogger
-	}
-	if fn == nil {
+	l := r.logger
+	if l == nil || (level != logError && level != logWarn) {
 		return
 	}
 	if f.markedWritten(err, info.Recovered) {
@@ -1485,7 +1468,12 @@ func (r *VelocityRouterV2) logDefault(ctx *Context, err error, f *errorFacts, in
 	if info.Stack != "" {
 		kvs = append(kvs, "stack", info.Stack)
 	}
-	fn("unhandled error in HTTP handler", kvs...)
+	const msg = "unhandled error in HTTP handler"
+	if level == logWarn {
+		l.Warn(msg, kvs...)
+		return
+	}
+	l.Error(msg, kvs...)
 }
 
 // Handle returns the underlying http.Handler

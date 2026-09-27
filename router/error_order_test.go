@@ -104,8 +104,7 @@ func TestDefaultErrorPath_ExplicitStatusWinsOverFallbacks(t *testing.T) {
 			r := NewV2()
 			errLog, warnLog := &logCapture{}, &logCapture{}
 			failed := &failedCapture{}
-			r.SetErrorLogger(errLog.fn)
-			r.SetWarnLogger(warnLog.fn)
+			r.SetLogger(levelLogger{onError: errLog.fn, onWarn: warnLog.fn})
 			r.SetEventDispatcher(failed.dispatch)
 			r.Get("/x", tt.handler)
 
@@ -132,8 +131,7 @@ func TestDefaultErrorPath_ExplicitStatusWinsOverFallbacks(t *testing.T) {
 func TestDefaultErrorPath_TimeoutLogsAtWarn(t *testing.T) {
 	r := NewV2()
 	errLog, warnLog := &logCapture{}, &logCapture{}
-	r.SetErrorLogger(errLog.fn)
-	r.SetWarnLogger(warnLog.fn)
+	r.SetLogger(levelLogger{onError: errLog.fn, onWarn: warnLog.fn})
 	r.Use(Timeout(1))
 	r.Get("/slow", func(c *Context) error {
 		<-c.Request.Context().Done()

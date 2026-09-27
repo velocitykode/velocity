@@ -387,7 +387,7 @@ func TestTimeout_LateWriterProducesOneBody(t *testing.T) {
 	}
 }
 
-// A deadline is a warning, not a failure the error logger owns: the
+// A deadline is a warning, not a failure logged at error level: the
 // default path logs the 503 once at warn level and RequestFailed carries
 // the deadline.
 func TestTimeout_DefaultPathLogsWarnAndFails(t *testing.T) {
@@ -396,8 +396,7 @@ func TestTimeout_DefaultPathLogsWarnAndFails(t *testing.T) {
 	collector := newTestEventCollector()
 
 	r := NewV2()
-	r.SetWarnLogger(func(string, ...any) { mu.Lock(); warns++; mu.Unlock() })
-	r.SetErrorLogger(func(string, ...any) { mu.Lock(); errs++; mu.Unlock() })
+	r.SetLogger(levelLogger{onError: func(string, ...any) { mu.Lock(); errs++; mu.Unlock() }, onWarn: func(string, ...any) { mu.Lock(); warns++; mu.Unlock() }})
 	r.SetEventDispatcher(collector.dispatch)
 	r.Use(Timeout(20 * time.Millisecond))
 	r.Get("/slow", func(c *Context) error {

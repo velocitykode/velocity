@@ -659,18 +659,13 @@ func New(opts ...Option) (*App, error) {
 	a.Router.SetServices(a.Services)
 	// Wire the app logger into the router's default error path (one
 	// error-level entry per 500-class failure, a warn entry per request
-	// deadline). Logging ownership is documented on
-	// router.SetErrorLogger: an error handler installed with
+	// deadline or shutdown cut-off). Logging ownership is documented on
+	// router.SetLogger: an error handler installed with
 	// Router.SetErrorHandler suppresses this default and owns reporting
 	// itself, so the two paths never both fire for the same request.
-	// Closures (not a.Log method values) so tests that swap a.Log after
-	// New() observe the replacement.
-	a.Router.SetErrorLogger(func(msg string, kvs ...any) {
-		a.Log.Error(msg, kvs...)
-	})
-	a.Router.SetWarnLogger(func(msg string, kvs ...any) {
-		a.Log.Warn(msg, kvs...)
-	})
+	// appLogger (not the a.Log value) so a logger swapped after New() is
+	// the one written to.
+	a.Router.SetLogger(appLogger{a: a})
 	// Connect the router's error boundary to the error handler built at
 	// step 2. From here on the handler reports and renders every failed
 	// request, and its LogReporter (bound to a.Log) is the single log

@@ -24,7 +24,7 @@ type Option func(*config)
 type config struct {
 	resolve func() contract.ErrorHandler
 	userID  contract.RequestUserIdentifier
-	logger  func(msg string, kvs ...any)
+	logger  contract.Logger
 }
 
 // WithHandler sets the function that returns the error handler for a
@@ -42,12 +42,12 @@ func WithUserID(id contract.RequestUserIdentifier) Option {
 	return func(c *config) { c.userID = id }
 }
 
-// WithLogger sets the error-level log function for a failed request that
-// no error handler takes: with no handler resolved the bridge logs one
-// line (the error, method and path) and then answers through
+// WithLogger sets the logger for a failed request that no error handler
+// takes: with no handler resolved the bridge logs one error-level line
+// (the error, method and path) and then answers through
 // router.DefaultErrorHandler, which logs nothing itself. Nil logs nothing.
-func WithLogger(fn func(msg string, kvs ...any)) Option {
-	return func(c *config) { c.logger = fn }
+func WithLogger(logger contract.Logger) Option {
+	return func(c *config) { c.logger = logger }
 }
 
 // Install sets r's error handler to the bridge. From then on the router
@@ -80,7 +80,7 @@ func Install(r *router.VelocityRouterV2, opts ...Option) {
 // logUnhandled logs the error-level line for a failed request no error
 // handler takes. A panicking logger is swallowed so the response is still
 // written.
-func logUnhandled(logger func(msg string, kvs ...any), c *router.Context, err error) {
+func logUnhandled(logger contract.Logger, c *router.Context, err error) {
 	if logger == nil || c == nil || err == nil {
 		return
 	}
@@ -92,7 +92,7 @@ func logUnhandled(logger func(msg string, kvs ...any), c *router.Context, err er
 			kvs = append(kvs, "path", r.URL.Path)
 		}
 	}
-	logger("routerbridge: no error handler; answered by the router default", kvs...)
+	logger.Error("routerbridge: no error handler; answered by the router default", kvs...)
 }
 
 // Handle hands one failed request to h: it builds the ErrorContext from

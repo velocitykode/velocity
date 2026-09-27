@@ -50,7 +50,7 @@ func (o *abortObserver) router(pipeline bool) *router.VelocityRouterV2 {
 		h.SetDebug(false)
 		Install(r, WithHandler(func() contract.ErrorHandler { return h }))
 	} else {
-		r.SetErrorLogger(func(string, ...any) { o.mu.Lock(); o.logs++; o.mu.Unlock() })
+		r.SetLogger(levelLogger{onError: func(string, ...any) { o.mu.Lock(); o.logs++; o.mu.Unlock() }})
 	}
 	return r
 }

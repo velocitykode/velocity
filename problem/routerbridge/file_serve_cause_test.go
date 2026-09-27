@@ -44,7 +44,7 @@ func TestInstall_FileServeFailureCauseStaysServerSide(t *testing.T) {
 			var logged []string
 			standalone := router.New()
 			standalone.SetFileRoot(dir)
-			standalone.SetErrorLogger(func(_ string, kvs ...any) {
+			standalone.SetLogger(levelLogger{onError: func(_ string, kvs ...any) {
 				mu.Lock()
 				defer mu.Unlock()
 				for i := 0; i+1 < len(kvs); i += 2 {
@@ -52,7 +52,7 @@ func TestInstall_FileServeFailureCauseStaysServerSide(t *testing.T) {
 						logged = append(logged, kvs[i+1].(string))
 					}
 				}
-			})
+			}})
 			standalone.Get("/f", handler)
 
 			var reported []string

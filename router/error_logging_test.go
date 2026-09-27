@@ -11,7 +11,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 )
 
-// logCapture records every call made through the wired error logger.
+// logCapture records every error-level line the wired logger receives.
 type logCapture struct {
 	mu      sync.Mutex
 	entries []capturedEntry
@@ -57,7 +57,7 @@ func TestVelocityRouterV2_DefaultErrorLogging(t *testing.T) {
 	t.Run("handler error logs exactly one entry", func(t *testing.T) {
 		r := NewV2()
 		capture := &logCapture{}
-		r.SetErrorLogger(capture.fn)
+		r.SetLogger(levelLogger{onError: capture.fn})
 		r.Get("/boom", func(c *Context) error {
 			return errors.New("db exploded")
 		})
@@ -87,7 +87,7 @@ func TestVelocityRouterV2_DefaultErrorLogging(t *testing.T) {
 	t.Run("recovered panic logs exactly one entry with stack", func(t *testing.T) {
 		r := NewV2()
 		capture := &logCapture{}
-		r.SetErrorLogger(capture.fn)
+		r.SetLogger(levelLogger{onError: capture.fn})
 		r.Get("/panic", func(c *Context) error {
 			panic("kaboom")
 		})
@@ -111,7 +111,7 @@ func TestVelocityRouterV2_DefaultErrorLogging(t *testing.T) {
 	t.Run("5xx HTTPError is logged", func(t *testing.T) {
 		r := NewV2()
 		capture := &logCapture{}
-		r.SetErrorLogger(capture.fn)
+		r.SetLogger(levelLogger{onError: capture.fn})
 		r.Get("/unavailable", func(c *Context) error {
 			return contract.NewHTTPError(http.StatusServiceUnavailable, "down")
 		})
@@ -139,7 +139,7 @@ func TestVelocityRouterV2_DefaultErrorLogging(t *testing.T) {
 	t.Run("4xx HTTPError is not logged", func(t *testing.T) {
 		r := NewV2()
 		capture := &logCapture{}
-		r.SetErrorLogger(capture.fn)
+		r.SetLogger(levelLogger{onError: capture.fn})
 		r.Get("/missing", func(c *Context) error {
 			return contract.NewHTTPError(http.StatusNotFound, "nope")
 		})
@@ -162,7 +162,7 @@ func TestVelocityRouterV2_DefaultErrorLogging(t *testing.T) {
 	t.Run("error handler seam suppresses default logging", func(t *testing.T) {
 		r := NewV2()
 		capture := &logCapture{}
-		r.SetErrorLogger(capture.fn)
+		r.SetLogger(levelLogger{onError: capture.fn})
 		r.SetErrorHandler(func(ctx *Context, err error, info ErrorInfo) {
 			ctx.Response.WriteHeader(http.StatusBadGateway)
 		})
@@ -184,7 +184,7 @@ func TestVelocityRouterV2_DefaultErrorLogging(t *testing.T) {
 	t.Run("ErrResponseWritten is not logged", func(t *testing.T) {
 		r := NewV2()
 		capture := &logCapture{}
-		r.SetErrorLogger(capture.fn)
+		r.SetLogger(levelLogger{onError: capture.fn})
 		r.Get("/invalid", func(c *Context) error {
 			c.Response.WriteHeader(http.StatusSeeOther)
 			return contract.ErrResponseWritten

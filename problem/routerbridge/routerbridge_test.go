@@ -185,10 +185,10 @@ func TestInstall_FallsBackToRouterDefault(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var lines []string
 			var kvs []any
-			opts := append([]Option{WithLogger(func(msg string, kv ...any) {
+			opts := append([]Option{WithLogger(levelLogger{onError: func(msg string, kv ...any) {
 				lines = append(lines, msg)
 				kvs = kv
-			})}, tt.opts...)
+			}})}, tt.opts...)
 			w := serve(t, func(*router.Context) error { return problem.NotFound("gone missing") }, opts...)
 			if w.Code != http.StatusNotFound {
 				t.Fatalf("status = %d, want 404", w.Code)
@@ -210,7 +210,7 @@ func TestInstall_LoggerOnlyWithoutHandler(t *testing.T) {
 	logged := 0
 	w := serve(t, func(*router.Context) error { return errors.New("boom") },
 		WithHandler(func() contract.ErrorHandler { return newSpy() }),
-		WithLogger(func(string, ...any) { logged++ }),
+		WithLogger(levelLogger{onError: func(string, ...any) { logged++ }}),
 	)
 	if logged != 0 {
 		t.Errorf("logged %d lines with a handler, want 0", logged)
@@ -220,7 +220,7 @@ func TestInstall_LoggerOnlyWithoutHandler(t *testing.T) {
 	}
 
 	panicky := serve(t, func(*router.Context) error { return problem.NotFound() },
-		WithLogger(func(string, ...any) { panic("logger down") }),
+		WithLogger(levelLogger{onError: func(string, ...any) { panic("logger down") }}),
 	)
 	if panicky.Code != http.StatusNotFound {
 		t.Errorf("status with a panicking logger = %d, want 404", panicky.Code)
@@ -930,7 +930,7 @@ func TestInstall_PanickingPreCommitHookFallsBackTo500(t *testing.T) {
 				h := problem.NewHandler(problem.WithHandlerLogger(logger), problem.WithReporters(rep))
 				Install(r, WithHandler(func() contract.ErrorHandler { return h }))
 			} else {
-				r.SetErrorLogger(func(string, ...any) { mu.Lock(); routerLog++; mu.Unlock() })
+				r.SetLogger(levelLogger{onError: func(string, ...any) { mu.Lock(); routerLog++; mu.Unlock() }})
 			}
 			r.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 				mu.Lock()

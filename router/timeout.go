@@ -219,7 +219,7 @@ func (tw *timeoutWriter) Push(target string, opts *http.PushOptions) error {
 // goroutine recovers it and the router serving the request reports it as
 // the boundary reports a recovered panic, dispatching RequestFailed with
 // Recovered set and handing it to the installed error handler with
-// ErrorInfo.Committed set (or logging it through the error logger when
+// ErrorInfo.Committed set (or logging it through the router's logger when
 // none is installed), but nothing is written: the client already has the
 // 503. The same holds for a panic delivered just as the deadline passed:
 // the deadline answers. A late returned error is dropped, unless it

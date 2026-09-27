@@ -77,7 +77,7 @@ func TestInstall_FileHelperErrors(t *testing.T) {
 					logged := 0
 					standalone := router.New()
 					standalone.SetFileRoot(tt.root)
-					standalone.SetErrorLogger(func(string, ...any) { mu.Lock(); logged++; mu.Unlock() })
+					standalone.SetLogger(levelLogger{onError: func(string, ...any) { mu.Lock(); logged++; mu.Unlock() }})
 					standalone.Get("/f", handler)
 
 					rec := &recordingReporter{}

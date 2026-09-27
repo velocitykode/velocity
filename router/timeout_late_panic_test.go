@@ -109,7 +109,7 @@ func (o *latePanicObserver) String() string {
 // latePanicRouter builds a router with Timeout(50ms) as its first global
 // middleware, observed by obs, in one of two modes: "pipeline" (the
 // problem pipeline installed with routerbridge, as velocity.New wires it)
-// or "standalone" (the router's own error and warn loggers).
+// or "standalone" (the router's own logger).
 func latePanicRouter(mode string, obs *latePanicObserver) *router.VelocityRouterV2 {
 	r := router.New()
 	r.SetEventDispatcher(obs.dispatch)
@@ -118,8 +118,7 @@ func latePanicRouter(mode string, obs *latePanicObserver) *router.VelocityRouter
 		h.SetDebug(false)
 		routerbridge.Install(r, routerbridge.WithHandler(func() contract.ErrorHandler { return h }))
 	} else {
-		r.SetErrorLogger(obs.errorLine)
-		r.SetWarnLogger(obs.warnLine)
+		r.SetLogger(levelLogger{onError: obs.errorLine, onWarn: obs.warnLine})
 	}
 	r.Use(router.Timeout(50 * time.Millisecond))
 	return r
@@ -131,8 +130,8 @@ func latePanicRouter(mode string, obs *latePanicObserver) *router.VelocityRouter
 // panic. The handler honours the deadline, but its cleanup runs on past
 // the 503 and panics only after ServeHTTP has returned. Through the
 // problem pipeline the reporter receives that panic once with
-// ErrorContext.Recovered set; on the standalone router the error logger
-// logs it once; either way the router dispatches one RequestFailed with
+// ErrorContext.Recovered set; on the standalone router the router's logger
+// logs it once at error level; either way the router dispatches one RequestFailed with
 // Recovered set for it. The client keeps its 503: the late panic writes
 // nothing. The panic may come from the matched route's handler or, for a
 // request no route matches and for a static file, from global middleware

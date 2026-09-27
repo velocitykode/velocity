@@ -1,0 +1,16 @@
+package velocity
+
+import "github.com/velocitykode/velocity/contract"
+
+// appLogger forwards every line to the App's Services.Log as it stands when
+// the line is written, so a logger that replaces Services.Log after New is
+// the one written to by the framework values holding an appLogger.
+type appLogger struct{ a *App }
+
+var _ contract.Logger = appLogger{}
+
+func (l appLogger) Debug(msg string, kvs ...any) { l.a.Log.Debug(msg, kvs...) }
+func (l appLogger) Info(msg string, kvs ...any)  { l.a.Log.Info(msg, kvs...) }
+func (l appLogger) Warn(msg string, kvs ...any)  { l.a.Log.Warn(msg, kvs...) }
+func (l appLogger) Error(msg string, kvs ...any) { l.a.Log.Error(msg, kvs...) }
+func (l appLogger) Fatal(msg string, kvs ...any) { l.a.Log.Fatal(msg, kvs...) }
