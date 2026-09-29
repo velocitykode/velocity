@@ -34,6 +34,10 @@ type Handler struct {
 	apiMode     bool
 	apiPrefixes []string
 	logger      contract.Logger
+	// ownReporter is the LogReporter NewHandler built when no reporters
+	// were given; SetLogger moves it with the handler's own logger. Nil
+	// when the application supplied the reporters.
+	ownReporter *LogReporter
 
 	// User rules, registered through the contract.ErrorHandler methods and
 	// the generic helpers. They outrank the framework rules below.
@@ -84,7 +88,8 @@ func NewHandler(opts ...Option) *Handler {
 	}
 	h.logger = fallbacklog.Resolve(h.logger)
 	if h.reporters == nil {
-		h.reporters = []Reporter{NewLogReporter(WithLogger(h.logger))}
+		h.ownReporter = NewLogReporter(WithLogger(h.logger))
+		h.reporters = []Reporter{h.ownReporter}
 	}
 	registerStdlibRules(h)
 
@@ -107,6 +112,25 @@ const debugForcedOffWarning = "APP_DEBUG=true is ignored in production: debug re
 // fallback logger, which writes warnings and errors to standard error.
 func WithHandlerLogger(l contract.Logger) Option {
 	return func(h *Handler) { h.logger = l }
+}
+
+var _ contract.LoggerAware = (*Handler)(nil)
+
+// SetLogger replaces the logger for the handler's own messages and for the
+// LogReporter NewHandler built when no reporters were given; nil restores
+// the framework's standalone fallback logger for both. Reporters the
+// application supplied (WithReporters, AddReporter, SetReporters) keep
+// their own loggers. Safe while errors are reported and requests served: a
+// report already writing finishes on the logger it read. velocity.New's
+// logger sweep calls it, so a module or callback replacing Services.Log
+// moves the built-in error pipeline at the next lifecycle boundary.
+func (h *Handler) SetLogger(l contract.Logger) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.logger = fallbacklog.Resolve(l)
+	if h.ownReporter != nil {
+		h.ownReporter.SetLogger(l)
+	}
 }
 
 // WithDebug enables or disables debug rendering.

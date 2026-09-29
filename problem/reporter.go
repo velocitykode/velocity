@@ -3,6 +3,7 @@ package problem
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
@@ -24,10 +25,17 @@ var (
 // LogReporter writes reported errors to a contract.Logger at the level the
 // pipeline selected (ErrorContext.Level; error when unset).
 type LogReporter struct {
-	logger      contract.Logger
+	// logger is replaced by SetLogger while Report runs, so it is held
+	// atomically; nil (never set, or set to nil) means the fallback.
+	logger      atomic.Pointer[loggerRef]
 	includeCtx  bool
 	contextKeys []string
 }
+
+// loggerRef boxes a logger for an atomic.Pointer.
+type loggerRef struct{ l contract.Logger }
+
+var _ contract.LoggerAware = (*LogReporter)(nil)
 
 // LogReporterOption configures a LogReporter.
 type LogReporterOption func(*LogReporter)
@@ -45,7 +53,22 @@ func NewLogReporter(opts ...LogReporterOption) *LogReporter {
 
 // WithLogger sets the logger the reporter writes to.
 func WithLogger(logger contract.Logger) LogReporterOption {
-	return func(r *LogReporter) { r.logger = logger }
+	return func(r *LogReporter) { r.SetLogger(logger) }
+}
+
+// SetLogger replaces the logger the reporter writes to; nil restores the
+// framework's standalone fallback logger. Safe while Report runs: a report
+// already writing finishes on the logger it read.
+func (r *LogReporter) SetLogger(logger contract.Logger) {
+	r.logger.Store(&loggerRef{l: logger})
+}
+
+// log returns the logger Report writes to: the one set, or the fallback.
+func (r *LogReporter) log() contract.Logger {
+	if ref := r.logger.Load(); ref != nil {
+		return fallbacklog.Resolve(ref.l)
+	}
+	return fallbacklog.Logger{}
 }
 
 // WithContextKeys limits the ErrorContext.Extra fields written to keys.
@@ -63,7 +86,7 @@ func (r *LogReporter) Report(err error, ctx *ErrorContext) {
 	if err == nil {
 		return
 	}
-	logger := fallbacklog.Resolve(r.logger)
+	logger := r.log()
 	fields := r.buildFields(err, ctx)
 	level := contract.LogLevelUnset
 	if ctx != nil {

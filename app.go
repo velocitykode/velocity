@@ -269,21 +269,19 @@ func New(opts ...Option) (*App, error) {
 		trustedProxyNets = nil
 	}
 
-	// V2-15: NewHandler's built-in default reporter is a LogReporter with
-	// no logger, which silently drops every Report. The app logger exists
-	// by this point (step 1), so replace the default with one bound to
-	// a.Log; the reporter count stays at one and consumers can still
-	// fully replace it via the Errors() chain method (SetReporters).
-	// WithHandlerLogger routes the handler's own boot-time warnings
-	// (debug-mode notices) through a.Log as well. The framework default
-	// mappings (see errors_wiring.go) go on right after construction, so
-	// every rule an application registers later outranks them.
+	// WithHandlerLogger binds the handler's own messages (debug-mode
+	// notices) and the one LogReporter NewHandler builds to a.Log; the
+	// logger sweep (wireInstanceLoggers) moves both when a module or
+	// callback replaces Services.Log. Consumers can still fully replace
+	// the reporter via the Errors() chain method (SetReporters). The
+	// framework default mappings (see errors_wiring.go) go on right after
+	// construction, so every rule an application registers later outranks
+	// them.
 	errHandler := problem.NewHandler(
 		problem.WithDebug(a.config.Debug),
 		problem.WithEnvironment(a.config.Env),
 		problem.WithTrustedProxies(clientip.CloneIPNets(trustedProxyNets)),
 		problem.WithHandlerLogger(a.Log),
-		problem.WithReporters(problem.NewLogReporter(problem.WithLogger(a.Log))),
 	)
 	installFrameworkErrorRules(errHandler)
 	a.Services.Errors = errHandler
