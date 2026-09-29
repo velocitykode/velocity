@@ -23,10 +23,10 @@ type PanicError = panicerr.Error
 func FromRecovered(r any) error { return panicerr.FromRecovered(r) }
 
 var (
-	// logger is the package logger SetLogger installed; nil means the
-	// fallback logger. A write reads it once (GetLogger), and SetLogger only
-	// swaps the pointer.
-	logger atomic.Pointer[contract.Logger]
+	// logger holds the package logger SetLogger installed; none (or nil)
+	// means the fallback logger. A write reads it once (GetLogger), and
+	// SetLogger only swaps its target.
+	logger fallbacklog.Forwarder
 
 	panicHook atomic.Pointer[func(context.Context, any) bool]
 )
@@ -44,11 +44,7 @@ var (
 // file logger sends such a late warning or error to the standalone
 // fallback logger; a custom logger's behaviour after close is its own.
 func SetLogger(l contract.Logger) {
-	if l == nil {
-		logger.Store(nil)
-		return
-	}
-	logger.Store(&l)
+	logger.Set(l)
 }
 
 // GetLogger returns the current package-level logger. Safe for concurrent
@@ -57,10 +53,7 @@ func SetLogger(l contract.Logger) {
 // Callers can use the returned logger to emit messages tagged with the same
 // sink the async package uses for panic logs.
 func GetLogger() contract.Logger {
-	if p := logger.Load(); p != nil {
-		return *p
-	}
-	return fallbacklog.Logger{}
+	return fallbacklog.Resolve(logger.Installed())
 }
 
 // SetPanicHook installs an interceptor invoked for every panic recovered

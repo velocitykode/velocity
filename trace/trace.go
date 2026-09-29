@@ -174,10 +174,10 @@ func warnRandUnavailable() {
 	})
 }
 
-// logger is the package logger SetLogger installed; nil means the fallback
-// logger. SetLogger may run on one goroutine while a request goroutine
-// reads it for the entropy warning: it only swaps the pointer.
-var logger atomic.Pointer[contract.Logger]
+// logger holds the package logger SetLogger installed; none (or nil) means
+// the fallback logger. SetLogger may run on one goroutine while a request
+// goroutine reads it for the entropy warning: it only swaps the target.
+var logger fallbacklog.Forwarder
 
 // SetLogger installs the logger the package writes its one warning to
 // (crypto/rand unavailable, fallback trace markers in use). Nil restores
@@ -193,20 +193,13 @@ var logger atomic.Pointer[contract.Logger]
 // warning to the standalone fallback logger; a custom logger's behaviour
 // after close is its own.
 func SetLogger(l contract.Logger) {
-	if l == nil {
-		logger.Store(nil)
-		return
-	}
-	logger.Store(&l)
+	logger.Set(l)
 }
 
 // GetLogger returns the package logger: the one SetLogger installed, or
 // the fallback logger. Safe for concurrent use.
 func GetLogger() contract.Logger {
-	if p := logger.Load(); p != nil {
-		return *p
-	}
-	return fallbacklog.Logger{}
+	return fallbacklog.Resolve(logger.Installed())
 }
 
 // WithTrace returns a new context with the given trace ID and span ID.
