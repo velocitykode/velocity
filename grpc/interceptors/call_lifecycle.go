@@ -169,15 +169,16 @@ func WithStackTrace(enabled bool) CallOption {
 // its correlation, panic recovery, request line, lifecycle events and one
 // error report, all from one effective context.
 //
-// Install the pair once, at both ends of the chain, as a framework-built
-// server does; on such a server configure the default one with
-// grpc.WithCallOptions instead of adding another. A CallLifecycle nested
-// inside a call another one owns passes the call through to that owner,
-// so the call still ends once, and the nested one's options have no
-// effect:
+// Install the pair once, at both ends of the chain, with every
+// interceptor between them wrapped in ContainUnary or ContainStream, as a
+// framework-built server does; on such a server configure the default one
+// with grpc.WithCallOptions instead of adding another. A CallLifecycle
+// nested inside a call another one owns passes the call through to that
+// owner, so the call still ends once, and the nested one's options have
+// no effect:
 //
 //	calls := interceptors.CallLifecycle(interceptors.WithReporter(reporter))
-//	grpc.ChainUnaryInterceptor(calls.Unary, auth.Unary, ..., calls.Unary)
+//	grpc.ChainUnaryInterceptor(calls.Unary, interceptors.ContainUnary(auth.Unary), ..., calls.Unary)
 //
 // The first occurrence owns the call. It gives the call its span and
 // request id (see correlate), dispatches RequestStarted, and when the call
@@ -195,9 +196,14 @@ func WithStackTrace(enabled bool) CallOption {
 // Every later occurrence (the last one, and any nested CallLifecycle)
 // publishes the context it passes on and contains a panic below it, for
 // the owner's call. The last occurrence contains a panic on the goroutine
-// that runs the handler, which may not be the owner's: an interceptor that runs the rest
-// of the chain on a goroutine of its own (a timeout, say) cannot pass a
-// panic there back to the owner. The call's error report is claimed once:
+// that runs the handler, which may not be the owner's: an interceptor that
+// runs the rest of the chain on a goroutine of its own (a timeout, say)
+// cannot pass a panic there back to the owner. For the same reason each
+// interceptor between the two occurrences is wrapped in ContainUnary or
+// ContainStream, which contains a panic of that interceptor on whatever
+// goroutine runs it. An interceptor sees a panic from below it as the
+// error its continuation returns (codes.Internal, or the PanicHandler's
+// result), never as a panic. The call's error report is claimed once:
 // whichever layer reports first (a panic, or the owner's Internal or
 // Unknown error) is the call's only report. A panic after the owner ended
 // the call is reported as late work, with "late" set in its report's
@@ -216,6 +222,52 @@ func CallLifecycle(opts ...CallOption) InterceptorPair {
 	return InterceptorPair{
 		Unary:  callsUnary(cfg),
 		Stream: callsStream(cfg),
+	}
+}
+
+// ContainUnary returns next with its panics contained for the call that
+// owns it: a panic in next, or in the chain below it on the same
+// goroutine, is recovered there and handled as a panic below the owner's
+// last occurrence is (reported once, late when the call already ended,
+// and PanicRecovered dispatched), and next's caller gets codes.Internal or
+// the PanicHandler's result, which receives the context next was called
+// with. It needs a CallLifecycle owner in the call's context (a framework-built
+// server installs one); without one the panic continues unchanged. It
+// covers only the work beneath the guarded call on the goroutine that
+// runs it: a goroutine an interceptor or handler starts needs its own
+// recovery. Wrap every interceptor between the two CallLifecycle
+// occurrences of a hand-built chain; a framework-built server wraps the
+// interceptors given to Use, UseStream and UseAll.
+func ContainUnary(next grpc.UnaryServerInterceptor) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
+		defer func() {
+			if p := recover(); p != nil {
+				c := callOf(ctx)
+				if c == nil {
+					panic(p)
+				}
+				resp, err = nil, c.recoverDownstream(ctx, p)
+			}
+		}()
+		return next(ctx, req, info, handler)
+	}
+}
+
+// ContainStream is ContainUnary for a stream interceptor: the owner is
+// found in the stream's context.
+func ContainStream(next grpc.StreamServerInterceptor) grpc.StreamServerInterceptor {
+	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
+		defer func() {
+			if p := recover(); p != nil {
+				ctx := ss.Context()
+				c := callOf(ctx)
+				if c == nil {
+					panic(p)
+				}
+				err = c.recoverDownstream(ctx, p)
+			}
+		}()
+		return next(srv, ss, info, handler)
 	}
 }
 

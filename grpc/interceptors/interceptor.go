@@ -15,13 +15,15 @@
 //	server.UseAll(interceptors.Auth(validator))
 //
 // A chain built on a bare grpc-go server installs the same CallLifecycle pair
-// first and last:
+// first and last, and wraps every interceptor between them in ContainUnary
+// or ContainStream, so a panic of one that runs on a goroutine an earlier
+// interceptor started is contained too:
 //
 //	calls := interceptors.CallLifecycle(interceptors.WithReporter(reporter))
 //	auth := interceptors.Auth(validator)
 //	grpc.NewServer(
-//	    grpc.ChainUnaryInterceptor(calls.Unary, auth.Unary, calls.Unary),
-//	    grpc.ChainStreamInterceptor(calls.Stream, auth.Stream, calls.Stream),
+//	    grpc.ChainUnaryInterceptor(calls.Unary, interceptors.ContainUnary(auth.Unary), calls.Unary),
+//	    grpc.ChainStreamInterceptor(calls.Stream, interceptors.ContainStream(auth.Stream), calls.Stream),
 //	)
 package interceptors
 

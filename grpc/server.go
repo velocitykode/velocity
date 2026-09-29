@@ -265,9 +265,12 @@ func WithMaxSendMsgSize(size int) ServerOption {
 // WithoutDefaultCallLifecycle disables the call lifecycle interceptor
 // (interceptors.CallLifecycle) that Build installs by default at both ends of the
 // chain. Use it only when you install interceptors.CallLifecycle yourself, first
-// and last in the chain; otherwise the calls are not correlated, observed
-// or reported, and an interceptor/handler panic crashes the gRPC serve
-// loop (grpc-go does not auto-recover).
+// and last in the chain, with every interceptor between them wrapped in
+// interceptors.ContainUnary or interceptors.ContainStream (the server
+// then installs Use, UseStream and UseAll interceptors as given, without
+// wrapping them); otherwise the calls are not correlated, observed or
+// reported, and an interceptor/handler panic crashes the gRPC serve loop
+// (grpc-go does not auto-recover).
 func WithoutDefaultCallLifecycle() ServerOption {
 	return func(s *Server) {
 		s.disableDefaultCallLifecycle = true
@@ -435,7 +438,9 @@ func (s *Server) Build() error {
 	// makes the one error report, all under the call's one span and
 	// request id. The last occurrence contains a handler panic on the
 	// goroutine that runs the handler, which an interceptor may have
-	// started. grpc-go does not auto-recover interceptor panics.
+	// started, and each user interceptor is wrapped in ContainUnary or
+	// ContainStream, which contains its panic on whatever goroutine runs
+	// it. grpc-go does not auto-recover interceptor panics.
 	opts := make([]grpc.ServerOption, 0, len(b.serverOptions)+2)
 	opts = append(opts, b.serverOptions...)
 
@@ -451,8 +456,16 @@ func (s *Server) Build() error {
 			interceptors.WithReporter(b.reporter),
 		}, b.callOptions...)
 		calls := interceptors.CallLifecycle(callOpts...)
-		unary = append(append(append(unary, calls.Unary), b.unaryInterceptors...), calls.Unary)
-		stream = append(append(append(stream, calls.Stream), b.streamInterceptors...), calls.Stream)
+		unary = append(unary, calls.Unary)
+		for _, ic := range b.unaryInterceptors {
+			unary = append(unary, interceptors.ContainUnary(ic))
+		}
+		unary = append(unary, calls.Unary)
+		stream = append(stream, calls.Stream)
+		for _, ic := range b.streamInterceptors {
+			stream = append(stream, interceptors.ContainStream(ic))
+		}
+		stream = append(stream, calls.Stream)
 	}
 
 	if len(unary) > 0 {
