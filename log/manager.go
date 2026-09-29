@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
 // Manager handles multiple logger channels for advanced logging scenarios.
@@ -210,6 +211,11 @@ func ToStringSlice(v any) ([]string, bool) {
 
 // StackLogger logs to multiple loggers simultaneously.
 // Useful for logging to multiple destinations (e.g., file and console)
+//
+// Each child writes the line in its own containment: a child that panics
+// has the line written to the framework's standalone fallback logger
+// instead (its warnings and errors reach standard error), and the children
+// after it still get the line.
 type StackLogger struct {
 	loggers []Logger
 	// ownsChildren reports whether this stack created its children
@@ -238,35 +244,35 @@ func newManagerStackLogger(loggers ...Logger) *StackLogger {
 // Debug logs a debug message to all configured loggers
 func (s *StackLogger) Debug(msg string, kvs ...any) {
 	for _, logger := range s.loggers {
-		logger.Debug(msg, kvs...)
+		fallbacklog.Write(logger, func(l Logger) { l.Debug(msg, kvs...) })
 	}
 }
 
 // Info logs an info message to all configured loggers
 func (s *StackLogger) Info(msg string, kvs ...any) {
 	for _, logger := range s.loggers {
-		logger.Info(msg, kvs...)
+		fallbacklog.Write(logger, func(l Logger) { l.Info(msg, kvs...) })
 	}
 }
 
 // Warn logs a warning message to all configured loggers
 func (s *StackLogger) Warn(msg string, kvs ...any) {
 	for _, logger := range s.loggers {
-		logger.Warn(msg, kvs...)
+		fallbacklog.Write(logger, func(l Logger) { l.Warn(msg, kvs...) })
 	}
 }
 
 // Error logs an error message to all configured loggers
 func (s *StackLogger) Error(msg string, kvs ...any) {
 	for _, logger := range s.loggers {
-		logger.Error(msg, kvs...)
+		fallbacklog.Write(logger, func(l Logger) { l.Error(msg, kvs...) })
 	}
 }
 
 // Fatal logs a fatal message to all configured loggers
 func (s *StackLogger) Fatal(msg string, kvs ...any) {
 	for _, logger := range s.loggers {
-		logger.Fatal(msg, kvs...)
+		fallbacklog.Write(logger, func(l Logger) { l.Fatal(msg, kvs...) })
 	}
 }
 
@@ -276,9 +282,21 @@ func (s *StackLogger) Fatal(msg string, kvs ...any) {
 func (s *StackLogger) With(kvs ...any) Logger {
 	children := make([]Logger, len(s.loggers))
 	for i, l := range s.loggers {
-		children[i] = l.With(kvs...)
+		children[i] = boundChild(l, kvs)
 	}
 	return newManagerStackLogger(children...)
+}
+
+// boundChild returns l.With(kvs...), or the fallback logger bound to kvs
+// when l's With panics, so one faulty child neither fails the stack's With
+// nor loses the lines meant for it.
+func boundChild(l Logger, kvs []any) (child Logger) {
+	defer func() {
+		if recover() != nil {
+			child = fallbacklog.Logger{}.With(kvs...)
+		}
+	}()
+	return l.With(kvs...)
 }
 
 // Level reports the stack's effective minimum severity so the below-level
