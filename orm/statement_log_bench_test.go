@@ -39,3 +39,34 @@ func BenchmarkManagerExecLogged(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkManagerQueryObserved reads a result set with a dispatcher
+// installed (the statement observer on) and the statement log off.
+func BenchmarkManagerQueryObserved(b *testing.B) {
+	m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:"})
+	if err != nil {
+		b.Fatalf("NewManager: %v", err)
+	}
+	defer m.Shutdown(context.Background())
+	m.SetEventDispatcher(func(context.Context, any) error { return nil })
+	ctx := context.Background()
+	db := m.DB()
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, "CREATE TABLE observed (id INTEGER)"); err != nil {
+		b.Fatalf("create: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO observed (id) VALUES (1)"); err != nil {
+		b.Fatalf("insert: %v", err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rows, err := db.QueryContext(ctx, "SELECT id FROM observed")
+		if err != nil {
+			b.Fatalf("query: %v", err)
+		}
+		for rows.Next() {
+		}
+		_ = rows.Close()
+	}
+}

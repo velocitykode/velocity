@@ -13,6 +13,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/latency"
+	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -154,6 +155,14 @@ func (b *observerBinding) logging() bool {
 // rule, hands the event to obs (nil when no observer wanted it when the
 // statement started) and writes the statement's log line. Control-flow
 // sentinels (see isControlErr) produce neither.
+//
+// record never panics. It runs inside a database/sql driver callback, on
+// the caller's goroutine or on database/sql's own (a result set closed when
+// its context ends), and database/sql releases the connection after the
+// callback returns: a panic here would crash the process on database/sql's
+// goroutine, and skip that release on the caller's. The observer and the
+// logger are user code, so a panic in either is contained and written to
+// the fallback logger, and the other still runs.
 func (b *observerBinding) record(obs StatementObserver, ev StatementEvent, argCount int) {
 	if ev.Err != nil && isControlErr(ev.Err) {
 		return
@@ -161,10 +170,31 @@ func (b *observerBinding) record(obs StatementObserver, ev StatementEvent, argCo
 	if ev.Err == nil {
 		ev.Slow = latency.Slow(ev.Duration, b.slowThreshold)
 	}
-	if obs != nil {
-		obs.ObserveStatement(ev)
+	if obs == nil {
+		b.log(ev, argCount)
+		return
 	}
-	b.log(ev, argCount)
+	// The observer is called from this frame, not a helper's, because it
+	// walks the stack to attribute the statement to its caller: a frame
+	// more would cost every observed statement a longer walk. The deferred
+	// function recovers a panic in it and writes the statement's line
+	// either way.
+	defer func() {
+		if p := recover(); p != nil {
+			b.observerPanicked(p)
+		}
+		b.log(ev, argCount)
+	}()
+	obs.ObserveStatement(ev)
+}
+
+// observerPanicked writes a statement observer's panic p through the query
+// logger, contained (see log).
+func (b *observerBinding) observerPanicked(p any) {
+	err := panicerr.FromRecovered(p)
+	fallbacklog.Write(b.queryLogger(), func(l contract.Logger) {
+		l.Error("velocity/orm: statement observer panicked", "connection", b.name, "error", err)
+	})
 }
 
 // unknownArgCount is the argument count of a statement whose count cannot
@@ -179,7 +209,6 @@ const unknownArgCount = -1
 // an argument value, nor a failure's error text, which drivers fill with
 // the offending value (a duplicate key, a rejected input).
 func (b *observerBinding) log(ev StatementEvent, argCount int) {
-	var level func(string, ...any)
 	var msg string
 	switch {
 	case ev.Slow:
@@ -192,11 +221,6 @@ func (b *observerBinding) log(ev StatementEvent, argCount int) {
 		msg = "velocity/orm: query executed"
 	}
 	l := b.queryLogger()
-	if ev.Slow {
-		level = l.Warn
-	} else {
-		level = l.Debug
-	}
 	var kvs []any
 	if argCount == unknownArgCount {
 		kvs = append(trace.LogFields(ev.Context),
@@ -215,7 +239,17 @@ func (b *observerBinding) log(ev StatementEvent, argCount int) {
 	if ev.Err == nil {
 		kvs = append(kvs, "rows", ev.RowsAffected)
 	}
-	level(msg, kvs...)
+	// The line goes through fallbacklog.Write: the logger is user code, and
+	// a panic in it lands the line on the fallback logger instead of
+	// escaping the driver callback (see record).
+	slow := ev.Slow
+	fallbacklog.Write(l, func(l contract.Logger) {
+		if slow {
+			l.Warn(msg, kvs...)
+		} else {
+			l.Debug(msg, kvs...)
+		}
+	})
 }
 
 // queryLogger returns the owning driver's query logger, or the framework's

@@ -51,9 +51,14 @@ type queryLoggerHolder struct{ contract.Logger }
 // standalone fallback logger, which drops debug lines and writes the slow
 // warn line to standard error. Safe to call while the driver runs queries.
 //
-// The line is written on the goroutine that ran the statement, before its
-// connection returns to the pool (for a read, when its rows close), so a
-// query logger must not itself query the same database.
+// The line is written inside the database/sql driver callback, before the
+// statement's connection returns to the pool (for a read, when its rows
+// close, which database/sql may do on a goroutine of its own when the
+// statement's context ends). So the query logger must not use the pool it
+// logs: a line that queries it waits for a free connection, and with every
+// connection held (one, with MaxOpenConns 1) it waits for itself forever.
+// A panic in the logger is contained: the line goes to the fallback logger
+// and the connection is still released.
 func (b *BaseDriver) SetLogger(l contract.Logger) {
 	b.logger.Store(queryLoggerHolder{Logger: l})
 }

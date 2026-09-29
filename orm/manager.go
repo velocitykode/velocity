@@ -43,7 +43,9 @@ type ManagerConfig struct {
 	ConnMaxLifetime time.Duration
 	// LogQueries writes one debug line per executed statement through the
 	// manager's logger: the statement and its argument count, never the
-	// argument values (see drivers.BaseDriver.SetLogger).
+	// argument values (see drivers.BaseDriver.SetLogger). The line is
+	// written before the statement's connection returns to the pool, so
+	// the manager's logger must not use the pool it logs.
 	LogQueries bool
 	// SlowThreshold makes a completed statement that ran longer than it
 	// write one warn line through the manager's logger and marks its
