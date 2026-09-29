@@ -319,7 +319,7 @@ func (m *Manager) AddConnection(name string, driver drivers.Driver) {
 	}
 	m.mu.Unlock()
 	if late {
-		la.SetLogger(&m.logger)
+		m.handLogger(la)
 	}
 }
 
@@ -965,14 +965,17 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	m.unhanded, m.unhandedDefault = nil, nil
 	m.mu.Unlock()
 
+	// Each Close is contained (closeContained): a driver whose Close panics
+	// has the panic returned as its error, and the drivers after it are
+	// still closed.
 	var firstErr error
 	if defaultDriver != nil {
-		if err := defaultDriver.Close(); err != nil {
+		if err := closeContained(defaultDriver); err != nil {
 			firstErr = err
 		}
 	}
 	for _, conn := range conns {
-		if err := conn.Close(); err != nil && firstErr == nil {
+		if err := closeContained(conn); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -1173,8 +1176,23 @@ func (m *Manager) SetLogger(logger contract.Logger) {
 	m.mu.Unlock()
 
 	for _, la := range pending {
-		la.SetLogger(&m.logger)
+		m.handLogger(la)
 	}
+}
+
+// handLogger hands la the manager's forwarding logger. A driver's
+// SetLogger is user code: a panic in it is contained and written as a
+// warning, so the drivers after it are still handed the forwarder.
+func (m *Manager) handLogger(la contract.LoggerAware) {
+	defer func() {
+		if p := recover(); p != nil {
+			err := panicerr.FromRecovered(p)
+			fallbacklog.Write(m.log(), func(l contract.Logger) {
+				l.Warn("velocity/orm: a connection's SetLogger panicked; it keeps its own logger", "error", err)
+			})
+		}
+	}()
+	la.SetLogger(&m.logger)
 }
 
 // log returns the installed logger, or the framework's standalone fallback

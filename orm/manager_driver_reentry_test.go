@@ -182,3 +182,33 @@ func TestManagerAddConnection_AfterShutdownClosesTheDriver(t *testing.T) {
 		t.Errorf("warnings = %d, want one per late connection (3)", got)
 	}
 }
+
+// Many Shutdowns racing each other and a statement-event drain: every one
+// returns nil once the drain and the closes finish, and each driver is
+// closed exactly once.
+func TestManagerShutdown_Concurrent(t *testing.T) {
+	m := newTestManager(t)
+	release := blockPump(t, m, 5)
+	d := &callbackDriver{}
+	m.AddConnection("counted", d)
+	const n = 16
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func() { errs <- m.Shutdown(context.Background()) }()
+	}
+	time.Sleep(20 * time.Millisecond)
+	release()
+	for i := 0; i < n; i++ {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Errorf("Shutdown: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a concurrent Shutdown did not return")
+		}
+	}
+	if got := d.closes.Load(); got != 1 {
+		t.Errorf("closes = %d, want 1", got)
+	}
+}
