@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/buildonce"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -29,7 +31,21 @@ type Manager struct {
 	// events holds the event dispatcher and handles a failed dispatch
 	// through the manager's logger.
 	events eventemit.Emitter
-	logger contract.Logger
+	// logger forwards to the logger the manager writes through. Every
+	// channel that takes a logger is handed this forwarder once, so a
+	// later SetLogger reaches them all through one atomic store, with no
+	// channel called again and no lock held.
+	logger fallbacklog.Forwarder
+	// handing is set by the first SetLogger with a logger: from then on
+	// every channel is handed the forwarder. Before it, a channel keeps a
+	// logger of its own.
+	handing atomic.Bool
+	// builds creates each registered channel once at a time, with no lock
+	// held.
+	builds buildonce.Group[Channel]
+	// generation counts Shutdowns, so a channel created across one is not
+	// registered into the emptied manager. Guarded by mu.
+	generation uint64
 }
 
 // NewManager creates a new notification manager.
@@ -50,38 +66,57 @@ func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event interfac
 }
 
 // SetLogger installs the logger the manager writes its own lines to (the
-// first failed dispatch of each event name) and hands it to every channel
-// that takes one (contract.LoggerAware): the channels registered now, and
-// each channel created or set later. Nil restores the framework's standalone fallback
-// logger. Safe to call while notifications are sent. The channels are
-// handed the logger under the manager's lock, as Channel and SetChannel
-// hand it, so concurrent calls leave the manager and every channel on the
-// same logger.
+// first failed dispatch of each event name) and its channels write
+// through. Nil restores the framework's standalone fallback logger. Safe
+// to call while notifications are sent.
+//
+// Every channel that takes a logger (contract.LoggerAware) is handed the
+// manager's forwarding logger once, from the first SetLogger with a logger
+// on: the channels registered then, and each channel created or set
+// later. Until then a channel keeps a logger of its own. A replacement is
+// one atomic store that every channel sees; no channel's SetLogger runs
+// under the manager's lock, so one that calls back into the manager
+// cannot deadlock it.
 func (m *Manager) SetLogger(l contract.Logger) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.logger = l
+	m.logger.Set(l)
+	if l == nil || !m.handing.CompareAndSwap(false, true) {
+		return
+	}
+	// A channel registered after this snapshot sees handing set and hands
+	// itself the forwarder (handLogger); one registered before is in the
+	// snapshot. A channel in both is handed it twice, which is harmless.
+	m.mu.RLock()
+	channels := make([]Channel, 0, len(m.channels))
 	for _, ch := range m.channels {
+		channels = append(channels, ch)
+	}
+	m.mu.RUnlock()
+	for _, ch := range channels {
 		if la, ok := ch.(contract.LoggerAware); ok {
-			la.SetLogger(l)
+			la.SetLogger(&m.logger)
 		}
 	}
 }
 
 var _ contract.LoggerAware = (*Manager)(nil)
 
-// log returns the installed logger, or the fallback logger when none is.
+// log returns the manager's forwarding logger: the installed logger, or
+// the fallback logger when none is.
 func (m *Manager) log() contract.Logger {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return fallbacklog.Resolve(m.logger)
+	return &m.logger
 }
 
-// handLogger gives ch the manager's logger when ch takes one. The caller
-// holds m.mu.
+// handLogger gives ch the manager's forwarding logger when ch takes one and
+// the manager hands it. The caller holds no lock (SetLogger is user code)
+// and has registered ch already: a first SetLogger that runs meanwhile
+// either finds ch in its snapshot or has set handing before this check,
+// so ch is never missed.
 func (m *Manager) handLogger(ch Channel) {
-	if la, ok := ch.(contract.LoggerAware); ok && m.logger != nil {
-		la.SetLogger(m.logger)
+	if !m.handing.Load() {
+		return
+	}
+	if la, ok := ch.(contract.LoggerAware); ok {
+		la.SetLogger(&m.logger)
 	}
 }
 
@@ -106,6 +141,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 		channels[k] = v
 	}
 	m.channels = make(map[string]Channel)
+	m.generation++
 	m.mu.Unlock()
 
 	var errs []error
@@ -123,6 +159,13 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 
 // Channel returns a registered channel driver by name, creating it from the
 // registry if not yet instantiated.
+//
+// The channel is created with no lock held: the registered factory and the
+// channel's SetLogger are user code, which may call back into the manager.
+// Each name is still created once at a time: concurrent first uses wait
+// for that creation, and a lookup of a name from inside its own creation
+// returns an error at once. A channel whose creation finishes after a
+// Shutdown that began after it started is not registered.
 func (m *Manager) Channel(name string) (Channel, error) {
 	// Fast path: check under read lock.
 	m.mu.RLock()
@@ -133,33 +176,69 @@ func (m *Manager) Channel(name string) (Channel, error) {
 		return ch, nil
 	}
 
-	// Slow path: hold write lock for the entire create-and-store sequence
-	// so only one goroutine creates the channel instance.
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ch, err := m.builds.Do(context.Background(), name, func() (Channel, error) {
+		return m.createAndRegister(name)
+	})
+	if err != nil {
+		var ce *createError
+		if errors.As(err, &ce) {
+			return nil, ce.err
+		}
+		return nil, fmt.Errorf("velocity/notification: channel %q: %w", name, err)
+	}
+	return ch, nil
+}
 
-	// Re-check - another goroutine may have created it while we waited.
-	if ch, exists = m.channels[name]; exists {
+// createAndRegister creates the channel name and registers it, unless it
+// was registered meanwhile or the manager was shut down.
+func (m *Manager) createAndRegister(name string) (Channel, error) {
+	m.mu.RLock()
+	ch, exists := m.channels[name]
+	generation := m.generation
+	m.mu.RUnlock()
+	if exists {
 		return ch, nil
 	}
 
 	ch, err := createChannel(name)
 	if err != nil {
-		return nil, err
+		return nil, &createError{err}
 	}
 
-	m.handLogger(ch)
+	m.mu.Lock()
+	if m.generation != generation {
+		m.mu.Unlock()
+		return nil, &createError{fmt.Errorf("velocity/notification: channel %q: the manager was shut down while the channel was created", name)}
+	}
+	if existing, ok := m.channels[name]; ok {
+		// SetChannel registered one meanwhile: it wins, as it would have
+		// under the old write lock had it come first.
+		m.mu.Unlock()
+		return existing, nil
+	}
 	m.channels[name] = ch
+	m.mu.Unlock()
+	// Handed after it is registered, never before: see handLogger.
+	m.handLogger(ch)
 	return ch, nil
 }
 
+// createError marks an error createAndRegister returned, which Channel
+// returns as it is, from one the build group returned (a re-entrant
+// lookup), which Channel wraps with the channel's name.
+type createError struct{ err error }
+
+func (e *createError) Error() string { return e.err.Error() }
+func (e *createError) Unwrap() error { return e.err }
+
 // SetChannel explicitly sets a channel driver instance. A channel that takes
-// a logger is handed the manager's logger when the manager has one.
+// a logger is handed the manager's forwarding logger when the manager hands
+// it (see SetLogger), right after it is registered.
 func (m *Manager) SetChannel(name string, ch Channel) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.handLogger(ch)
 	m.channels[name] = ch
+	m.mu.Unlock()
+	m.handLogger(ch)
 }
 
 // Send delivers a notification to a single notifiable across all channels

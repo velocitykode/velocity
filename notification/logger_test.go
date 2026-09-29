@@ -86,18 +86,48 @@ func (c *loggerChannel) current() contract.Logger {
 }
 
 // SetLogger reaches a channel registered before it, and a channel set
-// after it is handed the manager's logger.
+// after it is handed the manager's logger: each holds the manager's
+// forwarding logger, which writes through the logger set last.
 func TestManager_SetLoggerReachesItsChannels(t *testing.T) {
-	l := logdrivers.NewConsoleLoggerTo(&fallbacklogtest.Output{}, 0)
+	out := &fallbacklogtest.Output{}
+	l := logdrivers.NewConsoleLoggerTo(out, 0)
 	before, after := &loggerChannel{}, &loggerChannel{}
 	m := NewManager()
 	m.SetChannel("before", before)
 	m.SetLogger(l)
 	m.SetChannel("after", after)
 	for name, ch := range map[string]*loggerChannel{"before": before, "after": after} {
-		if got := ch.current(); got != contract.Logger(l) {
-			t.Errorf("channel %q holds logger %v, want the manager's", name, got)
+		if got := ch.current(); got != m.log() {
+			t.Errorf("channel %q holds logger %v, want the manager's forwarder", name, got)
 		}
+		ch.current().Warn("line from " + name)
+		if !strings.Contains(out.String(), "line from "+name) {
+			t.Errorf("channel %q's line did not reach the manager's logger: %q", name, out.String())
+		}
+	}
+	// A replacement reaches every channel with no channel called again.
+	out2 := &fallbacklogtest.Output{}
+	m.SetLogger(logdrivers.NewConsoleLoggerTo(out2, 0))
+	before.current().Warn("after replace")
+	if !strings.Contains(out2.String(), "after replace") {
+		t.Errorf("a replaced logger did not reach the channel: %q", out2.String())
+	}
+}
+
+// A channel keeps its own logger until the manager gets one.
+func TestManager_ChannelKeepsItsLoggerUntilTheManagerHasOne(t *testing.T) {
+	own := logdrivers.NewConsoleLoggerTo(&fallbacklogtest.Output{}, 0)
+	ch := &loggerChannel{}
+	ch.SetLogger(own)
+	m := NewManager()
+	m.SetChannel("c", ch)
+	m.SetLogger(nil)
+	if ch.current() != contract.Logger(own) {
+		t.Fatal("the channel lost its own logger before the manager had one")
+	}
+	m.SetLogger(logdrivers.NewConsoleLoggerTo(&fallbacklogtest.Output{}, 0))
+	if ch.current() != m.log() {
+		t.Fatal("the channel was not handed the manager's forwarder")
 	}
 }
 
