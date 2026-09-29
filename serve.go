@@ -260,9 +260,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 	eventqueue.InitializeQueueIntegration(nil, nil, nil)
 	queue.SetSigningLogger(nil)
 	queue.SetPayloadEncryptor(nil)
-	// Put the async and trace packages back on the standalone fallback
-	// logger so they do not keep writing to the logger closed below.
-	releasePackageLoggers()
 
 	// 6. Close cache connections
 	if a.Cache != nil {
@@ -310,9 +307,13 @@ func (a *App) Shutdown(ctx context.Context) error {
 		orm.ResetDefault()
 	}
 
-	// 8. Remove the async panic hook New installed (its reports end in the
-	// logger), then close the logger last so all prior steps can still log.
-	removePanicHook(a)
+	// 8. Release the process-wide state this app installed (the async
+	// panic hook, whose reports end in the logger, and the async and trace
+	// package loggers): the previous live app's is installed again, or the
+	// packages' defaults, and another app's installation is left alone.
+	// The release returns once every package-logger line in flight has been
+	// written. Then close the logger last so all prior steps can still log.
+	releasePackageState(a)
 	if a.Log != nil {
 		if sd, ok := a.Log.(contract.ShutdownAware); ok {
 			collect(sd.Shutdown(ctx))

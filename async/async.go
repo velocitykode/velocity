@@ -31,10 +31,12 @@ var (
 )
 
 // SetLogger sets the package-level logger recovered panics and GoCtx
-// cancellations are written to. velocity.New sets it to the app logger.
-// Nil restores the default, the framework's standalone fallback logger,
-// which writes warnings and errors to standard error. Safe for concurrent
-// use.
+// cancellations are written to. The logger is process-wide: velocity.New
+// sets it to the app logger, the newest live app's logger is the installed
+// one, and an app's Shutdown hands it back to the previous live app's
+// logger, or the default when none is left. Nil restores the default, the
+// framework's standalone fallback logger, which writes warnings and errors
+// to standard error. Safe for concurrent use.
 func SetLogger(l contract.Logger) {
 	loggerMu.Lock()
 	defer loggerMu.Unlock()
@@ -59,7 +61,11 @@ func getLogger() contract.Logger {
 // SetPanicHook installs an interceptor invoked for every panic recovered
 // by the async package's helpers (Run, RunWithTimeout, RunWithContext, Go,
 // GoCtx, GoWithRecover, GoWithRecoverE, GoWithLogger, ForEach, GoForEach,
-// TryForEach). Pass nil to clear. A hook that returns normally takes the
+// TryForEach). Pass nil to clear. The hook is process-wide: velocity.New
+// installs one reporting to the app's error handler, the newest live app's
+// hook is the installed one, and an app's Shutdown hands it back to the
+// previous live app's hook, or none. A panic in a goroutine an older app
+// started is therefore reported to the newest app while that app lives. A hook that returns normally takes the
 // panic over: the package does not also log it (velocity.New installs a
 // hook that reports the panic to the app's error handler, whose log
 // reporter writes the one entry). The hook itself is panic-safe: if it

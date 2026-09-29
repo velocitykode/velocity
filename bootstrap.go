@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"runtime/debug"
-	"sync"
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/async"
@@ -320,8 +319,9 @@ func wireInstanceEvents(a *App) {
 //   - the async package's panic hook, which reports a panic recovered in
 //     any goroutine the async helpers run (worker pumps, the ORM query
 //     pump, the server, the dispatcher's detached deliveries). The hook is
-//     process-wide: the app that wired it last owns it, and its Shutdown
-//     (or a failed New) removes it (see wirePanicHook).
+//     process-wide: the newest live app's hook is installed, and an app's
+//     Shutdown (or its failed New) hands it back to the previous live app
+//     (see package_state.go).
 //
 // All three close over the handler value rather than reading
 // a.Services.Errors when a failure happens: a worker a module Start
@@ -388,45 +388,14 @@ func buildFailureReporter(h contract.ErrorHandler) func(ctx context.Context, eve
 	}
 }
 
-// panicHookMu guards panicHookOwner, the app whose error handler the async
-// package's process-wide panic hook reports to: the app that wired it
-// last.
-var (
-	panicHookMu    sync.Mutex
-	panicHookOwner *App
-)
-
-// wirePanicHook installs the async package's panic hook (async.SetPanicHook)
-// reporting to h, owned by a. A nil h removes the hook when a owns it.
-// While the hook is installed the async package does not also log the
-// panics it recovers: the hook's report is the one entry (the handler's
-// LogReporter writes it through the app logger).
+// wirePanicHook records the async package's panic hook reporting to h as
+// a's (see installPanicHook): the newest live app's hook is the installed
+// one. A nil h records no hook for a. While a hook is installed the async
+// package does not also log the panics it recovers: the hook's report is
+// the one entry (the handler's LogReporter writes it through the app
+// logger).
 func wirePanicHook(a *App, h contract.ErrorHandler) {
-	hook := buildPanicHook(h)
-	panicHookMu.Lock()
-	defer panicHookMu.Unlock()
-	if hook == nil {
-		if panicHookOwner == a {
-			panicHookOwner = nil
-			async.SetPanicHook(nil)
-		}
-		return
-	}
-	panicHookOwner = a
-	async.SetPanicHook(hook)
-}
-
-// removePanicHook removes the async package's panic hook when a owns it,
-// so a panic recovered after a's Shutdown is not reported to a's
-// torn-down error handler. A hook an app wired after a stays installed.
-func removePanicHook(a *App) {
-	panicHookMu.Lock()
-	defer panicHookMu.Unlock()
-	if panicHookOwner != a {
-		return
-	}
-	panicHookOwner = nil
-	async.SetPanicHook(nil)
+	installPanicHook(a, buildPanicHook(h))
 }
 
 // buildPanicHook returns the async panic hook for h: it reports a panic

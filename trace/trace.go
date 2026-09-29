@@ -185,8 +185,10 @@ var (
 // (crypto/rand unavailable, fallback trace markers in use). Nil restores
 // the framework's standalone fallback logger, which writes it to standard
 // error. The logger is process-wide, like the async package's: an app
-// built by velocity.New hands it the app logger and puts it back on the
-// fallback when the app shuts down. Safe for concurrent use.
+// built by velocity.New hands it the app logger, the newest live app's
+// logger is the installed one, and an app's Shutdown hands it back to the
+// previous live app's logger, or the fallback when none is left. Safe for
+// concurrent use.
 func SetLogger(l contract.Logger) {
 	loggerMu.Lock()
 	defer loggerMu.Unlock()

@@ -205,6 +205,8 @@ and `SESSION_SAME_SITE` (the app's `contract.CookiePolicy`).
 | `LOG_REDACT` | `log/init.go` | `false` | recommended | PII in logs | process-wide default-on toggle |
 | `LOG_REDACT_EMAILS` | `log/redact.go` | `false` | recommended | emails in logs | |
 
+The async package's panic hook (a panic recovered in a background goroutine is reported to the app's error handler) and the async and trace package loggers are process-wide. With several apps in one process, the newest live app owns them. An app's `Shutdown`, or the cleanup of its failed `New`, hands them back to the previous live app (or to the defaults: no hook, the standalone fallback logger) and never clears or replaces another app's installation. Known limit: a panic in a goroutine an older app started is reported to the newest app's error handler while that app lives.
+
 ## Crypto
 
 | Name | Package | Default | Required in prod? | Security impact | Notes |

@@ -821,16 +821,14 @@ func New(opts ...Option) (*App, error) {
 	// 17. Initialize validator
 	a.Validator = validation.NewValidator()
 
-	// The sweep below also hands a.Log to the async and trace packages
-	// (see wireInstanceLoggers); a failed New puts them back on the
-	// fallback.
-	cleanups = append(cleanups, releasePackageLoggers)
-
-	// Background failures: wireInstanceEvents below installs the async
-	// package's panic hook on the error handler (see wireFailureReporters),
-	// so a panic recovered in a framework goroutine reaches the Reporter
-	// chain. A failed New removes it again, as Shutdown does.
-	cleanups = append(cleanups, func() { removePanicHook(a) })
+	// The sweep below records a.Log as the async and trace packages'
+	// logger (see wireInstanceLoggers) and installs the async package's
+	// panic hook on the error handler (see wireFailureReporters), so a
+	// panic recovered in a framework goroutine reaches the Reporter chain.
+	// Both are process-wide and owned by the newest live app; a failed New
+	// releases this app's installation as Shutdown does, leaving another
+	// app's in place (see package_state.go).
+	cleanups = append(cleanups, func() { releasePackageState(a) })
 
 	// Wire event dispatchers into service instances
 	wireInstanceEvents(a)

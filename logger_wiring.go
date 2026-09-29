@@ -1,15 +1,15 @@
 package velocity
 
 import (
-	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
-	"github.com/velocitykode/velocity/trace"
 )
 
 // wireInstanceLoggers hands the logger a.Services.Log holds now to every
 // service in loggerWiringCandidates that takes one (contract.LoggerAware),
-// to the async package, which writes recovered goroutine panics, and to the
-// trace package, which writes its entropy-outage warning.
+// and records it as a's logger for the async package, which writes
+// recovered goroutine panics, and the trace package, which writes its
+// entropy-outage warning. Those two loggers are process-wide: the newest
+// live app's is installed (see package_state.go).
 // Services that own other logger-aware values pass it on: the ORM manager
 // to its connections' query logger, the view engine to its bond, the auth
 // manager to its schemes and hasher, the CSRF instance to its token store,
@@ -38,8 +38,7 @@ func wireInstanceLoggers(a *App) {
 			la.SetLogger(l)
 		}
 	}
-	async.SetLogger(l)
-	trace.SetLogger(l)
+	installPackageLoggers(a, l)
 }
 
 // loggerCandidate is one Services field the logger sweep offers the app
@@ -73,12 +72,4 @@ func loggerWiringCandidates(a *App) []loggerCandidate {
 		{"Notification", s.Notification},
 		{"Validator", s.Validator},
 	}
-}
-
-// releasePackageLoggers puts the async and trace packages back on the
-// standalone fallback logger, so a torn-down app's logger is not written to
-// after it closes. The failed-New cleanup stack and App.Shutdown call it.
-func releasePackageLoggers() {
-	async.SetLogger(nil)
-	trace.SetLogger(nil)
 }
