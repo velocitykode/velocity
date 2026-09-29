@@ -67,12 +67,10 @@ func (l optionLogger) all() []optionLine {
 }
 
 // optionRun is what one unary call through the logging interceptor left
-// behind: the lines of the logger it was given, the fallback's output
-// and the events it dispatched.
+// behind: the lines of the logger it was given and the fallback's output.
 type optionRun struct {
 	lines    []optionLine
 	fallback string
-	events   int
 }
 
 // runLoggingCall sends one unary call to method through Logging(opts...),
