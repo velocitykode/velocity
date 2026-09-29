@@ -14,7 +14,6 @@ import (
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
-	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/internal/sqlerr"
 	"github.com/velocitykode/velocity/orm/drivers"
@@ -94,12 +93,7 @@ var _ Database = (*Manager)(nil)
 // Manager manages database connections. It is the instance-based alternative
 // to the package-level global functions.
 type Manager struct {
-	mu sync.RWMutex
-	// wiring serialises logger handoffs: SetLogger and AddConnection hold
-	// it from storing or reading the manager's logger until every driver
-	// has it, so the last handoff to finish is the one the manager and all
-	// its connections hold. Taken before mu, never while holding it.
-	wiring        sync.Mutex
+	mu            sync.RWMutex
 	defaultDriver drivers.Driver
 	connections   map[string]drivers.Driver
 	defaultName   string
@@ -136,10 +130,21 @@ type Manager struct {
 	// per-transaction events.BufferedDispatcher can route entries back
 	// through the matching method on the underlying dispatcher.
 	txEventBus events.Dispatcher
-	// logger receives warnings about runtime conditions (transaction
-	// rollback failures, recovered panics). nil until SetLogger is called;
-	// log() then answers the framework's standalone fallback logger.
-	logger contract.Logger
+	// logger forwards to the logger the manager writes through (warnings
+	// about transaction rollback failures, recovered panics) and is the one
+	// query logger every connection that takes one holds. Its target is
+	// swapped atomically by SetLogger; unset, it forwards to the
+	// framework's standalone fallback logger.
+	logger loggerForwarder
+	// unhanded holds the connections that take a logger
+	// (contract.LoggerAware) but have not been handed the forwarder yet,
+	// because the manager had no logger when they were added: such a
+	// connection keeps a logger of its own until the first SetLogger.
+	// Keyed by connection name; the default connection is
+	// unhandedDefault. Guarded by mu, with the target change that drains
+	// them, so a connection is handed the forwarder exactly once.
+	unhanded        map[string]contract.LoggerAware
+	unhandedDefault contract.LoggerAware
 }
 
 // NewManager creates a new ORM Manager with a connected database driver.
@@ -187,21 +192,33 @@ func NewManagerWithContext(ctx context.Context, config ManagerConfig) (*Manager,
 
 	connConfig.LogQueries = config.LogQueries
 	connConfig.SlowThreshold = config.SlowThreshold
-	connConfig.Logger = config.Logger
+
+	m := &Manager{
+		connections:  make(map[string]drivers.Driver),
+		defaultName:  config.Driver,
+		databaseName: config.Database,
+	}
+	// The forwarder is the connection's logger from its first statement
+	// (SQLite's connect-time PRAGMAs included) when the config names one.
+	if config.Logger != nil {
+		m.logger.set(config.Logger)
+		connConfig.Logger = &m.logger
+	}
 
 	driver, err := driverRegistry.Resolve(ctx, config.Driver, connConfig)
 	if err != nil {
 		return nil, fmt.Errorf("velocity/orm: %w", err)
 	}
-
-	m := &Manager{
-		defaultDriver: driver,
-		connections:   make(map[string]drivers.Driver),
-		defaultName:   config.Driver,
-		databaseName:  config.Database,
-		logger:        config.Logger,
-	}
+	// m is not shared yet, so the extension calls run before it is.
 	m.attachStatementObserver(driver)
+	if la, ok := driver.(contract.LoggerAware); ok {
+		if config.Logger != nil {
+			la.SetLogger(&m.logger)
+		} else {
+			m.unhandedDefault = la
+		}
+	}
+	m.defaultDriver = driver
 
 	return m, nil
 }
@@ -252,18 +269,34 @@ func (m *Manager) Connection(name string) (drivers.Driver, error) {
 // AddConnection registers a named database connection. Statements executed
 // against it dispatch through this manager's event dispatcher, and the
 // manager's logger, once it has one (ManagerConfig.Logger or SetLogger),
-// becomes the driver's query logger. Serialised with SetLogger, so a
-// connection added while the logger changes ends on the manager's logger.
+// becomes the driver's query logger: the driver is handed the manager's
+// forwarding logger once, and every later SetLogger reaches it through
+// that. A driver added while the manager has no logger keeps its own until
+// the first SetLogger. The driver's SetStatementObserver and SetLogger run
+// before the connection is published and under no manager lock, so either
+// may call back into the manager.
 func (m *Manager) AddConnection(name string, driver drivers.Driver) {
-	m.wiring.Lock()
-	defer m.wiring.Unlock()
 	m.attachStatementObserver(driver)
+	la, aware := driver.(contract.LoggerAware)
+	handed := aware && m.logger.installed() != nil
+	if handed {
+		la.SetLogger(&m.logger)
+	}
 	m.mu.Lock()
 	m.connections[name] = driver
-	logger := m.logger
+	delete(m.unhanded, name)
+	// A SetLogger that ran since the check above left no pending entry for
+	// this connection: hand it here, once, after the lock is released.
+	late := aware && !handed && m.logger.installed() != nil
+	if aware && !handed && !late {
+		if m.unhanded == nil {
+			m.unhanded = make(map[string]contract.LoggerAware)
+		}
+		m.unhanded[name] = la
+	}
 	m.mu.Unlock()
-	if la, ok := driver.(contract.LoggerAware); ok && logger != nil {
-		la.SetLogger(logger)
+	if late {
+		la.SetLogger(&m.logger)
 	}
 }
 
@@ -457,8 +490,8 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 	if err != nil {
 		return err
 	}
+	logger := m.log()
 	m.mu.RLock()
-	logger := fallbacklog.Resolve(m.logger)
 	rawDispatcher := m.rawEventDispatcher
 	bus := m.txEventBus
 	m.mu.RUnlock()
@@ -827,6 +860,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 		}
 		delete(m.connections, name)
 	}
+	m.unhanded, m.unhandedDefault = nil, nil
 
 	return firstErr
 }
@@ -991,43 +1025,45 @@ func flushBufferedEntry(ctx context.Context, entry events.BufferedEvent, bus eve
 }
 
 // SetLogger installs a logger that receives warnings about recovered
-// transaction panics and failed rollbacks, and hands it to every
-// connection's driver that takes one (contract.LoggerAware) as the query
-// logger ManagerConfig.LogQueries and ManagerConfig.SlowThreshold write to;
-// AddConnection hands it to a connection added later. Nil restores the
-// default, the framework's standalone fallback logger, for both (it drops
-// the query log's debug lines and writes slow query warnings to standard
-// error).
-// Safe to call concurrently, and while the connections run queries: calls
-// are serialised with each other and with AddConnection, so when they
-// overlap the manager and every connection end on the same logger.
+// transaction panics and failed rollbacks, and that every connection's
+// driver that takes one (contract.LoggerAware) writes its query log to
+// (ManagerConfig.LogQueries, ManagerConfig.SlowThreshold). Nil restores
+// the default, the framework's standalone fallback logger, for both (it
+// drops the query log's debug lines and writes slow query warnings to
+// standard error).
+//
+// Connections do not hold the installed logger itself: each is handed the
+// manager's forwarding logger once, and SetLogger swaps the forwarder's
+// target atomically, so a line a connection writes after SetLogger returns
+// goes to the new logger. A logger bound from the forwarder (With) follows
+// later swaps too. The first SetLogger hands the forwarder to the
+// connections that were added while the manager had no logger, after the
+// swap and under no manager lock, so their SetLogger may call back into
+// the manager. Safe to call concurrently, and while the connections run
+// queries: overlapping calls leave the manager and every connection on the
+// logger installed last.
 func (m *Manager) SetLogger(logger contract.Logger) {
-	m.wiring.Lock()
-	defer m.wiring.Unlock()
 	m.mu.Lock()
-	m.logger = logger
-	receivers := make([]contract.LoggerAware, 0, 1+len(m.connections))
-	if la, ok := m.defaultDriver.(contract.LoggerAware); ok {
-		receivers = append(receivers, la)
+	m.logger.set(logger)
+	pending := make([]contract.LoggerAware, 0, len(m.unhanded)+1)
+	if m.unhandedDefault != nil {
+		pending = append(pending, m.unhandedDefault)
 	}
-	for _, d := range m.connections {
-		if la, ok := d.(contract.LoggerAware); ok {
-			receivers = append(receivers, la)
-		}
+	for _, la := range m.unhanded {
+		pending = append(pending, la)
 	}
+	m.unhanded, m.unhandedDefault = nil, nil
 	m.mu.Unlock()
 
-	for _, r := range receivers {
-		r.SetLogger(logger)
+	for _, la := range pending {
+		la.SetLogger(&m.logger)
 	}
 }
 
 // log returns the installed logger, or the framework's standalone fallback
-// logger when none is installed.
+// logger when none is installed. Lock-free.
 func (m *Manager) log() contract.Logger {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return fallbacklog.Resolve(m.logger)
+	return m.logger.resolve()
 }
 
 // Logger returns the logger the manager writes through: the one SetLogger

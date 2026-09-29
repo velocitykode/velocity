@@ -201,8 +201,9 @@ func TestQueryEventPump_ConcurrentOverflowAndFlush(t *testing.T) {
 }
 
 // The pump's reporter goroutine reads the manager's logger (Manager.log,
-// under mu) while SetLogger and AddConnection hand loggers off under the
-// wiring mutex, and a hook that itself calls SetLogger runs on it; flushes
+// through the forwarder) while SetLogger swaps it and AddConnection hands
+// connections the forwarder, and a hook that itself calls SetLogger runs
+// on it; flushes
 // and Shutdown race all of them (run under -race). Nothing deadlocks, and
 // every drop is counted and hooked once.
 func TestQueryEventPump_ReporterRacesTheLoggerHandoff(t *testing.T) {
