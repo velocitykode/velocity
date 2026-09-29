@@ -94,6 +94,14 @@ func WithRecoveryReporter(reporter contract.Reporter) RecoveryOption {
 // It reports the panic (with a Reporter) or logs it, and returns an
 // internal error to the client. With a Reporter it also reports the
 // internal errors handlers return.
+//
+// The same pair may run at both ends of a chain, as a framework-built
+// server runs its default recovery: the last one recovers the handler's
+// panic, so every interceptor between the two (Logging's lifecycle events
+// and line included) sees the call end with the error the panic became,
+// and the first one recovers a panic in those interceptors. A panic is
+// reported once, and the error it became is not reported again as an
+// internal error.
 func Recovery(opts ...RecoveryOption) InterceptorPair {
 	cfg := &RecoveryConfig{
 		EnableStackTrace: true,
@@ -121,28 +129,76 @@ func StreamRecoveryInterceptor(opts ...RecoveryOption) grpc.StreamServerIntercep
 	return Recovery(opts...).Stream
 }
 
+// recoveryCallKey carries, in a call's context, the state the recovery
+// interceptor built from cfg keeps for the call (see recoveryCall).
+type recoveryCallKey struct{ cfg *RecoveryConfig }
+
+// recoveryCall is the state one recovery interceptor keeps for a call it
+// runs at both ends of the chain. The first layer (the one that finds no
+// state in the context) installs it; the last layer, finding it, recovers
+// the handler's panic there and records that it did, so the first layer
+// does not report the error the panic became as an internal error as
+// well. The layers run in turn on the goroutine that serves the call.
+type recoveryCall struct{ recovered bool }
+
+// callOf returns the state the first layer of cfg's interceptor installed
+// in ctx, or nil when ctx holds none.
+func callOf(ctx context.Context, cfg *RecoveryConfig) *recoveryCall {
+	call, _ := ctx.Value(recoveryCallKey{cfg: cfg}).(*recoveryCall)
+	return call
+}
+
 func recoveryUnary(cfg *RecoveryConfig) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
+		if call := callOf(ctx, cfg); call != nil {
+			// The last layer: the handler's panic ends the call here, as
+			// its error, inside every interceptor between the layers.
+			defer func() {
+				if r := recover(); r != nil {
+					call.recovered = true
+					err = handlePanic(ctx, r, info.FullMethod, cfg)
+				}
+			}()
+			return handler(ctx, req)
+		}
+		call := &recoveryCall{}
+		ctx = context.WithValue(ctx, recoveryCallKey{cfg: cfg}, call)
 		defer func() {
 			if r := recover(); r != nil {
 				err = handlePanic(ctx, r, info.FullMethod, cfg)
 			}
 		}()
 		resp, err = handler(ctx, req)
-		reportInternalError(ctx, err, info.FullMethod, cfg)
+		if !call.recovered {
+			reportInternalError(ctx, err, info.FullMethod, cfg)
+		}
 		return resp, err
 	}
 }
 
 func recoveryStream(cfg *RecoveryConfig) grpc.StreamServerInterceptor {
 	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
+		if call := callOf(ss.Context(), cfg); call != nil {
+			// The last layer (see recoveryUnary).
+			defer func() {
+				if r := recover(); r != nil {
+					call.recovered = true
+					err = handlePanic(ss.Context(), r, info.FullMethod, cfg)
+				}
+			}()
+			return handler(srv, ss)
+		}
+		call := &recoveryCall{}
+		ctx := context.WithValue(ss.Context(), recoveryCallKey{cfg: cfg}, call)
 		defer func() {
 			if r := recover(); r != nil {
-				err = handlePanic(ss.Context(), r, info.FullMethod, cfg)
+				err = handlePanic(ctx, r, info.FullMethod, cfg)
 			}
 		}()
-		err = handler(srv, ss)
-		reportInternalError(ss.Context(), err, info.FullMethod, cfg)
+		err = handler(srv, &tracedServerStream{inner: ss, ctx: ctx})
+		if !call.recovered {
+			reportInternalError(ctx, err, info.FullMethod, cfg)
+		}
 		return err
 	}
 }

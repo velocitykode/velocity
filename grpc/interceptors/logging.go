@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -285,8 +286,33 @@ func detectProtocol(ctx context.Context) grpcevents.Protocol {
 	return grpcevents.ProtocolGRPC
 }
 
+// Correlation returns the interceptor pair that gives a call its span and
+// request id (see correlate for the rules), once: a later Logging, and any
+// interceptor or handler after it, runs under the same ids, so the reports
+// and lines of every interceptor in the chain carry the ids of the call. A
+// framework-built server installs it first in its chain, ahead of its
+// default recovery; a chain built by hand puts it first as well.
+func Correlation() InterceptorPair {
+	return InterceptorPair{
+		Unary: func(ctx context.Context, req interface{}, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+			return handler(correlate(ctx), req)
+		},
+		Stream: func(srv interface{}, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+			return handler(srv, &tracedServerStream{inner: ss, ctx: correlate(ss.Context())})
+		},
+	}
+}
+
+// correlatedKey marks a context correlate returned; its value is the span id
+// correlate gave the call.
+type correlatedKey struct{}
+
 // correlate applies the edge rules to an incoming call and returns the
 // context the handler runs under.
+//
+// A context correlate already returned (an earlier Correlation or Logging
+// in the chain), still carrying the span it gave the call, is returned
+// unchanged: a call is correlated once.
 //
 // Trace: when an earlier interceptor in this process already put a trace in
 // ctx, the call is a new span under it. Otherwise the traceparent metadata
@@ -297,6 +323,9 @@ func detectProtocol(ctx context.Context) grpcevents.Protocol {
 // Request id: an id already in ctx is kept; otherwise the x-request-id the
 // caller sent when trace.ValidRequestID accepts it, else a generated one.
 func correlate(ctx context.Context) context.Context {
+	if span, ok := ctx.Value(correlatedKey{}).(string); ok && span == trace.GetSpanID(ctx) {
+		return ctx
+	}
 	md, _ := metadata.FromIncomingContext(ctx)
 
 	parent := trace.Parent{TraceID: trace.GetTraceID(ctx), SpanID: trace.GetSpanID(ctx)}
@@ -312,7 +341,7 @@ func correlate(ctx context.Context) context.Context {
 		}
 		ctx = trace.WithRequestID(ctx, id)
 	}
-	return ctx
+	return context.WithValue(ctx, correlatedKey{}, trace.GetSpanID(ctx))
 }
 
 // singleMetadataValue returns the one value md holds for key, or the empty

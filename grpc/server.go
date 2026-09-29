@@ -251,9 +251,10 @@ func WithMaxSendMsgSize(size int) ServerOption {
 }
 
 // WithoutDefaultRecovery disables the panic-recovery interceptor that Build
-// installs outermost by default. Use it only when you wire your own recovery
-// interceptor first in the chain; otherwise an interceptor/handler panic
-// crashes the gRPC serve loop (grpc-go does not auto-recover).
+// installs by default at both ends of the chain, after its correlation
+// interceptor. Use it only when you wire your own recovery interceptor
+// first in the chain; otherwise an interceptor/handler panic crashes the
+// gRPC serve loop (grpc-go does not auto-recover).
 func WithoutDefaultRecovery() ServerOption {
 	return func(s *Server) {
 		s.disableDefaultRecovery = true
@@ -419,25 +420,35 @@ func (s *Server) Build() error {
 	}
 	s.listener = lis
 
-	// Build server options with interceptor chains. The panic-recovery
-	// interceptor is prepended OUTERMOST by default so a panic in any other
-	// interceptor (e.g. logging's user-agent handling) or in a handler is
-	// converted to codes.Internal instead of crashing the serve loop: grpc-go
-	// does not auto-recover interceptor panics. Local slices keep s.* fields
-	// unmutated so a second Build (or inspection) sees the configured set.
+	// Build server options with interceptor chains. Correlation runs
+	// first, so every interceptor after it (the default recovery's reports
+	// and the logging interceptor's line and events included) runs under
+	// the call's one span and request id. The panic-recovery interceptor
+	// runs at both ends by default: the innermost layer turns a handler
+	// panic into the call's codes.Internal error inside every other
+	// interceptor, so the logging interceptor ends the call with its failed
+	// and completed events; the outer layer converts a panic in any other
+	// interceptor (e.g. logging's user-agent handling) instead of crashing
+	// the serve loop: grpc-go does not auto-recover interceptor panics.
+	// Local slices keep s.* fields unmutated so a second Build (or
+	// inspection) sees the configured set.
 	opts := make([]grpc.ServerOption, 0, len(s.serverOptions)+2)
 	opts = append(opts, s.serverOptions...)
 
-	unary := s.unaryInterceptors
-	stream := s.streamInterceptors
-	if !s.disableDefaultRecovery {
+	corr := interceptors.Correlation()
+	unary := []grpc.UnaryServerInterceptor{corr.Unary}
+	stream := []grpc.StreamServerInterceptor{corr.Stream}
+	if s.disableDefaultRecovery {
+		unary = append(unary, s.unaryInterceptors...)
+		stream = append(stream, s.streamInterceptors...)
+	} else {
 		rec := interceptors.Recovery(
 			interceptors.WithRecoveryLogger(s.logger),
 			interceptors.WithRecoveryEventDispatcher(s.eventDispatchFunc()),
 			interceptors.WithRecoveryReporter(s.reporter),
 		)
-		unary = append([]grpc.UnaryServerInterceptor{rec.Unary}, unary...)
-		stream = append([]grpc.StreamServerInterceptor{rec.Stream}, stream...)
+		unary = append(append(append(unary, rec.Unary), s.unaryInterceptors...), rec.Unary)
+		stream = append(append(append(stream, rec.Stream), s.streamInterceptors...), rec.Stream)
 	}
 
 	if len(unary) > 0 {

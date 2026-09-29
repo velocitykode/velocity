@@ -25,6 +25,12 @@
 //	    interceptors.Recovery(),
 //	    interceptors.Logging(),
 //	)
+//
+// A framework-built server runs Correlation first in its chain, so every
+// interceptor reports and logs under the call's one span and request id,
+// and runs its default Recovery at both ends, so a handler panic ends the
+// call as an error inside the other interceptors. A chain built on a bare
+// grpc-go server puts Correlation first as well.
 package interceptors
 
 import (
