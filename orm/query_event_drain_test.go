@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/internal/eventemit"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // blockPump installs a dispatcher that blocks in its first delivery until
@@ -37,15 +38,12 @@ func blockPump(t *testing.T, m *Manager, extra int) (release func()) {
 	return func() { once.Do(func() { close(gate) }) }
 }
 
-// within runs fn and fails the test when it has not returned by d.
+// within runs fn under hostile.Within: a hang fails the test with every
+// goroutine's stack, and a panic from fn is reported as what's failure.
 func within(t *testing.T, d time.Duration, what string, fn func()) {
 	t.Helper()
-	done := make(chan struct{})
-	go func() { defer close(done); fn() }()
-	select {
-	case <-done:
-	case <-time.After(d):
-		t.Fatalf("%s did not return within %v", what, d)
+	if p := hostile.Within(t, d, fn); p != nil {
+		t.Errorf("%s panicked: %v", what, p)
 	}
 }
 

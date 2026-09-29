@@ -28,7 +28,8 @@ func (tzStorageRecord) AssignableFields() []string { return []string{"name"} }
 // time.Local is process-global and cannot be mutated safely under -race,
 // so the parent re-execs the test binary with TZ=Asia/Karachi in the child
 // environment (same re-exec pattern as log/file's lock test) and the child
-// runs the real assertions against an in-memory SQLite database.
+// runs the real assertions against an in-memory SQLite database. Not
+// hostile.Isolated: the child needs its own TZ, not crash isolation.
 func TestUTCStorage_NonUTCHost(t *testing.T) {
 	if os.Getenv("VELOCITY_TZ_STORAGE_CHILD") == "1" {
 		runUTCStorageAssertions(t)

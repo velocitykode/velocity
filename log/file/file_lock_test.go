@@ -30,7 +30,8 @@ func TestFileLock_MultiProcess(t *testing.T) {
 
 	tempDir := t.TempDir()
 
-	// Launch two children sharing the same dir.
+	// Launch two children sharing the same dir. Not hostile.Isolated: the
+	// point is two processes writing at once, not crash isolation.
 	cmd1 := exec.Command(os.Args[0], "-test.run", "TestFileLock_MultiProcess")
 	cmd1.Env = append(os.Environ(), "VELOCITY_LOCK_CHILD=1", "VELOCITY_LOCK_DIR="+tempDir)
 	cmd2 := exec.Command(os.Args[0], "-test.run", "TestFileLock_MultiProcess")
