@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 )
 
 // callbackValue runs fn when a logger formats it.
@@ -73,5 +74,29 @@ func TestFileLogger_BlockingValueHoldsNoLock(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "INFO: free line") {
 		t.Errorf("file = %q, want the free line", b)
+	}
+}
+
+// Writers racing Shutdown: nothing races, no writer hangs, and Shutdown
+// returns once.
+func TestFileLogger_WritersRaceShutdown(t *testing.T) {
+	fallbacklogtest.Capture(t) // late warnings go to the fallback
+	l := NewFileLogger(t.TempDir(), 0, contract.LogLevelDebug)
+	done := make(chan struct{})
+	for i := 0; i < 8; i++ {
+		go func() {
+			for j := 0; j < 200; j++ {
+				l.With("w", j).Warn("line", "v", callbackValue{fn: func() {}})
+			}
+			done <- struct{}{}
+		}()
+	}
+	within(t, 5*time.Second, func() { _ = l.Shutdown(context.Background()) })
+	for i := 0; i < 8; i++ {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("a writer hung")
+		}
 	}
 }
