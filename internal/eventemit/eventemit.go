@@ -105,7 +105,9 @@ type Failures struct {
 // one more failure, and its first occurrence is logged at error level; it
 // never re-enters the policy, so the hook is not called for it. ctx is the
 // dispatch's context: both lines are bound to the request, trace and span
-// ids it carries, read only when a line is written.
+// ids it carries, read only when a line is written. A logger that panics
+// while writing either line is contained: the line goes to the fallback
+// logger instead, and the count and the hook are unaffected.
 //
 // A failure recorded on a goroutine that is running the hook, one the hook
 // caused, is counted and logged but not handed to the hook: the hook is
@@ -121,11 +123,39 @@ func (f *Failures) Record(ctx context.Context, logger contract.Logger, err error
 func (f *Failures) report(ctx context.Context, logger contract.Logger, err error, event any, skipHook bool) {
 	name := EventName(event)
 	if f.firstOf(name) {
-		boundTo(ctx, logger).Warn(FailureMessage, "event", name, "error", err)
+		writeLine(ctx, logger, func(l contract.Logger) {
+			l.Warn(FailureMessage, "event", name, "error", err)
+		})
 	}
 	if !skipHook {
 		f.callHook(ctx, logger, err, event, name)
 	}
+}
+
+// writeLine writes one of the policy's lines with write, through logger
+// bound to the ids ctx carries. A logger that panics, in With or in the
+// write, is contained and the same line goes to the fallback logger: a
+// panicking logger never skips the accounting or the hook, is not counted
+// as a failure of its own, and does not hide the failure it was logging.
+func writeLine(ctx context.Context, logger contract.Logger, write func(contract.Logger)) {
+	if logger != nil && tryLine(ctx, logger, write) {
+		return
+	}
+	tryLine(ctx, nil, write)
+}
+
+// tryLine writes a line through logger (the fallback when nil) bound to
+// ctx's ids, and reports whether it returned without panicking. A line's
+// values (an error whose Error method panics, say) can panic the fallback
+// too, so the fallback write is contained as well.
+func tryLine(ctx context.Context, logger contract.Logger, write func(contract.Logger)) (ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	write(boundTo(ctx, logger))
+	return true
 }
 
 // boundTo returns logger (the fallback when nil) bound to the ids ctx
@@ -155,7 +185,9 @@ func (f *Failures) callHook(ctx context.Context, logger contract.Logger, err err
 		if p := recover(); p != nil {
 			f.count.Add(1)
 			if f.hookPanicLogged.CompareAndSwap(false, true) {
-				boundTo(ctx, logger).Error(HookPanicMessage, "event", name, "panic", fmt.Sprint(p))
+				writeLine(ctx, logger, func(l contract.Logger) {
+					l.Error(HookPanicMessage, "event", name, "panic", fmt.Sprint(p))
+				})
 			}
 		}
 	}()

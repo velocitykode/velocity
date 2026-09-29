@@ -13,6 +13,7 @@ import (
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/eventemit"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -526,8 +527,36 @@ func (d *DefaultDispatcher) deliverDetached(ctx context.Context, event interface
 		return
 	}
 	if record := d.detachedFailures.Load(); record != nil {
-		(*record)(ctx, err, event)
+		containDetached(event, func() { (*record)(ctx, err, event) })
 	}
+}
+
+// detachedPanicMessage is the fallback line written for a panic contained
+// on a detached delivery (see containDetached).
+const detachedPanicMessage = "velocity/events: failure reporting panicked on a detached delivery"
+
+// containDetached runs fn, a call into failure reporting during a
+// detached delivery of event, on the goroutine delivering it: a timer, a
+// debounce or coalesce callback, or the no-queue DispatchAsync goroutine. No caller is left to receive a
+// panic there, so a panic in fn is contained and written through the
+// framework's fallback logger: it never ends the process, and never skips
+// the rest of the delivery (the other listeners, their AsyncFailed and the
+// recorder).
+func containDetached(event interface{}, fn func()) {
+	defer func() {
+		if p := recover(); p != nil {
+			writeDetachedPanic(event, p)
+		}
+	}()
+	fn()
+}
+
+// writeDetachedPanic writes the fallback line for panic p, contained on a
+// detached delivery of event. Formatting a panic value can panic in turn
+// (an error whose Error method panics), which is contained here too.
+func writeDetachedPanic(event interface{}, p any) {
+	defer func() { _ = recover() }()
+	fallbacklog.Logger{}.Error(detachedPanicMessage, "event", eventemit.EventName(event), "panic", fmt.Sprint(p))
 }
 
 // SetDetachedFailureRecorder installs fn as the recorder of detached
@@ -539,7 +568,8 @@ func (d *DefaultDispatcher) deliverDetached(ctx context.Context, event interface
 // the goroutine that delivered it, after each failure was dispatched as
 // its AsyncFailed and reported. The framework installs the app's failure
 // policy here, which counts the delivery and hands it to the failure hook.
-// nil removes it. Safe for concurrent use with dispatching.
+// A panic in fn is contained and written through the framework's fallback
+// logger: no caller is left to receive it. nil removes it. Safe for concurrent use with dispatching.
 func (d *DefaultDispatcher) SetDetachedFailureRecorder(fn func(ctx context.Context, err error, event any)) {
 	if fn == nil {
 		d.detachedFailures.Store(nil)
