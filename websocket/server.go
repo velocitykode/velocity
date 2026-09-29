@@ -389,32 +389,41 @@ func (s *Server) RecoveredPanics() uint64 {
 
 // HandleConnection upgrades HTTP connection to WebSocket
 func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
-	// Reserve pump slots on the WaitGroup while still holding the running
-	// check, so a concurrent Shutdown (which acquires the write lock before
-	// spawning its wg.Wait goroutine) cannot observe a zero counter and
-	// race the Add. The slots are released below if upgrade or auth fails.
 	s.mu.RLock()
-	if !s.running {
-		s.mu.RUnlock()
+	running := s.running
+	s.mu.RUnlock()
+	if !running {
 		http.Error(w, "Server not running", http.StatusServiceUnavailable)
 		return
 	}
-	s.wg.Add(2)
-	s.mu.RUnlock()
+
+	// The connection slot and, further down, the pump slots are released
+	// by this deferred rollback until the pumps own them, whatever ends
+	// the request first: a refusal, or a panic in the auth function or in
+	// the upgrade (a wrapped writer's Hijack). A leaked pump slot would
+	// make every later Shutdown wait out its deadline.
+	pumpsReserved, pumpsStarted := false, false
+	defer func() {
+		if pumpsStarted {
+			return
+		}
+		s.activeConns.Add(-1)
+		if pumpsReserved {
+			s.wg.Add(-2)
+		}
+	}()
 
 	n := s.activeConns.Add(1)
 	if s.config.MaxConnections > 0 && n > int64(s.config.MaxConnections) {
-		s.activeConns.Add(-1)
-		s.wg.Add(-2)
 		http.Error(w, "Connection limit reached", http.StatusServiceUnavailable)
 		return
 	}
 
-	// Authenticate before upgrading if an auth function is configured
+	// Authenticate before upgrading if an auth function is configured. It
+	// runs before the pump slots are reserved, so an auth function that
+	// shuts the server down does not wait on its own request.
 	if s.config.AuthFunc != nil {
 		if err := s.config.AuthFunc(r); err != nil {
-			s.activeConns.Add(-1)
-			s.wg.Add(-2)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -425,18 +434,28 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	// predictable ID (socket IDs bind channel-auth signatures).
 	id, err := generateID()
 	if err != nil {
-		s.activeConns.Add(-1)
-		s.wg.Add(-2)
 		s.logError("Failed to generate client ID", "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
+	// Reserve pump slots on the WaitGroup while still holding the running
+	// check, so a concurrent Shutdown (which acquires the write lock before
+	// spawning its wg.Wait goroutine) cannot observe a zero counter and
+	// race the Add.
+	s.mu.RLock()
+	if !s.running {
+		s.mu.RUnlock()
+		http.Error(w, "Server not running", http.StatusServiceUnavailable)
+		return
+	}
+	s.wg.Add(2)
+	pumpsReserved = true
+	s.mu.RUnlock()
+
 	// Upgrade connection
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		s.activeConns.Add(-1)
-		s.wg.Add(-2)
 		s.logError("Failed to upgrade connection", "error", err)
 		return
 	}
@@ -451,8 +470,14 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 		Metadata: make(map[string]interface{}),
 	}
 
-	// Register client
-	s.register <- client
+	// Register client. A server shut down meanwhile no longer drains
+	// register: close the connection instead of waiting for good.
+	select {
+	case s.register <- client:
+	case <-s.stopChan:
+		_ = conn.Close()
+		return
+	}
 
 	// Start client goroutines. Pump slots already reserved on the WaitGroup
 	// above so Shutdown can wait for them to drain.
@@ -463,6 +488,7 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	// boundary instead of taking the process down. The internal pump
 	// recover stays in place for symptom logging; async.Go is the
 	// last-resort net.
+	pumpsStarted = true
 	async.Go(func() {
 		defer s.wg.Done()
 		client.writePump()
@@ -1005,11 +1031,19 @@ func (s *Server) HandleRaw(w http.ResponseWriter, r *http.Request) (*websocket.C
 		return nil, noop, ErrConnectionLimit
 	}
 
+	upgraded := false
+	defer func() {
+		// A refused or panicking upgrade (a wrapped writer's Hijack)
+		// gives the slot back.
+		if !upgraded {
+			s.activeConns.Add(-1)
+		}
+	}()
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		s.activeConns.Add(-1)
 		return nil, noop, fmt.Errorf("websocket upgrade: %w", err)
 	}
+	upgraded = true
 
 	// release rolls the activeConns reservation back when the caller is done.
 	// sync.Once keeps it idempotent so a double-deferred release cannot drive
