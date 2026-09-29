@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/internal/hostile"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -147,47 +146,15 @@ func (p *pausingCASStore) CompareAndSwapRememberToken(ctx context.Context, u aut
 	return p.revokeTestStore.CompareAndSwapRememberToken(ctx, u, oldToken, newToken)
 }
 
-// parkedIn reports whether some goroutine is blocked on a sync primitive
-// with fn on its stack.
-func parkedIn(fn string) bool {
-	buf := make([]byte, 1<<20)
-	buf = buf[:runtime.Stack(buf, true)]
-	for _, g := range strings.Split(string(buf), "\n\n") {
-		header, _, _ := strings.Cut(g, "\n")
-		if strings.Contains(header, "[sync.") && strings.Contains(g, fn) {
-			return true
-		}
-	}
-	return false
-}
-
-// waitReturnedOrParked waits until done is closed or a goroutine running
-// fn is blocked on a lock, whichever comes first.
-func waitReturnedOrParked(t *testing.T, done <-chan struct{}, fn string) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		select {
-		case <-done:
-			return
-		default:
-		}
-		if parkedIn(fn) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s neither returned nor blocked", fn)
-		}
-		runtime.Gosched()
-	}
-}
-
 // A remember-me recall is one transition: while it is in flight (paused at
-// its remember-token compare-and-swap), another reader of the same request
-// does not see the provisional user, and the response committed meanwhile
-// waits for it. When the swap then loses, nothing of the recall survives:
-// both readers see no user and the saved session is signed out.
-func TestRememberRecall_ReadersAndCommitWaitForTheTransition(t *testing.T) {
+// its remember-token compare-and-swap) it holds the request's
+// authentication gate, so another reader of the same request fails closed
+// with auth.ErrOperationInProgress at once instead of seeing the
+// provisional user or waiting, and the response committed meanwhile
+// returns at once and saves nothing. When the swap then loses, nothing of
+// the recall survives: both readers see no user and the session is
+// signed out.
+func TestRememberRecall_ReadersAndCommitDuringTheTransitionAreRefused(t *testing.T) {
 	for _, mode := range lifetimeModes {
 		t.Run(mode.name, func(t *testing.T) {
 			clock := installLifetimeClock(t)
@@ -196,6 +163,7 @@ func TestRememberRecall_ReadersAndCommitWaitForTheTransition(t *testing.T) {
 			pausing := &pausingCASStore{revokeTestStore: users, entered: make(chan struct{}), release: make(chan struct{}), lose: true}
 
 			var recalled, read atomic.Bool
+			var readErr atomic.Pointer[error]
 			b := transitionBrowser(t, scheme, "/fanout", func(c *router.Context) error {
 				req := c.Request
 				recallDone := make(chan struct{})
@@ -208,16 +176,18 @@ func TestRememberRecall_ReadersAndCommitWaitForTheTransition(t *testing.T) {
 				readDone := make(chan struct{})
 				go func() {
 					defer close(readDone)
-					read.Store(scheme.User(req) != nil)
+					ok, err := scheme.CheckWithError(req)
+					read.Store(ok)
+					readErr.Store(&err)
 				}()
-				waitReturnedOrParked(t, readDone, "resolveAuthenticatedUser")
+				hostile.Within(t, hostile.Deadline, func() { <-readDone })
 
 				commitDone := make(chan struct{})
 				go func() {
 					defer close(commitDone)
 					_ = c.String(http.StatusOK, "done")
 				}()
-				waitReturnedOrParked(t, commitDone, "commitSession")
+				hostile.Within(t, hostile.Deadline, func() { <-commitDone })
 
 				close(pausing.release)
 				<-recallDone
@@ -239,6 +209,13 @@ func TestRememberRecall_ReadersAndCommitWaitForTheTransition(t *testing.T) {
 			if read.Load() {
 				t.Error("a reader during the recall saw the provisional user")
 			}
+			var got error
+			if p := readErr.Load(); p != nil {
+				got = *p
+			}
+			if !errors.Is(got, auth.ErrOperationInProgress) {
+				t.Errorf("a reader during the recall got %v, want auth.ErrOperationInProgress", got)
+			}
 			if b.liveCookie(rememberCookieName) != nil {
 				t.Error("a remember cookie was delivered for a recall that lost its swap")
 			}
@@ -250,9 +227,9 @@ func TestRememberRecall_ReadersAndCommitWaitForTheTransition(t *testing.T) {
 }
 
 // A response committed while a recall is between its remember-token swap
-// and the queueing of its cookie and undo waits for the recall, so when
-// the save then fails the undo runs: the presented remember cookie still
-// signs in once saving works again.
+// and the queueing of its cookie and undo returns at once and saves
+// nothing; the recall is then refused when it ends and runs its undo, so
+// the presented remember cookie still signs in once saving works again.
 func TestRememberRecall_FailedSaveDuringTheTransitionRollsBack(t *testing.T) {
 	for _, mode := range lifetimeModes {
 		t.Run(mode.name, func(t *testing.T) {
@@ -275,7 +252,7 @@ func TestRememberRecall_FailedSaveDuringTheTransitionRollsBack(t *testing.T) {
 					defer close(commitDone)
 					_ = c.String(http.StatusOK, "done")
 				}()
-				waitReturnedOrParked(t, commitDone, "commitSession")
+				hostile.Within(t, hostile.Deadline, func() { <-commitDone })
 
 				close(pausing.release)
 				<-recallDone

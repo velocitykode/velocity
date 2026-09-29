@@ -38,7 +38,13 @@ type cachedUser struct {
 	cachedAt time.Time
 }
 
-// JWTScheme implements JWT-based authentication for APIs
+// JWTScheme implements JWT-based authentication for APIs.
+//
+// It keeps no per-request state and holds no lock while it calls the user
+// store or the token manager (its user cache is locked only around its own
+// map), so it takes no per-request authentication gate: a user store that
+// calls back into the scheme for the request it serves cannot hang it,
+// and concurrent calls on one request run independently.
 type JWTScheme struct {
 	// user store and throttler are held via atomic.Pointer so concurrent
 	// SetUserStore / SetLoginThrottler calls cannot tear a reader's

@@ -205,12 +205,12 @@ type Authenticatable interface {
 // already-loaded user's stored hash), so it has no Ctx variant.
 //
 // The session scheme calls a user store during a sign-in, sign-out or
-// remember-me recall while it holds that request's authentication lock,
-// which makes the transition atomic for everything else reading the
-// request's user. A store must therefore not ask the scheme about the
-// request it is serving (User, Check, ID, Login, Logout, directly or
-// through a hook that resolves the current user from the context it was
-// passed): that call waits on the lock its own caller holds, for good.
+// remember-me recall with no lock held. The operation holds the request's
+// non-blocking authentication gate meanwhile, so a store that asks the
+// scheme about the request it is serving (User, Check, ID, Login, Logout,
+// directly or through a hook that resolves the current user from the
+// context it was passed) does not wait: it fails closed with
+// ErrOperationInProgress (no user, Check false).
 //
 // Implementations must pass authtest.RunUserStoreContractTests. See
 // authtest for the executable specification.
@@ -652,7 +652,9 @@ func (m *Manager) Allows(r *http.Request, ability string, args ...interface{}) b
 
 // Authorize checks if the authenticated user (from the default scheme) is
 // allowed to perform the given ability. Returns ErrUnauthorized on denial or
-// when there is no authenticated user.
+// when there is no authenticated user. A request whose authentication
+// operation is in flight has no user to authorize (the scheme fails
+// closed with ErrOperationInProgress), so it is unauthorized too.
 func (m *Manager) Authorize(r *http.Request, ability string, args ...interface{}) error {
 	if !m.Allows(r, ability, args...) {
 		return ErrUnauthorized

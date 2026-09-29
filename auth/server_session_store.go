@@ -29,6 +29,15 @@ var (
 	// administrative action removed it while the cookie was still live.
 	ErrSessionRevoked = errors.New("velocity/auth: session revoked")
 
+	// ErrOperationInProgress is what the session scheme returns, and
+	// SessionScheme.CheckWithError reports, for an authentication call
+	// made while another authentication operation of the same request is
+	// in flight: a goroutine of the request racing a Login, Logout or
+	// remember-me recall, or a store calling back into the scheme for the
+	// request it serves. The call does not wait; it fails closed (no
+	// user, Check false).
+	ErrOperationInProgress = errors.New("velocity/auth: another authentication operation is in progress on this request")
+
 	// ErrNoServerSessionStore is returned by Manager.RevokeSession,
 	// RevokeAllSessions, and ListActiveSessions when no server-side
 	// session store has been installed via SetServerSessionStore.
@@ -95,10 +104,11 @@ type SessionMeta struct {
 // session's data in the same record, so the cookie carries only the id.
 // Implementations must be safe for concurrent use.
 //
-// The session scheme calls the store while it holds the request's
-// authentication lock (see UserStore): a store must not ask the scheme
-// about the request it is serving. UpdateData runs its update callback
-// under the store's own lock, so the callback must not call the store.
+// The session scheme calls the store with no lock held; a store that asks
+// the scheme about the request it is serving while an authentication
+// operation of that request is in flight gets ErrOperationInProgress (see
+// UserStore). UpdateData runs its update callback under the store's own
+// lock, so the callback must not call the store.
 //
 // Implementations must pass authtest.RunServerSessionStoreContractTests.
 // See authtest for the executable specification.

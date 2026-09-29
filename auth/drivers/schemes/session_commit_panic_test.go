@@ -109,15 +109,18 @@ func TestSessionMiddleware_PanicInsideTheCommitReleasesTheLifecycleLock(t *testi
 		{"settlement panics after a staged deletion", sessionKept, func(rig *commitPanicRig, scheme *SessionScheme, c *router.Context) error {
 			holder := c.Request.Context().Value(sessionCtxKey{}).(*sessionHolder)
 			header := c.Response.Header()
-			holder.lifecycle.Lock()
-			holder.queueCredentialWrite(afterSaveWrite{
+			var op gateOp
+			if err := holder.reserve(&op); err != nil {
+				return err
+			}
+			op.queueCredentialWrite(afterSaveWrite{
 				settle: func() {
 					header.Add("Set-Cookie", (&http.Cookie{Name: "vel_session", Value: "", Path: "/", MaxAge: -1}).String())
 					panic("settlement failed after the deletion")
 				},
 				write: func(http.ResponseWriter) {},
 			})
-			holder.lifecycle.Unlock()
+			op.publish(false)
 			scheme.Session(c.Request).Put("touched", true)
 			return c.String(http.StatusOK, "ok")
 		}, sessionEnded},

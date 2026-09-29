@@ -78,11 +78,11 @@ type sessionHolder struct {
 	// remember-me recall) that changed the request's session; see
 	// afterSaveWrite.
 	transition uint64
-	// sealed is set by the seam's commit, under lifecycle held
-	// exclusively, before it attempts the save: the request's one commit
-	// is taken (whether or not its save then succeeds), so a sign-in or
-	// recall from here on could change nothing that is saved and is
-	// refused (see seal).
+	// sealed is set by the seam's commit, in the step that reserves the
+	// gate for it (reserveCommit), before it attempts the save: the
+	// request's one commit is taken (whether or not its save then
+	// succeeds), so a sign-in or recall from here on could change nothing
+	// that is saved and is refused.
 	sealed bool
 	// committedID is the id of the live session the commit saved (or
 	// found unchanged), the one the browser holds once the response is
@@ -97,17 +97,19 @@ type sessionHolder struct {
 	// delivery runs is delivered with it.
 	queueClosed bool
 
-	// lifecycle serializes the request's authentication transitions:
-	// remember-me recall (session id regeneration, the CSRF token and
-	// remember token rotations, and their rollback), Login and Logout,
-	// which hold it exclusively. A reader of the signed-in user holds it
-	// shared, so it never sees the provisional identity of a transition in
-	// flight, and the seam's commit holds it exclusively, so a session is
-	// never saved, nor its queued writes taken, halfway through one. The
-	// commit releases it before it delivers the queued writes, so a write
-	// may read the signed-in user.
-	// Held across store and user store calls, so it is separate from mu.
-	lifecycle sync.RWMutex
+	// busy is the request's authentication gate (see gate.go): set while
+	// an operation (Login, Logout, a remember-me recall or burn, the
+	// commit) holds it. A reader of the signed-in user, or another
+	// operation, fails closed while it is set, so none sees the
+	// provisional identity of a transition in flight, and the commit
+	// never saves a session halfway through one. The commit frees it
+	// before it delivers the queued writes, so a write may read the
+	// signed-in user.
+	busy bool
+	// torn is set when an operation was unwound by a panic after it began
+	// changing the session: no read uses the session and the commit does
+	// not save it until a later sign-in or logout publishes a whole state.
+	torn bool
 
 	// commitOnce makes the session middleware's commit run once per
 	// request, whichever write or return fires it.
@@ -120,7 +122,7 @@ type afterSaveWrite struct {
 	// settle, when set, is the part of write that changes state outside
 	// the response (a sign-in's remember token reaching the user store).
 	// The seam runs it once the save succeeded, while it still holds the
-	// lifecycle lock, so a transition that follows the commit (a logout
+	// request's gate, so a transition that follows the commit (a logout
 	// run while the writes are delivered) comes after it.
 	settle func()
 	// undo, when set, reverses a change made outside the session for
@@ -148,28 +150,6 @@ type afterSaveWrite struct {
 // was saved: the one save ran, so nothing the sign-in changed would be
 // saved or delivered.
 var errSessionSaved = errors.New("velocity/auth: sign-in refused: the request's session was already saved")
-
-// beginTransition records an authentication transition that changed the
-// request's session. The caller holds lifecycle exclusively and calls it
-// once the operation replaced the session state (the session was
-// regenerated or invalidated): only from there on are the credential
-// writes earlier transitions queued superseded, so an operation that
-// fails before it changed anything leaves them to be delivered, or undone,
-// as before.
-func (h *sessionHolder) beginTransition() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.transition++
-}
-
-// seal marks the request's one commit as taken, before its save is
-// attempted, so it says nothing about whether the save succeeded. The
-// caller holds lifecycle exclusively.
-func (h *sessionHolder) seal() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.sealed = true
-}
 
 // isSealed reports whether the request's one commit was taken already.
 func (h *sessionHolder) isSealed() bool {
@@ -238,15 +218,6 @@ func (h *sessionHolder) committed() string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.committedID
-}
-
-// queueCredentialWrite appends e, bound to the transition in progress: the
-// caller holds lifecycle exclusively inside the transition that begun it.
-func (h *sessionHolder) queueCredentialWrite(e afterSaveWrite) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	e.transition = h.transition
-	h.afterSave = append(h.afterSave, e)
 }
 
 // queuedWrites is what the seam may still run of the queue.
@@ -332,8 +303,8 @@ func (h *sessionHolder) takeAfterSave(sessionEnded bool) queuedWrites {
 // write added still ends the session before the panic reaches the router,
 // whose error response carries the response's cookies.
 //
-// write runs after the request's lifecycle lock is released, so it may
-// read the signed-in user (User, Check, ID). The request's session is
+// write runs after the commit freed the request's authentication gate, so
+// it may read the signed-in user (User, Check, ID). The request's session is
 // already saved and sealed by then: a Login it calls is refused, a
 // remember-me recall does not run, the session's id cannot be regenerated
 // (auth.ErrSessionSealed), and a CSRF token rotation is refused. A Logout
@@ -390,6 +361,17 @@ func seamHolder(r *http.Request) (holder *sessionHolder, standalone bool) {
 		return holder, false
 	}
 	return &sessionHolder{saveScope: true}, true
+}
+
+// isTorn reports whether an operation of the request was torn (see
+// sessionHolder.torn); false for a nil holder.
+func (h *sessionHolder) isTorn() bool {
+	if h == nil {
+		return false
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.torn
 }
 
 // getSession returns the cached session under a read lock.
@@ -916,9 +898,8 @@ func (g *SessionScheme) getCSRFTokenRotator() contract.CSRFTokenRotator {
 // teardown (a Logout's revocations, a commit's cleanup), which must run
 // whatever the logger does.
 //
-// Many callers hold the request holder's lifecycle lock. That lock is per
-// request, and a logger is handed no request, so it cannot reach the
-// lock; a blocking logger stalls only the request that logs.
+// No lock is held when it runs; a blocking logger stalls only the request
+// that logs.
 func (g *SessionScheme) logWarn(msg string, kvs ...any) {
 	g.mu.RLock()
 	l := g.logger
@@ -952,6 +933,10 @@ func (g *SessionScheme) Check(r *http.Request) bool {
 //     a session held in the record (session.ServerStore), the record is
 //     gone for any reason; a remember cookie never revives it and the
 //     remember credential it presents is burned
+//   - auth.ErrOperationInProgress: another authentication operation of
+//     the same request (a Login, Logout or remember-me recall on another
+//     goroutine, or the one whose store is calling back) is in flight;
+//     fail-closed, without waiting
 //   - any other error: server-side store lookup failed; fail-closed
 //     (returns false). The underlying error is logged when a logger is
 //     configured.
@@ -990,15 +975,18 @@ func (g *SessionScheme) CheckWithError(r *http.Request) (bool, error) {
 //     cookie as in step 2b; without a valid remember cookie the expiry is
 //     returned.
 //
-// A signed-in session its record vouches for resolves under the request
-// holder's lifecycle lock held shared, so readers run together but never
-// while a transition (a recall, Login, Logout) is in flight: the identity
-// a recall writes before its remember-token swap is provisional, and a
-// reader waits for the swap to decide it. Every other outcome may change
-// the session (recall, burn, expiry fall-through), so it is decided under
-// the lock held exclusively, after re-reading the session: goroutines of
-// one request that read the user together recall once, and the others see
-// the recalled user.
+// A signed-in session its record vouches for resolves without taking the
+// request's authentication gate, so readers run together, but never while
+// an operation (a recall, Login, Logout, the commit) holds it: the
+// identity a recall writes before its remember-token swap is provisional,
+// so a reader meanwhile fails closed with auth.ErrOperationInProgress. It
+// does not wait. Every other outcome may change the session (recall,
+// burn, expiry fall-through), so it is decided holding the gate, after
+// re-reading the session: goroutines of one request that read the user
+// together recall once, and the others fail closed while it runs or see
+// the recalled user after it. No lock is held while the user store and
+// the stores run. A request an operation was torn on (see gate.go) reads
+// as signed out.
 //
 // Returns the resolved user, whether the request is authenticated, and
 // the reason it is not (nil on the ordinary unauthenticated paths). Error
@@ -1010,15 +998,38 @@ func (g *SessionScheme) resolveAuthenticatedUser(r *http.Request) (auth.Authenti
 		return user, ok, err
 	}
 
-	if holder != nil {
-		holder.lifecycle.Lock()
-		defer holder.lifecycle.Unlock()
+	var op gateOp
+	if err := holder.reserve(&op); err != nil {
+		return nil, false, err
 	}
-	session := g.getSession(r)
-	if session == nil {
+	finished := false
+	defer func() {
+		if !finished {
+			op.abort()
+		}
+	}()
+	var (
+		user    auth.Authenticatable
+		ok      bool
+		err     error
+		session = g.getSession(r)
+	)
+	if holder.isTorn() {
+		session = nil
+	}
+	if session != nil {
+		user, ok, err = g.resolveAuthenticationChange(r, session, &op)
+	}
+	finished = true
+	if !op.publish(true) {
+		// The response was committed while the recall ran: nothing it
+		// changed is saved, so the request is not signed in by it.
+		if ok {
+			session.Remove(auth.UserIDSessionKey)
+		}
 		return nil, false, nil
 	}
-	return g.resolveAuthenticationChange(r, session)
+	return user, ok, err
 }
 
 // resolveVouchedSession is resolveAuthenticatedUser's shared-lock step: it
@@ -1027,11 +1038,20 @@ func (g *SessionScheme) resolveAuthenticatedUser(r *http.Request) (auth.Authenti
 // lookup failed), and reports decided false for everything that may
 // change the session.
 func (g *SessionScheme) resolveVouchedSession(r *http.Request, holder *sessionHolder) (user auth.Authenticatable, ok, decided bool, err error) {
+	var session auth.Session
 	if holder != nil {
-		holder.lifecycle.RLock()
-		defer holder.lifecycle.RUnlock()
+		s, busy, torn := holder.sessionForRead()
+		switch {
+		case busy:
+			return nil, false, true, auth.ErrOperationInProgress
+		case torn:
+			return nil, false, true, nil
+		}
+		session = s
 	}
-	session := g.getSession(r)
+	if session == nil {
+		session = g.getSession(r)
+	}
 	if session == nil {
 		return nil, false, true, nil
 	}
@@ -1055,8 +1075,8 @@ func (g *SessionScheme) resolveVouchedSession(r *http.Request, holder *sessionHo
 
 // resolveAuthenticationChange is resolveAuthenticatedUser's ladder for a
 // session that is not a vouched-for signed-in session. The caller holds
-// the request holder's lifecycle lock.
-func (g *SessionScheme) resolveAuthenticationChange(r *http.Request, session auth.Session) (auth.Authenticatable, bool, error) {
+// the request's gate for op.
+func (g *SessionScheme) resolveAuthenticationChange(r *http.Request, session auth.Session, op *gateOp) (auth.Authenticatable, bool, error) {
 	userID := session.Get(auth.UserIDSessionKey)
 	if userID == nil {
 		// A server-held session whose record was deleted arrives as an
@@ -1073,7 +1093,7 @@ func (g *SessionScheme) resolveAuthenticationChange(r *http.Request, session aut
 		// path mutates the in-memory session AND, when a server store
 		// is configured, writes a record keyed on the rotated id.
 		if user := g.checkRememberCookie(r); user != nil {
-			if !g.anchorRecalledUser(r, session, user) {
+			if !g.anchorRecalledUser(r, session, user, op) {
 				return nil, false, nil
 			}
 			return user, true, nil
@@ -1101,7 +1121,7 @@ func (g *SessionScheme) resolveAuthenticationChange(r *http.Request, session aut
 			// new session, exactly as when the cookie itself expired.
 			if recalled := g.checkRememberCookie(r); recalled != nil {
 				session.Remove(auth.UserIDSessionKey)
-				if g.anchorRecalledUser(r, session, recalled) {
+				if g.anchorRecalledUser(r, session, recalled, op) {
 					return recalled, true, nil
 				}
 			}
@@ -1187,7 +1207,10 @@ func (g *SessionScheme) User(r *http.Request) auth.Authenticatable {
 //   - the remember-token rotation could not complete (V2-08; see
 //     rotateRememberToken). Recall success is conditional on the
 //     presented credential being burned and a replacement delivered.
-func (g *SessionScheme) anchorRecalledUser(r *http.Request, session auth.Session, user auth.Authenticatable) bool {
+//
+// The caller holds the request's gate for op, which stages the recall's
+// transition and credential writes until it ends.
+func (g *SessionScheme) anchorRecalledUser(r *http.Request, session auth.Session, user auth.Authenticatable, op *gateOp) bool {
 	// Capture the pre-rotation id so the CSRF rotator (when wired) can
 	// drop any token bound to the planted id. Required to keep the
 	// session-fixation defense complete: H-02 says the CSRF token MUST
@@ -1213,9 +1236,7 @@ func (g *SessionScheme) anchorRecalledUser(r *http.Request, session auth.Session
 	// The recall is a transition of its own once the session is
 	// regenerated: credential writes an earlier transition of this
 	// request queued are superseded from here on.
-	if holder != nil {
-		holder.beginTransition()
-	}
+	op.beginTransition()
 
 	// Rotate the CSRF token alongside the session id (H-02). Without
 	// this, a token an attacker minted under the pre-revival id remains
@@ -1241,7 +1262,7 @@ func (g *SessionScheme) anchorRecalledUser(r *http.Request, session auth.Session
 		// persisted.
 		if holder != nil && holder.getResponseWriter() != nil {
 			newID := session.ID()
-			holder.queueCredentialWrite(afterSaveWrite{write: func(w http.ResponseWriter) {
+			op.queueCredentialWrite(afterSaveWrite{write: func(w http.ResponseWriter) {
 				rotator.WriteXSRFCookie(rotateCtx, w, newID)
 			}})
 		}
@@ -1282,7 +1303,7 @@ func (g *SessionScheme) anchorRecalledUser(r *http.Request, session auth.Session
 	// token), the recall fails closed. user_id is removed again so the
 	// save-at-end middleware does not persist an authenticated session
 	// that would bypass rotation on the next request.
-	if err := g.rotateRememberToken(r, user); err != nil {
+	if err := g.rotateRememberToken(r, user, op); err != nil {
 		g.logWarn("velocity/auth: remember-cookie revival: remember-token rotation failed; rejecting recall", "error", err)
 		session.Remove(auth.UserIDSessionKey)
 		return false
@@ -1336,7 +1357,7 @@ var errRememberTokenStale = errors.New("velocity/auth: remember token rotated co
 // offers no durable slot for a previous-token grace entry, and scheme-local
 // memory would not survive multi-host deployments, so we fail secure: at
 // worst the user signs in again.
-func (g *SessionScheme) rotateRememberToken(r *http.Request, user auth.Authenticatable) error {
+func (g *SessionScheme) rotateRememberToken(r *http.Request, user auth.Authenticatable, op *gateOp) error {
 	holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
 	if !ok || holder == nil {
 		return errors.New("velocity/auth: no session holder on request; cannot deliver rotated remember cookie")
@@ -1369,10 +1390,11 @@ func (g *SessionScheme) rotateRememberToken(r *http.Request, user auth.Authentic
 		return err
 	}
 	// The cookie and its undo are queued as one entry, so the seam's
-	// commit (which waits for this transition anyway) can never take one
-	// without the other.
+	// commit can never take one without the other; a commit while the
+	// recall holds the gate saves nothing and the recall's publish runs
+	// the undo instead.
 	ctx := context.WithoutCancel(r.Context())
-	holder.queueCredentialWrite(afterSaveWrite{write: func(w http.ResponseWriter) {
+	op.queueCredentialWrite(afterSaveWrite{write: func(w http.ResponseWriter) {
 		http.SetCookie(w, cookie)
 	}, undo: func() {
 		swapped, err := cas.CompareAndSwapRememberToken(ctx, user, newToken, oldToken)
@@ -1404,6 +1426,15 @@ func (g *SessionScheme) ID(r *http.Request) interface{} {
 // outside it Login commits its own save. After the request's session was
 // saved (a write queued behind the save calling Login) the sign-in is
 // refused with an error.
+//
+// Login holds the request's authentication gate while it runs (see
+// gate.go): a Login while another authentication operation of the request
+// is in flight, or from a store the operation calls, returns
+// auth.ErrOperationInProgress without waiting, and a response committed
+// while Login runs saves nothing, so Login then returns the sign-in
+// refused error and the queued credential writes are dropped. The server
+// record Login wrote for the new id names an id no client received and
+// ends with its TTL.
 //
 // A failed Login may leave side effects, depending on where it fails:
 //
@@ -1438,10 +1469,40 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 	// cookies bound to it. Outside it, this login is its own save scope
 	// and commits the same way before returning.
 	holder, standalone := seamHolder(r)
-	holder.lifecycle.Lock()
-	defer holder.lifecycle.Unlock()
-	if holder.isSealed() {
+	var op gateOp
+	if err := holder.reserve(&op); err != nil {
+		return fmt.Errorf("velocity/auth: login refused: %w", err)
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			op.abort()
+		}
+	}()
+	session, err := g.loginReserved(r, holder, user, &op, remember...)
+	finished = true
+	published := op.publish(true)
+	if err != nil {
+		return err
+	}
+	if !published {
 		return errSessionSaved
+	}
+	if standalone {
+		// The holder is this Login's own: nothing else reaches it, so its
+		// commit runs with the gate free.
+		holder.setSession(session)
+		return commitStandalone(g, r, w, holder)
+	}
+	return nil
+}
+
+// loginReserved is Login's body, run holding the request's gate for op. It
+// returns the signed-in session, or nil with the error that stopped the
+// sign-in.
+func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, user auth.Authenticatable, op *gateOp, remember ...bool) (auth.Session, error) {
+	if holder.isSealed() {
+		return nil, errSessionSaved
 	}
 
 	session := g.getSession(r)
@@ -1449,7 +1510,7 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 		var err error
 		session, err = g.store.Create("")
 		if err != nil {
-			return err
+			return nil, err
 		}
 		// Cache in request context if available
 		if cached, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && cached != nil {
@@ -1470,19 +1531,19 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 	// login before anything changed; the cookie store's revocation follows
 	// the regenerate below.
 	if err := g.retireServerRecord(r, oldSessionID); err != nil {
-		return fmt.Errorf("velocity/auth: login aborted: previous session not retired: %w", err)
+		return nil, fmt.Errorf("velocity/auth: login aborted: previous session not retired: %w", err)
 	}
 
 	// Regenerate session ID for security. A failure here must abort the
 	// login: proceeding with the old session ID opens a session-fixation
 	// window (an attacker who planted the cookie keeps access).
 	if err := session.Regenerate(); err != nil {
-		return fmt.Errorf("velocity/auth: login aborted: session regenerate failed: %w", err)
+		return nil, fmt.Errorf("velocity/auth: login aborted: session regenerate failed: %w", err)
 	}
 	// The session is replaced: from here on this sign-in supersedes the
 	// credential writes an earlier transition of the request queued (an
 	// earlier sign-in's remember cookie).
-	holder.beginTransition()
+	op.beginTransition()
 	if rev, ok := g.store.(sessionRevoker); ok && oldSessionID != "" {
 		rev.Revoke(oldSessionID)
 	}
@@ -1510,9 +1571,9 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 	if rotator := g.getCSRFTokenRotator(); rotator != nil {
 		rotateCtx := sessionContext(r, session)
 		if err := rotator.RotateToken(rotateCtx, oldSessionID, sessionID); err != nil {
-			return fmt.Errorf("velocity/auth: login aborted: csrf token rotate failed: %w", err)
+			return nil, fmt.Errorf("velocity/auth: login aborted: csrf token rotate failed: %w", err)
 		}
-		holder.queueCredentialWrite(afterSaveWrite{write: func(w http.ResponseWriter) {
+		op.queueCredentialWrite(afterSaveWrite{write: func(w http.ResponseWriter) {
 			rotator.WriteXSRFCookie(rotateCtx, w, sessionID)
 		}})
 	}
@@ -1527,13 +1588,13 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 	// undo the committed session and CSRF rotation. Log and continue:
 	// the user is authenticated for this session, just not recalled
 	// across a new one. The credential is issued (its hash stored) while
-	// the seam still holds the lifecycle lock after the save, and its
+	// the seam still holds the request's gate after the save, and its
 	// cookie written with the other queued writes, so a logout that
 	// follows the commit clears it after it was stored.
 	if len(remember) > 0 && remember[0] {
 		ctx := r.Context()
 		var cookie *http.Cookie
-		holder.queueCredentialWrite(afterSaveWrite{
+		op.queueCredentialWrite(afterSaveWrite{
 			settle: func() {
 				c, err := g.issueRememberCookie(ctx, user)
 				if err != nil {
@@ -1555,13 +1616,8 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 	// session in that record (session.ServerStore) saves into it and never
 	// creates a signed-in record itself. When the save then fails, the
 	// record names an id no client received and ends with its TTL.
-	g.recordServerSession(r, session, user) //lock-held-ok: per-request lifecycle lock; fmt contains a panicking identifier, and the stores may not call the scheme for this request
-
-	if standalone {
-		holder.setSession(session)
-		return commitStandalone(g, r, w, holder) //lock-held-ok: per-request lifecycle lock; a session store must not call the scheme for the request it serves (auth.SessionStore)
-	}
-	return nil
+	g.recordServerSession(r, session, user)
+	return session, nil
 }
 
 // LoginByID logs in a user by ID
@@ -1629,14 +1685,24 @@ type sessionRevoker interface {
 	Revoke(sessionID string)
 }
 
-// Logout logs out the user
+// Logout logs out the user.
+//
+// Logout holds the request's authentication gate (see gate.go) until the
+// session is invalidated: a Logout while another authentication operation
+// of the request is in flight, or from a store that operation calls,
+// returns auth.ErrOperationInProgress without waiting and changes nothing.
+// The server-side teardown that follows (the cookie store's revocation,
+// the server record deletes) runs with the gate free.
 func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	// The session middleware writes the delete cookie for the
 	// invalidated session. Outside it, this logout is its own save scope
 	// and commits the same way below.
 	holder, standalone := seamHolder(r)
-	holder.lifecycle.Lock()
-	defer holder.lifecycle.Unlock()
+	var op gateOp
+	if err := holder.reserve(&op); err != nil {
+		return fmt.Errorf("velocity/auth: logout refused: %w", err)
+	}
+	defer op.abort()
 	session := g.getSession(r)
 	if session == nil {
 		return nil
@@ -1656,7 +1722,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 		// the save calling Logout): the server-side teardown below still
 		// ends the session and the remember credential, but no save
 		// follows to delete the session cookie on this response.
-		g.logWarn("velocity/auth: logout after the session was saved: the session is ended server-side, its cookie is not deleted by this response", "session_id", sessionID) //lock-held-ok: per-request lifecycle lock; the logger gets no handle on the request and logWarn contains a panic
+		g.logWarn("velocity/auth: logout after the session was saved: the session is ended server-side, its cookie is not deleted by this response", "session_id", sessionID)
 		if committed := holder.committed(); committed != "" && committed != sessionID {
 			retired = append(retired, committed)
 		}
@@ -1672,7 +1738,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	if rotator := g.getCSRFTokenRotator(); rotator != nil {
 		if sessionID != "" {
 			if err := rotator.RevokeToken(sessionContext(r, session), sessionID); err != nil {
-				g.logWarn("velocity/auth: csrf token revoke (logout) failed", "session_id", sessionID, "error", err) //lock-held-ok: per-request lifecycle lock; the logger gets no handle on the request and logWarn contains a panic
+				g.logWarn("velocity/auth: csrf token revoke (logout) failed", "session_id", sessionID, "error", err)
 			}
 		}
 		// Clear the client-side XSRF-TOKEN cookie too. Without this the
@@ -1703,10 +1769,10 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 		switch {
 		case err == nil && user != nil:
 			if err := userStore.UpdateRememberTokenCtx(r.Context(), user, ""); err != nil {
-				g.logWarn("velocity/auth: clear remember token (logout) failed", "user_id", userID, "error", err) //lock-held-ok: per-request lifecycle lock; the logger gets no handle on the request and logWarn contains a panic
+				g.logWarn("velocity/auth: clear remember token (logout) failed", "user_id", userID, "error", err)
 			}
 		case err != nil && !errors.Is(err, auth.ErrUserNotFound):
-			g.logWarn("velocity/auth: clear remember token (logout) failed: user lookup failed", "user_id", userID, "error", err) //lock-held-ok: per-request lifecycle lock; the logger gets no handle on the request and logWarn contains a panic
+			g.logWarn("velocity/auth: clear remember token (logout) failed: user lookup failed", "user_id", userID, "error", err)
 		}
 	}
 
@@ -1725,8 +1791,12 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	// The session is ended: this logout supersedes the credential writes
 	// an earlier transition of the request queued, so a remember-me
 	// sign-in earlier in the request never issues its credential after
-	// the logout cleared it.
-	holder.beginTransition()
+	// the logout cleared it. The session is whole again (ended), so the
+	// transition is published and the gate freed: the teardown below runs
+	// with no reservation, and a standalone logout's commit, on the
+	// holder that is this logout's own, with nothing held.
+	op.beginTransition()
+	op.publish(false)
 
 	// The session middleware saves the invalidated session, which
 	// writes the delete cookie because the session is now marked
@@ -1737,7 +1807,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	var saveErr error
 	if standalone {
 		holder.setSession(session)
-		saveErr = commitStandalone(g, r, w, holder) //lock-held-ok: per-request lifecycle lock; a session store must not call the scheme for the request it serves (auth.SessionStore)
+		saveErr = commitStandalone(g, r, w, holder)
 	}
 
 	// Revoke in the underlying SessionStore when it supports the
@@ -1755,7 +1825,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 		}
 		if store := g.getServerStore(); store != nil {
 			if err := store.Delete(r.Context(), id); err != nil {
-				g.logWarn("velocity/auth: server session store delete (logout) failed", "session_id", id, "error", err) //lock-held-ok: per-request lifecycle lock; the logger gets no handle on the request and logWarn contains a panic
+				g.logWarn("velocity/auth: server session store delete (logout) failed", "session_id", id, "error", err)
 			}
 		}
 	}
@@ -1764,7 +1834,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	// upstream entropy failure callers most care about), then save.
 	// Server-side teardown above is best-effort with its own logging.
 	if invalidateErr != nil {
-		g.logWarn("velocity/auth: session invalidate (logout) failed; teardown completed best-effort", "session_id", sessionID, "error", invalidateErr) //lock-held-ok: per-request lifecycle lock; the logger gets no handle on the request and logWarn contains a panic
+		g.logWarn("velocity/auth: session invalidate (logout) failed; teardown completed best-effort", "session_id", sessionID, "error", invalidateErr)
 		return invalidateErr
 	}
 	return saveErr

@@ -106,20 +106,23 @@ func TestCommitStandalone_PanicDuringDeliveryStillEndsADeletedSession(t *testing
 				t.Fatal("premise: a request outside the middleware is not its own save scope")
 			}
 			var laterRan bool
-			holder.lifecycle.Lock()
+			var op gateOp
+			if err := holder.reserve(&op); err != nil {
+				t.Fatalf("reserve: %v", err)
+			}
 			s := scheme.Session(r)
 			if s == nil {
 				t.Fatal("premise: the captured cookie loads no session")
 			}
 			holder.setSession(s)
 			s.Put("touched", true)
-			holder.queueCredentialWrite(afterSaveWrite{write: func(w http.ResponseWriter) {
+			op.queueCredentialWrite(afterSaveWrite{write: func(w http.ResponseWriter) {
 				http.SetCookie(w, &http.Cookie{Name: "vel_session", Value: "", Path: "/", MaxAge: -1})
 			}})
-			holder.queueCredentialWrite(afterSaveWrite{write: func(http.ResponseWriter) { panic("queued write failed") }})
-			holder.queueCredentialWrite(afterSaveWrite{write: func(http.ResponseWriter) { laterRan = true }})
+			op.queueCredentialWrite(afterSaveWrite{write: func(http.ResponseWriter) { panic("queued write failed") }})
+			op.queueCredentialWrite(afterSaveWrite{write: func(http.ResponseWriter) { laterRan = true }})
+			op.publish(false)
 			func() {
-				defer holder.lifecycle.Unlock()
 				defer func() {
 					if recover() == nil {
 						t.Fatal("premise: the queued write's panic did not reach the caller")

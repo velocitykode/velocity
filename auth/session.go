@@ -86,8 +86,9 @@ type Session interface {
 // bytes on the wire), and session.ServerStore keeps it in the session's
 // server record and sends only the id. Pass one to the scheme with
 // schemes.WithSessionStore. The scheme calls the store, and the sessions
-// it returns, while it holds the request's authentication lock (see
-// UserStore): neither may ask the scheme about the request it is serving.
+// it returns, with no lock held; one that asks the scheme about the
+// request it is serving while an authentication operation of that request
+// is in flight gets ErrOperationInProgress (see UserStore).
 type SessionStore interface {
 	// Create a new session
 	Create(id string) (Session, error)

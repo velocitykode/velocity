@@ -248,21 +248,27 @@ func (p *preCommitWriter) Unwrap() http.ResponseWriter {
 // are bound to the session id the save did not persist, runs the queued
 // undo steps instead, and is returned.
 //
-// The save runs under the holder's lifecycle lock held exclusively, so it
-// waits for an authentication transition in flight (a recall between
-// writing the user and swapping the remember token) and never saves or
-// takes the queue halfway through one. Only the writes of the latest
-// transition run; a superseded one's (a remember-me sign-in the request
-// then logged out of) are dropped (see sessionHolder.takeAfterSave).
-// Still under the lock, the commit seals the request and its session (a
-// later sign-in or recall is refused, and the session's id can no longer
-// be regenerated, since nothing it changed would be saved), records the
-// id the save issues, and settles the queued credentials (a sign-in's
-// remember token reaches the user store), then releases the lock and
-// delivers the queued writes (see deliverAfterSave). A queued write may
-// therefore read the signed-in user of the request, and a logout it runs
-// comes after every credential the save issued and ends the session the
-// save issued.
+// The commit takes the request's authentication gate (see gate.go) and
+// seals the request in the same step. It never waits: when an
+// authentication operation holds the gate (a recall between writing the
+// user and swapping the remember token, a Login, a Logout), or one was
+// torn by a panic, it saves nothing, since the session may be halfway
+// through a transition. The response then goes out without a session
+// cookie change, the queued writes are dropped and their undo steps run,
+// one warning is logged, and the operation in flight is refused when it
+// ends (its changes are not saved). Otherwise, holding the gate, the
+// commit seals the session (the session's id can no longer be
+// regenerated, since nothing it changed would be saved), saves it with no
+// lock held, records the id the save issues, and settles the queued
+// credentials (a sign-in's remember token reaches the user store), then
+// frees the gate and delivers the queued writes (see deliverAfterSave).
+// Only the writes of the latest transition run; a superseded one's (a
+// remember-me sign-in the request then logged out of) are dropped (see
+// sessionHolder.takeAfterSave). A queued write may therefore read the
+// signed-in user of the request, and a logout it runs comes after every
+// credential the save issued and ends the session the save issued. A
+// store the save calls that asks the scheme about this request gets
+// auth.ErrOperationInProgress.
 //
 // A response that already deletes the session cookie (Context.DeleteCookie)
 // ends the session: it is invalidated and saved destroyed, which removes a
@@ -275,39 +281,55 @@ func (p *preCommitWriter) Unwrap() http.ResponseWriter {
 // panics.
 //
 // A panic anywhere in the commit (in the save, in a settlement after it,
-// or in a queued write) leaves the lifecycle lock released and the queue
-// closed, so a reader of the signed-in user (the router's error handler
-// answering the panic) never waits on it and a write queued afterwards is
-// refused; the panic goes on to the router unchanged (see finishCommit).
+// or in a queued write) leaves the gate free and the queue closed, so a
+// reader of the signed-in user (the router's error handler answering the
+// panic) is served and a write queued afterwards is refused; the panic
+// goes on to the router unchanged (see finishCommit).
 func commitSession(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) error {
-	holder.lifecycle.Lock()
-	locked := true
-	var saved bool
-	defer func() {
-		if !locked {
-			holder.lifecycle.Lock()
-		}
-		defer holder.lifecycle.Unlock()
-		finishCommit(g, r, w, holder, saved)
-	}()
 	if s, ok := holder.getSession().(sealableSession); ok {
 		s.Seal()
 	}
-	writes, err := commitSessionHeld(g, r, w, holder, &saved) //lock-held-ok: per-request lifecycle lock; a session store must not call the scheme for the request it serves (auth.SessionStore)
+	if err := holder.reserveCommit(); err != nil {
+		refuseCommit(g, holder, err)
+		return err
+	}
+	reserved := true
+	var saved bool
+	defer func() {
+		defer func() {
+			if reserved {
+				holder.releaseGate()
+			}
+		}()
+		finishCommit(g, r, w, holder, saved)
+	}()
+	writes, err := commitSessionHeld(g, r, w, holder, &saved)
 	if err != nil {
 		return err
 	}
-	holder.lifecycle.Unlock()
-	locked = false
+	holder.releaseGate()
+	reserved = false
 	deliverAfterSave(g, w, holder, writes)
 	return nil
 }
 
+// refuseCommit ends a commit refused because an authentication operation
+// holds the request's gate or was torn: nothing is saved, the queued
+// writes are dropped and their undo steps run, the queue is closed, and
+// one warning says why the response carries no session change.
+func refuseCommit(g *SessionScheme, holder *sessionHolder, reason error) {
+	queued := holder.takeAfterSave(true)
+	holder.closeQueue()
+	for _, fn := range queued.undo {
+		fn()
+	}
+	g.logWarn("velocity/auth: session not saved: the response was committed while an authentication operation of the request was in flight, or after one was interrupted", "error", reason)
+}
+
 // commitStandalone is commitSession for a Login or Logout outside the
-// session middleware, which holds the holder's lifecycle lock exclusively
-// and commits its own save scope. Its holder is the operation's own, so
-// nothing outside the operation queues on it or reads through it, and the
-// queued writes run while the lock is still held. The session is not
+// session middleware, which commits its own save scope once it published
+// its state. Its holder is the operation's own, so nothing outside the
+// operation queues on it or reads through it, and it takes no gate. The session is not
 // sealed: outside the middleware each operation is its own save, and a
 // later one on the same request saves again. It finishes the commit the
 // same way, also when a step panics (see finishCommit).
@@ -335,8 +357,8 @@ func commitStandalone(g *SessionScheme, r *http.Request, w http.ResponseWriter, 
 // response, which carries the response's cookies, deletion included. A
 // commit whose save failed or panicked issued no session, so a deletion
 // ends nothing. Nothing is saved again, and a panic goes on unchanged once
-// it returns. The commit defers it at its start, and the caller holds the
-// holder's lifecycle lock exclusively when it runs.
+// it returns. The commit defers it at its start; it runs with the gate
+// free once the queued writes were delivered, holding it otherwise.
 func finishCommit(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder, saved bool) {
 	holder.closeQueue()
 	if saved {
@@ -352,13 +374,12 @@ type sealableSession interface {
 }
 
 // commitSessionHeld saves the session and returns the queued writes for
-// the caller to deliver once it released the holder's lifecycle lock,
-// which it holds exclusively. It sets *saved once the commit succeeded:
+// the caller to deliver once it freed the request's gate, which it holds
+// (a standalone commit's holder has none to take). It sets *saved once the commit succeeded:
 // the session was saved, or needed no save, and only the settlements and
 // the delivery are left, so a panic in either still finishes a successful
 // commit (see finishCommit).
 func commitSessionHeld(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder, saved *bool) ([]func(http.ResponseWriter), error) {
-	holder.seal()
 	session := holder.getSession()
 	if session == nil {
 		holder.takeAfterSave(true)
@@ -456,8 +477,7 @@ func (a *afterSaveWriter) WriteHeader(statusCode int) {
 // logged), so a captured copy of the cookie is refused on every instance
 // sharing that store. The response keeps one session cookie line: the
 // session cookie the save issued and the deletions are replaced by one
-// deletion built by the session's cookie policy. The caller holds the
-// holder's lifecycle lock exclusively.
+// deletion built by the session's cookie policy.
 func (g *SessionScheme) endSessionDeletedAfterSave(r *http.Request, w http.ResponseWriter, holder *sessionHolder) {
 	id := holder.committed()
 	if id == "" {

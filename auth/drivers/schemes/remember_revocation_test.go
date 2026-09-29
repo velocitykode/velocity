@@ -121,9 +121,11 @@ func TestRememberCredential_ExpiresOnTheServer(t *testing.T) {
 }
 
 // Many goroutines reading the user on one request of a remembered visitor
-// whose session ended all see the user, and the recall happens once: one
-// new session carrying the user, one rotated remember cookie, and the
-// next request is signed in on the saved session.
+// whose session ended recall once: the read that runs the recall sees the
+// user, each other one sees it or, while the recall holds the request's
+// authentication gate, fails closed with auth.ErrOperationInProgress
+// without waiting. One new session carries the user, one rotated remember
+// cookie is sent, and the next request is signed in on the saved session.
 func TestRememberRecall_ConcurrentReadsOnOneRequestRecallOnce(t *testing.T) {
 	for _, mode := range lifetimeModes {
 		t.Run(mode.name, func(t *testing.T) {
@@ -131,7 +133,7 @@ func TestRememberRecall_ConcurrentReadsOnOneRequestRecallOnce(t *testing.T) {
 			scheme, _ := newLifetimeSchemeFor(t, 120, 0, mode)
 			b := newRememberBrowser(t, scheme)
 			const readers = 16
-			var denied int
+			var signedIn, busy, other int
 			r := router.New()
 			r.Use(scheme.SessionMiddleware())
 			r.Post("/login", func(c *router.Context) error {
@@ -145,15 +147,21 @@ func TestRememberRecall_ConcurrentReadsOnOneRequestRecallOnce(t *testing.T) {
 					wg sync.WaitGroup
 					mu sync.Mutex
 				)
-				denied = 0
+				signedIn, busy, other = 0, 0, 0
 				wg.Add(readers)
 				for i := 0; i < readers; i++ {
 					go func() {
 						defer wg.Done()
-						if scheme.User(c.Request) == nil {
-							mu.Lock()
-							denied++
-							mu.Unlock()
+						ok, err := scheme.CheckWithError(c.Request)
+						mu.Lock()
+						defer mu.Unlock()
+						switch {
+						case ok:
+							signedIn++
+						case errors.Is(err, auth.ErrOperationInProgress):
+							busy++
+						default:
+							other++
 						}
 					}()
 				}
@@ -174,8 +182,8 @@ func TestRememberRecall_ConcurrentReadsOnOneRequestRecallOnce(t *testing.T) {
 			b.replayRememberOnly(*b.cookies[rememberCookieName])
 
 			w := b.do(http.MethodGet, "/fanout")
-			if denied != 0 {
-				t.Fatalf("%d of %d concurrent reads on the remembered visitor's request saw no user", denied, readers)
+			if signedIn == 0 || other != 0 {
+				t.Fatalf("concurrent reads: %d signed in, %d busy, %d otherwise signed out; want at least one signed in and every other one busy", signedIn, busy, other)
 			}
 			var remembers, sessions int
 			for _, c := range w.Result().Cookies() {

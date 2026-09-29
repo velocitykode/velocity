@@ -14,11 +14,11 @@ import (
 // and is the session-less default of NewE.
 //
 // A store is called while CSRF holds a lock for the request (reading a
-// token single-flights per request); a session scheme rotating or
-// revoking a token calls it under the request's authentication lock. A
-// store must therefore not call back into CSRF token reads, or into the
-// session scheme, for the request it is serving: that call waits on the
-// lock its own caller holds.
+// token single-flights per request), so it must not call back into CSRF
+// token reads for the request it is serving: that call waits on the lock
+// its own caller holds. A session scheme rotating or revoking a token
+// calls it with no lock held; a store asking the scheme about that
+// request meanwhile gets auth.ErrOperationInProgress.
 type Store interface {
 	// Get returns the token held for session id, or
 	// stores.ErrTokenNotFound when none is held.
