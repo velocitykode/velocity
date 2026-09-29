@@ -21,10 +21,12 @@ const queryEventQueueSize = 1024
 // recorded with: listeners are slower than the query rate and the delivery
 // queue is full, so the event never reached a listener (the alternative
 // is stalling queries). The failure policy counts it as a failed event
-// (App.FailedEventCount) at once, and later, off the statement's path,
-// logs the first drop and hands it to the failure hook, so a hook can tell
-// a drop from a listener failure with errors.Is, and may itself use the
-// database.
+// (App.FailedEventCount) at once, exactly. Later, off the statement's
+// path, it logs the first drop and hands the drop to the failure hook, so
+// a hook can tell a drop from a listener failure with errors.Is, and may
+// itself use the database. That later part is best-effort: when the hook
+// is so slow that the backlog of drops waiting for it is full, a further
+// drop is counted but neither logged nor handed to the hook.
 var ErrQueryEventQueueFull = errors.New("velocity/orm: query event queue full, dropping event")
 
 // ErrQueryEventsFlushFromPump is returned by Manager.FlushQueryEvents and
@@ -60,7 +62,8 @@ type pendingEvent struct {
 // policy (the first-drop line and the failure hook, which may log, block,
 // or query the same pool) runs on a reporter goroutine of the pump's own,
 // after the callback has released its connection and whatever the
-// listener is doing.
+// listener is doing. The count is exact; the line and the hook are
+// best-effort, skipped for a drop that finds the reporter's backlog full.
 type eventPump struct {
 	ch      chan pendingEvent
 	reports chan func()

@@ -165,3 +165,45 @@ func TestManagerShutdown_ReturnsAnUnfinishedDrain(t *testing.T) {
 		t.Errorf("second Shutdown = %v, want nil", err)
 	}
 }
+
+// Under overload the drop count stays exact and the hook is best-effort:
+// with the hook stuck, drops beyond the reporter's backlog are counted but
+// not handed to it; once it recovers, every drop it was handed runs, and
+// never more than were counted.
+func TestQueryEventPump_OverloadKeepsCountsExactAndTheHookBestEffort(t *testing.T) {
+	m := newTestManager(t)
+	m.SetLogger(&fakeLogger{})
+	shared := &eventemit.Failures{}
+	hookGate := make(chan struct{})
+	var hookOnce sync.Once
+	releaseHook := func() { hookOnce.Do(func() { close(hookGate) }) }
+	defer releaseHook()
+	var hooked atomic.Int64
+	shared.SetHook(func(error, any) {
+		<-hookGate
+		hooked.Add(1)
+	})
+	m.ShareEventFailures(shared)
+	const drops = 2*queryEventQueueSize + 50 // queue full, then the report backlog too
+	release := blockPump(t, m, queryEventQueueSize+drops)
+	defer release()
+
+	if got := shared.Count(); got != drops {
+		t.Fatalf("failure count = %d, want exactly %d drops", got, drops)
+	}
+	releaseHook()
+	release()
+	if err := m.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	got := hooked.Load()
+	if got >= drops {
+		t.Errorf("hook calls = %d, want fewer than the %d drops: drops past the full backlog skip the hook", got, drops)
+	}
+	if got < queryEventQueueSize {
+		t.Errorf("hook calls = %d, want at least the %d the backlog holds", got, queryEventQueueSize)
+	}
+	if count := shared.Count(); count != drops {
+		t.Errorf("failure count after the hook ran = %d, want still exactly %d", count, drops)
+	}
+}

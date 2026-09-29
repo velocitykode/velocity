@@ -224,22 +224,37 @@ func WithoutEvents() Option {
 }
 
 // WithFailedEventHook installs fn as the hook every failed framework event
-// dispatch is handed to: a listener that returned an error or panicked
-// (once per dispatch, detached deliveries included; see
-// App.FailedEventCount), a dispatcher that panicked (as a recovered panic,
-// contract.RecoveredPanic), or an event the router or the ORM dropped
-// before any listener saw it. fn
+// dispatch is handed to: a listener that returned an error or panicked, a
+// dispatcher that panicked (as a recovered panic, contract.RecoveredPanic),
+// or an event the router or the ORM dropped before any listener saw it. fn
 // receives the failure and the event as it was dispatched, whatever its
 // type (app-defined events included). Each failure is also counted
-// (App.FailedEventCount) and the first failure of each event name is logged
-// at warn level through the app logger, with or without a hook.
+// (App.FailedEventCount) and the first failure of each event name is
+// logged at warn level through the app logger, with or without a hook.
+//
+// Per failed delivery, the failure is counted once and fn is called once,
+// however many of its listeners failed, detached deliveries included
+// (no-queue DispatchAsync or DispatchAfter, a debounced or coalesced
+// dispatch); the error handler reports each failed listener once.
+//
+// The count is exact; for a statement event the ORM drops under overload,
+// fn is best-effort. The ORM counts the drop inside the statement and
+// hands the drop line and fn to a goroutine of its own, so neither holds
+// the statement's database connection; when fn falls so far behind that
+// its backlog is full, a further drop is still counted but its line and fn
+// call are skipped rather than stall the query. Compare FailedEventCount
+// with the drops fn saw to tell. Bounded storage, queries that never wait
+// and a call to fn for every drop cannot all hold at once.
 //
 // fn runs on the goroutine that saw the failure (a request, a job, a
 // background pump), so it must be quick and safe for concurrent use. A
 // panic in fn is recovered and counted as one more failure; fn is not
 // called for it. A failure fn causes on its own goroutine while it runs
 // (a cache read whose listener fails, say) is counted and logged, and fn is
-// not called for it either. A nil fn installs no hook.
+// not called for it either. fn may query the database, but must not flush
+// or shut down the ORM (Manager.FlushQueryEvents, Manager.Shutdown) when
+// handed a dropped statement event: those return
+// orm.ErrQueryEventsFlushFromPump there. A nil fn installs no hook.
 func WithFailedEventHook(fn func(err error, event any)) Option {
 	return func(a *App) {
 		a.eventFailures.SetHook(fn)
