@@ -235,9 +235,10 @@ func startHealth(t *testing.T, s *grpc.Server) grpc_health_v1.HealthClient {
 	return grpc_health_v1.NewHealthClient(conn)
 }
 
-// GracefulStop waits for in-flight calls without holding the server's
-// lock: a call that reads a server accessor while the server drains
-// completes, and so does the stop.
+// The graceful drain waits for in-flight calls without holding the
+// server's lock: a call that reads a server accessor while the server
+// drains completes, and so does the Shutdown waiting for the drain
+// GracefulStop started.
 func TestServerGracefulStop_InFlightCallMayCallTheServer(t *testing.T) {
 	var ref atomic.Pointer[grpc.Server]
 	entered, stopping := make(chan struct{}), make(chan struct{})
@@ -263,6 +264,11 @@ func TestServerGracefulStop_InFlightCallMayCallTheServer(t *testing.T) {
 	<-entered
 	close(stopping)
 	within(t, 3*time.Second, "GracefulStop", s.GracefulStop)
+	within(t, 3*time.Second, "Shutdown", func() {
+		if err := s.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown = %v", err)
+		}
+	})
 	if err := <-callDone; err != nil {
 		t.Errorf("in-flight call = %v, want it to complete", err)
 	}

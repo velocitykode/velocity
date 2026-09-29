@@ -79,8 +79,8 @@ type Server struct {
 	tlsOpted bool
 
 	// stops coordinates the stops: the drain the stop that ends a running
-	// server owns, which a GracefulStop or Shutdown that overlaps waits on
-	// so it never reports success before that drain has finished, and the
+	// server owns, which a Shutdown that overlaps waits on so it never
+	// reports success before that drain has finished, and the
 	// goroutines running stop and serve work, so a stop called back from
 	// there does not wait on it. Its drain is guarded by mu.
 	stops drain.Coordinator
@@ -835,34 +835,23 @@ func (s *Server) Stop() {
 	}
 }
 
-// GracefulStop gracefully stops the gRPC server: it waits for the calls in
-// flight to finish. A GracefulStop that overlaps another graceful stop or
-// a Shutdown waits for that drain to finish. Like Stop, it also releases
-// a listener bound by Build but never served, so a built-but-unstarted
-// server does not leak its socket. The wait runs without the server's
-// lock, so those calls may call the server's accessors, and a Stop may
-// interrupt it.
-//
-// A GracefulStop called from inside the server's own stop or serve work
-// (as for Stop) does not wait: it runs the stop on its own goroutine, or
-// leaves it to the stop already in progress, and returns before the
-// transport has stopped. A GracefulStop called from a handler waits for
-// that handler, as grpc-go's does, so it never returns: from a handler,
-// use Shutdown with a deadline, or Stop.
+// GracefulStop starts a graceful stop of the gRPC server and returns at
+// once, before the drain ends: the server stops accepting calls, the
+// calls in flight run to completion on their own, and ServerStopped is
+// dispatched once, when the drain has ended. Call Shutdown(ctx) to wait
+// for the drain, bounded by ctx. So `GracefulStop(); db.Close()` closes the
+// database while calls may still be running; use Shutdown(ctx) before
+// tearing down what the handlers use. Because it never waits, a handler or
+// any other code the drain waits on may call it. Like Stop, it also
+// releases a listener bound by Build but never served, so a
+// built-but-unstarted server does not leak its socket.
 func (s *Server) GracefulStop() {
-	nested := s.stops.Nested()
 	st := s.beginStop(false)
-	switch {
-	case st.owner && nested:
+	if st.owner {
 		async.Go(func() { s.ownStop(st, "gRPC server gracefully stopping", (*grpc.Server).GracefulStop) })
-	case st.owner:
-		s.ownStop(st, "gRPC server gracefully stopping", (*grpc.Server).GracefulStop)
-	default:
-		if st.drained != nil && !nested {
-			<-st.drained
-		}
-		s.endStop(st)
+		return
 	}
+	s.endStop(st)
 }
 
 // ownStop runs the stop st owns, in order: its line, grpc-go's stop, then
@@ -870,8 +859,12 @@ func (s *Server) GracefulStop() {
 // runs as stop work, so a stop they call back into does not wait on them.
 func (s *Server) ownStop(st stopPlan, line string, stop func(*grpc.Server)) {
 	s.stops.Run(func() { s.logLine(func(l contract.Logger) { l.Info(line) }) })
-	s.stops.Drain(st.drained, func() { stop(st.srv) })
-	s.endStop(st)
+	// The drain closes after ServerStopped too, so a Shutdown that joined
+	// this stop returns nil only once the event is out.
+	s.stops.Drain(st.drained, func() {
+		stop(st.srv)
+		s.endStop(st)
+	})
 }
 
 // errShutdownNested is what a Shutdown called from inside the server's own
@@ -907,7 +900,7 @@ type stopPlan struct {
 // it. A running server stops running, and this stop owns its drain; force
 // (Stop) stops a server that was served even when it no longer runs, so
 // it reaches a GracefulStop in progress (grpc-go accepts Stop during
-// GracefulStop, and a repeated Stop is a no-op), and a graceful stop that
+// GracefulStop, and a repeated Stop is a no-op), and a Shutdown that
 // overlaps the owner's waits on its drain. A built but never served
 // server gives up its listener, and grpcServer is reset so it never
 // outlives that listener, or a later Build() early-returns and Start()
@@ -1046,8 +1039,10 @@ func (s *Server) serverStartedLocked() *grpcevents.ServerStarted {
 	}
 }
 
-// Shutdown gracefully stops the server, waiting for the calls in flight
-// until ctx is done. At the deadline it returns the ctx error and forces
+// Shutdown gracefully stops the server, or joins the graceful stop a
+// GracefulStop started, and waits for the calls in flight until ctx is
+// done. ctx is its only bound: Shutdown(context.Background()) waits as
+// long as the calls take, by the caller's choice. At the deadline it returns the ctx error and forces
 // the stop; a handler that ignores its context may still run after
 // Shutdown returns. A Shutdown that overlaps a stop already draining the
 // server waits for that drain the same way, so a nil return always means

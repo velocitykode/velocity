@@ -72,9 +72,8 @@ func TestServerStop_PanickingLoggerStillStops(t *testing.T) {
 			startHealth(t, s)
 
 			noPanic(t, name, func() { stop(s) })
-			if !lis.closed.Load() {
-				t.Error("listener still open after the stop")
-			}
+			// GracefulStop starts the drain and returns: wait for it.
+			waitFor(t, "the listener to close", lis.closed.Load)
 			if s.IsRunning() {
 				t.Error("server still running after the stop")
 			}
@@ -83,6 +82,7 @@ func TestServerStop_PanickingLoggerStillStops(t *testing.T) {
 				s.GracefulStop()
 				_ = s.Shutdown(context.Background())
 			})
+			waitFor(t, "ServerStopped", func() bool { return counter.n.Load() >= 1 })
 			if got := counter.n.Load(); got != 1 {
 				t.Errorf("ServerStopped dispatched %d times, want 1", got)
 			}
