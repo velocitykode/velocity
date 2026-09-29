@@ -726,14 +726,16 @@ func (s *Scheduler) runDueJobs() {
 			// Recover any panic from the framing (starting the span,
 			// binding the logger, which runs redactors, logger.Debug) so
 			// the release path always runs. It is installed first, and
-			// releases before it logs, so a logger that panics while
-			// binding or writing cannot skip the release. Note:
-			// Job.runInternal's inner panics are already recovered by
-			// Job.Run itself.
+			// releases after the panic line is written (deferred, so a
+			// logger that panics while writing it cannot skip the
+			// release): the run stays counted until its diagnostic is
+			// done, so Shutdown cannot return, and the app close the
+			// logger, under the line. Note: Job.runInternal's inner
+			// panics are already recovered by Job.Run itself.
 			var log contract.Logger
 			defer func() {
 				if r := recover(); r != nil {
-					release()
+					defer release()
 					logRunPanic(s, log, jobName, r)
 				}
 			}()

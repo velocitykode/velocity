@@ -308,11 +308,10 @@ func (j *Job) runInternal(ctx, tctx context.Context, shutdownGrace time.Duration
 	var released bool
 	defer func() {
 		// Recover any panic from Before hooks etc. so the
-		// teardown is unconditional. The outer goroutine in
-		// runDueJobs has its own recover that handles panics from
-		// runInternal itself, but doing it here ensures the
-		// runWg.Done + lock release happen synchronously inside
-		// runInternal regardless of who recovers.
+		// teardown is unconditional. On a normal return release runs
+		// here; on a panic it is left to the recovery of runDueJobs's
+		// goroutine, which re-recovers the re-raised panic and calls
+		// release after writing the panic line.
 		r := recover()
 		if released {
 			if r != nil {
@@ -327,12 +326,16 @@ func (j *Job) runInternal(ctx, tctx context.Context, shutdownGrace time.Duration
 		// We still own teardown. Clear running flag (so the next
 		// tick is not gated by stale state) and run release.
 		clearRunningFlag()
+		if r != nil {
+			// Re-raise so the outer recover in runDueJobs logs it. That
+			// recovery calls release once the panic line is written, so
+			// the run stays counted until then and Shutdown cannot
+			// return, and the app close the logger, under the line.
+			// Only runDueJobs passes a release.
+			panic(r)
+		}
 		if release != nil {
 			release()
-		}
-		if r != nil {
-			// Re-raise so the outer recover in runDueJobs logs it.
-			panic(r)
 		}
 	}()
 
