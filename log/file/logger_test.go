@@ -172,7 +172,8 @@ func TestFileLogger_ShutdownThenLog(t *testing.T) {
 		t.Fatalf("Shutdown failed: %v", err)
 	}
 
-	// Logging after shutdown should reopen the file, not panic
+	// Logging after shutdown must not panic, and Shutdown is terminal: the
+	// line is dropped instead of reopening the file.
 	logger.Info("after shutdown")
 
 	currentDate := time.Now().Format("2006-01-02")
@@ -183,8 +184,11 @@ func TestFileLogger_ShutdownThenLog(t *testing.T) {
 		t.Fatalf("Failed to read log file: %v", err)
 	}
 
-	if !strings.Contains(string(content), "after shutdown") {
-		t.Errorf("Log should contain 'after shutdown'")
+	if !strings.Contains(string(content), "before shutdown") {
+		t.Errorf("Log should contain 'before shutdown'")
+	}
+	if strings.Contains(string(content), "after shutdown") {
+		t.Errorf("Log must not contain 'after shutdown': the file was reopened after Shutdown")
 	}
 }
 

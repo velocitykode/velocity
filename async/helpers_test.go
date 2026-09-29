@@ -53,7 +53,7 @@ func (c *captureLogger) snapshot() []capturedEntry {
 // restores the previous one.
 func withLogger(t *testing.T) *captureLogger {
 	t.Helper()
-	prev := getLogger()
+	prev := GetLogger()
 	cap := &captureLogger{}
 	SetLogger(cap)
 	t.Cleanup(func() { SetLogger(prev) })

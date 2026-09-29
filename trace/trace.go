@@ -170,16 +170,16 @@ func generateHexID(byteLength int) (string, error) {
 // would amplify the original failure, so the one-shot is intentional.
 func warnRandUnavailable() {
 	randFallbackWarnOnce.Do(func() {
-		GetLogger().Warn("velocity/trace: crypto/rand unavailable; emitting fallback trace markers. APM correlation is impossible until entropy is restored")
+		logger.Use(func(l contract.Logger) {
+			l.Warn("velocity/trace: crypto/rand unavailable; emitting fallback trace markers. APM correlation is impossible until entropy is restored")
+		})
 	})
 }
 
-// logger is the package logger, guarded by loggerMu: SetLogger may run on
-// one goroutine while a request goroutine writes the entropy warning.
-var (
-	loggerMu sync.RWMutex
-	logger   contract.Logger = fallbacklog.Logger{}
-)
+// logger is the package logger: SetLogger may run on one goroutine while
+// a request goroutine writes the entropy warning through logger.Use, and
+// SetLogger returns only once that write has finished.
+var logger fallbacklog.Slot
 
 // SetLogger installs the logger the package writes its one warning to
 // (crypto/rand unavailable, fallback trace markers in use). Nil restores
@@ -188,19 +188,19 @@ var (
 // built by velocity.New hands it the app logger, the newest live app's
 // logger is the installed one, and an app's Shutdown hands it back to the
 // previous live app's logger, or the fallback when none is left. Safe for
-// concurrent use.
+// concurrent use. SetLogger returns only after the package's write in
+// flight through the logger it replaces, if any, has finished, so the
+// caller may close that logger once it returns. It must not be called from
+// inside the package logger's own methods.
 func SetLogger(l contract.Logger) {
-	loggerMu.Lock()
-	defer loggerMu.Unlock()
-	logger = fallbacklog.Resolve(l)
+	logger.Set(l)
 }
 
 // GetLogger returns the package logger: the one SetLogger installed, or
-// the fallback logger. Safe for concurrent use.
+// the fallback logger. Safe for concurrent use. A caller's writes through
+// the returned logger are not waited for by SetLogger.
 func GetLogger() contract.Logger {
-	loggerMu.RLock()
-	defer loggerMu.RUnlock()
-	return logger
+	return logger.Get()
 }
 
 // WithTrace returns a new context with the given trace ID and span ID.

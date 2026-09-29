@@ -3,6 +3,8 @@ package velocity
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
+	"github.com/velocitykode/velocity/log"
 	testsync "github.com/velocitykode/velocity/testing"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -254,5 +257,37 @@ func TestPackageState_ReleaseWithoutEntryIsNoop(t *testing.T) {
 	releasePackageState(owner)
 	if _, ok := async.GetLogger().(fallbacklog.Logger); !ok {
 		t.Errorf("async logger after release = %T, want fallbacklog.Logger", async.GetLogger())
+	}
+}
+
+// A goroutine that took the async package logger before an app with the
+// file driver shut down, and writes after, does not reopen the closed log
+// file.
+func TestShutdown_LateWriteThroughTheOldPackageLoggerDoesNotReopenTheLogFile(t *testing.T) {
+	restorePackageState(t)
+	dir := filepath.Join(t.TempDir(), "logs")
+	cfg := Config{
+		Env:   "testing",
+		Port:  "0",
+		Cache: CacheConfig{Driver: "memory"},
+		Queue: QueueConfig{Driver: "memory"},
+		Log:   log.LogConfig{Driver: "file", Config: map[string]any{"path": dir, "days": 0}},
+	}
+	a, err := New(WithConfig(cfg))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	held := async.GetLogger()
+	held.Error("before shutdown")
+	if err := a.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+	held.Error("after shutdown")
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		entries, _ := os.ReadDir(dir)
+		t.Fatalf("log dir after a write past Shutdown: %v entries (err %v), want none: the file was reopened", len(entries), err)
 	}
 }

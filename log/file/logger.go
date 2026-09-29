@@ -102,6 +102,9 @@ type FileLogger struct {
 	mu          sync.Mutex
 	file        *os.File
 	date        string
+	// closed is set by Shutdown, under mu, and never cleared: a write
+	// after it is dropped instead of reopening the file.
+	closed bool
 	// fields are the key-value pairs With bound, written before each
 	// line's own pairs.
 	fields []any
@@ -211,6 +214,11 @@ func (f *FileLogger) log(level, msg string, kvs ...any) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
+	// Shutdown is terminal: a late writer (a goroutine still holding this
+	// logger) must not reopen the file and leave a descriptor open.
+	if o.closed {
+		return
+	}
 	if err := o.ensureFile(); err != nil {
 		// The file driver cannot write through itself: the failure goes to
 		// the framework's standalone fallback logger (standard error).
@@ -337,14 +345,17 @@ func (f *FileLogger) cleanup() {
 	}
 }
 
-// Shutdown closes the underlying file handle, honoring the context deadline.
-// A logger With returned owns no file and closes nothing.
+// Shutdown closes the underlying file handle. It is terminal: every later
+// write, through f or a logger With returned from it, is dropped rather
+// than reopening the file, and a second Shutdown returns nil. A logger With
+// returned owns no file and closes nothing.
 func (f *FileLogger) Shutdown(ctx context.Context) error {
 	if f.base != nil {
 		return nil
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.closed = true
 	if f.file != nil {
 		err := f.file.Close()
 		f.file = nil
