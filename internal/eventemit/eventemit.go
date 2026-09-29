@@ -141,25 +141,12 @@ func (f *Failures) report(ctx context.Context, logger contract.Logger, err error
 // panicking logger does not hide the line. The failure policy writes its
 // lines through it, so a panicking logger never skips the accounting or
 // the hook and is not counted as a failure of its own.
+//
+// The containment is fallbacklog.Write's; WriteLine adds the ctx binding,
+// on the fallback line too. A line's values (an error whose Error method
+// panics, say) can panic the fallback as well, which is contained there.
 func WriteLine(ctx context.Context, logger contract.Logger, write func(contract.Logger)) {
-	if logger != nil && tryLine(ctx, logger, write) {
-		return
-	}
-	tryLine(ctx, nil, write)
-}
-
-// tryLine writes a line through logger (the fallback when nil) bound to
-// ctx's ids, and reports whether it returned without panicking. A line's
-// values (an error whose Error method panics, say) can panic the fallback
-// too, so the fallback write is contained as well.
-func tryLine(ctx context.Context, logger contract.Logger, write func(contract.Logger)) (ok bool) {
-	defer func() {
-		if recover() != nil {
-			ok = false
-		}
-	}()
-	write(boundTo(ctx, logger))
-	return true
+	fallbacklog.Write(logger, func(l contract.Logger) { write(boundTo(ctx, l)) })
 }
 
 // boundTo returns logger (the fallback when nil) bound to the ids ctx
