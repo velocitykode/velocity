@@ -62,10 +62,11 @@ type Server struct {
 	// Guarded by mu; nil until a stop ended a running server.
 	drained chan struct{}
 
-	// building is set while a Build constructs the server outside the
-	// lock, so a concurrent or re-entrant Build returns ErrBuildInProgress
-	// instead of constructing a second one. Guarded by mu.
-	building bool
+	// build is the Build constructing the server outside the lock, nil
+	// when none is. A concurrent or re-entrant Build returns
+	// ErrBuildInProgress instead of constructing a second one, and a stop
+	// marks it stopped so it publishes nothing. Guarded by mu.
+	build *buildPlan
 
 	serverOptions []grpc.ServerOption
 	logger        contract.Logger
@@ -410,7 +411,10 @@ func (s *Server) RegisterService(regFunc RegistrationFunc) *Server {
 // code may call the server's accessors. A Build called while another one
 // is constructing the server, concurrently or from that application code,
 // returns ErrBuildInProgress at once; a Build after a completed one
-// returns nil.
+// returns nil. A Build that a Stop, GracefulStop or Shutdown ran during
+// publishes nothing, closes the listener it bound or adopted and returns
+// grpc.ErrServerStopped (google.golang.org/grpc); a later Build
+// constructs the server afresh.
 func (s *Server) Build() error {
 	b, err := s.beginBuild()
 	if b == nil {
@@ -489,9 +493,16 @@ func (s *Server) Build() error {
 	}
 
 	s.mu.Lock()
+	if b.stopped {
+		// A stop ran while this Build constructed the server: publish
+		// nothing, and the deferred abort releases the listener.
+		s.mu.Unlock()
+		srv.Stop()
+		return grpc.ErrServerStopped
+	}
 	s.grpcServer = srv
 	s.listener = lis
-	s.building = false
+	s.build = nil
 	s.mu.Unlock()
 	published = true
 
@@ -548,6 +559,9 @@ type buildPlan struct {
 	// of the two listeners, because comparing interfaces panics for a
 	// listener whose dynamic value is not comparable.
 	ownsListener bool
+	// stopped is set by a stop that ran while this Build was in progress.
+	// Guarded by the server's mu.
+	stopped bool
 }
 
 // beginBuild runs Build's checks under the lock and, when they pass,
@@ -562,7 +576,7 @@ func (s *Server) beginBuild() (*buildPlan, error) {
 	if s.grpcServer != nil {
 		return nil, nil // Already built
 	}
-	if s.building {
+	if s.build != nil {
 		return nil, ErrBuildInProgress
 	}
 
@@ -595,8 +609,7 @@ func (s *Server) beginBuild() (*buildPlan, error) {
 		return nil, fmt.Errorf("velocity/grpc: reflection must not be enabled in production (set GRPC_REFLECTION=false or build without WithReflection(true))")
 	}
 
-	s.building = true
-	return &buildPlan{
+	s.build = &buildPlan{
 		logger:                      s.logger,
 		reporter:                    s.reporter,
 		port:                        s.port,
@@ -613,19 +626,31 @@ func (s *Server) beginBuild() (*buildPlan, error) {
 		enableReflection:            s.enableReflection,
 		authConfigured:              s.authConfigured,
 		warnTLS:                     warnTLS,
-	}, nil
+	}
+	return s.build, nil
 }
 
 // abortBuild ends the Build b without publishing a server (its listener
-// failed to bind, or its application code panicked): it closes a listener
-// b bound itself, leaves a caller-supplied one open for the next Build,
-// and clears the Build in progress so a later Build can run. The clear is
-// deferred so it runs whatever the close does, after the close, so a
-// retried Build never finds the port still bound.
+// failed to bind, its application code panicked, or a stop ran during
+// it): it closes a listener b bound itself, and clears the Build in
+// progress so a later Build can run. A caller-supplied listener stays
+// open for the next Build, unless a stop ran during b, which closes it as
+// a stop closes the listener of a built server. The clear is deferred so
+// it runs whatever the close does, after the close, so a retried Build
+// never finds the port still bound.
 func (s *Server) abortBuild(b *buildPlan) {
+	stopped := false
+	defer func() {
+		if stopped && b.listener != nil && !b.ownsListener {
+			s.closeListener(b.listener)
+		}
+	}()
 	defer func() {
 		s.mu.Lock()
-		s.building = false
+		if s.build == b {
+			s.build = nil
+		}
+		stopped = b.stopped
 		s.mu.Unlock()
 	}()
 	if b.listener != nil && b.ownsListener {
@@ -798,6 +823,11 @@ func (s *Server) beginStop(force bool) stopPlan {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := stopPlan{port: s.port}
+	if s.build != nil {
+		// A Build in progress publishes nothing once it sees this, and
+		// releases its listener itself.
+		s.build.stopped = true
+	}
 	switch {
 	case s.grpcServer != nil && s.running:
 		// grpc-go closes the serving listener. Do NOT touch s.listener here: the
