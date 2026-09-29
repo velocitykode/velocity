@@ -38,7 +38,8 @@ func TestSetPanicHook_ReceivesTheWorkContext(t *testing.T) {
 	if c := wait("Go"); c == nil || c.Value(hookCtxKey{}) != nil {
 		t.Errorf("Go hook ctx = %v, want a non-nil context without the work value", c)
 	}
-	GoCtx(nil, func(context.Context) { panic("nil ctx") }) //nolint:staticcheck // nil ctx is the edge case under test
+	//lint:ignore SA1012 exercising the nil-context code path is the point of this check
+	GoCtx(nil, func(context.Context) { panic("nil ctx") })
 	if c := wait("GoCtx(nil)"); c == nil {
 		t.Errorf("GoCtx(nil) hook ctx = nil, want context.Background")
 	}
