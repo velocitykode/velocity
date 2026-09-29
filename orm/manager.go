@@ -12,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/events"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -97,11 +98,13 @@ type Manager struct {
 	// dereferences). Atomic so execution hot paths can check liveness
 	// without taking mu.
 	closed atomic.Bool
-	// eventDispatcher is the typed event handler invoked by dispatchEvent.
-	// SetEventDispatcher (deprecated, untyped) adapts the legacy signature
-	// into a typed call so internal event firing remains type-safe.
-	eventDispatcher func(ctx context.Context, event contract.Event) error
-	// hasDispatcher mirrors "eventDispatcher != nil" for the statement
+	// events holds the dispatcher dispatchEvent hands events to and
+	// applies the failure policy to a failed dispatch, a listener panic the
+	// statement-event pump recovered, and a statement event the pump
+	// dropped (see internal/eventemit). Set only under mu, with the
+	// pump/hasDispatcher transition; read lock-free.
+	events eventemit.Emitter
+	// hasDispatcher mirrors "a dispatcher is installed" for the statement
 	// observation fast path, which runs inside a driver callback and must
 	// not take mu.
 	hasDispatcher atomic.Bool
@@ -620,7 +623,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		return contract.EventMeta{Context: ctx, TraceID: txTrace, SpanID: txSpanID, ParentID: parentSpanID, At: time.Now()}
 	}
 	dispatchTxExecuted := func(txErr error) {
-		if !m.hasEventDispatcher() {
+		if !m.events.Installed() {
 			return
 		}
 		meta := txMeta()
@@ -633,7 +636,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		})
 	}
 	dispatchTxRecover := func(ev *TxRecover) {
-		if !m.hasEventDispatcher() {
+		if !m.events.Installed() {
 			return
 		}
 		ev.EventMeta = txMeta()
@@ -788,13 +791,6 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	// under mu.
 	if p := m.pump.Load(); p != nil {
 		p.stop(ctx)
-		// Dropped telemetry that nothing reports is telemetry nobody
-		// knows to distrust. Say so once, at the only point where the
-		// final count is known.
-		if dropped := p.dropped.Load(); dropped > 0 {
-			m.log().Warn("velocity/orm: query events dropped; listeners could not keep up with the query rate",
-				"dropped", dropped, "queue_size", queryEventQueueSize)
-		}
 	}
 
 	m.mu.Lock()
@@ -892,15 +888,18 @@ func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event any) err
 	defer m.mu.Unlock()
 
 	if fn == nil {
-		m.eventDispatcher = nil
+		m.events.Set(nil)
 		m.rawEventDispatcher = nil
 		m.hasDispatcher.Store(false)
 		return
 	}
 	m.rawEventDispatcher = fn
-	m.eventDispatcher = func(ctx context.Context, event contract.Event) error {
-		return fn(ctx, event)
-	}
+	m.events.Set(fn)
+	// Failures log through the manager's logger as it is when they
+	// happen. Installed here, not in NewManager, so a manager built as a
+	// literal gets it too: nothing reaches the policy before a dispatcher
+	// is installed.
+	m.events.UseLogger(m.log)
 
 	// A manager already shut down does not get a new pump: its Shutdown has
 	// drained and stopped the old one, and starting another would leak the
@@ -924,7 +923,7 @@ func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event any) err
 	// dispatch, takes mu for reading and so simply waits for this call to
 	// return.
 	if m.pump.Load() == nil {
-		p := newEventPump()
+		p := newEventPump(m.events.Fail)
 		p.start(m.dispatchEvent)
 		m.pump.Store(p)
 	}
@@ -1021,18 +1020,10 @@ func (m *Manager) Logger() contract.Logger {
 
 var _ contract.LoggerAware = (*Manager)(nil)
 
-// hasEventDispatcher reports whether an event dispatcher is installed, so
-// an event is built only when one is.
-func (m *Manager) hasEventDispatcher() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.eventDispatcher != nil
-}
-
 // dispatchTxRecover dispatches ev for work running under ctx's span. The
 // event is built only when a dispatcher is installed.
 func (m *Manager) dispatchTxRecover(ctx context.Context, ev *TxRecover) {
-	if !m.hasEventDispatcher() {
+	if !m.events.Installed() {
 		return
 	}
 	ev.EventMeta = eventmeta.Current(ctx)
@@ -1041,14 +1032,21 @@ func (m *Manager) dispatchTxRecover(ctx context.Context, ev *TxRecover) {
 
 // dispatchEvent dispatches an event if a dispatcher is configured. ctx
 // reaches every listener so trace IDs and request-scoped values flow
-// through; cancellation/deadline behavior depends on the dispatcher.
+// through; cancellation/deadline behavior depends on the dispatcher. A
+// failed dispatch is counted and its event's first failure logged through
+// the manager's logger (see internal/eventemit).
 func (m *Manager) dispatchEvent(ctx context.Context, event contract.Event) {
-	m.mu.RLock()
-	fn := m.eventDispatcher
-	m.mu.RUnlock()
-	if fn != nil {
-		_ = fn(ctx, event)
-	}
+	m.events.Emit(ctx, event)
+}
+
+// ShareEventFailures is the app's wiring seam for the failure policy: the
+// framework calls it at every lifecycle boundary to have the manager record
+// its failed event dispatches, the listener panics its statement-event pump
+// recovers and the statement events it drops in the app's failed event
+// count. Its argument is framework-internal, so nothing outside the
+// framework can build one; nil returns the manager to its own count.
+func (m *Manager) ShareEventFailures(f *eventemit.Failures) {
+	m.events.Share(f)
 }
 
 // defaultManager is the framework-level default ORM Manager, set once by

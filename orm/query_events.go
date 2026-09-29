@@ -2,6 +2,7 @@ package orm
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 
@@ -12,8 +13,16 @@ import (
 
 // queryEventQueueSize bounds the number of statement events awaiting delivery.
 // A listener slower than the query rate fills the queue; further events are
-// counted as dropped rather than allowed to stall a database call.
+// dropped, as failed events, rather than allowed to stall a database call.
 const queryEventQueueSize = 1024
+
+// ErrQueryEventQueueFull is the failure a dropped statement event is
+// recorded with: listeners are slower than the query rate and the delivery
+// queue is full, so the event never reached a listener (the alternative
+// is stalling queries). The failure policy counts it as a failed event
+// (App.FailedEventCount), logs the first drop, and hands it to the failure
+// hook, so a hook can tell a drop from a listener failure with errors.Is.
+var ErrQueryEventQueueFull = errors.New("velocity/orm: query event queue full, dropping event")
 
 // pendingEvent is one queued item. A non-nil flush marks a barrier rather than
 // an event: the pump closes it once every event queued ahead of it has been
@@ -34,20 +43,24 @@ type pendingEvent struct {
 // callback only ever performs a non-blocking channel send.
 //
 // Delivery is FIFO. Events are dropped, never blocked on, when the queue is
-// full; Manager.DroppedQueryEvents reports the count.
+// full; each drop, and each listener panic the pump recovers, goes to fail,
+// the manager's failure policy.
 type eventPump struct {
 	ch   chan pendingEvent
 	quit chan struct{}
+	fail func(ctx context.Context, err error, event any)
 
-	dropped  atomic.Int64
 	stopped  atomic.Bool
 	stopOnce sync.Once
 }
 
-func newEventPump() *eventPump {
+// newEventPump returns a pump that hands each dropped event and each
+// recovered listener panic to fail.
+func newEventPump(fail func(ctx context.Context, err error, event any)) *eventPump {
 	return &eventPump{
 		ch:   make(chan pendingEvent, queryEventQueueSize),
 		quit: make(chan struct{}),
+		fail: fail,
 	}
 }
 
@@ -80,7 +93,8 @@ func (p *eventPump) run(dispatch func(context.Context, contract.Event)) {
 // deliver dispatches one item, recovering from a panicking listener. The
 // synchronous path let a listener panic propagate to whoever ran the query;
 // here there is no such caller, and letting the panic escape would kill the
-// pump and silence every later event.
+// pump and silence every later event. The recovered panic goes to the
+// failure policy like a listener error.
 func (p *eventPump) deliver(dispatch func(context.Context, contract.Event), item pendingEvent) {
 	if item.flush != nil {
 		close(item.flush)
@@ -88,7 +102,7 @@ func (p *eventPump) deliver(dispatch func(context.Context, contract.Event), item
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			_ = panicerr.FromRecovered(r)
+			p.fail(item.ctx, panicerr.FromRecovered(r), item.event)
 		}
 	}()
 	dispatch(item.ctx, item.event)
@@ -103,7 +117,7 @@ func (p *eventPump) enqueue(ctx context.Context, ev contract.Event) {
 	select {
 	case p.ch <- pendingEvent{ctx: ctx, event: ev}:
 	default:
-		p.dropped.Add(1)
+		p.fail(ctx, ErrQueryEventQueueFull, ev)
 	}
 }
 
@@ -164,15 +178,4 @@ func (m *Manager) FlushQueryEvents(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	return p.flush(ctx)
-}
-
-// DroppedQueryEvents reports how many statement events were discarded because
-// the delivery queue was full. A non-zero count means listeners are slower
-// than the query rate; the alternative to dropping is stalling queries.
-func (m *Manager) DroppedQueryEvents() int64 {
-	p := m.pump.Load()
-	if p == nil {
-		return 0
-	}
-	return p.dropped.Load()
 }

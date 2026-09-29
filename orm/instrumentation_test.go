@@ -516,7 +516,7 @@ func TestInstrumentation_ConcurrentDispatcherToggleKeepsFlagConsistent(t *testin
 			defer checkers.Done()
 			for !stop.Load() {
 				m.mu.RLock()
-				installed := m.eventDispatcher != nil
+				installed := m.events.Installed()
 				flag := m.hasDispatcher.Load()
 				m.mu.RUnlock()
 				if flag != installed {
@@ -551,7 +551,7 @@ func TestInstrumentation_ConcurrentDispatcherToggleKeepsFlagConsistent(t *testin
 	}
 
 	m.mu.RLock()
-	installed := m.eventDispatcher != nil
+	installed := m.events.Installed()
 	m.mu.RUnlock()
 	if flag := m.hasDispatcher.Load(); flag != installed {
 		t.Fatalf("final state: hasDispatcher=%t but a dispatcher is installed=%t", flag, installed)
