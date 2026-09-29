@@ -1833,8 +1833,9 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	// Surface the earliest hard error: invalidate first (the
 	// upstream entropy failure callers most care about), then save.
 	// Server-side teardown above is best-effort with its own logging.
+	// The invalidate failure is returned, not logged too, so it is
+	// reported once.
 	if invalidateErr != nil {
-		g.logWarn("velocity/auth: session invalidate (logout) failed; teardown completed best-effort", "session_id", sessionID, "error", invalidateErr)
 		return invalidateErr
 	}
 	return saveErr

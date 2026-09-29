@@ -249,3 +249,118 @@ func TestSessionScheme_CommitDuringLoginSavesNothing(t *testing.T) {
 		t.Error("the client is signed in although the commit ran while its Login was in flight")
 	}
 }
+
+// parkingRecords is a server session store whose first Delete blocks
+// until released, so a test can act while Logout's teardown is parked.
+type parkingRecords struct {
+	auth.ServerSessionStore
+	parked  atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+	deleted atomic.Pointer[string]
+}
+
+func (p *parkingRecords) Delete(ctx context.Context, id string) error {
+	if p.parked.CompareAndSwap(false, true) {
+		p.deleted.Store(&id)
+		close(p.entered)
+		<-p.release
+	}
+	return p.ServerSessionStore.Delete(ctx, id)
+}
+
+// Logout frees the request's gate once the session is invalidated, and
+// its server-side teardown then deletes only the ids it captured before:
+// a Login of the same request while that teardown is parked is not
+// touched by it. The old session's record is gone and its remember
+// credential no longer signs in, while the record Login wrote for its new
+// id, and the stored remember token, are the same after the teardown as
+// before it.
+func TestSessionScheme_LogoutTeardownLeavesARacingLoginAlone(t *testing.T) {
+	installLifetimeClock(t)
+	scheme, mem := newLifetimeSchemeFor(t, 120, 0, lifetimeModes[0])
+	users := userStoreOf(t, scheme)
+	records := &parkingRecords{ServerSessionStore: mem, entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-records.release:
+		default:
+			close(records.release)
+		}
+	})
+
+	b := newRememberBrowser(t, scheme)
+	b.do(http.MethodPost, "/login")
+	oldRemember := *b.cookies[rememberCookieName]
+	oldSession := *b.cookies[sessionCookieName]
+	scheme.SetServerSessionStore(records)
+
+	var (
+		oldID, newID            string
+		tokenBefore, tokenAfter string
+		newBefore, newAfter     error
+		logoutErr, loginErr     error
+	)
+	r := router.New()
+	r.Use(scheme.SessionMiddleware())
+	r.Post("/switch", func(c *router.Context) error {
+		oldID = scheme.Session(c.Request).ID()
+		logoutDone := make(chan struct{})
+		go func() {
+			defer close(logoutDone)
+			logoutErr = scheme.Logout(c.Response, c.Request)
+		}()
+		hostile.Within(t, hostile.Deadline, func() { <-records.entered })
+		hostile.Within(t, hostile.Deadline, func() {
+			loginErr = scheme.Login(c.Response, c.Request, &revokeTestUser{id: "u1"}, true)
+		})
+		newID = scheme.Session(c.Request).ID()
+		_, newBefore = mem.Get(context.Background(), newID)
+		tokenBefore = users.token("u1")
+		close(records.release)
+		hostile.Within(t, hostile.Deadline, func() { <-logoutDone })
+		_, newAfter = mem.Get(context.Background(), newID)
+		tokenAfter = users.token("u1")
+		return c.String(http.StatusOK, "switched")
+	})
+	r.Get("/check", func(c *router.Context) error {
+		if ok, _ := scheme.CheckWithError(c.Request); !ok {
+			return c.String(http.StatusUnauthorized, "out")
+		}
+		return c.String(http.StatusOK, "in")
+	})
+	b.handler = r
+	b.do(http.MethodPost, "/switch")
+
+	if logoutErr != nil || loginErr != nil {
+		t.Fatalf("Logout = %v, Login = %v; want both nil", logoutErr, loginErr)
+	}
+	if p := records.deleted.Load(); p == nil || *p != oldID {
+		t.Fatalf("the parked delete was %v, want the old session id %q", p, oldID)
+	}
+	if newID == "" || newID == oldID {
+		t.Fatalf("premise: Login did not move the session to a new id (old %q, new %q)", oldID, newID)
+	}
+	if newBefore != nil {
+		t.Fatalf("premise: Login wrote no record for its new id: %v", newBefore)
+	}
+	if newAfter != nil {
+		t.Errorf("the logout's teardown removed the record Login wrote for its new id: %v", newAfter)
+	}
+	if tokenAfter != tokenBefore {
+		t.Errorf("the logout's teardown changed the stored remember token: %q before, %q after", tokenBefore, tokenAfter)
+	}
+	if _, err := mem.Get(context.Background(), oldID); err == nil {
+		t.Error("the old session's record survived the logout")
+	}
+
+	// Neither old credential signs in any more.
+	b.cookies = map[string]*http.Cookie{rememberCookieName: &oldRemember}
+	if b.signedIn() {
+		t.Error("the old remember cookie still signs in after the logout")
+	}
+	b.cookies = map[string]*http.Cookie{sessionCookieName: &oldSession}
+	if b.signedIn() {
+		t.Error("the old session cookie still signs in after the logout")
+	}
+}

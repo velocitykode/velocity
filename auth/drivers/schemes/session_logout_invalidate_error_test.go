@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/session"
+	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
+	logdrivers "github.com/velocitykode/velocity/log/drivers"
 )
 
 // errInvalidateSession wraps a real auth.Session but reports a
@@ -28,13 +31,25 @@ func (e *errInvalidateSession) Invalidate() error {
 	return e.err
 }
 
+// IsModified and IsDestroyed forward the wrapped session's state, as a
+// framework session exposes it, so the commit sees the logout's
+// invalidation.
+func (e *errInvalidateSession) IsModified() bool {
+	return e.Session.(modifiedSession).IsModified()
+}
+
+func (e *errInvalidateSession) IsDestroyed() bool {
+	return e.Session.(modifiedSession).IsDestroyed()
+}
+
 // TestSessionScheme_LogoutContinuesTeardownOnInvalidateError pins the
 // invariant that an Invalidate() failure does NOT short-circuit the
 // rest of Logout. Pre-fix the early return skipped Save (no delete
 // cookie on the wire), CookieStore.Revoke (cookie still decrypts),
 // and server-store Delete (live record survives). Post-fix every
 // teardown step still runs against the pre-Invalidate sessionID and
-// the Invalidate error is returned at the end.
+// the Invalidate error is returned at the end, and only returned: it is
+// not logged as well.
 func TestSessionScheme_LogoutContinuesTeardownOnInvalidateError(t *testing.T) {
 	store := session.NewMemoryStore()
 	defer store.Close(context.Background())
@@ -68,9 +83,16 @@ func TestSessionScheme_LogoutContinuesTeardownOnInvalidateError(t *testing.T) {
 	}
 	holder.setSession(wrapped)
 
+	fallback := fallbacklogtest.Capture(t)
+	out := &fallbacklogtest.Output{}
+	scheme.SetLogger(logdrivers.NewConsoleLoggerTo(out, 0))
 	err := scheme.Logout(logoutW, logoutR)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("Logout must surface the Invalidate error; got %v want %v", err, sentinel)
+	}
+	// Reported once: returned, and not logged as well.
+	if s := out.String() + fallback.String(); strings.Contains(s, sentinel.Error()) {
+		t.Errorf("the Invalidate error was logged as well as returned: %q", s)
 	}
 
 	// Save() ran despite the Invalidate error: response carries a
