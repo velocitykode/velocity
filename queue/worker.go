@@ -291,15 +291,19 @@ func (w *Worker) Stop(ctx context.Context) error {
 		return nil
 	}
 	drained := w.stops.Ended()
-	if drained == nil {
+	owner := drained == nil
+	if owner {
 		drained = w.stops.Begin()
-		w.cancel()
+	}
+	cancel := w.cancel
+	w.life.Unlock()
+	if owner {
+		cancel()
 		async.Go(func() {
 			w.wg.Wait()
 			close(drained)
 		})
 	}
-	w.life.Unlock()
 	return w.stops.Await(ctx, drained, nil)
 }
 
