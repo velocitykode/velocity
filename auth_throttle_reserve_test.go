@@ -1,6 +1,8 @@
 package velocity
 
 import (
+	"context"
+	"github.com/velocitykode/velocity/contract"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -66,14 +68,16 @@ func TestCacheLoginThrottler_Reserve_ConcurrentBelowCap(t *testing.T) {
 
 // TestCacheLoginThrottler_Reserve_WindowReset covers the decay boundary:
 // once the window expires, concurrent reservations start a fresh count
-// that still admits no more than the cap.
+// that still admits no more than the cap. The window is long, and its end
+// is the counter leaving the store, done here by forgetting it, so no
+// wall-clock wait decides the result.
 func TestCacheLoginThrottler_Reserve_WindowReset(t *testing.T) {
 	store, err := newMemoryCacheManager().DefaultStore()
 	if err != nil {
 		t.Fatalf("DefaultStore: %v", err)
 	}
 	const cap = 3
-	th := newCacheLoginThrottler(store, cap, 20, 50, 50*time.Millisecond)
+	th := newCacheLoginThrottler(store, cap, 20, 50, time.Hour)
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
 	const key = auth.ThrottleKeyPairPrefix + "victim"
 	for i := 0; i < cap; i++ {
@@ -82,7 +86,13 @@ func TestCacheLoginThrottler_Reserve_WindowReset(t *testing.T) {
 	if within, _ := th.Reserve(r, key); within {
 		t.Fatal("reservation past cap allowed before the window expired")
 	}
-	time.Sleep(80 * time.Millisecond)
+	// The window expires: its counter leaves the store.
+	if _, ok := store.Get(th.cacheKey(key)); !ok {
+		t.Fatal("the window's counter is not in the store")
+	}
+	if err := store.ForgetCtx(context.Background(), th.cacheKey(key)); err != nil {
+		t.Fatalf("forget the window's counter: %v", err)
+	}
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -112,5 +122,59 @@ func TestCacheLoginThrottler_Reserve_NilSafe(t *testing.T) {
 	}
 	if within, _ := (&cacheLoginThrottler{}).Reserve(nil, "k"); !within {
 		t.Fatal("storeless throttler must reserve")
+	}
+}
+
+// expiringStore is a cache store whose next IncrementCtx finds the key
+// expired: it forgets the key first, so the increment recreates it from
+// nothing, with no expiration. It records the re-puts.
+type expiringStore struct {
+	contract.CacheStore
+	expireNext bool
+	puts       []time.Duration
+}
+
+func (s *expiringStore) IncrementCtx(ctx context.Context, key string, value int64) (int64, error) {
+	if s.expireNext {
+		s.expireNext = false
+		_ = s.CacheStore.ForgetCtx(ctx, key)
+	}
+	return s.CacheStore.IncrementCtx(ctx, key, value)
+}
+
+func (s *expiringStore) PutCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+	s.puts = append(s.puts, ttl)
+	return s.CacheStore.PutCtx(ctx, key, value, ttl)
+}
+
+// A window that expires between an attempt's add and its increment is
+// recreated by the increment with no expiration; the attempt then re-puts
+// its count of 1 under the decay TTL, so the bucket does not deny forever.
+// The first attempt of a fresh window needs no re-put.
+func TestCacheLoginThrottler_Reserve_ExpiryBetweenAddAndIncrement(t *testing.T) {
+	base, err := newMemoryCacheManager().DefaultStore()
+	if err != nil {
+		t.Fatalf("DefaultStore: %v", err)
+	}
+	store := &expiringStore{CacheStore: base}
+	th := newCacheLoginThrottler(store, 3, 20, 50, time.Hour)
+	r := httptest.NewRequest(http.MethodPost, "/login", nil)
+	const key = auth.ThrottleKeyPairPrefix + "victim"
+
+	if within, _ := th.Reserve(r, key); !within {
+		t.Fatal("first attempt refused")
+	}
+	if len(store.puts) != 0 {
+		t.Fatalf("the first attempt re-put its count: %v", store.puts)
+	}
+	store.expireNext = true
+	if within, _ := th.Reserve(r, key); !within {
+		t.Fatal("attempt after the expiry refused")
+	}
+	if len(store.puts) != 1 || store.puts[0] != time.Hour {
+		t.Fatalf("re-puts = %v, want one under the decay TTL", store.puts)
+	}
+	if v, ok := base.Get(th.cacheKey(key)); !ok || numericCacheValue(v) != 1 {
+		t.Fatalf("count after the expiry = %v (present %v), want 1", v, ok)
 	}
 }

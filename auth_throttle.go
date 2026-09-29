@@ -132,22 +132,29 @@ func (t *cacheLoginThrottler) Allow(r *http.Request, key string) bool {
 }
 
 // countAttempt records one attempt against key inside the current decay
-// window and returns the resulting count. The add-if-absent seeds the
-// window's TTL and the increment is atomic, but the key can expire in
-// between: every store then recreates it from the increment with no
-// expiration (redis INCR, the memory and file drivers), which would
-// leave that bucket denying forever. A count of 1 that the add did not
-// create is therefore re-put under the decay TTL. The re-put can lose an
-// increment that lands in the same instant, an undercount of at most the
-// arrivals in that instant, never an unbounded window.
+// window and returns the resulting count. The first attempt of a window
+// counts itself with the add-if-absent that seeds the window's TTL, so
+// concurrent attempts on a fresh window are counted by the atomic
+// increment alone and none resets the count. A later attempt increments
+// the live key, which holds at least 1, so its count is at least 2, unless
+// the key expired between the add and the increment: every store then
+// recreates it from the increment with no expiration (redis INCR, the
+// memory and file drivers), which would leave that bucket denying forever.
+// A count of 1 that the add did not create is therefore that expiry, and
+// the key is re-put under the decay TTL. The re-put can lose an increment
+// that lands between the recreate and the re-put, an undercount of at most
+// the arrivals in that instant of a real expiry.
 func (t *cacheLoginThrottler) countAttempt(ctx context.Context, key string) (int64, error) {
 	cacheKey := t.cacheKey(key)
-	added, _ := t.store.AddCtx(ctx, cacheKey, int64(0), t.decay)
+	added, err := t.store.AddCtx(ctx, cacheKey, int64(1), t.decay)
+	if err == nil && added {
+		return 1, nil
+	}
 	count, err := t.store.IncrementCtx(ctx, cacheKey, 1)
 	if err != nil {
 		return 0, err
 	}
-	if count == 1 && !added {
+	if count == 1 {
 		_ = t.store.PutCtx(ctx, cacheKey, int64(1), t.decay)
 	}
 	return count, nil
