@@ -838,19 +838,25 @@ func (m *Manager) Begin(ctx context.Context) (*sql.Tx, error) {
 // event, it returns ErrQueryEventsFlushFromPump and changes nothing: those
 // run on the goroutines the delivery would wait for.
 func (m *Manager) Shutdown(ctx context.Context) error {
-	p := m.pump.Load()
-	if p != nil && p.onPumpGoroutine() {
+	// A pump goroutine can only be running on a pump already published, so
+	// this unlocked read cannot miss the one the caller runs on.
+	if p := m.pump.Load(); p != nil && p.onPumpGoroutine() {
 		return ErrQueryEventsFlushFromPump
 	}
 
-	// Mark closed before touching any driver (and before taking mu) so
-	// concurrent queries observe the shutdown immediately and return
-	// ErrManagerShutdown rather than hitting a half-closed pool.
+	// Mark closed before touching any driver so concurrent queries observe
+	// the shutdown immediately and return ErrManagerShutdown rather than
+	// hitting a half-closed pool. The mark and the pump snapshot happen
+	// together under mu, which SetEventDispatcher holds while it checks
+	// closed and publishes a pump: either the pump was published first and
+	// is drained below, or SetEventDispatcher sees closed and starts none.
+	m.mu.Lock()
 	m.closed.Store(true)
+	p := m.pump.Load()
+	m.mu.Unlock()
 
-	// Deliver queued statement events before the dispatcher goes away.
-	// Runs before mu is taken: the pump calls dispatchEvent, which reads
-	// under mu.
+	// Deliver queued statement events before the dispatcher goes away,
+	// outside mu: the delivery runs listeners, which may use the manager.
 	var drainErr error
 	if p != nil {
 		if err := p.stop(ctx); err != nil {
