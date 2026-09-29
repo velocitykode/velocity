@@ -254,7 +254,7 @@ func (f *Failures) Recording(dispatch func(ctx context.Context, event any) error
 
 // dispatchRecovering calls dispatch, returning a panic in it as the typed
 // panic error.
-func dispatchRecovering(dispatch func(ctx context.Context, event any) error, ctx context.Context, event any) (err error) {
+func dispatchRecovering(dispatch dispatchFunc, ctx context.Context, event any) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = panicerr.FromRecovered(p)
@@ -271,21 +271,45 @@ func (e *recordedError) Unwrap() error { return e.err }
 
 // Recorded reports whether err, or an error it wraps, is a failure a
 // Failures already recorded (a dispatch function built by
-// Failures.Recording returned it).
-func Recorded(err error) bool {
+// Failures.Recording returned it). The walk calls the Unwrap and As
+// methods of the errors err wraps, which may be user code: a panic in one
+// is contained, and err then counts as not recorded, so the failure is
+// recorded rather than lost.
+func Recorded(err error) (recorded bool) {
+	defer func() {
+		if recover() != nil {
+			recorded = false
+		}
+	}()
 	var r *recordedError
 	return errors.As(err, &r)
 }
 
 // EventName returns the name failures of event are logged under: the
 // event's Name when it implements contract.Event, its Go type otherwise.
+// Name is user code: a panic in it is contained and the Go type is used,
+// so a failure is never left uncounted, unlogged or unhooked by the name
+// it is logged under.
 func EventName(event any) string {
-	if e, ok := event.(contract.Event); ok {
-		if name := e.Name(); name != "" {
-			return name
-		}
+	if name := contractName(event); name != "" {
+		return name
 	}
 	return fmt.Sprintf("%T", event)
+}
+
+// contractName returns the event's Name when it implements
+// contract.Event, or "" when it does not or its Name panics.
+func contractName(event any) (name string) {
+	e, ok := event.(contract.Event)
+	if !ok {
+		return ""
+	}
+	defer func() {
+		if recover() != nil {
+			name = ""
+		}
+	}()
+	return e.Name()
 }
 
 // Emitter holds one component's event dispatcher and applies the failure
@@ -326,9 +350,10 @@ func (e *Emitter) Installed() bool {
 // Emit hands event to the installed dispatcher under ctx (context.Background
 // when nil) and applies the failure policy to a failed dispatch (see Fail).
 // It reports whether a dispatcher was installed. A panic in the dispatcher
-// is not recovered here (in an app, the dispatch function Recording built
-// recovers and records it first): a component whose caller must survive one
-// from any other dispatcher recovers it and hands it to Fail.
+// is recovered here and is such a failure, as the typed panic error
+// (panicerr.FromRecovered): the component that emitted survives it, and it
+// is recorded once (in an app, the dispatch function Recording built has
+// already recovered and recorded it, so Fail skips it).
 func (e *Emitter) Emit(ctx context.Context, event any) bool {
 	p := e.dispatch.Load()
 	if p == nil {
@@ -337,7 +362,7 @@ func (e *Emitter) Emit(ctx context.Context, event any) bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := (*p)(ctx, event); err != nil {
+	if err := dispatchRecovering(*p, ctx, event); err != nil {
 		e.Fail(ctx, err, event)
 	}
 	return true

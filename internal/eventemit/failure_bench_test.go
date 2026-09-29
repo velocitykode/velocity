@@ -30,3 +30,16 @@ func BenchmarkFailuresRecord(b *testing.B) {
 		f.Record(ctx, benchLogger{}, err, "bench.event")
 	}
 }
+
+// BenchmarkEmitterEmit measures the success path of Emit: the dispatcher
+// load and the contained call of a dispatcher that succeeds.
+func BenchmarkEmitterEmit(b *testing.B) {
+	var e Emitter
+	e.Set(func(context.Context, any) error { return nil })
+	ctx := context.Background()
+	ev := &struct{}{}
+	b.ReportAllocs()
+	for b.Loop() {
+		e.Emit(ctx, ev)
+	}
+}
