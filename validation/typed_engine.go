@@ -11,9 +11,6 @@ import (
 // registered, so a custom rule works on a shared long-lived validator
 // without mutating it.
 func (v *defaultValidator) validateNormalized(data interface{}, rs normalizedRuleSet) (*ValidatedData, error) {
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-
 	// Every handler this set needs is installed by now: the built-ins, the
 	// extras a Check helper supplied, and the ones the rules carry. A name
 	// that still does not resolve is a configuration bug, so it is reported
@@ -22,6 +19,7 @@ func (v *defaultValidator) validateNormalized(data interface{}, rs normalizedRul
 		return nil, err
 	}
 
+	messages := v.currentMessages()
 	validated := contract.NewValidatedData()
 
 	dataMap, err := toMap(data)
@@ -30,7 +28,7 @@ func (v *defaultValidator) validateNormalized(data interface{}, rs normalizedRul
 	}
 
 	for field, fieldRules := range rs.fields {
-		v.validateFieldRules(validated, dataMap, field, fieldRules, rs.custom)
+		v.validateFieldRules(validated, dataMap, field, fieldRules, rs.custom, messages)
 	}
 
 	if validated.HasErrors() {

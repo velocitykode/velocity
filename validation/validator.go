@@ -16,7 +16,7 @@ package validation
 import (
 	"fmt"
 	"strings"
-	"sync"
+	"sync/atomic"
 
 	"github.com/velocitykode/velocity/contract"
 )
@@ -30,10 +30,17 @@ type Validator = contract.Validator
 type ValidatedData = contract.ValidatedData
 
 // defaultValidator is the default validator implementation
+//
+// No validator lock is held while a rule handler runs: a handler is user
+// code (a custom rule, or a database rule whose query logs through the app
+// logger) and may call back into the validator, SetMessages included. The
+// messages are read once per validation, from one atomic load, so a
+// concurrent SetMessages applies to the next validation whole.
 type defaultValidator struct {
 	registry *ruleRegistry
-	messages Messages
-	mu       sync.RWMutex
+	// messages holds the custom messages SetMessages installed last; nil
+	// until then.
+	messages atomic.Pointer[Messages]
 }
 
 // defaultValidator must satisfy the contract Validator interface.
@@ -53,7 +60,6 @@ func newDefaultValidator() *defaultValidator {
 		registry: &ruleRegistry{
 			rules: make(map[string]RuleHandler),
 		},
-		messages: make(Messages),
 	}
 }
 
@@ -76,12 +82,10 @@ func (v *defaultValidator) ValidateValue(value interface{}, rules ...Rule) error
 		return err
 	}
 
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-
 	if err := v.checkResolvable(normalized); err != nil {
 		return err
 	}
+	messages := v.currentMessages()
 
 	fieldRules := normalized.fields["value"]
 
@@ -92,7 +96,7 @@ func (v *defaultValidator) ValidateValue(value interface{}, rules ...Rule) error
 	}
 
 	for _, r := range fieldRules {
-		if err := v.validateField("value", value, r, nil, normalized.custom); err != nil {
+		if err := v.validateField("value", value, r, nil, normalized.custom, messages); err != nil {
 			return err
 		}
 	}
@@ -101,16 +105,22 @@ func (v *defaultValidator) ValidateValue(value interface{}, rules ...Rule) error
 
 // SetMessages sets custom error messages
 func (v *defaultValidator) SetMessages(messages Messages) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	v.messages = messages
+	v.messages.Store(&messages)
+}
+
+// currentMessages returns the custom messages installed last, or nil.
+func (v *defaultValidator) currentMessages() Messages {
+	if m := v.messages.Load(); m != nil {
+		return *m
+	}
+	return nil
 }
 
 // validateFieldRules applies one field's rules and records the value or the
-// first failure on validated. Callers hold v.mu for reading. custom carries
+// first failure on validated. custom carries
 // the handlers supplied by the rule set itself and is consulted before the
 // registry.
-func (v *defaultValidator) validateFieldRules(validated *ValidatedData, dataMap map[string]interface{}, field string, fieldRules []parsedRule, custom map[string]carriedRule) {
+func (v *defaultValidator) validateFieldRules(validated *ValidatedData, dataMap map[string]interface{}, field string, fieldRules []parsedRule, custom map[string]carriedRule, messages Messages) {
 	value := getFieldValue(dataMap, field)
 
 	// "nullable" short-circuit: a field carrying "nullable" whose value is
@@ -122,7 +132,7 @@ func (v *defaultValidator) validateFieldRules(validated *ValidatedData, dataMap 
 	}
 
 	for _, rule := range fieldRules {
-		if err := v.validateField(field, value, rule, dataMap, custom); err != nil {
+		if err := v.validateField(field, value, rule, dataMap, custom, messages); err != nil {
 			validated.AddError(field, err.Error(), rule.name)
 			break // Stop on first error for this field
 		}
@@ -138,7 +148,7 @@ func (v *defaultValidator) validateFieldRules(validated *ValidatedData, dataMap 
 // the rule set win over the registry; normalization has already refused a
 // carried name that shadows a framework rule, so the overlay cannot hijack a
 // built-in.
-func (v *defaultValidator) validateField(field string, value interface{}, rule parsedRule, data map[string]interface{}, custom map[string]carriedRule) error {
+func (v *defaultValidator) validateField(field string, value interface{}, rule parsedRule, data map[string]interface{}, custom map[string]carriedRule, messages Messages) error {
 	handler, exists := v.resolve(rule.name, custom)
 	if !exists {
 		// Unreachable: checkResolvable runs before evaluation and rejects
@@ -156,7 +166,7 @@ func (v *defaultValidator) validateField(field string, value interface{}, rule p
 	}
 
 	if err := handler(field, value, params, data); err != nil {
-		if customMsg, ok := v.messages[MessageKey{Field: field, Rule: rule.name}]; ok {
+		if customMsg, ok := messages[MessageKey{Field: field, Rule: rule.name}]; ok {
 			return fmt.Errorf("%s", customMsg)
 		}
 		return err
@@ -180,7 +190,7 @@ func (v *defaultValidator) resolve(name string, custom map[string]carriedRule) (
 // resolve. It runs after every handler is installed, so an unresolvable name
 // is a configuration bug (a typo, or a DB rule without a database wired) and
 // is reported to the caller instead of surfacing as a field error the end
-// user would see. Callers hold v.mu for reading.
+// user would see.
 func (v *defaultValidator) checkResolvable(rs normalizedRuleSet) error {
 	for field, fieldRules := range rs.fields {
 		for _, rule := range fieldRules {

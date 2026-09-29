@@ -52,10 +52,16 @@ func RegisterUniqueViolationClassifier(c UniqueViolationClassifier) {
 // order and returns the first authoritative (matched) result. It reports
 // matched=false when no classifier recognises err, signalling the caller to
 // fall back to generic error-string matching. Safe for concurrent use.
+//
+// The classifiers run after the registry lock is released: the slice only
+// ever grows by append, so the snapshot taken under the lock stays valid,
+// and a classifier (code a driver package, or an app, registered) may call
+// back into the registry, RegisterUniqueViolationClassifier included.
 func ClassifyUniqueViolation(err error) (columnHint string, isUnique bool, matched bool) {
 	classifierMu.RLock()
-	defer classifierMu.RUnlock()
-	for _, c := range uniqueClassifiers {
+	classifiers := uniqueClassifiers
+	classifierMu.RUnlock()
+	for _, c := range classifiers {
 		if hint, isUnique, ok := c(err); ok {
 			return hint, isUnique, true
 		}
