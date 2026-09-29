@@ -28,19 +28,19 @@ func (f *Forwarder) Set(l contract.Logger) {
 	f.target.Store(&forwardTarget{logger: l})
 }
 
-// Target returns the logger set last, or nil when none is set.
-func (f *Forwarder) Target() contract.Logger {
+// Installed returns the logger set last, or nil when none is set.
+func (f *Forwarder) Installed() contract.Logger {
 	if t := f.target.Load(); t != nil {
 		return t.logger
 	}
 	return nil
 }
 
-func (f *Forwarder) Debug(msg string, kvs ...any) { Resolve(f.Target()).Debug(msg, kvs...) }
-func (f *Forwarder) Info(msg string, kvs ...any)  { Resolve(f.Target()).Info(msg, kvs...) }
-func (f *Forwarder) Warn(msg string, kvs ...any)  { Resolve(f.Target()).Warn(msg, kvs...) }
-func (f *Forwarder) Error(msg string, kvs ...any) { Resolve(f.Target()).Error(msg, kvs...) }
-func (f *Forwarder) Fatal(msg string, kvs ...any) { Resolve(f.Target()).Fatal(msg, kvs...) }
+func (f *Forwarder) Debug(msg string, kvs ...any) { Resolve(f.Installed()).Debug(msg, kvs...) }
+func (f *Forwarder) Info(msg string, kvs ...any)  { Resolve(f.Installed()).Info(msg, kvs...) }
+func (f *Forwarder) Warn(msg string, kvs ...any)  { Resolve(f.Installed()).Warn(msg, kvs...) }
+func (f *Forwarder) Error(msg string, kvs ...any) { Resolve(f.Installed()).Error(msg, kvs...) }
+func (f *Forwarder) Fatal(msg string, kvs ...any) { Resolve(f.Installed()).Fatal(msg, kvs...) }
 
 // With binds kvs on the forwarder itself, not on the current target, so a
 // bound logger follows a later Set too. The pairs come before each line's

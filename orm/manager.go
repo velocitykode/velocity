@@ -279,7 +279,7 @@ func (m *Manager) Connection(name string) (drivers.Driver, error) {
 func (m *Manager) AddConnection(name string, driver drivers.Driver) {
 	m.attachStatementObserver(driver)
 	la, aware := driver.(contract.LoggerAware)
-	handed := aware && m.logger.Target() != nil
+	handed := aware && m.logger.Installed() != nil
 	if handed {
 		la.SetLogger(&m.logger)
 	}
@@ -288,7 +288,7 @@ func (m *Manager) AddConnection(name string, driver drivers.Driver) {
 	delete(m.unhanded, name)
 	// A SetLogger that ran since the check above left no pending entry for
 	// this connection: hand it here, once, after the lock is released.
-	late := aware && !handed && m.logger.Target() != nil
+	late := aware && !handed && m.logger.Installed() != nil
 	if aware && !handed && !late {
 		if m.unhanded == nil {
 			m.unhanded = make(map[string]contract.LoggerAware)
@@ -1081,7 +1081,7 @@ func (m *Manager) SetLogger(logger contract.Logger) {
 // log returns the installed logger, or the framework's standalone fallback
 // logger when none is installed. Lock-free.
 func (m *Manager) log() contract.Logger {
-	return fallbacklog.Resolve(m.logger.Target())
+	return fallbacklog.Resolve(m.logger.Installed())
 }
 
 // Logger returns the logger the manager writes through: the one SetLogger
