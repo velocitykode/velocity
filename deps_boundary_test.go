@@ -89,9 +89,9 @@ func TestEventEnvelopeHelperOutsideRouterGraph(t *testing.T) {
 
 // TestEventEmitterImportsOnlyItsLeaves pins that internal/eventemit, which
 // the router and every event-dispatching package link, imports only the
-// standard library, contract, internal/fallbacklog, internal/panicerr and
-// trace (itself only stdlib, contract and internal/fallbacklog, all already
-// in the router's graph), so it adds exactly one package to the router's
+// standard library, contract, internal/fallbacklog, internal/goroutine,
+// internal/panicerr and trace (each stdlib-only or built from those, all
+// already in the router's graph), so it adds itself to the router's
 // dependency graph and nothing heavy.
 func TestEventEmitterImportsOnlyItsLeaves(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
