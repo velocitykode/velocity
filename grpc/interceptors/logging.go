@@ -148,15 +148,7 @@ func logRequest(ctx context.Context, method string, start time.Time, err error, 
 
 	duration := time.Since(start)
 
-	// Extract status code
-	code := codes.OK
-	if err != nil {
-		if s, ok := status.FromError(err); ok {
-			code = s.Code()
-		} else {
-			code = codes.Unknown
-		}
-	}
+	code := statusCodeOf(err)
 
 	// Build base fields
 	fields := []interface{}{
@@ -191,6 +183,21 @@ func logRequest(ctx context.Context, method string, start time.Time, err error, 
 	} else {
 		logger.Info("gRPC request", fields...)
 	}
+}
+
+// statusCodeOf returns the gRPC status code a handler's error ends the call
+// with, as grpc-go derives the status it sends: OK for nil, the error's own
+// status when it carries one (wrapped included), else the status of a
+// context error (Canceled, DeadlineExceeded, wrapped included), else
+// Unknown.
+func statusCodeOf(err error) codes.Code {
+	if err == nil {
+		return codes.OK
+	}
+	if s, ok := status.FromError(err); ok {
+		return s.Code()
+	}
+	return status.FromContextError(err).Code()
 }
 
 // Event dispatching helpers, shared between unary and stream variants.

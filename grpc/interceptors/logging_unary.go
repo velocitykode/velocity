@@ -5,9 +5,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/internal/eventemit"
@@ -65,18 +63,6 @@ func dispatchRequestStarted(ctx context.Context, method string, start time.Time,
 		Protocol:  protocol,
 		Metadata:  md,
 	})
-}
-
-// statusCodeOf returns the gRPC status code a handler's error ends the call
-// with: OK for nil, Unknown for an error that carries no status.
-func statusCodeOf(err error) codes.Code {
-	if err == nil {
-		return codes.OK
-	}
-	if s, ok := status.FromError(err); ok {
-		return s.Code()
-	}
-	return codes.Unknown
 }
 
 // dispatchRequestCompleted dispatches the end of a unary call: RequestFailed

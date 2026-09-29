@@ -38,8 +38,8 @@ type RecoveryConfig struct {
 
 	// Reporter, when set, receives every recovered panic, in place of the
 	// Logger's line, and every internal error a handler returns (its gRPC
-	// code is Internal or Unknown; an error that is no gRPC status is
-	// Unknown), each once, with the method named. Pass the app's error
+	// code is Internal or Unknown; an error that is neither a gRPC status
+	// nor a context error is Unknown), each once, with the method named. Pass the app's error
 	// handler (Services.Errors). Reporting never changes what the client
 	// gets.
 	Reporter contract.Reporter
@@ -149,8 +149,9 @@ func recoveryStream(cfg *RecoveryConfig) grpc.StreamServerInterceptor {
 
 // reportInternalError reports err, which the handler of method returned,
 // to cfg.Reporter when it is an internal error: its gRPC code is Internal
-// or Unknown (an error that is no gRPC status is Unknown), the codes the
-// logging interceptor logs at error level. A call its own context ended
+// or Unknown (an error that is neither a gRPC status nor a context error
+// is Unknown; see statusCodeOf), the codes the logging interceptor logs at
+// error level. A call its own context ended
 // (the client cancelled, or the deadline passed) is not reported. The
 // client gets err unchanged.
 func reportInternalError(ctx context.Context, err error, method string, cfg *RecoveryConfig) {
@@ -160,7 +161,7 @@ func reportInternalError(ctx context.Context, err error, method string, cfg *Rec
 	if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
 		return
 	}
-	switch status.Code(err) {
+	switch statusCodeOf(err) {
 	case codes.Internal, codes.Unknown:
 		report(ctx, cfg.Reporter, err, method, false, "")
 	}
