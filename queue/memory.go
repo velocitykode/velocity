@@ -393,6 +393,11 @@ func (m *MemoryDriver) PopCtxReserved(ctx context.Context, queueName string) (Jo
 	if err != nil || wrapper == nil {
 		return nil, ReservationToken{}, tc, err
 	}
+	// Same-process pop: the wrapper keeps the live job, and no user code
+	// runs to rebuild it.
+	if wrapper.Job != nil {
+		return wrapper.Job, token, tc, nil
+	}
 	// Rebuilding the job may run the registered factory, user code, so it
 	// runs after the lock is released. A job that cannot be rebuilt (an
 	// error, or a panic that goes on to the caller) is dropped with its
