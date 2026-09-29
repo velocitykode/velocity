@@ -112,7 +112,7 @@ func (m *Memory) seen(nonce string) bool {
 	if !ok {
 		return false
 	}
-	return !m.nowFn().After(exp)
+	return !m.nowFn().After(exp) //lock-held-ok: nowFn is the store's clock (time.Now, or a test clock), read under the lock by design (see above)
 }
 
 // Len reports the current number of stored nonces (including any expired

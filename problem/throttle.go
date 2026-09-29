@@ -68,7 +68,7 @@ func (t *throttleBuckets) allow(rule contract.ThrottleRule, err error) bool {
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	now := t.now()
+	now := t.now() //lock-held-ok: t.now is the throttle's clock (time.Now, or a test clock), read under the lock so bucket windows advance in order
 	b, ok := t.buckets[id]
 	if !ok {
 		if len(t.buckets) >= maxThrottleBuckets {
@@ -116,5 +116,5 @@ func (t *throttleBuckets) sweep(now time.Time) {
 // buckets of its own. AddThrottleRule gives every rule it stores a Key, an
 // anonymous rule one of its own.
 func throttleRuleID(rule contract.ThrottleRule) any {
-	return throttleKey(rule)
+	return ruleIdentity(rule)
 }

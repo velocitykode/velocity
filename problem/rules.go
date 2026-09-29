@@ -10,12 +10,13 @@ import (
 )
 
 // upsert returns rules with rule added: a keyed rule replaces the earlier
-// rule with an equal key in place, an anonymous rule is appended. The input
-// slice is never modified.
-func upsert[R any](rules []R, rule R, key func(R) any) []R {
-	if k := key(rule); k != nil {
+// rule with an equal identity in place, an anonymous rule is appended. k is
+// rule's identity (ruleIdentity), which the caller computes before taking
+// the handler's lock. The input slice is never modified.
+func upsert[R any](rules []R, rule R, k any) []R {
+	if k != nil {
 		for i, existing := range rules {
-			if key(existing) == k {
+			if ruleIdentity(existing) == k {
 				out := append([]R(nil), rules...)
 				out[i] = rule
 				return out
@@ -25,27 +26,44 @@ func upsert[R any](rules []R, rule R, key func(R) any) []R {
 	return appendCopy(rules, rule)
 }
 
-// removeKey returns rules without the rules whose key (as key returns it)
+// removeKey returns rules without the rules whose identity (ruleIdentity)
 // is k. A nil k removes nothing. The input slice is never modified.
-func removeKey[R any](rules []R, k any, key func(R) any) []R {
+func removeKey[R any](rules []R, k any) []R {
 	if k == nil {
 		return rules
 	}
 	out := make([]R, 0, len(rules))
 	for _, r := range rules {
-		if key(r) != k {
+		if ruleIdentity(r) != k {
 			out = append(out, r)
 		}
 	}
 	return out
 }
 
-func mapKey(r contract.MapRule) any           { return sourcedKey(r.Key, r.Sources) }
-func renderKey(r contract.RenderRule) any     { return r.Key }
-func reportKey(r contract.ReportRule) any     { return r.Key }
-func ignoreKey(r contract.IgnoreRule) any     { return sourcedKey(r.Key, r.Sources) }
-func levelKey(r contract.LevelRule) any       { return sourcedKey(r.Key, r.Sources) }
-func throttleKey(r contract.ThrottleRule) any { return sourcedKey(r.Key, r.Sources) }
+// ruleIdentity returns the identity a registered rule replaces and removes
+// by: the Key of a render or report rule, and for a map, ignore, level or
+// throttle rule its Key together with its sources (see sourcedKey). Nil
+// means an anonymous rule. It reads fields only: the rule lists are
+// updated under the handler's lock, where no function a caller supplied
+// may run.
+func ruleIdentity[R any](r R) any {
+	switch v := any(r).(type) {
+	case contract.MapRule:
+		return sourcedKey(v.Key, v.Sources)
+	case contract.RenderRule:
+		return v.Key
+	case contract.ReportRule:
+		return v.Key
+	case contract.IgnoreRule:
+		return sourcedKey(v.Key, v.Sources)
+	case contract.LevelRule:
+		return sourcedKey(v.Key, v.Sources)
+	case contract.ThrottleRule:
+		return sourcedKey(v.Key, v.Sources)
+	}
+	return nil
+}
 
 // sourcedRule is the identity of a keyed map, ignore, level or throttle
 // rule written for sources other than requests alone: its Key and those
@@ -84,9 +102,10 @@ func (h *Handler) AddMapRule(rule contract.MapRule) {
 		return
 	}
 	rule.Key = ruleKey(rule.Key)
+	k := ruleIdentity(rule)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.mapRules = upsert(h.mapRules, rule, mapKey)
+	h.mapRules = upsert(h.mapRules, rule, k)
 }
 
 // AddRenderRule registers a rule that renders a matched error. User render
@@ -96,9 +115,10 @@ func (h *Handler) AddRenderRule(rule contract.RenderRule) {
 		return
 	}
 	rule.Key = ruleKey(rule.Key)
+	k := ruleIdentity(rule)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.renderRules = upsert(h.renderRules, rule, renderKey)
+	h.renderRules = upsert(h.renderRules, rule, k)
 }
 
 // AddReportRule registers a rule that reports a matched error.
@@ -107,9 +127,10 @@ func (h *Handler) AddReportRule(rule contract.ReportRule) {
 		return
 	}
 	rule.Key = ruleKey(rule.Key)
+	k := ruleIdentity(rule)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.reportRules = upsert(h.reportRules, rule, reportKey)
+	h.reportRules = upsert(h.reportRules, rule, k)
 }
 
 // AddIgnoreRule registers an ignore rule, or with Unignore set an unignore
@@ -122,15 +143,16 @@ func (h *Handler) AddIgnoreRule(rule contract.IgnoreRule) {
 		return
 	}
 	rule.Key = ruleKey(rule.Key)
+	k := ruleIdentity(rule)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if rule.Unignore {
-		h.ignoreRules = removeKey(h.ignoreRules, ignoreKey(rule), ignoreKey)
-		h.unignoreRules = upsert(h.unignoreRules, rule, ignoreKey)
+		h.ignoreRules = removeKey(h.ignoreRules, k)
+		h.unignoreRules = upsert(h.unignoreRules, rule, k)
 		return
 	}
-	h.unignoreRules = removeKey(h.unignoreRules, ignoreKey(rule), ignoreKey)
-	h.ignoreRules = upsert(h.ignoreRules, rule, ignoreKey)
+	h.unignoreRules = removeKey(h.unignoreRules, k)
+	h.ignoreRules = upsert(h.ignoreRules, rule, k)
 }
 
 // AddLevelRule registers the log level for a matched error.
@@ -139,9 +161,10 @@ func (h *Handler) AddLevelRule(rule contract.LevelRule) {
 		return
 	}
 	rule.Key = ruleKey(rule.Key)
+	k := ruleIdentity(rule)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.levelRules = upsert(h.levelRules, rule, levelKey)
+	h.levelRules = upsert(h.levelRules, rule, k)
 }
 
 // AddThrottleRule registers report throttling for a matched error. The
@@ -157,9 +180,10 @@ func (h *Handler) AddThrottleRule(rule contract.ThrottleRule) {
 	if rule.Key == nil {
 		rule.Key = new(anonymousThrottleKey)
 	}
+	k := ruleIdentity(rule)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.throttleRules = upsert(h.throttleRules, rule, throttleKey)
+	h.throttleRules = upsert(h.throttleRules, rule, k)
 }
 
 // anonymousThrottleKey is the Key of a throttle rule registered without
@@ -249,9 +273,10 @@ func (h *Handler) AddFrameworkIgnoreRule(rule contract.IgnoreRule) {
 		return
 	}
 	rule.Key = ruleKey(rule.Key)
+	k := ruleIdentity(rule)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.frameworkIgnores = upsert(h.frameworkIgnores, rule, ignoreKey)
+	h.frameworkIgnores = upsert(h.frameworkIgnores, rule, k)
 }
 
 // AddFrameworkPrepareRule registers a framework prepare rule. Prepare rules
@@ -265,9 +290,10 @@ func (h *Handler) AddFrameworkPrepareRule(rule contract.MapRule) {
 		return
 	}
 	rule.Key = ruleKey(rule.Key)
+	k := ruleIdentity(rule)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.frameworkPrepare = upsert(h.frameworkPrepare, rule, mapKey)
+	h.frameworkPrepare = upsert(h.frameworkPrepare, rule, k)
 }
 
 // AddFrameworkRenderRule registers a framework render rule, consulted after
@@ -279,9 +305,10 @@ func (h *Handler) AddFrameworkRenderRule(rule contract.RenderRule) {
 		return
 	}
 	rule.Key = ruleKey(rule.Key)
+	k := ruleIdentity(rule)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.frameworkRender = upsert(h.frameworkRender, rule, renderKey)
+	h.frameworkRender = upsert(h.frameworkRender, rule, k)
 }
 
 // AddFrameworkLevelRule registers a framework level rule, consulted after
@@ -291,9 +318,10 @@ func (h *Handler) AddFrameworkLevelRule(rule contract.LevelRule) {
 		return
 	}
 	rule.Key = ruleKey(rule.Key)
+	k := ruleIdentity(rule)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.frameworkLevels = upsert(h.frameworkLevels, rule, levelKey)
+	h.frameworkLevels = upsert(h.frameworkLevels, rule, k)
 }
 
 // belowServerErrorKey keys the framework ignore for status errors below 500.
