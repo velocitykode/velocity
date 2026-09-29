@@ -386,7 +386,13 @@ func commitSessionHeld(g *SessionScheme, r *http.Request, w http.ResponseWriter,
 		*saved = true
 		return nil, nil
 	}
-	ended := g.endSessionDeletedBy(r, w, session)
+	// A Logout of the request ended the session: the holder says so even
+	// when the session cannot (a custom auth.Session without IsDestroyed),
+	// and it is not ended a second time as a cookie deletion.
+	ended := holder.isEnded()
+	if !ended {
+		ended = g.endSessionDeletedBy(r, w, session)
+	}
 	if ms, ok := session.(modifiedSession); ok && ms.IsDestroyed() {
 		ended = true
 	}
