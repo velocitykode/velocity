@@ -297,8 +297,9 @@ func RaceWithTimeout[T any](timeout time.Duration, fns ...func() T) *Result[T] {
 		go func() {
 			defer func() {
 				if p := recover(); p != nil {
-					// Ignore panics in losing goroutines
-					return
+					// A panicking fn loses the race; the panic still
+					// reaches the package handler like every other helper's.
+					handlePanic(context.Background(), p)
 				}
 			}()
 
