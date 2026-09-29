@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 )
 
 // logCapture records every error-level line the wired logger receives.
@@ -205,16 +206,42 @@ func TestVelocityRouterV2_DefaultErrorLogging(t *testing.T) {
 		}
 	})
 
-	t.Run("no logger wired stays silent and still writes 500", func(t *testing.T) {
+	t.Run("no logger wired writes through the fallback and still writes 500", func(t *testing.T) {
+		fallback := fallbacklogtest.Capture(t)
 		r := NewV2()
 		r.Get("/boom", func(c *Context) error {
 			return errors.New("standalone router")
+		})
+		r.Get("/panic", func(c *Context) error {
+			panic("standalone panic")
+		})
+		r.Get("/missing", func(c *Context) error {
+			return &contract.HTTPError{Status: http.StatusNotFound, Message: "missing"}
 		})
 
 		w := serveErrLogReq(r, "GET", "/boom")
 
 		if w.Code != http.StatusInternalServerError {
 			t.Errorf("expected 500, got %d", w.Code)
+		}
+		if n := fallback.Count("ERROR", UnhandledErrorMessage); n != 1 {
+			t.Fatalf("fallback error lines = %d, want 1: %q", n, fallback.String())
+		}
+		if !strings.Contains(fallback.String(), "error=\"standalone router\"") || !strings.Contains(fallback.String(), "url=/boom") {
+			t.Errorf("fallback line = %q, want the error and url", fallback.String())
+		}
+
+		serveErrLogReq(r, "GET", "/panic")
+		if n := fallback.Count("ERROR", UnhandledErrorMessage); n != 2 {
+			t.Fatalf("fallback error lines after a panic = %d, want 2", n)
+		}
+		if !strings.Contains(fallback.String(), "stack=") {
+			t.Errorf("panic line carries no stack: %q", fallback.String())
+		}
+
+		serveErrLogReq(r, "GET", "/missing")
+		if n := len(fallback.Lines()); n != 2 {
+			t.Errorf("a 4xx wrote a fallback line: %d lines, want 2", n)
 		}
 	})
 }

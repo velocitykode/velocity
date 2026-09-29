@@ -20,6 +20,7 @@ import (
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/eventemit"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -264,7 +265,9 @@ func (r *VelocityRouterV2) SetErrorHandler(fn func(c *Context, err error, info E
 //     suppressed; the handler replaces the whole error pipeline
 //     (rendering AND reporting).
 //
-// Nil (the default) means failed requests are not logged. Like
+// Nil (the default) means failed requests go to the services' logger
+// when SetServices wired one, else to the framework's standalone fallback
+// logger, which writes warnings and errors to standard error. Like
 // SetValidator, this must be called before serving begins; it is not
 // synchronized for concurrent mutation at runtime.
 func (r *VelocityRouterV2) SetLogger(l contract.Logger) {
@@ -1435,13 +1438,15 @@ const UnhandledErrorMessage = "unhandled error in HTTP handler"
 // logDefault emits the single default-path log entry for a failed request
 // at level, the level the resolution chose; f classifies err. The line is
 // bound to the request's LogFields and carries the error, the path as url
-// and a recovered panic's stack. No-op when no logger is wired (standalone
-// router) or the resolution logs nothing.
+// and a recovered panic's stack. It goes to the router's logger, else its
+// services' logger, else the framework's standalone fallback logger (a
+// standalone router with no logger). No-op when the resolution logs
+// nothing.
 func (r *VelocityRouterV2) logDefault(ctx *Context, err error, f *errorFacts, info ErrorInfo, level defaultLogLevel) {
-	l := r.logger
-	if l == nil || (level != logError && level != logWarn) {
+	if level != logError && level != logWarn {
 		return
 	}
+	l := fallbacklog.Resolve(r.eventLogger())
 	if f.markedWritten(err, info.Recovered) {
 		if cause := contract.HandledCause(err); cause != nil {
 			err = cause

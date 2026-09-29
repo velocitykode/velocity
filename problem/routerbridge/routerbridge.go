@@ -14,6 +14,7 @@ import (
 	"net/http"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -46,7 +47,9 @@ func WithUserID(id contract.RequestUserIdentifier) Option {
 // router.UnhandledErrorMessage bound to the request's LogFields with the
 // error, the path as url and a recovered panic's stack, as the router's
 // default error path does, and then answers through
-// router.DefaultErrorHandler, which logs nothing itself. Nil logs nothing.
+// router.DefaultErrorHandler, which logs nothing itself. Without it, or
+// with nil, the line goes to the request's app logger (Services.Log), else
+// to the framework's standalone fallback logger.
 func WithLogger(logger contract.Logger) Option {
 	return func(c *config) { c.logger = logger }
 }
@@ -82,8 +85,14 @@ func Install(r *router.VelocityRouterV2, opts ...Option) {
 // handler takes, under the router default's message and keys. A panicking
 // logger is swallowed so the response is still written.
 func logUnhandled(logger contract.Logger, c *router.Context, err error, info router.ErrorInfo) {
-	if logger == nil || c == nil || err == nil {
+	if c == nil || err == nil {
 		return
+	}
+	if logger == nil {
+		if svc := c.ServicesIfSet(); svc != nil {
+			logger = svc.Log
+		}
+		logger = fallbacklog.Resolve(logger)
 	}
 	defer func() { _ = recover() }()
 	kvs := []any{"error", err.Error()}

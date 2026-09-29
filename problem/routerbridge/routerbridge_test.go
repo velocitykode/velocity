@@ -17,6 +17,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/csrf/stores"
+	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/trace"
@@ -1049,5 +1050,21 @@ func TestInstall_PanickingRedirectFallbackHasNoLocation(t *testing.T) {
 	}
 	if loc := resp.Header.Get("Location"); loc != "" {
 		t.Errorf("Location = %q, want none", loc)
+	}
+}
+
+// With no logger and no handler, the unhandled-failure line goes through
+// the framework's standalone fallback logger instead of being dropped.
+func TestInstall_WithoutLoggerLogsThroughTheFallback(t *testing.T) {
+	fallback := fallbacklogtest.Capture(t)
+	w := serve(t, func(*router.Context) error { return errors.New("bridge boom") })
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	if n := fallback.Count("ERROR", router.UnhandledErrorMessage); n != 1 {
+		t.Fatalf("fallback lines = %d, want 1: %q", n, fallback.String())
+	}
+	if !strings.Contains(fallback.String(), "bridge boom") {
+		t.Errorf("fallback line = %q, want the error", fallback.String())
 	}
 }
