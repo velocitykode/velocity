@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"runtime/debug"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -60,7 +61,9 @@ type CallConfig struct {
 	// recovered panic, in place of the Logger's line, or else the error
 	// the call ended with when its gRPC code is Internal or Unknown (an
 	// error that is neither a gRPC status nor a context error is
-	// Unknown), with the method named. Pass the app's error handler
+	// Unknown), with the method named and the call's identity from its
+	// claims (the user id as ErrorContext.UserID, the team id as Extra
+	// "team_id", each when non-zero). Pass the app's error handler
 	// (Services.Errors). Reporting never changes what the client gets.
 	Reporter contract.Reporter
 
@@ -185,6 +188,9 @@ func WithStackTrace(enabled bool) CallOption {
 // sequence. User fields (the claims' user_id and team_id, and ExtraFields)
 // may come from the context the handler received, which interceptors
 // between the two occurrences (Auth, say) extend; correlation never does.
+// The claims are read once per call, contained (a getter that panics
+// leaves them empty), and that one snapshot feeds the request line, the
+// events and the error report.
 //
 // Every later occurrence (the last one, and any nested CallLifecycle)
 // publishes the context it passes on and contains a panic below it, for
@@ -221,11 +227,12 @@ type callKey struct{}
 // call is what the owner of one call shares, through its context, with
 // the last occurrence, which runs next to the handler. Every field is set
 // before the owner runs the rest of the chain and never written again,
-// except two synchronized ones: state, whose bits record that the owner
-// ended the call and that a layer claimed the call's one report; and
+// except three synchronized ones: state, whose bits record that the owner
+// ended the call and that a layer claimed the call's one report;
 // handlerCtx, which the last occurrence stores before it calls the handler
 // and the owner loads once when it ends the call (a store after that is
-// unused).
+// unused); and claims, the call's one snapshot of its user fields (see
+// userClaims).
 type call struct {
 	cfg    *CallConfig
 	ctx    context.Context
@@ -238,6 +245,60 @@ type call struct {
 	state atomic.Uint32
 	// handlerCtx is the context the handler received (see userContext).
 	handlerCtx atomic.Pointer[handlerContext]
+	// claims is the call's claims snapshot, nil until first taken.
+	claims atomic.Pointer[callClaims]
+}
+
+// callClaims is a snapshot of a call's claims: the user and team ids,
+// and whether the call has claims at all (a request line writes the ids of
+// present claims even when they are zero).
+type callClaims struct {
+	userID, teamID uint
+	present        bool
+}
+
+// noClaims and zeroClaims are the snapshots of a call without claims and
+// of one whose claims hold zero ids, shared so such calls allocate none.
+var (
+	noClaims   = &callClaims{}
+	zeroClaims = &callClaims{present: true}
+)
+
+// userClaims returns the call's one claims snapshot, taking it from
+// userContext on first use. The request line, the events and the error
+// report all read it, so they carry the same identity. Two goroutines
+// that race to take it (the owner ending the call and a late panic) may
+// both read the claims, but only the first snapshot published is used:
+// no lock, and no goroutine waits on another's claims getters.
+func (c *call) userClaims() *callClaims {
+	if snap := c.claims.Load(); snap != nil {
+		return snap
+	}
+	snap := claimsOf(c.userContext())
+	if !c.claims.CompareAndSwap(nil, snap) {
+		return c.claims.Load()
+	}
+	return snap
+}
+
+// claimsOf reads the claims ctx carries. The claims and their getters are
+// application code: one that panics (a typed-nil *BasicClaims, say) is
+// contained and yields no claims, so it never skips the end of a call.
+func claimsOf(ctx context.Context) (snap *callClaims) {
+	defer func() {
+		if recover() != nil {
+			snap = noClaims
+		}
+	}()
+	claims := ClaimsFromContext(ctx)
+	if claims == nil {
+		return noClaims
+	}
+	userID, teamID := claims.GetUserID(), claims.GetTeamID()
+	if userID == 0 && teamID == 0 {
+		return zeroClaims
+	}
+	return &callClaims{userID: userID, teamID: teamID, present: true}
 }
 
 // handlerContext boxes the context the handler received, for handlerCtx.
@@ -376,12 +437,12 @@ func (c *call) end(p interface{}, err error) error {
 	if c.observed {
 		user := c.userContext()
 		if c.cfg.RequestLine {
-			logRequest(c.ctx, user, c.method, c.start, err, c.cfg)
+			logRequest(c.ctx, user, c.userClaims(), c.method, c.start, err, c.cfg)
 		}
-		c.completed(user, err)
+		c.completed(err)
 	}
 	if reportable(c.ctx, err) && c.claimReport() {
-		report(c.ctx, c.cfg.Reporter, err, c.method, false, "", false)
+		c.report(err, false, "", false)
 	}
 	return err
 }
@@ -419,7 +480,7 @@ func reportable(ctx context.Context, err error) bool {
 // call's effective context, or logs it when there is no Reporter (or it
 // panicked): one entry. late marks a panic after the call ended.
 func (c *call) reportPanic(p interface{}, stack string, late bool) {
-	if c.cfg.Reporter != nil && report(c.ctx, c.cfg.Reporter, panicerr.FromRecovered(p), c.method, true, stack, late) {
+	if c.cfg.Reporter != nil && c.report(panicerr.FromRecovered(p), true, stack, late) {
 		return
 	}
 	fields := []interface{}{"method", c.method, "panic", p}
@@ -463,29 +524,38 @@ func (c *call) panicResult(ctx context.Context, p interface{}) (err error) {
 	return c.cfg.PanicHandler(ctx, p)
 }
 
-// report hands err, a failure of the call to method, to reporter with the
-// ErrorContext trace.NewErrorContext builds from the call's ctx (its
-// request, trace and span ids), naming the method; recovered marks a
-// recovered panic, with its stack, and late one that happened after the
-// call ended. It returns whether the reporter returned normally: a
-// reporter that panics is contained, since reporting must never fail the
-// call or crash the server.
-func report(ctx context.Context, reporter contract.Reporter, err error, method string, recovered bool, stack string, late bool) (reported bool) {
-	if reporter == nil {
+// report hands err, a failure of the call, to the Reporter with the
+// ErrorContext trace.NewErrorContext builds from the call's effective
+// context (its request, trace and span ids), naming the method and
+// carrying the call's identity from its claims snapshot: the user id as
+// UserID and the team id as Extra "team_id", each only when non-zero.
+// recovered marks a recovered panic, with its stack, and late one that
+// happened after the call ended. It returns whether the reporter returned
+// normally: a reporter that panics is contained, since reporting must
+// never fail the call or crash the server.
+func (c *call) report(err error, recovered bool, stack string, late bool) (reported bool) {
+	if c.cfg.Reporter == nil {
 		return false
 	}
+	claims := c.userClaims()
 	defer func() {
 		if recover() != nil {
 			reported = false
 		}
 	}()
-	ec := trace.NewErrorContext(ctx)
+	ec := trace.NewErrorContext(c.ctx)
 	ec.Recovered, ec.PanicStack = recovered, stack
-	ec.Extra["method"] = method
+	ec.Extra["method"] = c.method
+	if claims.userID != 0 {
+		ec.UserID = strconv.FormatUint(uint64(claims.userID), 10)
+	}
+	if claims.teamID != 0 {
+		ec.Extra["team_id"] = claims.teamID
+	}
 	if late {
 		ec.Extra["late"] = true
 	}
-	reporter.Report(err, ec)
+	c.cfg.Reporter.Report(err, ec)
 	return true
 }
 
@@ -510,8 +580,8 @@ func (c *call) started() {
 
 // completed dispatches the end of the call: the failed event when it
 // ended with err, then the completed event, the terminal event of every
-// call. The claims are read from user (see userContext).
-func (c *call) completed(user context.Context, err error) {
+// call. The user fields come from the call's claims snapshot.
+func (c *call) completed(err error) {
 	if !eventsInstalled(c.cfg.events) {
 		return
 	}
@@ -519,10 +589,8 @@ func (c *call) completed(user context.Context, err error) {
 	duration := meta.At.Sub(c.start)
 	protocol := detectProtocol(c.ctx)
 	code := statusCodeOf(err)
-	var userID, teamID uint
-	if claims := ClaimsFromContext(user); claims != nil {
-		userID, teamID = claims.GetUserID(), claims.GetTeamID()
-	}
+	claims := c.userClaims()
+	userID, teamID := claims.userID, claims.teamID
 	if err != nil {
 		var failed interface{} = &grpcevents.RequestFailed{EventMeta: meta, Method: c.method, Protocol: protocol,
 			Duration: duration, StatusCode: code, Err: err, UserID: userID, TeamID: teamID}

@@ -86,14 +86,13 @@ func equalKinds(a, b []string) bool {
 // around handler, and returns the error the call ended with.
 func runChain(kind string, calls interceptors.InterceptorPair, middle func(next func(ctx context.Context) error, ctx context.Context) error, handler func(ctx context.Context) error) error {
 	if kind == "unary" {
+		// The response is dropped: next may run on a goroutine of middle's,
+		// after middle returned.
 		mid := func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
-			var resp any
-			err := middle(func(ctx context.Context) error {
-				var err error
-				resp, err = h(ctx, req)
+			return nil, middle(func(ctx context.Context) error {
+				_, err := h(ctx, req)
 				return err
 			}, ctx)
-			return resp, err
 		}
 		_, err := chainUnary(context.Background(), func(ctx context.Context, _ any) (any, error) { return nil, handler(ctx) },
 			calls.Unary, mid, calls.Unary)

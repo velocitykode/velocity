@@ -40,11 +40,12 @@ func isHealthCheck(method string) bool {
 
 // logRequest writes the call's request line through cfg.Logger (the
 // fallback when none is set), bound to the request, trace and span ids of
-// ctx, the call's effective context (trace.LogFields). The claims and
-// ExtraFields are read from user (see call.userContext). A panicking
-// ExtraFields is contained and its fields omitted; a panicking logger is
-// contained as well (see eventemit.WriteLine).
-func logRequest(ctx, user context.Context, method string, start time.Time, err error, cfg *CallConfig) {
+// ctx, the call's effective context (trace.LogFields). The user fields
+// come from claims, the call's claims snapshot, and ExtraFields is read
+// from user (see call.userContext). A panicking ExtraFields is contained
+// and its fields omitted; a panicking logger is contained as well (see
+// eventemit.WriteLine).
+func logRequest(ctx, user context.Context, claims *callClaims, method string, start time.Time, err error, cfg *CallConfig) {
 	duration := time.Since(start)
 	code := statusCodeOf(err)
 	fields := []interface{}{
@@ -52,10 +53,10 @@ func logRequest(ctx, user context.Context, method string, start time.Time, err e
 		"code", code.String(),
 		latency.Key, latency.Millis(duration),
 	}
-	if claims := ClaimsFromContext(user); claims != nil {
+	if claims.present {
 		fields = append(fields,
-			"user_id", claims.GetUserID(),
-			"team_id", claims.GetTeamID(),
+			"user_id", claims.userID,
+			"team_id", claims.teamID,
 		)
 	}
 	fields = append(fields, extraFields(user, cfg)...)
