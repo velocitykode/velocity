@@ -8,6 +8,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -25,6 +26,14 @@ const queryEventQueueSize = 1024
 // a drop from a listener failure with errors.Is, and may itself use the
 // database.
 var ErrQueryEventQueueFull = errors.New("velocity/orm: query event queue full, dropping event")
+
+// ErrQueryEventsFlushFromPump is returned by Manager.FlushQueryEvents and
+// Manager.Shutdown when called from a goroutine the statement-event pump
+// runs user code on: an event listener, or the failure hook handed a
+// dropped event. Either would wait for that goroutine to finish, which is
+// itself, so the call is refused at once instead, and Shutdown changes
+// nothing. Flush or shut down from another goroutine.
+var ErrQueryEventsFlushFromPump = errors.New("velocity/orm: query events cannot be flushed from a listener or drop hook")
 
 // pendingEvent is one queued item. A non-nil flush marks a barrier rather than
 // an event: the pump closes it once every event queued ahead of it has been
@@ -61,6 +70,13 @@ type eventPump struct {
 
 	stopped  atomic.Bool
 	stopOnce sync.Once
+
+	// deliverer and reporter are the goroutine ids of the delivery and
+	// reporter goroutines (eventemit.GoroutineID), each stored once by the
+	// goroutine itself before it runs any user code, so a flush can tell
+	// it was called from one of them.
+	deliverer atomic.Uint64
+	reporter  atomic.Uint64
 }
 
 // newEventPump returns a pump that hands each recovered listener panic to
@@ -79,8 +95,21 @@ func newEventPump(fail func(ctx context.Context, err error, event any), failLate
 // start launches the delivery goroutine and the reporter goroutine.
 // dispatch is called once per event on the delivery goroutine.
 func (p *eventPump) start(dispatch func(context.Context, contract.Event)) {
-	async.Go(func() { p.run(dispatch) })
-	async.Go(p.runReports)
+	async.Go(func() {
+		p.deliverer.Store(eventemit.GoroutineID())
+		p.run(dispatch)
+	})
+	async.Go(func() {
+		p.reporter.Store(eventemit.GoroutineID())
+		p.runReports()
+	})
+}
+
+// onPumpGoroutine reports whether the caller runs on the delivery or the
+// reporter goroutine, where a flush would wait on itself.
+func (p *eventPump) onPumpGoroutine() bool {
+	id := eventemit.GoroutineID()
+	return id == p.deliverer.Load() || id == p.reporter.Load()
 }
 
 // runReports runs the drop reports enqueue hands over, in order, until
@@ -175,8 +204,13 @@ func (p *eventPump) enqueue(ctx context.Context, ev contract.Event) {
 //
 // The barrier sends are blocking, unlike enqueue, because a dropped barrier
 // would report a flush that never happened. That is safe only away from a
-// driver callback, which is the only place flush is called from.
+// driver callback, which is the only place flush is called from, and away
+// from the pump's own goroutines, where it returns
+// ErrQueryEventsFlushFromPump without waiting.
 func (p *eventPump) flush(ctx context.Context) error {
+	if p.onPumpGoroutine() {
+		return ErrQueryEventsFlushFromPump
+	}
 	if p.stopped.Load() {
 		return nil
 	}
@@ -208,14 +242,20 @@ func await[T any](p *eventPump, ctx context.Context, ch chan T, barrier T, done 
 	}
 }
 
-// stop drains and shuts the pump down. The channel is never closed, so an
-// enqueue racing with stop is discarded rather than panicking.
-func (p *eventPump) stop(ctx context.Context) {
+// stop drains and shuts the pump down, returning the drain's error when
+// ctx ended before it finished (the pump stops all the same, delivering
+// what is queued on its own goroutines). The channel is never closed, so
+// an enqueue racing with stop is discarded rather than panicking. Only the
+// first call drains and reports; later calls return nil, so an unfinished
+// drain is reported once.
+func (p *eventPump) stop(ctx context.Context) error {
+	var err error
 	p.stopOnce.Do(func() {
-		_ = p.flush(ctx)
+		err = p.flush(ctx)
 		p.stopped.Store(true)
 		close(p.quit)
 	})
+	return err
 }
 
 // FlushQueryEvents blocks until every query event recorded before the call has
@@ -227,8 +267,9 @@ func (p *eventPump) stop(ctx context.Context) {
 // asserting on dispatched events, or an application draining telemetry before
 // exiting. Manager.Shutdown flushes on its own.
 //
-// Must not be called from an event listener: listeners run on the pump
-// goroutine, and waiting there for the pump to drain deadlocks.
+// Called from an event listener or from the failure hook handed a dropped
+// event, it returns ErrQueryEventsFlushFromPump at once: those run on the
+// pump's own goroutines, which the flush would wait for.
 func (m *Manager) FlushQueryEvents(ctx context.Context) error {
 	p := m.pump.Load()
 	if p == nil {

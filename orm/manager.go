@@ -828,9 +828,20 @@ func (m *Manager) Begin(ctx context.Context) (*sql.Tx, error) {
 	return driver.BeginTx(ctx, nil)
 }
 
-// Shutdown closes the default database connection and all named connections,
-// honoring the context deadline.
+// Shutdown delivers the queued statement events, then closes the default
+// database connection and all named connections. When ctx ends before the
+// events are delivered it still closes the connections, and returns the
+// delivery's error (wrapping ctx's) joined with any close error.
+//
+// Called from an event listener or from the failure hook handed a dropped
+// event, it returns ErrQueryEventsFlushFromPump and changes nothing: those
+// run on the goroutines the delivery would wait for.
 func (m *Manager) Shutdown(ctx context.Context) error {
+	p := m.pump.Load()
+	if p != nil && p.onPumpGoroutine() {
+		return ErrQueryEventsFlushFromPump
+	}
+
 	// Mark closed before touching any driver (and before taking mu) so
 	// concurrent queries observe the shutdown immediately and return
 	// ErrManagerShutdown rather than hitting a half-closed pool.
@@ -839,8 +850,11 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	// Deliver queued statement events before the dispatcher goes away.
 	// Runs before mu is taken: the pump calls dispatchEvent, which reads
 	// under mu.
-	if p := m.pump.Load(); p != nil {
-		p.stop(ctx)
+	var drainErr error
+	if p != nil {
+		if err := p.stop(ctx); err != nil {
+			drainErr = fmt.Errorf("velocity/orm: deliver query events: %w", err)
+		}
 	}
 
 	m.mu.Lock()
@@ -862,6 +876,9 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	}
 	m.unhanded, m.unhandedDefault = nil, nil
 
+	if drainErr != nil {
+		return errors.Join(drainErr, firstErr)
+	}
 	return firstErr
 }
 
