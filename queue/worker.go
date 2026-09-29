@@ -80,9 +80,15 @@ type Worker struct {
 	maxRetries  int
 	backoff     BackoffStrategy
 	attempts    sync.Map // keyed by jobKey(job) → *int32
-	ctx         context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
+	// life serializes Start and Stop: Start publishes ctx and cancel and
+	// adds every pump to wg under it, so a Stop that races Start sees
+	// either no start or the whole start and never waits before a pump's
+	// Add. The pumps read ctx without it: Start writes it before it spawns
+	// them.
+	life   sync.Mutex
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 	// stops records the pump goroutines as the worker's own work, so a
 	// Stop called from one of them (a listener, logger or hook the pump
 	// runs) returns instead of waiting on itself.
@@ -231,14 +237,16 @@ func (w *Worker) Start(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	w.life.Lock()
+	defer w.life.Unlock()
 	if w.ctx != nil {
 		// Already started: do not spawn additional pumps.
 		return
 	}
 	w.ctx, w.cancel = context.WithCancel(ctx)
 
+	w.wg.Add(w.concurrency)
 	for i := 0; i < w.concurrency; i++ {
-		w.wg.Add(1)
 		id := i
 		async.Go(func() {
 			defer w.wg.Done()
@@ -258,15 +266,19 @@ func (w *Worker) Start(ctx context.Context) {
 // outside then waits for the drain. A goroutine the job starts on its own
 // is not recognised as the worker's work.
 func (w *Worker) Stop() error {
+	w.life.Lock()
+	cancel := w.cancel
+	w.life.Unlock()
 	if w.stops.Nested() {
-		if w.cancel != nil {
-			w.cancel()
+		if cancel != nil {
+			cancel()
 		}
 		return fmt.Errorf("velocity/queue: Stop called from a pump of this worker; the worker stops without this call waiting for it: %w", contract.ErrStopFromOwnWork)
 	}
-	if w.cancel != nil {
-		w.cancel()
+	if cancel == nil {
+		return nil
 	}
+	cancel()
 	w.wg.Wait()
 	return nil
 }
