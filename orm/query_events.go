@@ -3,7 +3,6 @@ package orm
 import (
 	"context"
 	"errors"
-	"sync"
 	"sync/atomic"
 
 	"github.com/velocitykode/velocity/async"
@@ -75,8 +74,10 @@ type eventPump struct {
 	fail      func(ctx context.Context, err error, event any)
 	failLater func(ctx context.Context, err error, event any) func()
 
-	stopped  atomic.Bool
-	stopOnce sync.Once
+	stopped atomic.Bool
+	// stopping is claimed by the first stop, which drains and closes quit;
+	// a later stop waits for the pump's exit instead.
+	stopping atomic.Bool
 
 	// own holds the delivery and the reporter goroutine, each entered by
 	// the goroutine itself before it runs any user code, so a flush can
@@ -273,17 +274,23 @@ func (p *eventPump) awaitExit(ctx context.Context) error {
 
 // stop drains and shuts the pump down, returning the drain's error when
 // ctx ended before it finished (the pump stops all the same, delivering
-// what is queued on its own goroutines; a later flush waits for that).
-// The channel is never closed, so an enqueue racing with stop is discarded
-// rather than panicking. Only the first call drains and reports; later
-// calls return nil, so an unfinished drain is reported once.
+// what is queued on its own goroutines). The channel is never closed, so an
+// enqueue racing with stop is discarded rather than panicking. Only the
+// first call drains and closes quit; a later call, overlapping it or after
+// it timed out, waits for the pump's goroutines to finish delivering, or
+// returns ctx's error when ctx ends first, so a nil return from any call
+// means everything admitted before it has been handled. Called on the
+// pump's own goroutines it returns ErrQueryEventsFlushFromPump at once.
 func (p *eventPump) stop(ctx context.Context) error {
-	var err error
-	p.stopOnce.Do(func() {
-		err = p.flush(ctx)
-		p.stopped.Store(true)
-		close(p.quit)
-	})
+	if p.onPumpGoroutine() {
+		return ErrQueryEventsFlushFromPump
+	}
+	if !p.stopping.CompareAndSwap(false, true) {
+		return p.awaitExit(ctx)
+	}
+	err := p.flush(ctx)
+	p.stopped.Store(true)
+	close(p.quit)
 	return err
 }
 

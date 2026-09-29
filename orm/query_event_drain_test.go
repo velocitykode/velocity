@@ -147,7 +147,9 @@ func TestQueryEventPump_FlushAndShutdownFromAListenerAreRefused(t *testing.T) {
 
 // A Shutdown whose ctx ends before the queued statement events are
 // delivered still closes the connections, and returns the drain's error
-// instead of reporting success.
+// instead of reporting success. A later Shutdown does not report success
+// while that drain is still delivering either: it waits for it, or returns
+// its own ctx's error, and returns nil once the drain has finished.
 func TestManagerShutdown_ReturnsAnUnfinishedDrain(t *testing.T) {
 	m := newTestManager(t)
 	release := blockPump(t, m, 3)
@@ -161,9 +163,17 @@ func TestManagerShutdown_ReturnsAnUnfinishedDrain(t *testing.T) {
 	if err := m.Ping(); !errors.Is(err, ErrManagerShutdown) {
 		t.Errorf("after Shutdown: Ping = %v, want ErrManagerShutdown (teardown went on)", err)
 	}
-	if err := m.Shutdown(context.Background()); err != nil {
-		t.Errorf("second Shutdown = %v, want nil", err)
+	short, cancelShort := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancelShort()
+	if err := m.Shutdown(short); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("second Shutdown while the drain still delivers = %v, want its ctx's DeadlineExceeded", err)
 	}
+	release()
+	within(t, 2*time.Second, "Shutdown after the drain was released", func() {
+		if err := m.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown after the drain finished = %v, want nil", err)
+		}
+	})
 }
 
 // Under overload the drop count stays exact and the hook is best-effort:

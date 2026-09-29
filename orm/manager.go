@@ -15,6 +15,7 @@ import (
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/internal/sqlerr"
 	"github.com/velocitykode/velocity/orm/drivers"
@@ -146,6 +147,15 @@ type Manager struct {
 	// them, so a connection is handed the forwarder exactly once.
 	unhanded        map[string]contract.LoggerAware
 	unhandedDefault contract.LoggerAware
+	// closing is made by the first Shutdown to reach the close phase, under
+	// mu, and closed once it has closed every driver: that Shutdown owns
+	// the closes, and a later one waits on it (or on its own ctx), so a nil
+	// return still means every driver is closed.
+	closing chan struct{}
+	// closer is the goroutine running those closes (internal/goroutine),
+	// set with closing: a Shutdown from it (a driver's Close shutting the
+	// manager down) is refused at once instead of waiting on itself.
+	closer uint64
 }
 
 // NewManager creates a new ORM Manager with a connected database driver.
@@ -241,12 +251,13 @@ func (m *Manager) attachStatementObserver(d drivers.Driver) {
 
 // DB returns the underlying *sql.DB from the default connection.
 func (m *Manager) DB() *sql.DB {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.defaultDriver == nil {
+	// The driver is called after the lock is released: a driver is user
+	// code and may call back into the manager.
+	d := m.DefaultDriver()
+	if d == nil {
 		return nil
 	}
-	return m.defaultDriver.DB()
+	return d.DB()
 }
 
 // Connection returns a named database connection.
@@ -275,7 +286,8 @@ func (m *Manager) Connection(name string) (drivers.Driver, error) {
 // that. A driver added while the manager has no logger keeps its own until
 // the first SetLogger. The driver's SetStatementObserver and SetLogger run
 // before the connection is published and under no manager lock, so either
-// may call back into the manager.
+// may call back into the manager. A connection added once Shutdown has
+// begun is not published: it is closed, and a warning says so.
 func (m *Manager) AddConnection(name string, driver drivers.Driver) {
 	m.attachStatementObserver(driver)
 	la, aware := driver.(contract.LoggerAware)
@@ -284,6 +296,14 @@ func (m *Manager) AddConnection(name string, driver drivers.Driver) {
 		la.SetLogger(&m.logger)
 	}
 	m.mu.Lock()
+	if m.closed.Load() {
+		// Shutdown has begun: it takes the connections to close under mu
+		// after setting closed under mu, so one published now would never
+		// be closed. Publish nothing and close it here instead.
+		m.mu.Unlock()
+		m.closeUnpublished(name, driver)
+		return
+	}
 	m.connections[name] = driver
 	delete(m.unhanded, name)
 	// A SetLogger that ran since the check above left no pending entry for
@@ -299,6 +319,30 @@ func (m *Manager) AddConnection(name string, driver drivers.Driver) {
 	if late {
 		la.SetLogger(&m.logger)
 	}
+}
+
+// closeUnpublished closes a connection AddConnection was handed after
+// Shutdown began, and writes one warning saying so. The driver's Close is
+// user code: a panic in it is contained and reported on the same line.
+func (m *Manager) closeUnpublished(name string, driver drivers.Driver) {
+	err := closeContained(driver)
+	kvs := []any{"connection", name}
+	if err != nil {
+		kvs = append(kvs, sqlerr.Key, sqlerr.Kind(err))
+	}
+	fallbacklog.Write(m.log(), func(l contract.Logger) {
+		l.Warn("velocity/orm: connection added after Shutdown was closed, not added", kvs...)
+	})
+}
+
+// closeContained closes driver, returning a panic in its Close as an error.
+func closeContained(driver drivers.Driver) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = panicerr.FromRecovered(p)
+		}
+	}()
+	return driver.Close()
 }
 
 // Introspector returns the schema introspector for the default connection.
@@ -829,6 +873,11 @@ func (m *Manager) Begin(ctx context.Context) (*sql.Tx, error) {
 	return driver.BeginTx(ctx, nil)
 }
 
+// errShutdownFromClose is what a Shutdown called from inside a driver's
+// Close, while an earlier Shutdown closes the drivers, returns at once: it
+// would otherwise wait for the closes it is itself part of.
+var errShutdownFromClose = errors.New("velocity/orm: Shutdown called from a driver's Close while the manager closes its drivers")
+
 // Shutdown delivers the queued statement events, then closes the default
 // database connection and all named connections. When ctx ends before the
 // events are delivered it still closes the connections, and returns the
@@ -837,6 +886,12 @@ func (m *Manager) Begin(ctx context.Context) (*sql.Tx, error) {
 // Called from an event listener or from the failure hook handed a dropped
 // event, it returns ErrQueryEventsFlushFromPump and changes nothing: those
 // run on the goroutines the delivery would wait for.
+//
+// The first Shutdown closes the drivers, after releasing the manager's
+// lock, so a driver's Close may call back into the manager. A Shutdown
+// that overlaps it waits for those closes, or returns ctx's error when ctx
+// ends first; one called from inside a driver's Close returns an error at
+// once. A later Shutdown returns nil once the closes are done.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	// A pump goroutine can only be running on a pump already published, so
 	// this unlocked read cannot miss the one the caller runs on.
@@ -864,24 +919,52 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 		}
 	}
 
+	// Take the drivers out under mu and close them after it is released:
+	// a driver's Close is user code, which may log through the manager's
+	// forwarder into a logger that calls back into the manager. Only the
+	// first Shutdown here owns the closes; a later one waits for them.
+	id := goroutine.ID()
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	var firstErr error
-	if m.defaultDriver != nil {
-		if err := m.defaultDriver.Close(); err != nil {
-			firstErr = err
+	if closing, closer := m.closing, m.closer; closing != nil {
+		m.mu.Unlock()
+		select {
+		case <-closing:
+			return drainErr
+		default:
 		}
-		m.defaultDriver = nil
+		if closer == id {
+			return errors.Join(drainErr, errShutdownFromClose)
+		}
+		select {
+		case <-closing:
+			return drainErr
+		case <-ctx.Done():
+			return errors.Join(drainErr, ctx.Err())
+		}
 	}
-
+	m.closing, m.closer = make(chan struct{}), id
+	defer close(m.closing)
+	defaultDriver := m.defaultDriver
+	m.defaultDriver = nil
+	conns := make([]drivers.Driver, 0, len(m.connections))
 	for name, conn := range m.connections {
-		if err := conn.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
+		conns = append(conns, conn)
 		delete(m.connections, name)
 	}
 	m.unhanded, m.unhandedDefault = nil, nil
+	m.mu.Unlock()
+
+	var firstErr error
+	if defaultDriver != nil {
+		if err := defaultDriver.Close(); err != nil {
+			firstErr = err
+		}
+	}
+	for _, conn := range conns {
+		if err := conn.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 
 	if drainErr != nil {
 		return errors.Join(drainErr, firstErr)
@@ -925,12 +1008,11 @@ func (m *Manager) liveDriver() (drivers.Driver, error) {
 
 // DriverName returns the name of the default database driver.
 func (m *Manager) DriverName() string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.defaultDriver == nil {
+	d := m.DefaultDriver()
+	if d == nil {
 		return ""
 	}
-	return m.defaultDriver.DriverName()
+	return d.DriverName()
 }
 
 // DatabaseName returns the name of the current database.
