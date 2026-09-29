@@ -844,8 +844,11 @@ func (w *Worker) failJob(ctx context.Context, log contract.Logger, job Job, jobT
 		}
 		return
 	}
+	// The dispatcher is user code: a panic in it comes back as a
+	// contract.RecoveredPanic and goes to the failure policy like a
+	// returned error, so the pump lives on.
 	dispatchJobFailed(func(ctx context.Context, event interface{}) {
-		if err := dispatch(ctx, event); err != nil {
+		if err := eventemit.DispatchContained(ctx, dispatch, event); err != nil {
 			w.events.Fail(ctx, err, event)
 		}
 	}, ctx, jobType, w.queueName, jobIDOf(job), failure, duration)
