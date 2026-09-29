@@ -61,7 +61,7 @@ func schemeLogger(g *SessionScheme) contract.Logger {
 }
 
 // The manager's logger reaches the session scheme whichever of SetLogger
-// and RegisterScheme runs first, and SetLogger(nil) clears it.
+// and RegisterScheme runs first, and SetLogger(nil) takes it away again.
 func TestManagerLogger_ReachesTheSessionScheme(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -88,12 +88,15 @@ func TestManagerLogger_ReachesTheSessionScheme(t *testing.T) {
 			if tt.clearAtEnd {
 				m.SetLogger(nil)
 			}
-			got := schemeLogger(scheme)
-			if tt.wantScheme && got != logs {
-				t.Fatalf("scheme logger = %v, want the manager's", got)
+			scheme.logWarn("probe")
+			logs.mu.Lock()
+			got := len(logs.entries)
+			logs.mu.Unlock()
+			if tt.wantScheme && got != 1 {
+				t.Fatalf("manager logger got %d scheme lines, want 1", got)
 			}
-			if !tt.wantScheme && got != nil {
-				t.Fatalf("scheme logger = %v, want nil after SetLogger(nil)", got)
+			if !tt.wantScheme && got != 0 {
+				t.Fatalf("manager logger got %d scheme lines after SetLogger(nil), want 0", got)
 			}
 		})
 	}

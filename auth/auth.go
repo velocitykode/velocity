@@ -204,6 +204,14 @@ type Authenticatable interface {
 // ValidateCredentials does no I/O (it compares a candidate password to the
 // already-loaded user's stored hash), so it has no Ctx variant.
 //
+// The session scheme calls a user store during a sign-in, sign-out or
+// remember-me recall while it holds that request's authentication lock,
+// which makes the transition atomic for everything else reading the
+// request's user. A store must therefore not ask the scheme about the
+// request it is serving (User, Check, ID, Login, Logout, directly or
+// through a hook that resolves the current user from the context it was
+// passed): that call waits on the lock its own caller holds, for good.
+//
 // Implementations must pass authtest.RunUserStoreContractTests. See
 // authtest for the executable specification.
 type UserStore interface {
@@ -328,15 +336,12 @@ type Manager struct {
 	hasher        Hasher
 	access        *Access
 
-	// logger is stored atomically so middleware request paths can read
-	// the current logger without contending with the RWMutex protecting
-	// the scheme/user store maps.
-	logger atomic.Value // holds authLoggerHolder{contract.Logger}
-
-	// loggerMu serialises SetLogger against the logger hand-off in
-	// RegisterScheme, so a scheme registered while SetLogger runs ends
-	// with the logger installed last, never a stale one.
-	loggerMu sync.Mutex
+	// logger forwards to the logger SetLogger installed (none means the
+	// fallback logger). Schemes and the hasher are handed the forwarder
+	// itself, never its target, so a SetLogger racing a RegisterScheme
+	// cannot leave a scheme on a stale logger, and no lock is held while
+	// a scheme's SetLogger runs.
+	logger fallbacklog.Forwarder
 
 	// serverSessions holds an optional server-side session store used by
 	// administrative operations (RevokeSession, RevokeAllSessions,
@@ -391,10 +396,6 @@ type authEventDispatcherHolder struct {
 	fn func(ctx context.Context, event any) error
 }
 
-// authLoggerHolder wraps a contract.Logger so atomic.Value stores a single
-// type.
-type authLoggerHolder struct{ contract.Logger }
-
 // NewManager creates a new auth manager
 func NewManager() *Manager {
 	return &Manager{
@@ -421,12 +422,8 @@ func (m *Manager) RegisterScheme(name string, scheme Scheme) {
 	rotator := m.csrfRotator
 	m.mu.Unlock()
 
-	if r, ok := scheme.(contract.LoggerAware); ok {
-		m.loggerMu.Lock()
-		if l := m.log(); l != nil {
-			r.SetLogger(l)
-		}
-		m.loggerMu.Unlock()
+	if r, ok := scheme.(contract.LoggerAware); ok && m.log() != nil {
+		r.SetLogger(&m.logger)
 	}
 
 	if dispatcher := m.eventDispatcher.Load(); dispatcher != nil && dispatcher.fn != nil {
@@ -681,9 +678,9 @@ func (m *Manager) SetHasher(h Hasher) {
 	m.hasher = h
 	m.mu.Unlock()
 
-	if logger := m.log(); logger != nil {
+	if m.log() != nil {
 		if bh, ok := h.(*BcryptHasher); ok {
-			bh.SetLogger(logger)
+			bh.SetLogger(&m.logger)
 		}
 	}
 }
@@ -695,14 +692,14 @@ func (m *Manager) SetHasher(h Hasher) {
 // concurrently.
 //
 // Every registered scheme implementing contract.LoggerAware (the session
-// scheme's save, revival and teardown warnings) is notified immediately,
-// nil included; schemes registered later inherit a non-nil logger at
-// registration time (see RegisterScheme).
+// scheme's save, revival and teardown warnings) and a *BcryptHasher are
+// handed a logger that forwards to the manager's, nil included; schemes
+// registered later are handed it at registration time while a non-nil
+// logger is installed (see RegisterScheme). The hand-off calls each
+// scheme's SetLogger with no lock held, so a scheme's SetLogger may call
+// back into the manager.
 func (m *Manager) SetLogger(l contract.Logger) {
-	m.loggerMu.Lock()
-	defer m.loggerMu.Unlock()
-
-	m.logger.Store(authLoggerHolder{Logger: l})
+	m.logger.Set(l)
 
 	m.mu.RLock()
 	hasher := m.hasher
@@ -714,11 +711,13 @@ func (m *Manager) SetLogger(l contract.Logger) {
 	}
 	m.mu.RUnlock()
 
-	if bh, ok := hasher.(*BcryptHasher); ok {
-		bh.SetLogger(l)
+	// A nil logger is not handed to the hasher: its construction-time
+	// warning stays pending until a logger is installed.
+	if bh, ok := hasher.(*BcryptHasher); ok && l != nil {
+		bh.SetLogger(&m.logger)
 	}
 	for _, r := range receivers {
-		r.SetLogger(l)
+		r.SetLogger(&m.logger)
 	}
 }
 
@@ -726,17 +725,15 @@ var _ contract.LoggerAware = (*Manager)(nil)
 
 // log returns the installed logger, or nil when SetLogger has not been called.
 func (m *Manager) log() contract.Logger {
-	v := m.logger.Load()
-	if v == nil {
-		return nil
-	}
-	return v.(authLoggerHolder).Logger
+	return m.logger.Installed()
 }
 
 // logWarn emits a warn event through the installed logger, or the
-// framework's standalone fallback logger when none is installed.
+// framework's standalone fallback logger when none is installed. A logger
+// that panics is contained (the line goes to the fallback logger), so a
+// warning never cuts short the teardown that raised it.
 func (m *Manager) logWarn(msg string, kvs ...any) {
-	fallbacklog.Resolve(m.log()).Warn(msg, kvs...)
+	fallbacklog.Write(m.log(), func(l contract.Logger) { l.Warn(msg, kvs...) })
 }
 
 // GetHasher returns the manager's hasher, falling back to a default bcrypt hasher.

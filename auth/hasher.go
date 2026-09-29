@@ -81,7 +81,9 @@ func (h *BcryptHasher) SetLogger(l contract.Logger) {
 	h.mu.Unlock()
 
 	if pending {
-		l.Warn("auth: bcrypt cost below secure minimum, clamped", "requested", requested, "minimum", minSecureBcryptCost, "using", effective)
+		fallbacklog.Write(l, func(l contract.Logger) {
+			l.Warn("auth: bcrypt cost below secure minimum, clamped", "requested", requested, "minimum", minSecureBcryptCost, "using", effective)
+		})
 	}
 }
 
@@ -148,7 +150,9 @@ func (h *BcryptHasher) SetCost(cost int) {
 	h.mu.Unlock()
 
 	if belowMin {
-		fallbacklog.Resolve(logger).Warn("auth: bcrypt cost below secure minimum, clamped", "requested", cost, "minimum", minSecureBcryptCost, "using", effective)
+		fallbacklog.Write(logger, func(l contract.Logger) {
+			l.Warn("auth: bcrypt cost below secure minimum, clamped", "requested", cost, "minimum", minSecureBcryptCost, "using", effective)
+		})
 	}
 }
 
