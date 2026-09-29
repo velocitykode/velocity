@@ -242,34 +242,57 @@ func (f *FileLogger) writeLate(level, msg string, kvs []any) {
 // lock. It reports false, writing nothing, once the owner is shut down:
 // Shutdown is terminal, and a late writer must not reopen the file and
 // leave a descriptor open.
+//
+// The line is formatted before the lock is taken: formatting calls the
+// String or Error method of each value, which is user code that may log
+// through this logger, block, or shut it down, and none of that may run
+// while the owner's lock is held. Only the timestamp is taken under the
+// lock, so lines stay in the order they are written.
 func (f *FileLogger) writeFile(level, msg string, kvs []any) bool {
+	body := f.formatBody(level, msg, kvs)
+
 	o := f.owner()
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	if o.closed {
-		return false
-	}
-	if err := o.ensureFile(); err != nil {
+	written, openErr := o.writeLine(body)
+	if openErr != nil {
 		// The file driver cannot write through itself: the failure goes to
-		// the framework's standalone fallback logger (standard error).
-		fallbacklog.Logger{}.Error("velocity/log: open log file failed; the line is dropped", "error", err)
-		return true
+		// the framework's standalone fallback logger (standard error),
+		// after the lock is released.
+		fallbacklog.Logger{}.Error("velocity/log: open log file failed; the line is dropped", "error", openErr)
 	}
+	return written
+}
 
-	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
-
+// formatBody returns the part of a line after its timestamp: the level, the
+// sanitised message and every sanitised key-value pair.
+func (f *FileLogger) formatBody(level, msg string, kvs []any) string {
 	// Sanitise the user-controlled msg before emit. Without this, a
 	// caller passing an HTTP URL path or any other request-derived
 	// string can drop a literal CRLF into the log file and forge a
 	// second record. See log/internal/sanitize.
-	logLine := fmt.Sprintf("[%s] %s: %s", timestamp, level, sanitize.Value(msg))
-
+	body := level + ": " + sanitize.Value(msg)
 	if len(f.fields) > 0 || len(kvs) > 0 {
-		logLine += " |"
-		logLine = appendPairs(logLine, f.fields)
-		logLine = appendPairs(logLine, kvs)
+		body += " |"
+		body = appendPairs(body, f.fields)
+		body = appendPairs(body, kvs)
 	}
+	return body
+}
+
+// writeLine writes one formatted body to f's file under f's lock, stamped
+// with the time. It reports false once f is shut down, and the open error
+// (having written nothing) when the file cannot be opened.
+func (f *FileLogger) writeLine(body string) (written bool, openErr error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.closed {
+		return false, nil
+	}
+	if err := f.ensureFile(); err != nil {
+		return true, err
+	}
+
+	logLine := "[" + time.Now().Format("2006-01-02 15:04:05.000") + "] " + body
 
 	// Cross-process advisory lock around the single write so two
 	// processes sharing this log file cannot interleave bytes
@@ -277,8 +300,8 @@ func (f *FileLogger) writeFile(level, msg string, kvs []any) bool {
 	// behaviour is OS-dependent on Darwin and undefined for writes
 	// above the limit). No-op when useFileLock is false and on
 	// platforms without flock support.
-	if o.useFileLock && o.file != nil {
-		release, lockErr := lockFile(o.file)
+	if f.useFileLock && f.file != nil {
+		release, lockErr := lockFile(f.file)
 		if lockErr == nil {
 			defer release()
 		}
@@ -287,8 +310,8 @@ func (f *FileLogger) writeFile(level, msg string, kvs []any) bool {
 		// data loss.
 	}
 
-	_, _ = fmt.Fprintln(o.file, logLine)
-	return true
+	_, _ = fmt.Fprintln(f.file, logLine)
+	return true, nil
 }
 
 // appendPairs appends each complete key-value pair of kvs to line as
