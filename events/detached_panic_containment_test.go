@@ -96,6 +96,7 @@ func TestDetachedDelivery_PanickingRecorderOrReporterIsContained(t *testing.T) {
 	}
 	for _, name := range []string{
 		"recorder/after", "recorder/async", "recorder/debounce", "recorder/coalesce",
+		"reporter/after", "reporter/async", "reporter/debounce", "reporter/debounce-failure-event", "reporter/coalesce",
 	} {
 		t.Run(name, func(t *testing.T) {
 			cmd := exec.Command(os.Args[0], "-test.run", "^TestDetachedDelivery_PanickingRecorderOrReporterIsContained$", "-test.count=1")

@@ -480,7 +480,7 @@ func (d *DefaultDispatcher) dispatchLater(ctx context.Context, event interface{}
 	}
 	// A detached dispatch returns an error only for a nil event, excluded
 	// above: every listener failure became an AsyncFailed and was recorded.
-	_ = d.dispatch(d.reportFailure(ctx, event), event, true)
+	_ = d.dispatch(d.reportDetached(ctx, event), event, true)
 }
 
 // DispatchNow fires an event synchronously to all listeners.
@@ -535,8 +535,8 @@ func (d *DefaultDispatcher) deliverDetached(ctx context.Context, event interface
 // on a detached delivery (see containDetached).
 const detachedPanicMessage = "velocity/events: failure reporting panicked on a detached delivery"
 
-// containDetached runs fn, a call into failure reporting during a
-// detached delivery of event, on the goroutine delivering it: a timer, a
+// containDetached runs fn, a call into failure reporting (the recorder or
+// the failure-report bridge) during a detached delivery of event, on the goroutine delivering it: a timer, a
 // debounce or coalesce callback, or the no-queue DispatchAsync goroutine. No caller is left to receive a
 // panic there, so a panic in fn is contained and written through the
 // framework's fallback logger: it never ends the process, and never skips
@@ -557,6 +557,15 @@ func containDetached(event interface{}, fn func()) {
 func writeDetachedPanic(event interface{}, p any) {
 	defer func() { _ = recover() }()
 	fallbacklog.Logger{}.Error(detachedPanicMessage, "event", eventemit.EventName(event), "panic", fmt.Sprint(p))
+}
+
+// reportDetached is reportFailure for a detached delivery: a failure
+// reporter that panics is contained (see containDetached), and ctx is
+// returned unmarked in that case.
+func (d *DefaultDispatcher) reportDetached(ctx context.Context, event interface{}) (reported context.Context) {
+	reported = ctx
+	containDetached(event, func() { reported = d.reportFailure(ctx, event) })
+	return reported
 }
 
 // SetDetachedFailureRecorder installs fn as the recorder of detached
@@ -588,7 +597,7 @@ func (d *DefaultDispatcher) SetDetachedFailureRecorder(fn func(ctx context.Conte
 // fails on every event cannot loop.
 func (d *DefaultDispatcher) dispatchListenerFailure(ctx context.Context, event interface{}, listener Listener, err error) {
 	failed := newAsyncFailed(ctx, event, listener, err)
-	ctx = d.reportFailure(ctx, failed)
+	ctx = d.reportDetached(ctx, failed)
 	if _, nested := event.(*AsyncFailed); nested {
 		return
 	}
