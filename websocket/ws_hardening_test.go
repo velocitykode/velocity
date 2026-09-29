@@ -33,8 +33,8 @@ func TestSentinelErrors_IsMatchable(t *testing.T) {
 			name: "SendToClient send channel full",
 			produce: func(t *testing.T) error {
 				s := New(DefaultConfig())
-				full := &Client{ID: "c1", Send: make(chan Message, 1), Server: s}
-				full.Send <- Message{} // saturate the buffer
+				full := &Client{ID: "c1", send: make(chan Message, 1), Server: s}
+				full.send <- Message{} // saturate the buffer
 				s.clients["c1"] = full
 				return s.SendToClient("c1", Message{Type: "x"})
 			},

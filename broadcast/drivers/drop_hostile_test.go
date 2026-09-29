@@ -9,17 +9,11 @@ import (
 	"github.com/velocitykode/velocity/websocket"
 )
 
-// fullClient returns a registered client whose send buffer is full, so a
-// broadcast to it is dropped.
-func fullClient(d *WebSocketDriver) *websocket.Client {
-	c := &websocket.Client{
-		ID:       "slow",
-		Send:     make(chan websocket.Message, 1),
-		Groups:   make(map[string]bool),
-		Metadata: make(map[string]interface{}),
-	}
-	c.Send <- websocket.Message{Type: "filler"}
-	d.channels["c"] = map[string]*websocket.Client{"slow": c}
+// fullClient registers, on channel "c", a connected client whose send
+// queue is full, so a broadcast to it is dropped.
+func fullClient(t *testing.T, d *WebSocketDriver) *websocket.Client {
+	c, _ := newClientHost(t).full(t)
+	d.channels["c"] = map[string]*websocket.Client{c.ID: c}
 	return c
 }
 
@@ -27,7 +21,7 @@ func fullClient(d *WebSocketDriver) *websocket.Client {
 // code run on the broadcast path. One that panics is contained where it is
 // called: the drop is counted once, the callback runs once, one line
 // reports the panic, the healthy client stays registered, and Broadcast
-// returns normally. The closed-channel recover is only for the send.
+// returns normally. A full queue never purges the client.
 func TestBroadcast_HostileDropPathIsContained(t *testing.T) {
 	for _, blocking := range []time.Duration{0, time.Millisecond} {
 		name := "non-blocking"
@@ -42,8 +36,7 @@ func TestBroadcast_HostileDropPathIsContained(t *testing.T) {
 				blockingSendTO: blocking,
 				onDrop:         func(string, string, string) { code.Run() },
 			}
-			fullClient(d)
-			assertContainedDrop(t, d)
+			assertContainedDrop(t, d, fullClient(t, d))
 			if n := code.Calls(); n != 1 {
 				t.Errorf("onDrop calls = %d, want 1", n)
 			}
@@ -59,8 +52,7 @@ func TestBroadcast_HostileDropPathIsContained(t *testing.T) {
 				blockingSendTO: blocking,
 			}
 			d.SetLogger(hostile.NewLogger(code, hostile.Warn))
-			fullClient(d)
-			assertContainedDrop(t, d)
+			assertContainedDrop(t, d, fullClient(t, d))
 			if n := code.Calls(); n != 1 {
 				t.Errorf("logger Warn calls = %d, want 1", n)
 			}
@@ -71,7 +63,7 @@ func TestBroadcast_HostileDropPathIsContained(t *testing.T) {
 	}
 }
 
-func assertContainedDrop(t *testing.T, d *WebSocketDriver) {
+func assertContainedDrop(t *testing.T, d *WebSocketDriver, c *websocket.Client) {
 	t.Helper()
 	var err error
 	if p := hostile.Within(t, hostile.Deadline, func() {
@@ -86,52 +78,42 @@ func assertContainedDrop(t *testing.T, d *WebSocketDriver) {
 		t.Errorf("DroppedCount = %d, want 1", got)
 	}
 	d.mu.RLock()
-	_, registered := d.channels["c"]["slow"]
+	_, registered := d.channels["c"][c.ID]
 	d.mu.RUnlock()
 	if !registered {
 		t.Error("the healthy client was purged")
 	}
 }
 
-// closedClient returns a registered client whose Send channel is closed,
-// so a broadcast to it panics on the send.
-func closedClient(d *WebSocketDriver) {
-	ch := make(chan websocket.Message)
-	close(ch)
-	d.channels["c"] = map[string]*websocket.Client{"ghost": {
-		ID:       "ghost",
-		Send:     ch,
-		Groups:   make(map[string]bool),
-		Metadata: make(map[string]interface{}),
-	}}
+// closedClient registers, on channel "c", a client that has disconnected
+// but that the driver has not purged yet: the state a broadcast snapshot
+// taken before the purge holds.
+func closedClient(t *testing.T, d *WebSocketDriver) {
+	c := newClientHost(t).closed(t)
+	d.channels["c"] = map[string]*websocket.Client{c.ID: c}
 }
 
-// A send on a closed channel is recovered, the client purged and the drop
-// reported once, even when the drop report is hostile: a panicking onDrop
-// or logger is contained, and one that broadcasts again finds the client
-// already purged instead of recursing into it. A panicking report writes a
-// second line next to the closed-send one: they are two events.
+// A send to a client that disconnected after the snapshot purges it and
+// reports the drop once, even when the drop report is hostile: a panicking
+// onDrop or logger is contained, and one that broadcasts again finds the
+// client already purged instead of reaching it again.
 func TestBroadcast_ClosedSendWithHostileDropReport(t *testing.T) {
-	const closedLine = "velocity/broadcast: recovered from send-on-closed-channel; purged client"
 	cases := []struct {
 		name string
 		arm  func(d *WebSocketDriver, code *hostile.Code)
 		mode hostile.Mode
-		// line is the second line the report writes, "" for none.
+		// line is the line the report writes, "" for none.
 		line string
-		// calls is how many times the hostile code runs: onDrop once, the
-		// logger once per line (the drop and the closed send).
-		calls int
 	}{
 		{"onDrop panics", func(d *WebSocketDriver, code *hostile.Code) {
 			d.onDrop = func(string, string, string) { code.Run() }
-		}, hostile.Panic, "velocity/broadcast: onDrop callback panicked", 1},
+		}, hostile.Panic, "velocity/broadcast: onDrop callback panicked"},
 		{"logger panics", func(d *WebSocketDriver, code *hostile.Code) {
 			d.SetLogger(hostile.NewLogger(code, hostile.Warn))
-		}, hostile.Panic, "velocity/broadcast: dropped message", 2},
+		}, hostile.Panic, "velocity/broadcast: dropped message"},
 		{"onDrop broadcasts again", func(d *WebSocketDriver, code *hostile.Code) {
 			d.onDrop = func(string, string, string) { code.Run() }
-		}, hostile.Reenter, "", 1},
+		}, hostile.Reenter, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -141,7 +123,7 @@ func TestBroadcast_ClosedSendWithHostileDropReport(t *testing.T) {
 				_ = d.Broadcast([]string{"c"}, "again", nil)
 			})
 			c.arm(d, code)
-			closedClient(d)
+			closedClient(t, d)
 
 			var err error
 			if p := hostile.Within(t, hostile.Deadline, func() {
@@ -155,17 +137,14 @@ func TestBroadcast_ClosedSendWithHostileDropReport(t *testing.T) {
 			if got := d.DroppedCount(); got != 1 {
 				t.Errorf("DroppedCount = %d, want 1", got)
 			}
-			if n := code.Calls(); n != c.calls {
-				t.Errorf("hostile calls = %d, want %d", n, c.calls)
+			if n := code.Calls(); n != 1 {
+				t.Errorf("hostile calls = %d, want 1", n)
 			}
 			d.mu.RLock()
 			_, still := d.channels["c"]
 			d.mu.RUnlock()
 			if still {
 				t.Error("the closed client was not purged")
-			}
-			if n := out.Count("WARN", closedLine); n != 1 {
-				t.Errorf("closed-send lines = %d, want 1:\n%s", n, out.String())
 			}
 			if c.line != "" {
 				if n := out.Count("WARN", c.line); n != 1 {

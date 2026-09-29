@@ -8,7 +8,7 @@ import (
 
 // addTestClient registers a client directly, with no connection.
 func addTestClient(s *Server, id string) *Client {
-	c := &Client{ID: id, Send: make(chan Message, 4), Server: s, Groups: map[string]bool{}, Metadata: map[string]interface{}{}}
+	c := &Client{ID: id, send: make(chan Message, 4), Server: s, Groups: map[string]bool{}, Metadata: map[string]interface{}{}}
 	s.mu.Lock()
 	s.clients[id] = c
 	s.mu.Unlock()

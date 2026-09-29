@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -220,12 +221,11 @@ func NewWebSocketDriver(config websocket.Config, opts ...DriverOption) *WebSocke
 	server.On("client-event", driver.handleClientEvent)
 
 	// Audit D-01: purge stale client pointers from the channels map the
-	// moment the server unregisters a client. The listener fires BEFORE
-	// close(client.Send) so a concurrent Broadcast that snapshotted the
-	// pointer can still complete safely without panicking on
-	// send-on-closed-channel.
+	// moment the server unregisters a client. A Broadcast that snapshotted
+	// the pointer before the purge sends to a closed client, which reports
+	// websocket.ErrClientNotFound, and sendOrDrop drops the message.
 	server.AddOnDisconnect(func(c *websocket.Client) {
-		driver.purgeClient(c.ID)
+		driver.purgeClient(c)
 	})
 
 	// Start the server. The constructor signature cannot surface an error
@@ -244,13 +244,16 @@ func (d *WebSocketDriver) Broadcast(channels []string, event string, data interf
 }
 
 // BroadcastCtx sends an event to channels using the provided context. If a
-// client's Send buffer is full, the message is either dropped (default) or
-// the call blocks for up to blockingSendTO (configured via WithBlockingSend).
+// client's send queue is full, the message is either dropped (default) or
+// the call waits for up to blockingSendTO (configured via WithBlockingSend).
 // Dropped messages are counted and the onDrop callback (if any) is invoked.
 //
 // The context is consulted between per-target sends so a long fan-out loop
-// honours request cancellation; the per-send blocking-send timeout still
-// applies inside sendOrDrop.
+// honours request cancellation, and it bounds a blocking send's wait too:
+// when ctx ends while a send waits, that message is counted as dropped and
+// BroadcastCtx returns ctx's error without sending to the targets left. A
+// blocking send whose own timeout expires is a drop, and the fan-out goes
+// on.
 //
 // Per audit M-28 the fan-out runs in two phases: snapshot the subscriber set
 // under the channels-map RLock, release the lock, then iterate the local
@@ -275,7 +278,9 @@ func (d *WebSocketDriver) BroadcastCtx(ctx context.Context, channels []string, e
 				return err
 			}
 		}
-		d.sendOrDrop(t.client, t.channel, event, data)
+		if err := d.sendOrDrop(ctx, t.client, t.channel, event, data); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -305,7 +310,9 @@ func (d *WebSocketDriver) BroadcastExceptCtx(ctx context.Context, channels []str
 				return err
 			}
 		}
-		d.sendOrDrop(t.client, t.channel, event, data)
+		if err := d.sendOrDrop(ctx, t.client, t.channel, event, data); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -327,15 +334,13 @@ type broadcastTarget struct {
 //
 // Stale-pointer safety (audit D-01):
 //
-//   - Primary defence: NewWebSocketDriver registers a server-side
-//     OnDisconnect listener that calls purgeClient, removing the client
-//     from every channels map BEFORE the server closes client.Send. So a
-//     snapshot taken after disconnect cannot include the dead client.
-//   - Defensive defence: sendOrDrop wraps the send in a recover so if a
-//     snapshot was taken in the narrow window between OnDisconnect firing
-//     and close(client.Send), the eventual `send on closed channel` panic
-//     is contained, the dropped count is incremented, and purgeClient is
-//     re-invoked synchronously to self-heal.
+//   - NewWebSocketDriver registers a server-side OnDisconnect listener
+//     that calls purgeClient, removing the client from every channels map,
+//     so a snapshot taken after disconnect cannot include the dead client.
+//   - A snapshot taken before the purge may still hold it. A send to a
+//     closed client reports websocket.ErrClientNotFound instead of
+//     meeting a closed queue, and sendOrDrop purges that client instance
+//     and counts the drop.
 func (d *WebSocketDriver) snapshotTargets(channels []string, exceptSocketID string) []broadcastTarget {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -366,93 +371,97 @@ func (d *WebSocketDriver) snapshotTargets(channels []string, exceptSocketID stri
 	return targets
 }
 
-// sendOrDrop attempts to deliver a message to client's Send channel. When a
-// blocking-send timeout is configured it waits up to that duration; otherwise
-// it drops immediately on full buffer. Drops increment droppedCount and
-// trigger the onDrop callback (if set).
-//
-// Audit D-01 defensive guard: a `send on closed channel` panic is the
-// symptom of a stale pointer surviving the OnDisconnect window. The primary
-// defence (the purgeClient listener installed in NewWebSocketDriver) closes
-// that window for every typical disconnect, but a snapshot taken in the
-// narrow race between listener-fire and close(Send) would still trigger a
-// panic on the send case (a closed channel is "ready" for send, beating the
-// default case in the non-blocking select). The deferred recover handles
-// that panic: it purges the client first, so a drop report that broadcasts
-// again cannot reach the closed client, then counts the drop and writes the
-// line.
-//
-// The recover is meant for a send on a closed channel only. User code in
-// the body (onDrop, the logger) must be contained where it is called, as
-// recordDrop does, or its panic would be taken for a closed send and purge
-// a healthy client. A closed send whose drop report panics writes two
-// lines, the report's panic and the closed send: they are two events.
-func (d *WebSocketDriver) sendOrDrop(client *websocket.Client, channel, event string, data interface{}) {
-	defer func() {
-		if r := recover(); r != nil {
-			d.purgeClient(client.ID)
-			d.recordDrop(client.ID, channel, event)
-			fallbacklog.Write(d.log(), func(l contract.Logger) {
-				l.Warn("velocity/broadcast: recovered from send-on-closed-channel; purged client",
-					"client_id", client.ID, "channel", channel, "event", event, "panic", fmt.Sprintf("%v", r))
-			})
-		}
-	}()
-
+// sendOrDrop delivers a message to client through its send methods. It
+// tries a non-blocking send first; only when the client's queue is full and
+// a blocking-send timeout is configured does it wait, bounded by that
+// timeout and ctx, so a client that keeps up costs no timer. A message that
+// is not enqueued is counted as dropped and reported to the onDrop callback
+// (if set). A client that reports itself gone (websocket.ErrClientNotFound:
+// it disconnected after the snapshot) is purged first, so a drop report
+// that broadcasts again cannot reach it; a full queue or an expired wait
+// never purges. It returns ctx's error when the caller's ctx ended the
+// wait, so the broadcast stops; nil otherwise.
+func (d *WebSocketDriver) sendOrDrop(ctx context.Context, client *websocket.Client, channel, event string, data interface{}) error {
 	msg := websocket.Message{Type: event, Data: data}
-
-	if d.blockingSendTO <= 0 {
-		select {
-		case client.Send <- msg:
-			return
-		default:
+	err := client.SendMessage(msg)
+	if err == nil {
+		return nil
+	}
+	if err == websocket.ErrSendChannelFull {
+		if d.blockingSendTO <= 0 {
 			d.recordDrop(client.ID, channel, event)
-			return
+			return nil
+		}
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		waitCtx, cancel := context.WithTimeout(ctx, d.blockingSendTO)
+		err = client.SendMessageCtx(waitCtx, msg)
+		cancel()
+		if err == nil {
+			return nil
 		}
 	}
-
-	// Blocking path with timeout. Uses a timer rather than time.After so the
-	// underlying resources are released promptly when the send succeeds.
-	t := time.NewTimer(d.blockingSendTO)
-	defer t.Stop()
-
-	select {
-	case client.Send <- msg:
-		return
-	case <-t.C:
-		d.recordDrop(client.ID, channel, event)
+	if errors.Is(err, websocket.ErrClientNotFound) {
+		d.purgeClient(client)
 	}
+	d.recordDrop(client.ID, channel, event)
+	if ctx != nil {
+		if cerr := ctx.Err(); cerr != nil && errors.Is(err, cerr) {
+			return cerr
+		}
+	}
+	return nil
 }
 
-// purgeClient removes a client from every channel it was subscribed to.
-// Used as the OnDisconnect listener registered by NewWebSocketDriver and as
-// the self-heal step in sendOrDrop's defensive recover (audit D-01).
+// purgeClient removes client from every channel it was subscribed to. It
+// is the OnDisconnect listener registered by NewWebSocketDriver, and
+// sendOrDrop runs it for a client that reported itself gone. It removes
+// only this client instance's entries: Client.ID is a caller-settable field
+// and Subscribe is public, so another Client may hold the same ID, and its
+// entries stay. The ID's subscription budget gives back each channel
+// removed here; the rest of the ID-keyed state (the budget itself, the
+// client-event bucket) is dropped only when no other instance holds the ID.
 //
 // Holds the channels-map write lock for the duration of the walk. The walk
 // is O(channels) which is bounded by the application's subscription set and
-// runs at most once per disconnect, so the lock window stays small.
-func (d *WebSocketDriver) purgeClient(clientID string) {
-	if clientID == "" {
+// runs once per disconnect, plus once per send that meets a closed client,
+// so the lock window stays small.
+func (d *WebSocketDriver) purgeClient(client *websocket.Client) {
+	if client == nil || client.ID == "" {
 		return
 	}
+	id := client.ID
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	reused := false
+	subs := d.clientSubs[id]
 	for channel, clients := range d.channels {
-		if _, ok := clients[clientID]; ok {
-			delete(clients, clientID)
-			if len(clients) == 0 {
-				delete(d.channels, channel)
-			}
+		held, ok := clients[id]
+		if !ok {
+			continue
 		}
+		if held != client {
+			reused = true
+			continue
+		}
+		delete(clients, id)
+		delete(subs, channel)
+		if len(clients) == 0 {
+			delete(d.channels, channel)
+		}
+	}
+	if reused {
+		return
 	}
 	// Drop the per-client subscription bookkeeping so a disconnect frees
 	// the D-03 cap budget for any future reconnect of the same ID.
-	delete(d.clientSubs, clientID)
+	delete(d.clientSubs, id)
 
 	// Evict the client-event rate-limit bucket so the map stays bounded by
 	// live connections.
 	d.clientEventMu.Lock()
-	delete(d.clientEventBuckets, clientID)
+	delete(d.clientEventBuckets, id)
 	d.clientEventMu.Unlock()
 }
 

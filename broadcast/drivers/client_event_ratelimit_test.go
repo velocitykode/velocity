@@ -1,6 +1,10 @@
 package drivers
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/velocitykode/velocity/websocket"
+)
 
 func TestAllowClientEvent_RateLimit(t *testing.T) {
 	d := &WebSocketDriver{}
@@ -33,7 +37,7 @@ func TestAllowClientEvent_BucketEvictedOnPurge(t *testing.T) {
 		t.Fatalf("bucket should exist after a whisper")
 	}
 
-	d.purgeClient("c1")
+	d.purgeClient(&websocket.Client{ID: "c1"})
 
 	d.clientEventMu.Lock()
 	_, present = d.clientEventBuckets["c1"]

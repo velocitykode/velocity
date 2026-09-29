@@ -32,9 +32,9 @@ func TestServer_RunLoopPanicRecovered(t *testing.T) {
 	// hit `send on closed channel` when it iterates clients.
 	bait := &Client{
 		ID:   "panic-bait",
-		Send: make(chan Message, 1),
+		send: make(chan Message, 1),
 	}
-	close(bait.Send)
+	close(bait.send)
 
 	s.mu.Lock()
 	s.clients[bait.ID] = bait
@@ -73,9 +73,9 @@ func TestServer_RegisterPanicRecovered(t *testing.T) {
 	// Closed Send channel so handleRegister panics on the welcome enqueue.
 	bad := &Client{
 		ID:   "bad-register",
-		Send: make(chan Message),
+		send: make(chan Message),
 	}
-	close(bad.Send)
+	close(bad.send)
 
 	s.register <- bad
 
@@ -108,15 +108,15 @@ func TestServer_RunLoopContinuesAfterPanic(t *testing.T) {
 	// Bait client: closed Send, forces handleBroadcast to panic on send.
 	bait := &Client{
 		ID:   "bait",
-		Send: make(chan Message, 1),
+		send: make(chan Message, 1),
 	}
-	close(bait.Send)
+	close(bait.send)
 
 	// Live client: open Send buffer, used to verify subsequent broadcasts
 	// still land after multiple panics.
 	live := &Client{
 		ID:   "live",
-		Send: make(chan Message, 8),
+		send: make(chan Message, 8),
 	}
 
 	s.mu.Lock()
@@ -139,7 +139,7 @@ func TestServer_RunLoopContinuesAfterPanic(t *testing.T) {
 	// we just need a clean slate for the post-panic assertion).
 	for {
 		select {
-		case <-live.Send:
+		case <-live.send:
 			continue
 		default:
 		}
@@ -157,7 +157,7 @@ func TestServer_RunLoopContinuesAfterPanic(t *testing.T) {
 	s.Broadcast(Message{Type: "after", Data: "still-alive"})
 
 	select {
-	case msg := <-live.Send:
+	case msg := <-live.send:
 		if msg.Type != "after" {
 			t.Errorf("post-panic broadcast: expected type 'after', got %q", msg.Type)
 		}

@@ -28,7 +28,7 @@ func TestAutoWire_VerifierInstalledOnSetAuthSecret(t *testing.T) {
 	// Subscribing to a private channel WITHOUT an auth field must now be
 	// rejected even though no explicit driver.SetTokenVerifier call was
 	// made. The verifier must have been auto-wired by SetAuthSecret.
-	client := createTestClient("client-1")
+	client := connectedClient(t)
 	err := driver.handleSubscribe(client, websocket.Message{
 		Type: "subscribe",
 		Data: map[string]interface{}{"channel": "private-room"},
@@ -39,11 +39,10 @@ func TestAutoWire_VerifierInstalledOnSetAuthSecret(t *testing.T) {
 
 	// Authorized auth-token subscribe must succeed. Token comes from the
 	// same BroadcastManager so it carries the matching HMAC.
-	token, sErr := b.SignAuthToken("client-1", "private-room")
+	token, sErr := b.SignAuthToken(client.ID, "private-room")
 	if sErr != nil {
 		t.Fatalf("SignAuthToken: %v", sErr)
 	}
-	client = createTestClient("client-1")
 	err = driver.handleSubscribe(client, websocket.Message{
 		Type: "subscribe",
 		Data: map[string]interface{}{
@@ -73,7 +72,7 @@ func TestAutoWire_VerifierClearedWhenSecretRemoved(t *testing.T) {
 
 	// With verifier cleared, subscribing without auth must once again be
 	// accepted (authorizer-only legacy path).
-	client := createTestClient("client-1")
+	client := connectedClient(t)
 	err := driver.handleSubscribe(client, websocket.Message{
 		Type: "subscribe",
 		Data: map[string]interface{}{"channel": "private-room"},
@@ -96,8 +95,9 @@ func TestAutoWire_SecretRotation(t *testing.T) {
 	b := broadcast.New(driver)
 	b.SetAuthorizer(func(channel string, user interface{}) bool { return true })
 
+	client := connectedClient(t)
 	b.SetAuthSecret([]byte("key-v1"))
-	oldToken, err := b.SignAuthToken("client-1", "private-room")
+	oldToken, err := b.SignAuthToken(client.ID, "private-room")
 	if err != nil {
 		t.Fatalf("SignAuthToken under v1: %v", err)
 	}
@@ -105,7 +105,6 @@ func TestAutoWire_SecretRotation(t *testing.T) {
 	b.SetAuthSecret([]byte("key-v2"))
 
 	// Old token should no longer verify after rotation.
-	client := createTestClient("client-1")
 	err = driver.handleSubscribe(client, websocket.Message{
 		Type: "subscribe",
 		Data: map[string]interface{}{
@@ -118,11 +117,10 @@ func TestAutoWire_SecretRotation(t *testing.T) {
 	}
 
 	// Fresh token under v2 should verify.
-	newToken, err := b.SignAuthToken("client-1", "private-room")
+	newToken, err := b.SignAuthToken(client.ID, "private-room")
 	if err != nil {
 		t.Fatalf("SignAuthToken under v2: %v", err)
 	}
-	client = createTestClient("client-1")
 	err = driver.handleSubscribe(client, websocket.Message{
 		Type: "subscribe",
 		Data: map[string]interface{}{

@@ -220,7 +220,7 @@ func TestHandleUnregister_ConcurrentGroupOps_NoRace(t *testing.T) {
 
 	client := &Client{
 		ID:       "c1",
-		Send:     make(chan Message, 256),
+		send:     make(chan Message, 256),
 		Server:   s,
 		Groups:   make(map[string]bool),
 		Metadata: make(map[string]interface{}),

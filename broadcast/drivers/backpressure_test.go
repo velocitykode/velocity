@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/hostile"
 	"github.com/velocitykode/velocity/websocket"
 )
 
@@ -25,15 +26,8 @@ func TestBroadcast_DroppedCount(t *testing.T) {
 		},
 	}
 
-	client := &websocket.Client{
-		ID:       "slow",
-		Send:     make(chan websocket.Message, 1),
-		Groups:   make(map[string]bool),
-		Metadata: make(map[string]interface{}),
-	}
-	client.Send <- websocket.Message{Type: "filler", Data: nil} // fill buffer
-
-	d.channels["c"] = map[string]*websocket.Client{"slow": client}
+	client, _ := newClientHost(t).full(t)
+	d.channels["c"] = map[string]*websocket.Client{client.ID: client}
 
 	if err := d.Broadcast([]string{"c"}, "evt", "data"); err != nil {
 		t.Fatalf("Broadcast: %v", err)
@@ -45,45 +39,32 @@ func TestBroadcast_DroppedCount(t *testing.T) {
 
 	onDropMu.Lock()
 	defer onDropMu.Unlock()
-	if len(drops) != 1 || drops[0] != "slow:c:evt" {
-		t.Fatalf("onDrop = %v, want [slow:c:evt]", drops)
+	if want := client.ID + ":c:evt"; len(drops) != 1 || drops[0] != want {
+		t.Fatalf("onDrop = %v, want [%s]", drops, want)
 	}
 }
 
 // TestWithBlockingSend_BlocksUntilDrain covers Task 2: when a blocking timeout
-// is configured, Broadcast blocks until either the buffer drains or the
-// deadline expires.
+// is configured, Broadcast waits for room in a full queue, and delivers
+// once the client drains it.
 func TestWithBlockingSend_BlocksUntilDrain(t *testing.T) {
 	d := &WebSocketDriver{
 		channels:       make(map[string]map[string]*websocket.Client),
-		blockingSendTO: 200 * time.Millisecond,
+		blockingSendTO: time.Minute,
 	}
 
-	client := &websocket.Client{
-		ID:       "busy",
-		Send:     make(chan websocket.Message, 1),
-		Groups:   make(map[string]bool),
-		Metadata: make(map[string]interface{}),
-	}
-	client.Send <- websocket.Message{Type: "filler"} // fill
+	client, peer := newClientHost(t).full(t)
+	d.channels["c"] = map[string]*websocket.Client{client.ID: client}
 
-	d.channels["c"] = map[string]*websocket.Client{"busy": client}
+	// The peer starts reading, which drains the queue so the waiting send
+	// can enqueue.
+	discard(peer)
 
-	// Drain the filler after a short delay so the blocking send can succeed.
-	go func() {
-		time.Sleep(30 * time.Millisecond)
-		<-client.Send
-	}()
-
-	start := time.Now()
-	if err := d.Broadcast([]string{"c"}, "evt", "data"); err != nil {
-		t.Fatalf("Broadcast: %v", err)
-	}
-	elapsed := time.Since(start)
-
-	if elapsed >= 200*time.Millisecond {
-		t.Fatalf("Broadcast blocked for %v — should have drained before timeout", elapsed)
-	}
+	hostile.Within(t, hostile.Deadline, func() {
+		if err := d.Broadcast([]string{"c"}, "evt", "data"); err != nil {
+			t.Errorf("Broadcast: %v", err)
+		}
+	})
 	if got := d.DroppedCount(); got != 0 {
 		t.Fatalf("DroppedCount = %d, want 0", got)
 	}
@@ -98,21 +79,20 @@ func TestWithBlockingSend_TimesOut(t *testing.T) {
 		blockingSendTO: 30 * time.Millisecond,
 	}
 
-	client := &websocket.Client{
-		ID:       "frozen",
-		Send:     make(chan websocket.Message, 1),
-		Groups:   make(map[string]bool),
-		Metadata: make(map[string]interface{}),
-	}
-	client.Send <- websocket.Message{Type: "filler"} // fill and never drain
-
-	d.channels["c"] = map[string]*websocket.Client{"frozen": client}
+	client, _ := newClientHost(t).full(t)
+	d.channels["c"] = map[string]*websocket.Client{client.ID: client}
 
 	if err := d.Broadcast([]string{"c"}, "evt", "data"); err != nil {
 		t.Fatalf("Broadcast: %v", err)
 	}
 	if got := d.DroppedCount(); got != 1 {
 		t.Fatalf("DroppedCount = %d, want 1", got)
+	}
+	d.mu.RLock()
+	_, registered := d.channels["c"][client.ID]
+	d.mu.RUnlock()
+	if !registered {
+		t.Error("a client whose send timed out was purged")
 	}
 }
 

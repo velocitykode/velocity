@@ -37,7 +37,7 @@ func TestHandleBroadcast_DeliversToSnapshotClients(t *testing.T) {
 	clients := make([]*Client, n)
 	s.mu.Lock()
 	for i := range clients {
-		c := &Client{ID: fmt.Sprintf("c-%d", i), Send: make(chan Message, 1)}
+		c := &Client{ID: fmt.Sprintf("c-%d", i), send: make(chan Message, 1)}
 		clients[i] = c
 		s.clients[c.ID] = c
 	}
@@ -48,7 +48,7 @@ func TestHandleBroadcast_DeliversToSnapshotClients(t *testing.T) {
 	deadline := time.After(2 * time.Second)
 	for i, c := range clients {
 		select {
-		case msg := <-c.Send:
+		case msg := <-c.send:
 			if msg.Type != "snap" {
 				t.Errorf("client %d: expected type 'snap', got %q", i, msg.Type)
 			}
@@ -89,7 +89,7 @@ func TestHandleBroadcast_RegistrationProceedsDuringFanout(t *testing.T) {
 	}
 
 	// One pre-existing client so the broadcast has a real snapshot to deliver.
-	early := &Client{ID: "early", Send: make(chan Message, 1), Groups: make(map[string]bool)}
+	early := &Client{ID: "early", send: make(chan Message, 1), Groups: make(map[string]bool)}
 	s.mu.Lock()
 	s.clients[early.ID] = early
 	s.mu.Unlock()
@@ -106,7 +106,7 @@ func TestHandleBroadcast_RegistrationProceedsDuringFanout(t *testing.T) {
 	// Fan-out is now paused. Enqueue a brand new client exactly as
 	// HandleConnection does (s.register <- client) and assert the run loop
 	// registers it while the fan-out is still blocked.
-	late := &Client{ID: "late", Send: make(chan Message, 1), Groups: make(map[string]bool)}
+	late := &Client{ID: "late", send: make(chan Message, 1), Groups: make(map[string]bool)}
 	s.register <- late
 
 	registered := false
@@ -164,7 +164,7 @@ func TestHandleBroadcast_RunLoopUnblockedWhenFanoutQueueFull(t *testing.T) {
 
 	// One pre-existing client so the broadcast has a real snapshot to deliver
 	// and the hook fires.
-	early := &Client{ID: "early", Send: make(chan Message, 1), Groups: make(map[string]bool)}
+	early := &Client{ID: "early", send: make(chan Message, 1), Groups: make(map[string]bool)}
 	s.mu.Lock()
 	s.clients[early.ID] = early
 	s.mu.Unlock()
@@ -205,7 +205,7 @@ func TestHandleBroadcast_RunLoopUnblockedWhenFanoutQueueFull(t *testing.T) {
 
 	// With the queue saturated and the fan-out still paused, a queued
 	// registration must still be processed by the run loop.
-	late := &Client{ID: "late", Send: make(chan Message, 1), Groups: make(map[string]bool)}
+	late := &Client{ID: "late", send: make(chan Message, 1), Groups: make(map[string]bool)}
 	s.register <- late
 
 	registered := false
@@ -260,7 +260,7 @@ func TestHandleBroadcast_ConcurrentRegistrationNotBlocked(t *testing.T) {
 	for i := 0; i < n; i++ {
 		id := fmt.Sprintf("bcast-%d", i)
 		ids[i] = id
-		s.clients[id] = &Client{ID: id, Send: make(chan Message, 256), Groups: make(map[string]bool)}
+		s.clients[id] = &Client{ID: id, send: make(chan Message, 256), Groups: make(map[string]bool)}
 	}
 	s.mu.Unlock()
 
@@ -273,7 +273,7 @@ func TestHandleBroadcast_ConcurrentRegistrationNotBlocked(t *testing.T) {
 		s.mu.RLock()
 		chans := make([]chan Message, 0, len(s.clients))
 		for _, c := range s.clients {
-			chans = append(chans, c.Send)
+			chans = append(chans, c.send)
 		}
 		s.mu.RUnlock()
 		for {

@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"context"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -97,6 +98,10 @@ func (c *Client) writePump() {
 	defer func() {
 		ticker.Stop()
 		c.Conn.Close()
+		// writePump is the queue's only reader: once it exits, whatever
+		// ended it (server shutdown, a failed write), the client takes no
+		// more sends.
+		c.closeSend()
 	}()
 	defer func() {
 		if r := recover(); r != nil {
@@ -106,7 +111,7 @@ func (c *Client) writePump() {
 
 	for {
 		select {
-		case message, ok := <-c.Send:
+		case message, ok := <-c.send:
 			c.Conn.SetWriteDeadline(time.Now().Add(c.Server.config.WriteTimeout))
 			if !ok {
 				// The server closed the channel
@@ -123,9 +128,9 @@ func (c *Client) writePump() {
 			atomic.AddInt64(&c.Server.stats.MessagesSent, 1)
 
 			// Send any queued messages
-			n := len(c.Send)
+			n := len(c.send)
 			for i := 0; i < n; i++ {
-				if err := c.Conn.WriteJSON(<-c.Send); err != nil {
+				if err := c.Conn.WriteJSON(<-c.send); err != nil {
 					return
 				}
 				atomic.AddInt64(&c.Server.stats.MessagesSent, 1)
@@ -156,17 +161,17 @@ func (c *Client) handleMessage(msg Message) {
 
 	if !ok {
 		// No handler registered: use generic error to avoid reflecting user input.
-		// Non-blocking send. handleMessage runs on readPump's goroutine; if
-		// writePump has died with Send full, a blocking send wedges readPump
-		// forever (close(c.Send) only fires after readPump returns via the
-		// unregister path), leaking the connection. Drop the reply instead.
+		// Non-blocking send: handleMessage runs on readPump's goroutine, and
+		// a reply to a full queue is dropped rather than holding the read
+		// loop. A writePump that has exited ended the client's send state,
+		// so the reply reports ErrClientNotFound instead of waiting.
 		if err := c.SendMessage(Message{
 			Type: "error",
 			Data: map[string]interface{}{
 				"message": "unknown message type",
 			},
 		}); err != nil {
-			c.Server.logWarn("websocket dropping unknown-type error reply, send channel full", "client_id", c.ID)
+			c.Server.logWarn("websocket dropping unknown-type error reply", "client_id", c.ID, "error", err)
 		}
 		return
 	}
@@ -186,57 +191,106 @@ func (c *Client) handleMessage(msg Message) {
 					"message": "internal error",
 				},
 			}); err != nil {
-				c.Server.logWarn("websocket dropping handler-error reply, send channel full", "client_id", c.ID)
+				c.Server.logWarn("websocket dropping handler-error reply", "client_id", c.ID, "error", err)
 			}
 		}
 	}
 }
 
-// trySend attempts a non-blocking enqueue onto c.Send while holding c.mu,
-// coordinating with closeSend so the run loop's unregister close cannot race a
-// broadcast fan-out send (both serialize on c.mu). It reports whether the
-// message was queued and, when not, whether the channel was already closed (vs
-// merely full) so the caller can log the right reason. A send is only attempted
-// when c.closed is false; the caller's recover remains a backstop for a Send
-// channel closed out-of-band (without the flag set).
+// trySend attempts a non-blocking enqueue onto the send queue. It holds mu,
+// which closeSend also holds to mark the client closed, so it never
+// enqueues after the queue closed. The hold is exclusive, not shared:
+// shared holds let many concurrent senders hammer the queue at once and
+// starve its one reader. It reports whether the message was
+// queued and, when not, whether the client was closed (vs its queue merely
+// full) so the caller can log the right reason.
 func (c *Client) trySend(msg Message) (queued, closed bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if c.closed || c.send == nil {
 		return false, true
 	}
 	select {
-	case c.Send <- msg:
+	case c.send <- msg:
 		return true, false
 	default:
 		return false, false
 	}
 }
 
-// closeSend marks the Send channel closed and closes it under c.mu so a
-// concurrent fan-out send (trySend) observes the closed flag instead of racing
-// the close. Idempotent: a duplicate close is a no-op.
+// closeSend ends the client's send state: it marks the client closed and
+// wakes every bounded send parked on the queue, then, with mu released,
+// waits for those sends to leave and closes the queue, which ends
+// writePump. Idempotent: a later call is a no-op, and so is a call on a
+// Client the server did not connect. Only the first call waits for the
+// parked sends; a concurrent later call returns at once, so a return is
+// not a sign that the queue is closed yet.
 func (c *Client) closeSend() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.closed {
+		c.mu.Unlock()
 		return
 	}
 	c.closed = true
-	close(c.Send)
+	if c.done != nil {
+		close(c.done)
+	}
+	c.mu.Unlock()
+	c.senders.Wait()
+	if c.send != nil {
+		close(c.send)
+	}
 }
 
-// SendMessage sends a message to the client. A client that has
-// disconnected (its send channel closed) reports ErrClientNotFound.
+// errClientClosed is the error a send to a closed client returns.
+func (c *Client) errClientClosed() error {
+	return fmt.Errorf("client %s disconnected: %w", sanitizeForLog(c.ID), ErrClientNotFound)
+}
+
+// SendMessage enqueues msg for the client without blocking. A client that
+// has disconnected reports ErrClientNotFound, and a full queue
+// ErrSendChannelFull.
 func (c *Client) SendMessage(msg Message) error {
 	queued, closed := c.trySend(msg)
 	switch {
 	case closed:
-		return fmt.Errorf("client %s disconnected: %w", sanitizeForLog(c.ID), ErrClientNotFound)
+		return c.errClientClosed()
 	case !queued:
 		return ErrSendChannelFull
 	}
 	return nil
+}
+
+// SendMessageCtx enqueues msg for the client, waiting for room in its queue
+// until ctx is done. A nil error means msg was enqueued. A client that has
+// disconnected, or disconnects while the call waits, reports
+// ErrClientNotFound; when ctx ends first it returns ctx.Err(). The wait
+// gives none of the three priority: a call whose ctx is already done may
+// still enqueue when the queue has room, and then returns nil, and a call
+// already waiting when the client closes may still enqueue if the queue
+// has room at that moment, and then returns nil (writePump or the close
+// discards the message).
+func (c *Client) SendMessageCtx(ctx context.Context, msg Message) error {
+	c.mu.Lock()
+	if c.closed || c.send == nil {
+		c.mu.Unlock()
+		return c.errClientClosed()
+	}
+	if c.done == nil {
+		c.done = make(chan struct{})
+	}
+	done := c.done
+	c.senders.Add(1)
+	c.mu.Unlock()
+	defer c.senders.Done()
+	select {
+	case c.send <- msg:
+		return nil
+	case <-done:
+		return c.errClientClosed()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // SendJSON sends a JSON message to the client
@@ -269,7 +323,11 @@ func (c *Client) IsInGroup(group string) bool {
 	return c.Groups[group]
 }
 
-// Close closes the client connection
+// Close closes the client connection. On a Client the server did not
+// connect it is a no-op.
 func (c *Client) Close() {
+	if c.Conn == nil {
+		return
+	}
 	c.Conn.Close()
 }

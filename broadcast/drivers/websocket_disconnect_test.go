@@ -2,6 +2,7 @@ package drivers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	gorillaws "github.com/gorilla/websocket"
+	"github.com/velocitykode/velocity/internal/hostile"
 	"github.com/velocitykode/velocity/websocket"
 )
 
@@ -107,91 +109,87 @@ func TestBroadcast_NoPanicAfterDisconnect(t *testing.T) {
 	}
 }
 
-// TestBroadcast_DefensiveRecoverOnClosedSend (audit D-01, defensive layer):
-// simulates the race window where a snapshot was taken just before
-// purgeClient ran and close(client.Send) ran. We construct that state
-// directly by inserting a client whose Send channel is already closed, then
-// call Broadcast and assert (1) it does not panic, (2) the stale pointer is
-// purged by the recover path, and (3) the dropped count is incremented.
-func TestBroadcast_DefensiveRecoverOnClosedSend(t *testing.T) {
+// TestBroadcast_ClosedClientPurgedOnSend (audit D-01): a snapshot taken
+// before the disconnect purge holds a client that has since closed. The
+// send reports it gone, at once on the blocking path too, and the driver
+// purges it and counts one drop; a repeat broadcast is a no-op.
+func TestBroadcast_ClosedClientPurgedOnSend(t *testing.T) {
 	t.Parallel()
 
-	d := &WebSocketDriver{
-		channels: make(map[string]map[string]*websocket.Client),
-	}
+	for _, blocking := range []time.Duration{0, time.Hour} {
+		name := "non-blocking"
+		if blocking > 0 {
+			name = "blocking"
+		}
+		t.Run(name, func(t *testing.T) {
+			d := &WebSocketDriver{
+				channels:       make(map[string]map[string]*websocket.Client),
+				blockingSendTO: blocking,
+			}
+			c := newClientHost(t).closed(t)
+			d.channels["c"] = map[string]*websocket.Client{c.ID: c}
 
-	// Build a client whose Send channel is closed: sending to it always
-	// panics with `send on closed channel`.
-	closed := make(chan websocket.Message)
-	close(closed)
-	c := &websocket.Client{
-		ID:       "ghost",
-		Send:     closed,
-		Groups:   make(map[string]bool),
-		Metadata: make(map[string]interface{}),
-	}
-	d.channels["c"] = map[string]*websocket.Client{"ghost": c}
+			hostile.Within(t, hostile.Deadline, func() {
+				if err := d.Broadcast([]string{"c"}, "evt", "data"); err != nil {
+					t.Errorf("Broadcast: %v", err)
+				}
+			})
+			if got := d.DroppedCount(); got != 1 {
+				t.Fatalf("DroppedCount = %d, want 1", got)
+			}
+			d.mu.RLock()
+			_, exists := d.channels["c"]
+			d.mu.RUnlock()
+			if exists {
+				t.Fatal("the closed client was not purged")
+			}
 
-	if err := d.Broadcast([]string{"c"}, "evt", "data"); err != nil {
-		t.Fatalf("Broadcast: %v", err)
-	}
-
-	if got := d.DroppedCount(); got != 1 {
-		t.Fatalf("DroppedCount = %d, want 1 (defensive recover should have counted the drop)", got)
-	}
-
-	// The defensive recover must have purged the stale pointer. After purge
-	// the channel "c" is empty and removed from the map entirely.
-	d.mu.RLock()
-	_, exists := d.channels["c"]
-	d.mu.RUnlock()
-	if exists {
-		t.Fatal("purgeClient was not invoked from sendOrDrop recover; channel still present")
-	}
-
-	// A repeat broadcast must also be safe and a no-op for state.
-	if err := d.Broadcast([]string{"c"}, "evt", "data"); err != nil {
-		t.Fatalf("Broadcast (repeat): %v", err)
-	}
-	if got := d.DroppedCount(); got != 1 {
-		t.Fatalf("DroppedCount after no-op broadcast = %d, want 1", got)
+			// A repeat broadcast must also be safe and a no-op for state.
+			if err := d.Broadcast([]string{"c"}, "evt", "data"); err != nil {
+				t.Fatalf("Broadcast (repeat): %v", err)
+			}
+			if got := d.DroppedCount(); got != 1 {
+				t.Fatalf("DroppedCount after no-op broadcast = %d, want 1", got)
+			}
+		})
 	}
 }
 
-// TestBroadcast_DefensiveRecoverOnBlockingSend covers the blocking path of
-// sendOrDrop: WithBlockingSend(timeout) routes through the timer-based
-// select rather than the non-blocking default. The recover must catch the
-// send-on-closed panic on this branch too.
-func TestBroadcast_DefensiveRecoverOnBlockingSend(t *testing.T) {
+// A purge removes only the client instance it is given: an entry that
+// holds another client under the same ID stays, and so does that entry's
+// share of the ID's subscription budget; the purged instance's share is
+// given back.
+func TestPurgeClient_OnlyThatInstance(t *testing.T) {
 	t.Parallel()
 
+	stale := &websocket.Client{ID: "same"}
+	current := &websocket.Client{ID: "same"}
 	d := &WebSocketDriver{
-		channels:       make(map[string]map[string]*websocket.Client),
-		blockingSendTO: 100 * time.Millisecond,
+		channels: map[string]map[string]*websocket.Client{
+			"old": {"same": stale},
+			"new": {"same": current},
+		},
+		clientSubs: map[string]map[string]struct{}{"same": {"old": {}, "new": {}}},
 	}
+	d.purgeClient(stale)
 
-	closed := make(chan websocket.Message)
-	close(closed)
-	c := &websocket.Client{
-		ID:       "ghost-blocking",
-		Send:     closed,
-		Groups:   make(map[string]bool),
-		Metadata: make(map[string]interface{}),
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if _, ok := d.channels["old"]; ok {
+		t.Error("the stale instance was not purged")
 	}
-	d.channels["b"] = map[string]*websocket.Client{"ghost-blocking": c}
-
-	start := time.Now()
-	if err := d.Broadcast([]string{"b"}, "evt", "data"); err != nil {
-		t.Fatalf("Broadcast: %v", err)
+	if d.channels["new"]["same"] != current {
+		t.Error("the current instance under the same ID was purged")
 	}
-	if elapsed := time.Since(start); elapsed >= 100*time.Millisecond {
-		// The send-on-closed panic must fire instantly, not after the
-		// timeout. If we ever wait the full 100ms the recover is on the
-		// wrong branch (or the panic is being eaten elsewhere).
-		t.Fatalf("Broadcast blocked %v on closed Send; recover should have fired immediately", elapsed)
+	subs, ok := d.clientSubs["same"]
+	if !ok {
+		t.Fatal("the ID's subscription budget was dropped while another instance holds it")
 	}
-	if got := d.DroppedCount(); got != 1 {
-		t.Fatalf("DroppedCount = %d, want 1", got)
+	if _, ok := subs["new"]; !ok {
+		t.Error("the current instance's subscription was dropped from the budget")
+	}
+	if _, ok := subs["old"]; ok {
+		t.Error("the purged instance's subscription still counts against the budget")
 	}
 }
 
@@ -212,7 +210,7 @@ func TestPurgeClient_RemovesFromAllChannels(t *testing.T) {
 	d.channels["beta"] = map[string]*websocket.Client{"multi": c1}
 	d.channels["gamma"] = map[string]*websocket.Client{"other": c2}
 
-	d.purgeClient("multi")
+	d.purgeClient(c1)
 
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -242,68 +240,73 @@ func TestPurgeClient_EmptyID(t *testing.T) {
 			"c": {"a": createTestClient("a")},
 		},
 	}
-	d.purgeClient("")
+	d.purgeClient(&websocket.Client{})
+	d.purgeClient(nil)
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	if _, ok := d.channels["c"]["a"]; !ok {
-		t.Fatal("purgeClient(\"\") must be a no-op")
+		t.Fatal("purging a client with no ID must be a no-op")
 	}
 }
 
-// TestServer_AddOnDisconnect_FiresBeforeClose verifies the server-side
-// contract that the broadcast driver depends on: disconnect listeners fire
-// while client.Send is still a live channel.
-func TestServer_AddOnDisconnect_FiresBeforeClose(t *testing.T) {
+// TestServer_AddOnDisconnect_FiresOnUnregister verifies the server-side
+// contract the broadcast driver depends on: a disconnect listener fires
+// for a client that disconnects, with the client itself, and once the
+// server is done with it the client takes no more sends. A send the
+// listener makes may already report the client gone; it never panics.
+func TestServer_AddOnDisconnect_FiresOnUnregister(t *testing.T) {
 	t.Parallel()
 
-	s := websocket.New(websocket.DefaultConfig())
-	if err := s.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer s.Shutdown(context.Background())
-
-	var sendStillOpen atomic.Bool
+	h := newClientHost(t)
+	var fired atomic.Pointer[websocket.Client]
 	done := make(chan struct{})
-	s.AddOnDisconnect(func(c *websocket.Client) {
-		// Probe whether Send is still open. A non-blocking send into a
-		// buffered channel succeeds when open; a closed channel panics.
-		defer func() {
-			if r := recover(); r != nil {
-				sendStillOpen.Store(false)
-			}
-			close(done)
-		}()
-		select {
-		case c.Send <- websocket.Message{Type: "probe"}:
-			sendStillOpen.Store(true)
-		default:
-			// Buffer was full but channel was open: still counts as "open".
-			sendStillOpen.Store(true)
-		}
+	h.server.AddOnDisconnect(func(c *websocket.Client) {
+		defer close(done)
+		_ = c.SendMessage(websocket.Message{Type: "probe"})
+		fired.Store(c)
 	})
+	c, ws := h.connect(t)
+	_ = ws.Close()
 
-	ts := httptest.NewServer(http.HandlerFunc(s.HandleConnection))
-	defer ts.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
-	ws, _, err := gorillaws.DefaultDialer.Dial(wsURL, originHeader(ts.URL))
-	if err != nil {
-		t.Fatalf("Dial: %v", err)
+	hostile.Within(t, hostile.Deadline, func() { <-done })
+	if fired.Load() != c {
+		t.Fatal("the listener was not handed the disconnected client")
 	}
+	hostile.Eventually(t, hostile.Deadline, "the client closed", func() bool {
+		return errors.Is(c.SendMessage(websocket.Message{Type: "late"}), websocket.ErrClientNotFound)
+	})
+}
 
-	// Drain welcome and disconnect.
-	var welcome websocket.Message
-	_ = ws.ReadJSON(&welcome)
-	ws.Close()
+// A broadcast whose ctx ends while a blocking send waits on a full queue
+// returns ctx's error: the waiting message counts as dropped, and the
+// caller's cancellation is not mistaken for the send's own timeout.
+func TestBroadcastCtx_CancellationEndsABlockingSend(t *testing.T) {
+	t.Parallel()
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("disconnect listener never fired")
+	d := &WebSocketDriver{
+		channels:       make(map[string]map[string]*websocket.Client),
+		blockingSendTO: time.Hour,
 	}
+	c, _ := newClientHost(t).full(t)
+	d.channels["c"] = map[string]*websocket.Client{c.ID: c}
 
-	if !sendStillOpen.Load() {
-		t.Fatal("listener observed closed Send channel; close must happen AFTER listeners fire")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	var err error
+	hostile.Within(t, hostile.Deadline, func() {
+		err = d.BroadcastCtx(ctx, []string{"c"}, "evt", "data")
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("BroadcastCtx = %v, want the caller's deadline", err)
+	}
+	if got := d.DroppedCount(); got > 1 {
+		t.Errorf("DroppedCount = %d, want at most the one waiting message", got)
+	}
+	d.mu.RLock()
+	_, registered := d.channels["c"][c.ID]
+	d.mu.RUnlock()
+	if !registered {
+		t.Error("a client whose send was cancelled was purged")
 	}
 }
 

@@ -147,7 +147,7 @@ func TestReadPump_ExitsOnStopChan(t *testing.T) {
 		client := &Client{
 			ID:       "leaktest",
 			Conn:     conn,
-			Send:     make(chan Message, 1),
+			send:     make(chan Message, 1),
 			Server:   s,
 			Groups:   make(map[string]bool),
 			Metadata: make(map[string]interface{}),

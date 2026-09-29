@@ -501,7 +501,7 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	client := &Client{
 		ID:       id,
 		Conn:     conn,
-		Send:     make(chan Message, 256),
+		send:     make(chan Message, 256),
 		Server:   s,
 		Groups:   make(map[string]bool),
 		Metadata: make(map[string]interface{}),
@@ -512,6 +512,9 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	select {
 	case s.register <- client:
 	case <-s.stopChan:
+		// No pump will drain the client: end its send state the way
+		// writePump's exit does, then drop the connection.
+		client.closeSend()
 		_ = conn.Close()
 		return
 	}
@@ -591,11 +594,12 @@ func (s *Server) invokeConnectListener(fn func(*Client), client *Client) {
 
 // handleUnregister removes a client.
 //
-// Disconnect listeners (and the single onDisconnect callback) fire BEFORE
-// close(client.Send) so adapters such as broadcast/drivers.WebSocketDriver
-// can purge their own state while client.Send is still a live channel.
-// Closing first would let a concurrent Broadcast hit `send on closed channel`
-// before the listener could clear the stale pointer (audit D-01).
+// Disconnect listeners (and the single onDisconnect callback) fire before
+// this closeSend, so adapters such as broadcast/drivers.WebSocketDriver
+// purge their references; the client's writePump may have ended its send
+// state already. A send that races the close is safe either way: every
+// send checks the closed flag under client.mu and reports
+// ErrClientNotFound once it is set.
 //
 // Each listener runs under its own deferred recover so a single panicking
 // listener cannot abort the unregister sequence or take the server-side
@@ -637,7 +641,7 @@ func (s *Server) handleUnregister(client *Client) {
 		onDisconnect = *p
 	}
 
-	// Fire listeners BEFORE close(client.Send). Each is invoked under its
+	// Fire listeners before closeSend. Each is invoked under its
 	// own recover so a misbehaving listener cannot derail the rest of the
 	// teardown sequence (recovered panics are logged but not re-raised).
 	for _, fn := range listeners {
@@ -648,14 +652,8 @@ func (s *Server) handleUnregister(client *Client) {
 	}
 
 	// Now that every listener has had a chance to purge its references,
-	// close the Send channel via closeSend, which sets client.closed and
-	// closes under client.mu. The broadcast fan-out's sendOrDrop serializes on
-	// the same client.mu (via trySend) and observes the closed flag instead of
-	// racing the close, so the concurrent-disconnect path is -race clean rather
-	// than relying solely on a recover. The listener-driven purge that just ran
-	// still clears adapter references. We do not re-acquire s.mu: the client is
-	// already removed from s.clients, so no other server-side path can reach
-	// Send by name.
+	// end the client's send state. writePump's exit may have ended it
+	// already; closeSend is idempotent.
 	client.closeSend()
 
 	s.logInfo("Client disconnected", "client_id", client.ID)
@@ -756,7 +754,7 @@ func (s *Server) drainFanout() {
 }
 
 // deliver fans a snapshotted broadcast out to every client, sending through
-// sendOrDrop so neither a full nor a closed Send channel can abort the loop.
+// sendOrDrop so neither a full nor a closed client can abort the loop.
 func (s *Server) deliver(job broadcastJob) {
 	if hook := s.fanoutHook; hook != nil {
 		hook()
@@ -769,31 +767,13 @@ func (s *Server) deliver(job broadcastJob) {
 	// clients skipped for a full buffer).
 }
 
-// sendOrDrop enqueues message onto client.Send without blocking and without
-// letting one stale client abort the rest of the fan-out. It delegates to
-// client.trySend, which serializes the send against handleUnregister's
-// closeSend on client.mu: when the client unregistered between the snapshot and
-// this send (the snapshot and send run on different goroutines - run loop vs
-// fanout - so that race is real), trySend observes client.closed under the lock
-// and skips the send instead of racing the close. A full buffer is skipped and
-// warned. Either way iteration continues so every other snapshot-time client
-// still receives the message - preserving the all-snapshot-clients invariant.
-//
-// The deferred recover remains a backstop for a Send channel closed out-of-band
-// (without client.closed set, e.g. a caller that closes Send directly). Such a
-// recovered panic is counted on s.recoveredPanics (same counter as the run
-// loop) and logged.
+// sendOrDrop enqueues message for client without blocking and without
+// letting one stale client abort the rest of the fan-out. The snapshot and
+// the send run on different goroutines (run loop vs fanout), so the client
+// can unregister in between: trySend then observes it closed and skips the
+// send. A full queue is skipped and warned. Either way iteration continues
+// so every other snapshot-time client still receives the message.
 func (s *Server) sendOrDrop(client *Client, message Message) {
-	defer func() {
-		if r := recover(); r != nil {
-			s.recoveredPanics.Add(1)
-			s.logError(
-				"websocket broadcast send recovered",
-				"client_id", client.ID,
-				"error", panicerr.FromRecovered(r),
-			)
-		}
-	}()
 	switch queued, closed := client.trySend(message); {
 	case queued:
 	case closed:
@@ -921,9 +901,11 @@ func (s *Server) OnDisconnect(fn DisconnectFunc) {
 }
 
 // AddOnDisconnect appends a disconnect listener that fires alongside the
-// single OnDisconnect callback. Listeners are invoked BEFORE client.Send is
-// closed so adapters can drop stale references and avoid `send on closed
-// channel` panics from concurrent broadcasts (audit D-01).
+// single OnDisconnect callback when the server unregisters a client, so
+// adapters can drop their references to it (audit D-01). The client may
+// already take no sends when a listener runs: its send state ends when its
+// writePump exits (a failed write, server shutdown), which can come first.
+// A send to it then reports ErrClientNotFound; it never panics.
 //
 // Multiple listeners may be registered; they fire in registration order.
 // A nil fn is rejected to keep the unregister path total. Safe to call

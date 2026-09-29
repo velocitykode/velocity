@@ -14,8 +14,8 @@ import (
 
 // TestHandleMessageNonBlockingWhenSendFull is the B10 regression: handleMessage
 // runs on readPump's goroutine. If writePump has died with the Send channel
-// full, the old bare `c.Send <- ...` error replies blocked forever, wedging
-// readPump (close(c.Send) only fires after readPump returns) and leaking the
+// full, the old bare `c.send <- ...` error replies blocked forever, wedging
+// readPump (close(c.send) only fires after readPump returns) and leaking the
 // connection. Both the unknown-type reply and the handler-error reply must now
 // return promptly when the channel is full and unattended.
 func TestHandleMessageNonBlockingWhenSendFull(t *testing.T) {
@@ -49,12 +49,12 @@ func TestHandleMessageNonBlockingWhenSendFull(t *testing.T) {
 
 			c := &Client{
 				ID:     "c1",
-				Send:   make(chan Message, 1),
+				send:   make(chan Message, 1),
 				Server: s,
 			}
 			// Saturate Send so any further send would block. writePump is NOT
 			// running, so nothing will ever drain it.
-			c.Send <- Message{Type: "filler"}
+			c.send <- Message{Type: "filler"}
 
 			done := make(chan struct{})
 			go func() {

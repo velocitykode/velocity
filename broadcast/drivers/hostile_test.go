@@ -20,10 +20,15 @@ func TestWebSocketDriver_VerifierWarningWithHostileLogger(t *testing.T) {
 				authorizer: denyAllChannelAuthorizer,
 			}
 			d.SetAuthorizer(func(*websocket.Client, string) bool { return true })
+			host := newClientHost(t)
+			clients := make([]*websocket.Client, 8)
+			for i := range clients {
+				clients[i], _ = host.connect(t)
+			}
 			n := 0
 			subscribe := func() {
 				n++
-				client := createTestClient("hostile-" + string(rune('a'+n)))
+				client := clients[n]
 				if err := d.handleSubscribe(client, subscribeMsg("private-a", "")); err != nil {
 					t.Errorf("subscribe: %v", err)
 				}

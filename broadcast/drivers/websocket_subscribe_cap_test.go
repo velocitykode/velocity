@@ -200,7 +200,8 @@ func TestHandleSubscribe_ChannelCapSurfacesAsError(t *testing.T) {
 		maxChannelNameLength: DefaultMaxChannelNameLength,
 		authorizer:           denyAllChannelAuthorizer,
 	}
-	client := createTestClient("c1")
+	// A connected client: the subscribe confirms through its queue.
+	client, _ := newClientHost(t).connect(t)
 
 	// First public-channel subscribe should succeed and consume the budget.
 	if err := d.handleSubscribe(client, websocket.Message{
@@ -209,10 +210,6 @@ func TestHandleSubscribe_ChannelCapSurfacesAsError(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("first subscribe: %v", err)
 	}
-	// Drain the subscription_succeeded confirmation so we do not block
-	// the second send-confirmation path.
-	<-client.Send
-
 	// Second distinct subscribe must be rejected.
 	err := d.handleSubscribe(client, websocket.Message{
 		Type: "subscribe",

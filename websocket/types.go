@@ -16,20 +16,33 @@ type Message struct {
 	From   string      `json:"from,omitempty"`   // Client ID
 }
 
-// Client represents a WebSocket connection
+// Client represents a WebSocket connection. The server makes a Client for
+// each connection it accepts. A Client the server did not connect is not
+// connected: every send returns ErrClientNotFound and closing it is a
+// no-op.
 type Client struct {
 	ID       string
 	Conn     *websocket.Conn
-	Send     chan Message
 	Server   *Server
 	Groups   map[string]bool
 	Metadata map[string]interface{}
 	mu       sync.RWMutex
-	// closed guards the Send channel's lifecycle. It is set true (and Send
-	// closed) exactly once by closeSend under mu; trySend checks it under the
-	// same mu so a broadcast fan-out send cannot race the unregister close.
-	// See websocket/server.go handleUnregister and sendOrDrop.
+
+	// send is the client's outbound queue, drained by writePump; nil on a
+	// Client the server did not connect. Every enqueue goes through the
+	// Client's send methods, and only closeSend closes it, so a send never
+	// meets a closed queue.
+	send chan Message
+	// closed is set, under mu, by the closeSend that ends the queue; a send
+	// checks it under mu before it enqueues.
 	closed bool
+	// done is closed with closed set, so a bounded send parked on a full
+	// queue leaves when the client closes. Made lazily, under mu, by the
+	// first bounded send.
+	done chan struct{}
+	// senders counts the bounded sends between their closed check and
+	// their return; closeSend waits for them before it closes send.
+	senders sync.WaitGroup
 }
 
 // Config holds WebSocket server configuration

@@ -35,7 +35,7 @@ func TestHandleSubscribe_AuthorizerAllows(t *testing.T) {
 		channels:   make(map[string]map[string]*websocket.Client),
 		authorizer: func(client *websocket.Client, channel string) bool { return channel == "private-ok" },
 	}
-	client := createTestClient("c2")
+	client := connectedClient(t)
 
 	err := d.handleSubscribe(client, websocket.Message{
 		Type: "subscribe",
@@ -44,7 +44,7 @@ func TestHandleSubscribe_AuthorizerAllows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if _, ok := d.channels["private-ok"]["c2"]; !ok {
+	if _, ok := d.channels["private-ok"][client.ID]; !ok {
 		t.Fatal("client was not subscribed after authorizer approval")
 	}
 }

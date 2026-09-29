@@ -22,15 +22,10 @@ func TestBroadcast_SlowClientDoesNotBlockSubscribe(t *testing.T) {
 	// blocking-send timeout set, the broadcast will park on this client for
 	// the full 500 ms before dropping. Before M-28 this parked the channel
 	// map's RLock for that whole window.
-	slow := &websocket.Client{
-		ID:       "slow",
-		Send:     make(chan websocket.Message, 1),
-		Groups:   make(map[string]bool),
-		Metadata: make(map[string]interface{}),
-	}
-	slow.Send <- websocket.Message{Type: "filler"} // fill, never drain
+	host := newClientHost(t)
+	slow, _ := host.full(t) // full, never drained
 
-	d.channels["c"] = map[string]*websocket.Client{"slow": slow}
+	d.channels["c"] = map[string]*websocket.Client{slow.ID: slow}
 
 	// Kick off the broadcast in the background. It is going to spend ~500 ms
 	// trying to deliver to slow.
@@ -48,12 +43,7 @@ func TestBroadcast_SlowClientDoesNotBlockSubscribe(t *testing.T) {
 	// channel-map write lock. Pre-M-28 this would wait for the broadcast's
 	// RLock to drop, i.e. for the entire 500 ms slow-client timeout.
 	subscribed := make(chan time.Duration, 1)
-	newClient := &websocket.Client{
-		ID:       "fresh",
-		Send:     make(chan websocket.Message, 1),
-		Groups:   make(map[string]bool),
-		Metadata: make(map[string]interface{}),
-	}
+	newClient, _ := host.connect(t)
 	go func() {
 		start := time.Now()
 		_ = d.Subscribe("c", newClient)
@@ -89,24 +79,13 @@ func TestBroadcast_FastSubscribersStillDeliveredEventually(t *testing.T) {
 		blockingSendTO: 150 * time.Millisecond,
 	}
 
-	slow := &websocket.Client{
-		ID:       "slow",
-		Send:     make(chan websocket.Message, 1),
-		Groups:   make(map[string]bool),
-		Metadata: make(map[string]interface{}),
-	}
-	slow.Send <- websocket.Message{Type: "filler"}
-
-	fast := &websocket.Client{
-		ID:       "fast",
-		Send:     make(chan websocket.Message, 4),
-		Groups:   make(map[string]bool),
-		Metadata: make(map[string]interface{}),
-	}
+	host := newClientHost(t)
+	slow, _ := host.full(t)
+	fast, fastPeer := host.connect(t)
 
 	d.channels["c"] = map[string]*websocket.Client{
-		"slow": slow,
-		"fast": fast,
+		slow.ID: slow,
+		fast.ID: fast,
 	}
 
 	broadcastDone := make(chan struct{})
@@ -119,16 +98,8 @@ func TestBroadcast_FastSubscribersStillDeliveredEventually(t *testing.T) {
 	// holds the send path for at most one blockingSendTO window; with map
 	// iteration order non-deterministic we allow up to ~3x that window for
 	// the fast client to drain.
-	select {
-	case msg := <-fast.Send:
-		if msg.Type != "evt" {
-			t.Errorf("fast client got %q, want %q", msg.Type, "evt")
-		}
-		if msg.Data != "payload" {
-			t.Errorf("fast client got data %v, want %q", msg.Data, "payload")
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("fast subscriber never received the broadcast")
+	if msg := readType(t, fastPeer, "evt"); msg.Data != "payload" {
+		t.Errorf("fast client got data %v, want %q", msg.Data, "payload")
 	}
 
 	<-broadcastDone
@@ -147,6 +118,7 @@ func TestBroadcast_FastSubscribersStillDeliveredEventually(t *testing.T) {
 // held the Unsubscribe write lock will deadlock and the test times out.
 func TestBroadcast_LockReleasedBeforeSend(t *testing.T) {
 	var unsubFinished atomic.Bool
+	slow, _ := newClientHost(t).full(t)
 
 	d := &WebSocketDriver{
 		channels:       make(map[string]map[string]*websocket.Client),
@@ -157,19 +129,11 @@ func TestBroadcast_LockReleasedBeforeSend(t *testing.T) {
 		// Inside the send path. If snapshotTargets failed to release the
 		// RLock we cannot acquire the write lock here and the test will
 		// time out.
-		_ = d.Unsubscribe("c", "slow")
+		_ = d.Unsubscribe("c", slow.ID)
 		unsubFinished.Store(true)
 	}
 
-	slow := &websocket.Client{
-		ID:       "slow",
-		Send:     make(chan websocket.Message, 1),
-		Groups:   make(map[string]bool),
-		Metadata: make(map[string]interface{}),
-	}
-	slow.Send <- websocket.Message{Type: "filler"}
-
-	d.channels["c"] = map[string]*websocket.Client{"slow": slow}
+	d.channels["c"] = map[string]*websocket.Client{slow.ID: slow}
 
 	done := make(chan struct{})
 	go func() {

@@ -57,7 +57,7 @@ func TestHandleSubscribe_AuthorizerWithoutVerifier_WarnsOnce(t *testing.T) {
 	d.SetLogger(logger)
 	d.SetAuthorizer(func(client *websocket.Client, channel string) bool { return true })
 
-	client := createTestClient("warn-1")
+	client := connectedClient(t)
 	for _, ch := range []string{"private-a", "presence-b"} {
 		if err := d.handleSubscribe(client, subscribeMsg(ch, "")); err != nil {
 			t.Fatalf("subscribe to %s: %v", ch, err)
@@ -84,7 +84,7 @@ func TestHandleSubscribe_AuthorizerWithVerifier_NoWarn(t *testing.T) {
 	d.SetAuthorizer(func(client *websocket.Client, channel string) bool { return true })
 	d.SetTokenVerifier(func(socketID, channel, token string) bool { return token == "valid" })
 
-	client := createTestClient("warn-2")
+	client := connectedClient(t)
 	if err := d.handleSubscribe(client, subscribeMsg("private-a", "valid")); err != nil {
 		t.Fatalf("subscribe with valid token: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestHandleSubscribe_DefaultDeny_NoWarn(t *testing.T) {
 	logger := &captureLogger{}
 	d.SetLogger(logger)
 
-	client := createTestClient("warn-3")
+	client := connectedClient(t)
 	err := d.handleSubscribe(client, subscribeMsg("private-a", ""))
 	if err == nil || !strings.Contains(err.Error(), "unauthorized") {
 		t.Fatalf("expected unauthorized error, got %v", err)
@@ -129,7 +129,7 @@ func TestHandleSubscribe_VerifierClearedAfterSecretRemoval_Warns(t *testing.T) {
 	d.SetAuthorizer(func(client *websocket.Client, channel string) bool { return true })
 	d.SetTokenVerifier(func(socketID, channel, token string) bool { return true })
 
-	client := createTestClient("warn-4")
+	client := connectedClient(t)
 	if err := d.handleSubscribe(client, subscribeMsg("private-a", "tok")); err != nil {
 		t.Fatalf("subscribe with verifier: %v", err)
 	}

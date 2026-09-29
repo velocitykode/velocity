@@ -6,29 +6,18 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/velocitykode/velocity/internal/hostile"
 	"github.com/velocitykode/velocity/websocket"
 )
 
-// createTestClient creates a mock client with buffered Send channel for testing
+// createTestClient returns a Client the server did not connect: it serves
+// as an identity only, and every send to it reports the client gone. Tests
+// that observe deliveries connect a real client through a clientHost.
 func createTestClient(id string) *websocket.Client {
 	return &websocket.Client{
 		ID:       id,
-		Send:     make(chan websocket.Message, 10),
 		Groups:   make(map[string]bool),
 		Metadata: make(map[string]interface{}),
-	}
-}
-
-// drainMessages reads all messages from client's Send channel
-func drainMessages(client *websocket.Client) []websocket.Message {
-	var messages []websocket.Message
-	for {
-		select {
-		case msg := <-client.Send:
-			messages = append(messages, msg)
-		default:
-			return messages
-		}
 	}
 }
 
@@ -273,6 +262,7 @@ func TestWebSocketDriver_Unsubscribe(t *testing.T) {
 }
 
 func TestWebSocketDriver_Broadcast(t *testing.T) {
+	h := newClientHost(t)
 	tests := []struct {
 		name          string
 		setupChannels map[string][]string
@@ -389,7 +379,7 @@ func TestWebSocketDriver_Broadcast(t *testing.T) {
 				driver.channels[channel] = make(map[string]*websocket.Client)
 				for _, id := range clientIDs {
 					if _, exists := allClients[id]; !exists {
-						allClients[id] = createTestClient(id)
+						allClients[id] = h.client(t, id)
 					}
 					driver.channels[channel][id] = allClients[id]
 				}
@@ -409,7 +399,7 @@ func TestWebSocketDriver_Broadcast(t *testing.T) {
 					continue
 				}
 
-				gotMsgs := drainMessages(client)
+				gotMsgs := h.drain(t, client)
 				if len(gotMsgs) != len(wantMsgs) {
 					t.Errorf("client %q: got %d messages, want %d", clientID, len(gotMsgs), len(wantMsgs))
 					continue
@@ -426,7 +416,7 @@ func TestWebSocketDriver_Broadcast(t *testing.T) {
 			// Verify clients not in wantMessages got no messages
 			for clientID, client := range allClients {
 				if _, expected := tt.wantMessages[clientID]; !expected {
-					msgs := drainMessages(client)
+					msgs := h.drain(t, client)
 					if len(msgs) != 0 {
 						t.Errorf("client %q: got %d unexpected messages", clientID, len(msgs))
 					}
@@ -437,6 +427,7 @@ func TestWebSocketDriver_Broadcast(t *testing.T) {
 }
 
 func TestWebSocketDriver_BroadcastExcept(t *testing.T) {
+	h := newClientHost(t)
 	tests := []struct {
 		name          string
 		setupChannels map[string][]string
@@ -520,7 +511,7 @@ func TestWebSocketDriver_BroadcastExcept(t *testing.T) {
 				driver.channels[channel] = make(map[string]*websocket.Client)
 				for _, id := range clientIDs {
 					if _, exists := allClients[id]; !exists {
-						allClients[id] = createTestClient(id)
+						allClients[id] = h.client(t, id)
 					}
 					driver.channels[channel][id] = allClients[id]
 				}
@@ -540,7 +531,7 @@ func TestWebSocketDriver_BroadcastExcept(t *testing.T) {
 					continue
 				}
 
-				gotMsgs := drainMessages(client)
+				gotMsgs := h.drain(t, client)
 				if len(gotMsgs) != len(wantMsgs) {
 					t.Errorf("client %q: got %d messages, want %d", clientID, len(gotMsgs), len(wantMsgs))
 				}
@@ -548,7 +539,7 @@ func TestWebSocketDriver_BroadcastExcept(t *testing.T) {
 
 			// Verify excluded client received no messages
 			if excludedClient, exists := allClients[tt.excludeID]; exists {
-				msgs := drainMessages(excludedClient)
+				msgs := h.drain(t, excludedClient)
 				if len(msgs) != 0 {
 					t.Errorf("excluded client %q received %d messages, want 0", tt.excludeID, len(msgs))
 				}
@@ -558,6 +549,7 @@ func TestWebSocketDriver_BroadcastExcept(t *testing.T) {
 }
 
 func TestWebSocketDriver_handleSubscribe(t *testing.T) {
+	h := newClientHost(t)
 	tests := []struct {
 		name         string
 		msgData      interface{}
@@ -611,7 +603,7 @@ func TestWebSocketDriver_handleSubscribe(t *testing.T) {
 				channels: make(map[string]map[string]*websocket.Client),
 			}
 
-			client := createTestClient("client-1")
+			client := h.client(t, "client-1")
 			msg := websocket.Message{
 				Type: "subscribe",
 				Data: tt.msgData,
@@ -642,12 +634,14 @@ func TestWebSocketDriver_handleSubscribe(t *testing.T) {
 				return
 			}
 
-			if _, ok := clients[tt.wantClientID]; !ok {
+			// The test's "client-1" is the connected client, under its
+			// server-made ID.
+			if _, ok := clients[client.ID]; !ok {
 				t.Errorf("expected client %q to be subscribed to channel %q", tt.wantClientID, tt.wantChannel)
 			}
 
 			// Verify confirmation message was sent
-			msgs := drainMessages(client)
+			msgs := h.drain(t, client)
 			if len(msgs) != 1 {
 				t.Errorf("expected 1 confirmation message, got %d", len(msgs))
 				return
@@ -661,6 +655,7 @@ func TestWebSocketDriver_handleSubscribe(t *testing.T) {
 }
 
 func TestWebSocketDriver_handleUnsubscribe(t *testing.T) {
+	h := newClientHost(t)
 	tests := []struct {
 		name          string
 		setupChannels map[string][]string
@@ -711,16 +706,19 @@ func TestWebSocketDriver_handleUnsubscribe(t *testing.T) {
 				channels: make(map[string]map[string]*websocket.Client),
 			}
 
-			client := createTestClient("client-1")
+			client := h.client(t, "client-1")
 
 			// Setup channels
 			for channel, clientIDs := range tt.setupChannels {
 				driver.channels[channel] = make(map[string]*websocket.Client)
 				for _, id := range clientIDs {
+					// Keyed by the connected client's server-made ID, as a
+					// subscribe keys it.
 					if id == "client-1" {
-						driver.channels[channel][id] = client
+						driver.channels[channel][client.ID] = client
 					} else {
-						driver.channels[channel][id] = createTestClient(id)
+						other := h.client(t, id)
+						driver.channels[channel][other.ID] = other
 					}
 				}
 			}
@@ -749,7 +747,7 @@ func TestWebSocketDriver_handleUnsubscribe(t *testing.T) {
 			}
 
 			// Verify confirmation message was sent
-			msgs := drainMessages(client)
+			msgs := h.drain(t, client)
 			if len(msgs) != 1 {
 				t.Errorf("expected 1 confirmation message, got %d", len(msgs))
 				return
@@ -763,6 +761,7 @@ func TestWebSocketDriver_handleUnsubscribe(t *testing.T) {
 }
 
 func TestWebSocketDriver_handleClientEvent(t *testing.T) {
+	h := newClientHost(t)
 	tests := []struct {
 		name          string
 		setupChannels map[string][]string
@@ -918,20 +917,22 @@ func TestWebSocketDriver_handleClientEvent(t *testing.T) {
 			}
 
 			allClients := make(map[string]*websocket.Client)
-			senderClient := createTestClient(tt.clientID)
+			senderClient := h.client(t, tt.clientID)
 			allClients[tt.clientID] = senderClient
 
 			// Setup channels
 			for channel, clientIDs := range tt.setupChannels {
 				driver.channels[channel] = make(map[string]*websocket.Client)
 				for _, id := range clientIDs {
+					// Keyed by the connected client's server-made ID, as a
+					// subscribe keys it.
 					if id == tt.clientID {
-						driver.channels[channel][id] = senderClient
+						driver.channels[channel][senderClient.ID] = senderClient
 					} else {
 						if _, exists := allClients[id]; !exists {
-							allClients[id] = createTestClient(id)
+							allClients[id] = h.client(t, id)
 						}
-						driver.channels[channel][id] = allClients[id]
+						driver.channels[channel][allClients[id].ID] = allClients[id]
 					}
 				}
 			}
@@ -952,7 +953,7 @@ func TestWebSocketDriver_handleClientEvent(t *testing.T) {
 					t.Errorf("got error %q, want %q", err.Error(), tt.wantErrMsg)
 				}
 				for id, client := range allClients {
-					if msgs := drainMessages(client); len(msgs) != 0 {
+					if msgs := h.drain(t, client); len(msgs) != 0 {
 						t.Errorf("client %q received %d messages after rejected event, want 0", id, len(msgs))
 					}
 				}
@@ -965,7 +966,7 @@ func TestWebSocketDriver_handleClientEvent(t *testing.T) {
 			}
 
 			// Verify sender did not receive the message
-			senderMsgs := drainMessages(senderClient)
+			senderMsgs := h.drain(t, senderClient)
 			if len(senderMsgs) != 0 {
 				t.Errorf("sender received %d messages, want 0", len(senderMsgs))
 			}
@@ -978,7 +979,7 @@ func TestWebSocketDriver_handleClientEvent(t *testing.T) {
 					continue
 				}
 
-				msgs := drainMessages(receiver)
+				msgs := h.drain(t, receiver)
 				if len(msgs) != 1 {
 					t.Errorf("receiver %q: got %d messages, want 1", receiverID, len(msgs))
 					continue
@@ -1165,34 +1166,23 @@ func TestWebSocketDriver_BroadcastWithFullChannel(t *testing.T) {
 		channels: make(map[string]map[string]*websocket.Client),
 	}
 
-	// Create a client with a small buffer that we'll fill
-	client := &websocket.Client{
-		ID:       "slow-client",
-		Send:     make(chan websocket.Message, 1), // Very small buffer
-		Groups:   make(map[string]bool),
-		Metadata: make(map[string]interface{}),
-	}
-
+	// A connected client whose queue is full.
+	client, _ := newClientHost(t).full(t)
 	driver.channels["test"] = map[string]*websocket.Client{
 		"slow-client": client,
 	}
 
-	// Fill the channel
-	client.Send <- websocket.Message{Type: "filler", Data: "data"}
-
 	// This should not block - message should be dropped
-	err := driver.Broadcast([]string{"test"}, "event", "data")
-	if err != nil {
-		t.Errorf("Broadcast() should not return error when channel is full, got %v", err)
+	hostile.Within(t, hostile.Deadline, func() {
+		if err := driver.Broadcast([]string{"test"}, "event", "data"); err != nil {
+			t.Errorf("Broadcast() should not return error when channel is full, got %v", err)
+		}
+	})
+	if got := driver.DroppedCount(); got != 1 {
+		t.Errorf("DroppedCount = %d, want 1", got)
 	}
-
-	// Drain and verify only the filler message is there
-	msgs := drainMessages(client)
-	if len(msgs) != 1 {
-		t.Errorf("expected 1 message (the filler), got %d", len(msgs))
-	}
-	if msgs[0].Type != "filler" {
-		t.Errorf("expected filler message, got %q", msgs[0].Type)
+	if _, ok := driver.channels["test"]["slow-client"]; !ok {
+		t.Error("a client with a full queue was purged")
 	}
 }
 
@@ -1203,10 +1193,11 @@ func TestWebSocketDriver_BroadcastWithFullChannel(t *testing.T) {
 func TestWebSocketDriver_handleSubscribe_TokenVerifier(t *testing.T) {
 	const validToken = "valid-token-abc"
 
-	// Verifier accepts only the canonical (clientID="client-1", channel,
-	// token=validToken) triple so we can exercise tamper paths against it.
+	// Verifier accepts only the connected client's ID with validToken, so
+	// we can exercise tamper paths against it.
+	client := connectedClient(t)
 	verifier := func(socketID, channel, token string) bool {
-		return socketID == "client-1" && token == validToken
+		return socketID == client.ID && token == validToken
 	}
 
 	tests := []struct {
@@ -1276,7 +1267,6 @@ func TestWebSocketDriver_handleSubscribe_TokenVerifier(t *testing.T) {
 				authorizer: func(client *websocket.Client, channel string) bool { return true },
 				verifier:   verifier,
 			}
-			client := createTestClient("client-1")
 
 			err := driver.handleSubscribe(client, websocket.Message{Type: "subscribe", Data: tt.authData})
 
@@ -1306,7 +1296,7 @@ func TestWebSocketDriver_SetTokenVerifier(t *testing.T) {
 
 	// Default: no verifier installed, so subscribe to private channel is
 	// allowed (authorizer-only path, backwards compatible).
-	client := createTestClient("client-1")
+	client := connectedClient(t)
 	err := driver.handleSubscribe(client, websocket.Message{
 		Type: "subscribe",
 		Data: map[string]interface{}{"channel": "private-x"},
@@ -1331,7 +1321,7 @@ func TestWebSocketDriver_SetTokenVerifier(t *testing.T) {
 
 	// Remove verifier; private-channel subscribe should work again.
 	driver.SetTokenVerifier(nil)
-	client3 := createTestClient("client-3")
+	client3 := connectedClient(t)
 	err = driver.handleSubscribe(client3, websocket.Message{
 		Type: "subscribe",
 		Data: map[string]interface{}{"channel": "private-x"},
