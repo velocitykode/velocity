@@ -94,8 +94,8 @@ func checkNested(t *testing.T, s *grpc.Server, outer func(*grpc.Server) error, n
 		t.Fatal("the nested stop never ran")
 	}
 	if nestedName == "Shutdown" {
-		if !errors.Is(nested.err, grpcgo.ErrServerStopped) {
-			t.Errorf("nested Shutdown = %v, want an error wrapping ErrServerStopped", nested.err)
+		if !errors.Is(nested.err, grpcgo.ErrServerStopped) || !errors.Is(nested.err, contract.ErrStopFromOwnWork) {
+			t.Errorf("nested Shutdown = %v, want an error wrapping ErrServerStopped and contract.ErrStopFromOwnWork", nested.err)
 		}
 	} else if nested.err != nil {
 		t.Errorf("nested %s = %v", nestedName, nested.err)

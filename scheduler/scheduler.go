@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"runtime"
 	"strings"
@@ -90,11 +91,11 @@ type Scheduler struct {
 	// task's run, a RunInBackground task's completion, a Shutdown's lines.
 	// Each enters before it runs any user code and leaves after the last
 	// (for a run, after its release), so Shutdown, which would wait on
-	// them, refuses a call from one of them (ErrShutdownFromTask). Its
-	// drain is the one the Shutdown that stopped the scheduler owns,
-	// closed when every run it admitted has finished; a later Shutdown
-	// waits on it, and a Run does not start before it closes. The drain
-	// is guarded by mu.
+	// them, refuses a call from one of them (an error wrapping
+	// contract.ErrStopFromOwnWork). Its drain is the one the Shutdown that
+	// stopped the scheduler owns, closed when every run it admitted has
+	// finished; a later Shutdown waits on it, and a Run does not start
+	// before it closes. The drain is guarded by mu.
 	stops drain.Coordinator
 
 	// locker acquires named distributed locks for WithoutOverlapping() and
@@ -413,7 +414,8 @@ func (s *Scheduler) Command(command string, args ...string) *Job {
 // Shutdown: each Run builds fresh per-run state below. While the runs a
 // Shutdown admitted are still draining (it timed out), Run waits for
 // them before it starts, or returns ctx's error; called from one of
-// those runs it would wait on itself, and returns ErrShutdownFromTask.
+// those runs it would wait on itself, and returns an error wrapping
+// contract.ErrStopFromOwnWork.
 func (s *Scheduler) Run(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -430,7 +432,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		}
 		s.mu.Unlock()
 		if s.stops.Nested() {
-			return ErrShutdownFromTask
+			return fmt.Errorf("velocity/scheduler: Run called from inside a run it would wait for: %w", contract.ErrStopFromOwnWork)
 		}
 		select {
 		case <-pending:
@@ -539,8 +541,9 @@ func (s *Scheduler) ValidateJobs() {
 //
 // Called from inside the scheduler's own work (a task's run, hooks,
 // listeners, logger or lock release, a RunInBackground task's completion,
-// or a tick's callbacks, Locker or lines), it returns ErrShutdownFromTask
-// and changes nothing: it would wait on its caller.
+// or a tick's callbacks, Locker or lines), it returns an error wrapping
+// contract.ErrStopFromOwnWork and changes nothing: it would wait on its
+// caller.
 //
 // Past that check, cancelling the scheduler's internal run-context is
 // the first thing Shutdown does once it has stopped admitting runs. Any Locker.Acquire that is in-flight on
@@ -550,7 +553,7 @@ func (s *Scheduler) ValidateJobs() {
 // believed shutdown completed.
 func (s *Scheduler) Shutdown(ctx context.Context) error {
 	if s.stops.Nested() {
-		return ErrShutdownFromTask
+		return fmt.Errorf("velocity/scheduler: shutdown called from inside a task or tick it would wait for: %w", contract.ErrStopFromOwnWork)
 	}
 
 	s.mu.Lock()

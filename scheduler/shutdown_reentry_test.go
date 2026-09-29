@@ -34,7 +34,7 @@ func (r *reentry) shutdown() {
 }
 
 // assertShutdownRefused runs s, waits for the Shutdown r makes from inside
-// s's work, and requires it to have returned ErrShutdownFromTask with the
+// s's work, and requires it to have returned an error wrapping contract.ErrStopFromOwnWork with the
 // scheduler left running. A Shutdown from outside then stops it, once
 // settle (when not nil) has returned.
 func assertShutdownRefused(t *testing.T, s *Scheduler, r *reentry, settle ...func()) {
@@ -44,8 +44,8 @@ func assertShutdownRefused(t *testing.T, s *Scheduler, r *reentry, settle ...fun
 
 	select {
 	case err := <-r.got:
-		if !errors.Is(err, ErrShutdownFromTask) {
-			t.Fatalf("Shutdown from inside the scheduler's work returned %v, want ErrShutdownFromTask", err)
+		if !errors.Is(err, contract.ErrStopFromOwnWork) {
+			t.Fatalf("Shutdown from inside the scheduler's work returned %v, want an error wrapping contract.ErrStopFromOwnWork", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the work never called Shutdown")
@@ -243,8 +243,8 @@ func TestShutdown_RefusedBeforeRunChangesNothing(t *testing.T) {
 	s.runDueJobs()
 	select {
 	case err := <-r.got:
-		if !errors.Is(err, ErrShutdownFromTask) {
-			t.Fatalf("Shutdown from a task run outside Run returned %v, want ErrShutdownFromTask", err)
+		if !errors.Is(err, contract.ErrStopFromOwnWork) {
+			t.Fatalf("Shutdown from a task run outside Run returned %v, want an error wrapping contract.ErrStopFromOwnWork", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the task never called Shutdown")

@@ -587,12 +587,6 @@ type Relay struct {
 	own goroutine.Set
 }
 
-// errStopFromRelay is what Stop returns, at once and changing nothing,
-// when called from the relay's own goroutines: a dispatch callback, or a
-// logger writing a relay line. Stop waits for those goroutines to finish,
-// so it would wait on itself.
-var errStopFromRelay = errors.New("velocity/orm: relay Stop called from a relay callback or logger; stop the relay from another goroutine")
-
 // NewRelay constructs a Relay. The relay does not start until Start is called.
 func NewRelay(mgr *Manager, callbacks RelayCallbacks, cfg RelayConfig) *Relay {
 	if cfg.PollInterval <= 0 {
@@ -733,7 +727,7 @@ func (r *Relay) Start(ctx context.Context) error {
 // error at once and changes nothing: stop the relay from another goroutine.
 func (r *Relay) Stop(ctx context.Context) error {
 	if r.own.Contains(goroutine.ID()) {
-		return errStopFromRelay
+		return fmt.Errorf("velocity/orm: relay Stop called from a relay callback or logger; stop the relay from another goroutine: %w", contract.ErrStopFromOwnWork)
 	}
 	r.mu.Lock()
 	if !r.running {

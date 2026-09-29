@@ -99,8 +99,8 @@ func TestRelay_StopFromCallbackIsRefused(t *testing.T) {
 	}
 	select {
 	case err := <-inner:
-		if err == nil {
-			t.Error("Stop from a callback returned nil, want an error: it would wait on itself")
+		if !errors.Is(err, contract.ErrStopFromOwnWork) {
+			t.Errorf("Stop from a callback = %v, want an error wrapping contract.ErrStopFromOwnWork: it would wait on itself", err)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Stop from a callback did not return")

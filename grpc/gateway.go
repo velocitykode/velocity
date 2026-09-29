@@ -758,7 +758,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	}
 	if !owner {
 		if nested && !drain.Closed(drained) {
-			return errGatewayShutdownNested
+			return fmt.Errorf("velocity/grpc: Shutdown called from inside a stop of this gateway: %w: %w", contract.ErrStopFromOwnWork, http.ErrServerClosed)
 		}
 		return g.stops.Await(ctx, drained, func() { _ = server.Close() })
 	}
@@ -780,10 +780,6 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	}
 	return drainErr // read after finished closed, which its write precedes
 }
-
-// errGatewayShutdownNested is what a Shutdown called from the gateway's own
-// stop line returns: it cannot wait on the stop it runs in.
-var errGatewayShutdownNested = fmt.Errorf("velocity/grpc: Shutdown called from inside a stop of this gateway: %w", http.ErrServerClosed)
 
 // beginStop records a stop under the lock. A running gateway stops
 // running, and this stop owns its drain: server is returned with owner

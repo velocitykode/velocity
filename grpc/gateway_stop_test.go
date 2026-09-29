@@ -210,8 +210,8 @@ func TestGatewayStop_NestedStopFromTheStopLineDoesNotWaitOnItself(t *testing.T) 
 						t.Fatal("the nested stop did not return")
 					}
 					if nestedName == "Shutdown" {
-						if !errors.Is(logger.err, http.ErrServerClosed) {
-							t.Errorf("nested Shutdown = %v, want an error wrapping http.ErrServerClosed", logger.err)
+						if !errors.Is(logger.err, http.ErrServerClosed) || !errors.Is(logger.err, contract.ErrStopFromOwnWork) {
+							t.Errorf("nested Shutdown = %v, want an error wrapping http.ErrServerClosed and contract.ErrStopFromOwnWork", logger.err)
 						}
 					}
 					if outerName == "Shutdown" && outerErr != nil {

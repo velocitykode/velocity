@@ -186,7 +186,7 @@ func (a *App) serveHTTP() error {
 func (a *App) Shutdown(ctx context.Context) error {
 	t := &a.teardown
 	if t.stops.Nested() {
-		return errShutdownFromTeardown
+		return fmt.Errorf("velocity: Shutdown called from the app's own teardown: %w", contract.ErrStopFromOwnWork)
 	}
 	t.mu.Lock()
 	done := t.stops.Ended()
@@ -205,10 +205,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 	}
 	return t.err
 }
-
-// errShutdownFromTeardown is what App.Shutdown returns when called from
-// the teardown it would wait on.
-var errShutdownFromTeardown = errors.New("velocity: Shutdown called from the app's own teardown")
 
 // appTeardown is the one run of App.Shutdown's teardown: the coordinator
 // marks the goroutine running it, and err is its result, written before

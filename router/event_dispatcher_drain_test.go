@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"errors"
+	"github.com/velocitykode/velocity/contract"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,8 +30,8 @@ func TestShutdownEventDispatcher_FromItsOwnListenerDoesNotWait(t *testing.T) {
 	hostile.Within(t, hostile.Deadline, func() { <-returned })
 	if p := stopErr.Load(); p == nil || *p == nil {
 		t.Fatal("ShutdownEventDispatcher from its own listener returned nil; want an error saying it cannot wait")
-	} else if !errors.Is(*p, errEventDispatcherStopped) {
-		t.Errorf("error = %v, want one wrapping errEventDispatcherStopped", *p)
+	} else if !errors.Is(*p, errEventDispatcherStopped) || !errors.Is(*p, contract.ErrStopFromOwnWork) {
+		t.Errorf("error = %v, want one wrapping errEventDispatcherStopped and contract.ErrStopFromOwnWork", *p)
 	}
 	if err := r.events.Dispatcher()(context.Background(), "late"); !errors.Is(err, errEventDispatcherStopped) {
 		t.Errorf("dispatch after the stop = %v, want errEventDispatcherStopped", err)

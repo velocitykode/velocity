@@ -125,7 +125,7 @@ func TestRun_DoesNotOvertakeAPendingDrain(t *testing.T) {
 }
 
 // A Run called from the task a pending drain waits on would wait on
-// itself: it returns ErrShutdownFromTask at once.
+// itself: it returns an error wrapping contract.ErrStopFromOwnWork at once.
 func TestRun_FromTheDrainedTaskIsRefused(t *testing.T) {
 	s := New()
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -147,8 +147,8 @@ func TestRun_FromTheDrainedTaskIsRefused(t *testing.T) {
 	close(release)
 	select {
 	case err := <-runErr:
-		if !errors.Is(err, ErrShutdownFromTask) {
-			t.Errorf("Run from the drained task = %v, want ErrShutdownFromTask", err)
+		if !errors.Is(err, contract.ErrStopFromOwnWork) {
+			t.Errorf("Run from the drained task = %v, want an error wrapping contract.ErrStopFromOwnWork", err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run from the drained task waited on itself")

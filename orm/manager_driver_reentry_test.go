@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/velocitykode/velocity/contract"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -109,8 +110,8 @@ func TestManagerShutdown_FromADriverCloseIsRefused(t *testing.T) {
 			t.Errorf("outer Shutdown: %v", err)
 		}
 	})
-	if inner == nil {
-		t.Error("Shutdown from inside Close returned nil, want an error: the closes were not finished")
+	if !errors.Is(inner, contract.ErrStopFromOwnWork) {
+		t.Errorf("Shutdown from inside Close = %v, want an error wrapping contract.ErrStopFromOwnWork: the closes were not finished", inner)
 	}
 	if d.closes.Load() != 1 {
 		t.Errorf("closes = %d, want 1", d.closes.Load())

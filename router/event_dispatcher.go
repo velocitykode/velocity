@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/goroutine"
@@ -27,12 +28,6 @@ var ErrEventBufferFull = errors.New("velocity/router: event buffer full, droppin
 // that no longer accepts them. The router counts the drop like a full
 // buffer, as a failed event.
 var errEventDispatcherStopped = errors.New("velocity/router: event dispatcher stopped, dropping event")
-
-// errStopFromOwnListener is what a stop of an async pool called from one
-// of that pool's own listeners returns: the stop waits for the pool's
-// workers, and the listener runs on one of them, so the pool is stopped
-// without the call waiting for it.
-var errStopFromOwnListener = fmt.Errorf("velocity/router: event dispatcher stopped from its own listener; the pool drains without this call waiting for it: %w", errEventDispatcherStopped)
 
 // SetAsyncEventDispatcher wires an event dispatcher that delivers events
 // to fn from a pool of worker goroutines reading a buffered channel.
@@ -241,7 +236,7 @@ func (s *asyncEventStop) stop(ctx context.Context, joinWaits bool) error {
 	case drain.Closed(drained):
 		return nil
 	case nested:
-		return errStopFromOwnListener
+		return fmt.Errorf("velocity/router: event dispatcher stopped from its own listener; the pool drains without this call waiting for it: %w: %w", contract.ErrStopFromOwnWork, errEventDispatcherStopped)
 	case !owner && !joinWaits:
 		return nil
 	}

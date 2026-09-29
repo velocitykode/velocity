@@ -889,11 +889,6 @@ func (m *Manager) Begin(ctx context.Context) (*sql.Tx, error) {
 	return driver.BeginTx(ctx, nil)
 }
 
-// errShutdownFromClose is what a Shutdown called from inside a driver's
-// Close, while an earlier Shutdown closes the drivers, returns at once: it
-// would otherwise wait for the closes it is itself part of.
-var errShutdownFromClose = errors.New("velocity/orm: Shutdown called from a driver's Close while the manager closes its drivers")
-
 // Shutdown delivers the queued statement events, then closes the default
 // database connection and all named connections. When ctx ends before the
 // events are delivered it still closes the connections, and returns the
@@ -943,7 +938,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	if closed := m.closes.Ended(); closed != nil {
 		m.mu.Unlock()
 		if !drain.Closed(closed) && m.closes.Nested() {
-			return errors.Join(drainErr, errShutdownFromClose)
+			return errors.Join(drainErr, fmt.Errorf("velocity/orm: Shutdown called from a driver's Close while the manager closes its drivers: %w", contract.ErrStopFromOwnWork))
 		}
 		if err := m.closes.Await(ctx, closed, nil); err != nil {
 			return errors.Join(drainErr, err)

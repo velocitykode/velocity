@@ -3,6 +3,7 @@ package websocket
 import (
 	"context"
 	"errors"
+	"github.com/velocitykode/velocity/contract"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -74,8 +75,8 @@ func TestServer_ShutdownFromAServerGoroutineDoesNotWait(t *testing.T) {
 
 			e.kick(t, s, ts.URL)
 			hostile.Within(t, hostile.Deadline, func() { <-returned })
-			if p := stopErr.Load(); p == nil || !errors.Is(*p, ErrServerClosed) {
-				t.Fatalf("Shutdown from a server goroutine = %v, want an error wrapping ErrServerClosed", p)
+			if p := stopErr.Load(); p == nil || !errors.Is(*p, ErrServerClosed) || !errors.Is(*p, contract.ErrStopFromOwnWork) {
+				t.Fatalf("Shutdown from a server goroutine = %v, want an error wrapping ErrServerClosed and contract.ErrStopFromOwnWork", p)
 			}
 			hostile.Within(t, hostile.Deadline, func() {
 				ctx, cancel := context.WithTimeout(context.Background(), hostile.Deadline)

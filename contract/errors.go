@@ -94,6 +94,17 @@ var (
 	// may still return it from those methods.
 	// Hoisted from crypto/drivers.ErrInvalidCipher.
 	ErrInvalidCipher = errors.New("velocity/crypto: unsupported cipher")
+
+	// ErrStopFromOwnWork is what a component's stop (Shutdown, Stop)
+	// returns when it is called from inside the work it would wait for: a
+	// scheduler task, a worker's job or listener, a server's handler or
+	// pump, a module's Shutdown during the app's teardown. Waiting there
+	// would wait on the caller itself, so the stop is signalled and the
+	// call returns at once without waiting; a stop from outside then
+	// waits for the drain. Every such error wraps it: check with
+	// errors.Is(err, ErrStopFromOwnWork). Each owner adds its own context,
+	// and may wrap its own closed-state sentinel as well.
+	ErrStopFromOwnWork = errors.New("velocity: stop called from inside the work it would wait for")
 )
 
 // HTTPError is the framework's one HTTP-shaped error value. Router, auth,

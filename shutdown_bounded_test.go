@@ -188,7 +188,7 @@ func TestShutdown_FromTheTeardownReturnsAtOnce(t *testing.T) {
 	if err := shutdownWithin(t, a, 2*time.Second); err != nil {
 		t.Fatalf("App.Shutdown = %v, want nil", err)
 	}
-	if !errors.Is(m.err, errShutdownFromTeardown) {
-		t.Errorf("the nested App.Shutdown = %v, want errShutdownFromTeardown", m.err)
+	if !errors.Is(m.err, contract.ErrStopFromOwnWork) {
+		t.Errorf("the nested App.Shutdown = %v, want an error wrapping contract.ErrStopFromOwnWork", m.err)
 	}
 }

@@ -286,11 +286,6 @@ func (s *Server) serveWork(fn func()) {
 	fn()
 }
 
-// errShutdownNested is what a Shutdown called from one of the server's
-// own goroutines returns: the drain waits for that goroutine, so the call
-// stops the server without waiting for it.
-var errShutdownNested = fmt.Errorf("websocket: Shutdown called from a server goroutine (run loop, fan-out or a client pump); the server drains without this call waiting for it: %w", ErrServerClosed)
-
 // Shutdown gracefully stops the server and waits for the run-loop goroutine
 // and every per-client read/write pump to drain, bounded by ctx.
 //
@@ -361,7 +356,7 @@ func (s *Server) awaitDrain(ctx context.Context, drained chan struct{}, nested b
 	case drained == nil || drain.Closed(drained):
 		return nil
 	case nested:
-		return errShutdownNested
+		return fmt.Errorf("websocket: Shutdown called from a server goroutine (run loop, fan-out or a client pump); the server drains without this call waiting for it: %w: %w", contract.ErrStopFromOwnWork, ErrServerClosed)
 	}
 	return s.stops.Await(ctx, drained, nil)
 }

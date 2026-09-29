@@ -882,10 +882,6 @@ func (s *Server) ownStop(st stopPlan, line string, stop func(*grpc.Server)) {
 	})
 }
 
-// errShutdownNested is what a Shutdown called from inside the server's own
-// stop or serve work returns: it cannot wait on the work it runs in.
-var errShutdownNested = fmt.Errorf("velocity/grpc: Shutdown called from inside a stop of this server: %w", grpc.ErrServerStopped)
-
 // stopPlan is what one Stop or GracefulStop does after it released the
 // lock.
 type stopPlan struct {
@@ -1085,7 +1081,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	switch {
 	case st.owner && nested:
 		async.Go(func() { s.ownStop(st, "gRPC server gracefully stopping", (*grpc.Server).GracefulStop) })
-		return errShutdownNested
+		return fmt.Errorf("velocity/grpc: Shutdown called from inside a stop of this server: %w: %w", contract.ErrStopFromOwnWork, grpc.ErrServerStopped)
 	case st.owner:
 		// The owner's whole stop (its line, the drain, ServerStopped) runs
 		// on a goroutine of its own, so neither the drain nor a logger or
@@ -1097,7 +1093,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		})
 		return s.stops.Await(ctx, finished, st.srv.Stop)
 	case nested && st.drained != nil && !drain.Closed(st.drained):
-		return errShutdownNested
+		return fmt.Errorf("velocity/grpc: Shutdown called from inside a stop of this server: %w: %w", contract.ErrStopFromOwnWork, grpc.ErrServerStopped)
 	}
 	var err error
 	if st.drained != nil {

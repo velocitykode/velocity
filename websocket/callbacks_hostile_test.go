@@ -3,6 +3,7 @@ package websocket
 import (
 	"context"
 	"errors"
+	"github.com/velocitykode/velocity/contract"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -97,8 +98,8 @@ func TestServer_CallbacksAreContained(t *testing.T) {
 					code.Release()
 				case hostile.Reenter:
 					waitFor(t, func() bool { return nestedErr.Load() != nil }, "the re-entering callback returning")
-					if err := *nestedErr.Load(); !errors.Is(err, ErrServerClosed) {
-						t.Errorf("Shutdown from the callback = %v, want an error wrapping ErrServerClosed", err)
+					if err := *nestedErr.Load(); !errors.Is(err, ErrServerClosed) || !errors.Is(err, contract.ErrStopFromOwnWork) {
+						t.Errorf("Shutdown from the callback = %v, want an error wrapping ErrServerClosed and contract.ErrStopFromOwnWork", err)
 					}
 				}
 				hostile.Within(t, hostile.Deadline, func() {
