@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/log/drivers"
 )
@@ -54,5 +55,35 @@ func TestLoggingMiddleware_FailedCommandShowsAtWarnLevel(t *testing.T) {
 	}
 	if strings.Contains(got, "Dispatching command") || strings.Contains(got, "Command completed") {
 		t.Errorf("output at warn level = %q, want no dispatch or completion lines", got)
+	}
+}
+
+// panickingLogger panics on every line.
+type panickingLogger struct{}
+
+func (panickingLogger) Debug(string, ...any)          { panic("logger broke") }
+func (panickingLogger) Info(string, ...any)           { panic("logger broke") }
+func (panickingLogger) Warn(string, ...any)           { panic("logger broke") }
+func (panickingLogger) Error(string, ...any)          { panic("logger broke") }
+func (panickingLogger) Fatal(string, ...any)          { panic("logger broke") }
+func (l panickingLogger) With(...any) contract.Logger { return l }
+
+// A logger that panics never fails the command it describes: the handler
+// runs and the dispatch returns the handler's result.
+func TestLoggingMiddleware_PanickingLoggerDoesNotFailTheCommand(t *testing.T) {
+	b := New()
+	b.Through(LoggingMiddleware(panickingLogger{}))
+	ran := 0
+	Register(b, func(createUser) error { ran++; return nil })
+	Register(b, func(deleteUser) error { ran++; return errors.New("mailbox full") })
+
+	if err := b.Dispatch(createUser{Name: "Test"}); err != nil {
+		t.Errorf("Dispatch = %v, want nil", err)
+	}
+	if err := b.Dispatch(deleteUser{ID: 1}); err == nil || err.Error() != "mailbox full" {
+		t.Errorf("Dispatch = %v, want the handler's error", err)
+	}
+	if ran != 2 {
+		t.Errorf("handlers ran %d times, want 2", ran)
 	}
 }

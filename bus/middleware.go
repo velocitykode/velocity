@@ -22,12 +22,14 @@ func Middleware(fn func(cmd Command, next func(Command) error) error) pipeline.S
 func LoggingMiddleware(logger contract.Logger) pipeline.Stage[Command] {
 	logger = fallbacklog.Resolve(logger)
 	return Middleware(func(cmd Command, next func(Command) error) error {
-		logger.Info("Dispatching command", "type", formatType(cmd))
+		// A panicking logger never fails the command it describes.
+		typ := formatType(cmd)
+		fallbacklog.Write(logger, func(l contract.Logger) { l.Info("Dispatching command", "type", typ) })
 		err := next(cmd)
 		if err != nil {
-			logger.Error("Command failed", "type", formatType(cmd), "error", err)
+			fallbacklog.Write(logger, func(l contract.Logger) { l.Error("Command failed", "type", typ, "error", err) })
 		} else {
-			logger.Info("Command completed", "type", formatType(cmd))
+			fallbacklog.Write(logger, func(l contract.Logger) { l.Info("Command completed", "type", typ) })
 		}
 		return err
 	})

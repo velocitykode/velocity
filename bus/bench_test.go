@@ -1,6 +1,10 @@
 package bus
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/velocitykode/velocity/contract"
+)
 
 // BenchmarkBusDispatch measures the hot path with no middleware and no event
 // dispatcher set: the composed chain is read lock-free and the command type
@@ -40,6 +44,36 @@ func BenchmarkBusDispatchMiddleware(b *testing.B) {
 			return next(cmd)
 		}),
 	)
+	cmd := createUser{Name: "Alice", Email: "alice@example.com"}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := bus.Dispatch(cmd); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// discardLogger drops every line.
+type discardLogger struct{}
+
+func (discardLogger) Debug(string, ...any)          {}
+func (discardLogger) Info(string, ...any)           {}
+func (discardLogger) Warn(string, ...any)           {}
+func (discardLogger) Error(string, ...any)          {}
+func (discardLogger) Fatal(string, ...any)          {}
+func (l discardLogger) With(...any) contract.Logger { return l }
+
+// BenchmarkBusDispatchLogging measures a dispatch through LoggingMiddleware
+// with a logger that drops its lines, so only the middleware's own cost
+// shows.
+func BenchmarkBusDispatchLogging(b *testing.B) {
+	bus := New()
+	Register(bus, func(cmd createUser) error {
+		return nil
+	})
+	bus.Through(LoggingMiddleware(discardLogger{}))
 	cmd := createUser{Name: "Alice", Email: "alice@example.com"}
 
 	b.ReportAllocs()
