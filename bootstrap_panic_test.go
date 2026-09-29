@@ -8,13 +8,9 @@ import (
 	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/events"
+	"github.com/velocitykode/velocity/internal/hostile"
 	"github.com/velocitykode/velocity/scheduler"
 )
-
-// panickingWarnLogger panics on every warn line.
-type panickingWarnLogger struct{ levelLogger }
-
-func (*panickingWarnLogger) Warn(string, ...any) { panic("logger broke") }
 
 // A logger that panics on the warning Bootstrap writes when events are
 // disabled but event callbacks were registered does not stop the
@@ -25,7 +21,7 @@ func TestBootstrap_PanickingLoggerDoesNotSkipLaterSteps(t *testing.T) {
 		t.Fatalf("NewTestApp: %v", err)
 	}
 	t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
-	a.Services.Log = &panickingWarnLogger{}
+	a.Services.Log = hostile.NewLogger(hostile.New(t, hostile.Panic, nil), hostile.Warn)
 	scheduled := false
 	a.Events(func(events.Dispatcher) {}).
 		Schedule(func(scheduler.TaskScheduler) { scheduled = true })

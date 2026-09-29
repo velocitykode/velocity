@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/hostile"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/log/drivers"
 )
@@ -58,21 +58,11 @@ func TestLoggingMiddleware_FailedCommandShowsAtWarnLevel(t *testing.T) {
 	}
 }
 
-// panickingLogger panics on every line.
-type panickingLogger struct{}
-
-func (panickingLogger) Debug(string, ...any)          { panic("logger broke") }
-func (panickingLogger) Info(string, ...any)           { panic("logger broke") }
-func (panickingLogger) Warn(string, ...any)           { panic("logger broke") }
-func (panickingLogger) Error(string, ...any)          { panic("logger broke") }
-func (panickingLogger) Fatal(string, ...any)          { panic("logger broke") }
-func (l panickingLogger) With(...any) contract.Logger { return l }
-
 // A logger that panics never fails the command it describes: the handler
 // runs and the dispatch returns the handler's result.
 func TestLoggingMiddleware_PanickingLoggerDoesNotFailTheCommand(t *testing.T) {
 	b := New()
-	b.Through(LoggingMiddleware(panickingLogger{}))
+	b.Through(LoggingMiddleware(hostile.NewLogger(hostile.New(t, hostile.Panic, nil))))
 	ran := 0
 	Register(b, func(createUser) error { ran++; return nil })
 	Register(b, func(deleteUser) error { ran++; return errors.New("mailbox full") })

@@ -8,18 +8,8 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
-
-// nameOncePanicEvent is an event whose Name panics the first time it is
-// called and names it "evt" after that.
-type nameOncePanicEvent struct{ calls *atomic.Int32 }
-
-func (e nameOncePanicEvent) Name() string {
-	if e.calls.Add(1) == 1 {
-		panic("Name broke")
-	}
-	return "evt"
-}
 
 // A panic while a flush dispatches an entry (here the event's Name) is
 // returned as an error on the same path as a listener failure: the entry
@@ -29,7 +19,8 @@ func TestBatchingFlush_PanicIsAnErrorAndTheNextFlushDelivers(t *testing.T) {
 	d := NewBatchingDispatcher(10, time.Hour)
 	var seen atomic.Int32
 	d.Listen("evt", tallyListener{n: &seen})
-	if err := d.Dispatch(context.Background(), nameOncePanicEvent{calls: new(atomic.Int32)}); err != nil {
+	name := hostile.New(t, hostile.Panic, nil)
+	if err := d.Dispatch(context.Background(), panickingNameEvent{c: name}); err != nil {
 		t.Fatalf("Dispatch = %v", err)
 	}
 
@@ -49,6 +40,7 @@ func TestBatchingFlush_PanicIsAnErrorAndTheNextFlushDelivers(t *testing.T) {
 	if got := d.GetBatchSize(); got != 1 {
 		t.Fatalf("batch size after the failed flush = %d, want 1", got)
 	}
+	name.Disarm()
 	if err := d.Flush(); err != nil {
 		t.Fatalf("second Flush = %v", err)
 	}

@@ -4,9 +4,9 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // selfDispatchingNameEvent is an event whose Name dispatches through the
@@ -20,20 +20,13 @@ func (e selfDispatchingNameEvent) Name() string {
 	return "outer"
 }
 
-// within fails t when fn does not return within two seconds: the user code
-// fn runs called back into the component that called it, under a lock
-// that component held.
+// within fails t when fn hangs (see hostile.Within) or panics: the user
+// code fn runs called back into the component that called it, under a
+// lock that component held.
 func within(t *testing.T, what string, fn func()) {
 	t.Helper()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		fn()
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("%s deadlocked on user code calling back into it", what)
+	if p := hostile.Within(t, hostile.Deadline, fn); p != nil {
+		t.Fatalf("%s panicked: %v", what, p)
 	}
 }
 

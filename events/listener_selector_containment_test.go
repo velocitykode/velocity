@@ -3,33 +3,30 @@ package events
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
-// selectorChildEnv names the scenario a re-executed test binary runs.
-const selectorChildEnv = "VELOCITY_SELECTOR_PANIC_CHILD"
-
-// asyncPanicListener panics when asked whether it is queued.
-type asyncPanicListener struct{}
+// asyncPanicListener runs its hostile code when asked whether it is queued.
+type asyncPanicListener struct{ c *hostile.Code }
 
 func (asyncPanicListener) Handle(context.Context, interface{}) error { return nil }
-func (asyncPanicListener) Async() bool                               { panic("Async broke") }
+func (l asyncPanicListener) Async() bool                             { l.c.Run(); return false }
 
-// afterCommitPanicListener panics when asked whether it waits for commit.
-type afterCommitPanicListener struct{}
+// afterCommitPanicListener runs its hostile code when asked whether it
+// waits for commit.
+type afterCommitPanicListener struct{ c *hostile.Code }
 
 func (afterCommitPanicListener) Handle(context.Context, interface{}) error { return nil }
 func (afterCommitPanicListener) Async() bool                               { return false }
-func (afterCommitPanicListener) ShouldDispatchAfterCommit() bool {
-	panic("ShouldDispatchAfterCommit broke")
+func (l afterCommitPanicListener) ShouldDispatchAfterCommit() bool {
+	l.c.Run()
+	return false
 }
 
 // tallyListener counts the events it handles.
@@ -38,32 +35,33 @@ type tallyListener struct{ n *atomic.Int32 }
 func (l tallyListener) Handle(context.Context, interface{}) error { l.n.Add(1); return nil }
 func (tallyListener) Async() bool                                 { return false }
 
-// panickingNameEvent is an event whose Name panics.
-type panickingNameEvent struct{}
+// panickingNameEvent is an event whose Name runs its hostile code.
+type panickingNameEvent struct{ c *hostile.Code }
 
-func (panickingNameEvent) Name() string { panic("Name broke") }
+func (e panickingNameEvent) Name() string { e.c.Run(); return "evt" }
 
 // selectorScenario delivers one event detached, the way name says, to a
 // listener whose selector (Async, ShouldDispatchAfterCommit) panics beside
 // a healthy listener, or as an event whose Name panics, and returns how
 // many deliveries were recorded and how many events the healthy listener
 // handled.
-func selectorScenario(name string) (recorded, handled int32) {
+func selectorScenario(t *testing.T, name string) (recorded, handled int32) {
 	var calls, seen atomic.Int32
+	panics := hostile.New(t, hostile.Panic, nil)
 	parts := strings.SplitN(name, "/", 2)
 	wire := func(d *DefaultDispatcher) {
 		d.SetDetachedFailureRecorder(func(context.Context, error, any) { calls.Add(1) })
 		switch parts[0] {
 		case "async":
-			d.Listen("evt", asyncPanicListener{})
+			d.Listen("evt", asyncPanicListener{c: panics})
 		case "after-commit":
-			d.Listen("evt", afterCommitPanicListener{})
+			d.Listen("evt", afterCommitPanicListener{c: panics})
 		}
 		d.Listen("evt", tallyListener{n: &seen})
 	}
 	var event any = "evt"
 	if parts[0] == "name" {
-		event = panickingNameEvent{}
+		event = panickingNameEvent{c: panics}
 	}
 	ctx := context.Background()
 	var stop func()
@@ -79,18 +77,11 @@ func selectorScenario(name string) (recorded, handled int32) {
 	case "debounce":
 		d := NewDebouncingDispatcher(time.Millisecond)
 		wire(d.DefaultDispatcher)
-		if parts[0] == "name" {
-			// Debounce keys by name; a panicking Name fails the caller.
-			return 1, 0
-		}
 		_ = d.Dispatch(ctx, event)
 		stop = d.Stop
 	case "coalesce":
 		d := NewCoalescingDispatcher(time.Millisecond)
 		wire(d.DefaultDispatcher)
-		if parts[0] == "name" {
-			return 1, 0
-		}
 		_ = d.Dispatch(ctx, event)
 		stop = d.Stop
 	}
@@ -107,44 +98,39 @@ func selectorScenario(name string) (recorded, handled int32) {
 // whose Name panics, on a detached delivery (a DispatchAfter or
 // DispatchAsync without a queue, a debounced or coalesced delivery) has no
 // caller left to receive the panic: it is contained, the other listeners
-// still run, and the delivery is recorded once.
+// still run, and the delivery is recorded once. Each scenario runs in a
+// child process, so a panic that escapes fails that scenario only.
 func TestDetachedDelivery_PanickingSelectorIsContained(t *testing.T) {
-	if name := os.Getenv(selectorChildEnv); name != "" {
-		recorded, handled := selectorScenario(name)
-		fmt.Printf("recorded=%d handled=%d\n", recorded, handled)
-		return
-	}
 	for _, name := range []string{
 		// DispatchAsync without a queue delivers every listener inline and
 		// never asks it Async or ShouldDispatchAfterCommit, so only a
-		// panicking Name reaches its goroutine.
+		// panicking Name reaches its goroutine. A debounced or coalesced
+		// dispatch keys by name, so a panicking Name fails its caller.
 		"async/after", "async/debounce", "async/coalesce",
 		"after-commit/after", "after-commit/debounce", "after-commit/coalesce",
 		"name/after", "name/async",
 	} {
 		t.Run(name, func(t *testing.T) {
-			cmd := exec.Command(os.Args[0], "-test.run", "^TestDetachedDelivery_PanickingSelectorIsContained$", "-test.count=1")
-			cmd.Env = append(os.Environ(), selectorChildEnv+"="+name)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("the panic ended the process: %v\n%s", err, out)
-			}
-			want := "recorded=1 handled=1\n"
-			if strings.HasPrefix(name, "name/") {
-				want = "recorded=1 handled=0\n"
-			}
-			if !strings.Contains(string(out), want) {
-				t.Errorf("want %q in\n%s", want, out)
-			}
+			hostile.Isolated(t, func() {
+				recorded, handled := selectorScenario(t, name)
+				wantHandled := int32(1)
+				if strings.HasPrefix(name, "name/") {
+					wantHandled = 0
+				}
+				if recorded != 1 || handled != wantHandled {
+					t.Errorf("recorded=%d handled=%d, want recorded=1 handled=%d", recorded, handled, wantHandled)
+				}
+			})
 		})
 	}
 }
 
-// panickingQueue is a QueueDispatcher whose Push panics.
-type panickingQueue struct{}
+// panickingQueue is a QueueDispatcher whose Push runs its hostile code.
+type panickingQueue struct{ c *hostile.Code }
 
-func (panickingQueue) Push(context.Context, interface{}, Listener, time.Duration) error {
-	panic("Push broke")
+func (q panickingQueue) Push(context.Context, interface{}, Listener, time.Duration) error {
+	q.c.Run()
+	return nil
 }
 
 // queuedCounting is a queued listener that counts the events it handles.
@@ -157,25 +143,26 @@ func (queuedCounting) Async() bool { return true }
 // recovered panic as an error and the other listeners still run.
 func TestDispatch_PanickingSelectorOrQueueFailsOnlyThatListener(t *testing.T) {
 	ctx := context.Background()
+	panics := hostile.New(t, hostile.Panic, nil)
 	for _, tc := range []struct {
 		name  string
 		setup func(d *DefaultDispatcher)
 		call  func(d *DefaultDispatcher) error
 	}{
-		{"Dispatch/Async", func(d *DefaultDispatcher) { d.Listen("evt", asyncPanicListener{}) },
+		{"Dispatch/Async", func(d *DefaultDispatcher) { d.Listen("evt", asyncPanicListener{c: panics}) },
 			func(d *DefaultDispatcher) error { return d.Dispatch(ctx, "evt") }},
-		{"Dispatch/ShouldDispatchAfterCommit", func(d *DefaultDispatcher) { d.Listen("evt", afterCommitPanicListener{}) },
+		{"Dispatch/ShouldDispatchAfterCommit", func(d *DefaultDispatcher) { d.Listen("evt", afterCommitPanicListener{c: panics}) },
 			func(d *DefaultDispatcher) error { return d.Dispatch(ctx, "evt") }},
 		{"Dispatch/Push", func(d *DefaultDispatcher) {
-			d.SetQueueDispatcher(panickingQueue{})
+			d.SetQueueDispatcher(panickingQueue{c: panics})
 			d.Listen("evt", queuedCounting{})
 		}, func(d *DefaultDispatcher) error { return d.Dispatch(ctx, "evt") }},
 		{"DispatchAsync/Push", func(d *DefaultDispatcher) {
-			d.SetQueueDispatcher(panickingQueue{})
+			d.SetQueueDispatcher(panickingQueue{c: panics})
 			d.Listen("evt", queuedCounting{})
 		}, func(d *DefaultDispatcher) error { return d.DispatchAsync(ctx, "evt") }},
 		{"DispatchAfter/Push", func(d *DefaultDispatcher) {
-			d.SetQueueDispatcher(panickingQueue{})
+			d.SetQueueDispatcher(panickingQueue{c: panics})
 			d.Listen("evt", queuedCounting{})
 		}, func(d *DefaultDispatcher) error { return d.DispatchAfter(ctx, "evt", time.Second) }},
 	} {
@@ -209,19 +196,20 @@ func TestDispatch_PanickingSelectorOrQueueFailsOnlyThatListener(t *testing.T) {
 // or handler fails that listener only.
 func TestQueueIntegratedAndStoppable_PanickingListenerFailsOnlyThatListener(t *testing.T) {
 	ctx := context.Background()
+	panics := hostile.New(t, hostile.Panic, nil)
 	for _, tc := range []struct {
 		name     string
 		dispatch func(seen *atomic.Int32) error
 	}{
 		{"QueueIntegrated/Async", func(seen *atomic.Int32) error {
 			d := NewQueueIntegratedDispatcher()
-			d.Listen("evt", asyncPanicListener{})
+			d.Listen("evt", asyncPanicListener{c: panics})
 			d.Listen("evt", tallyListener{n: seen})
 			return d.Dispatch(ctx, "evt")
 		}},
 		{"QueueIntegrated/ShouldDispatchAfterCommit", func(seen *atomic.Int32) error {
 			d := NewQueueIntegratedDispatcher()
-			d.Listen("evt", afterCommitPanicListener{})
+			d.Listen("evt", afterCommitPanicListener{c: panics})
 			d.Listen("evt", tallyListener{n: seen})
 			return d.Dispatch(ctx, "evt")
 		}},
@@ -233,7 +221,7 @@ func TestQueueIntegratedAndStoppable_PanickingListenerFailsOnlyThatListener(t *t
 		}},
 		{"Stoppable/Async", func(seen *atomic.Int32) error {
 			d := NewStoppablePropagationDispatcher()
-			d.Listen("evt", asyncPanicListener{})
+			d.Listen("evt", asyncPanicListener{c: panics})
 			d.Listen("evt", tallyListener{n: seen})
 			return d.Dispatch(ctx, "evt")
 		}},

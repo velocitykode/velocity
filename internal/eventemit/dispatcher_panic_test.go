@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // A dispatcher that panics is recovered where the dispatch function
@@ -16,7 +17,7 @@ func TestFailures_Recording_RecoversADispatcherPanic(t *testing.T) {
 	var f Failures
 	hooked := make(chan error, 2)
 	f.SetHook(func(err error, _ any) { hooked <- err })
-	dispatch := f.Recording(func(context.Context, any) error { panic("dispatcher broke") }, &recordingLogger{})
+	dispatch := f.Recording(hostile.NewDispatcher(hostile.New(t, hostile.Panic, nil)).Dispatch, &recordingLogger{})
 
 	var err error
 	func() {
@@ -28,7 +29,7 @@ func TestFailures_Recording_RecoversADispatcherPanic(t *testing.T) {
 		err = dispatch(context.Background(), namedEvent{name: "cache.hit"})
 	}()
 	var rp contract.RecoveredPanic
-	if !errors.As(err, &rp) || rp.Recovered() != "dispatcher broke" {
+	if !errors.As(err, &rp) || rp.Recovered() != hostile.PanicValue {
 		t.Fatalf("dispatch returned %#v, want the recovered panic", err)
 	}
 	if !Recorded(err) {
@@ -59,7 +60,7 @@ func TestEmitter_Emit_ContainsADispatcherPanic(t *testing.T) {
 	var e Emitter
 	var hooked []error
 	e.failures().SetHook(func(err error, _ any) { hooked = append(hooked, err) })
-	e.Set(func(context.Context, any) error { panic("dispatcher broke") })
+	e.Set(hostile.NewDispatcher(hostile.New(t, hostile.Panic, nil)).Dispatch)
 
 	func() {
 		defer func() {
@@ -78,7 +79,7 @@ func TestEmitter_Emit_ContainsADispatcherPanic(t *testing.T) {
 		t.Fatalf("hook calls = %d, want 1", len(hooked))
 	}
 	var rp contract.RecoveredPanic
-	if !errors.As(hooked[0], &rp) || rp.Recovered() != "dispatcher broke" {
+	if !errors.As(hooked[0], &rp) || rp.Recovered() != hostile.PanicValue {
 		t.Errorf("hook got %#v, want the recovered panic", hooked[0])
 	}
 
@@ -109,18 +110,19 @@ func TestEmitter_Emit_ReentrantPanicsAreEachRecordedOnce(t *testing.T) {
 	}
 }
 
-// panickingUnwrapError is a user error whose Unwrap panics, as the walk in
-// Recorded reaches it.
-type panickingUnwrapError struct{}
+// panickingUnwrapError is a user error whose Unwrap runs its hostile code,
+// as the walk in Recorded reaches it.
+type panickingUnwrapError struct{ c *hostile.Code }
 
-func (panickingUnwrapError) Error() string { return "user error" }
-func (panickingUnwrapError) Unwrap() error { panic("unwrap broke") }
+func (panickingUnwrapError) Error() string   { return "user error" }
+func (e panickingUnwrapError) Unwrap() error { e.c.Run(); return nil }
 
 // A failure whose error panics while Recorded walks it is still recorded
 // once, and the panic does not escape Emit or Fail.
 func TestEmitter_FailedErrorWithPanickingUnwrapIsRecorded(t *testing.T) {
 	var e Emitter
-	e.Set(func(context.Context, any) error { return panickingUnwrapError{} })
+	unwrap := panickingUnwrapError{c: hostile.New(t, hostile.Panic, nil)}
+	e.Set(func(context.Context, any) error { return unwrap })
 	func() {
 		defer func() {
 			if p := recover(); p != nil {
@@ -128,17 +130,17 @@ func TestEmitter_FailedErrorWithPanickingUnwrapIsRecorded(t *testing.T) {
 			}
 		}()
 		e.Emit(context.Background(), namedEvent{name: "cache.hit"})
-		e.Fail(context.Background(), panickingUnwrapError{}, namedEvent{name: "cache.hit"})
+		e.Fail(context.Background(), unwrap, namedEvent{name: "cache.hit"})
 	}()
 	if got := e.FailureCount(); got != 2 {
 		t.Errorf("FailureCount = %d, want 2", got)
 	}
 }
 
-// panickingNameEvent is an event whose Name panics.
-type panickingNameEvent struct{}
+// panickingNameEvent is an event whose Name runs its hostile code.
+type panickingNameEvent struct{ c *hostile.Code }
 
-func (panickingNameEvent) Name() string { panic("name broke") }
+func (e panickingNameEvent) Name() string { e.c.Run(); return "evt" }
 
 // A failure of an event whose Name panics is counted, logged under the
 // event's Go type and handed to the hook, and the panic never escapes the
@@ -148,6 +150,7 @@ func TestFailures_EventWithPanickingNameIsRecorded(t *testing.T) {
 	hooks := 0
 	f.SetHook(func(error, any) { hooks++ })
 	logger := &recordingLogger{}
+	event := panickingNameEvent{c: hostile.New(t, hostile.Panic, nil)}
 	dispatch := f.Recording(func(context.Context, any) error { return errors.New("listener failed") }, logger)
 	func() {
 		defer func() {
@@ -155,12 +158,12 @@ func TestFailures_EventWithPanickingNameIsRecorded(t *testing.T) {
 				t.Fatalf("panic escaped the failure policy: %v", p)
 			}
 		}()
-		_ = dispatch(context.Background(), panickingNameEvent{})
+		_ = dispatch(context.Background(), event)
 	}()
 	if f.Count() != 1 || hooks != 1 {
 		t.Errorf("Count = %d, hooks = %d, want 1 and 1", f.Count(), hooks)
 	}
-	if got := EventName(panickingNameEvent{}); got != "eventemit.panickingNameEvent" {
+	if got := EventName(event); got != "eventemit.panickingNameEvent" {
 		t.Errorf("EventName = %q, want the Go type", got)
 	}
 }

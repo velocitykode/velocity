@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // A function that panics in RaceWithTimeout is reported through the panic
@@ -15,9 +17,10 @@ func TestRaceWithTimeout_ReportsAPanic(t *testing.T) {
 	SetPanicHook(func(context.Context, any) { hooked.Add(1) })
 	t.Cleanup(func() { SetPanicHook(nil) })
 
+	racer := hostile.New(t, hostile.Panic, nil)
 	release := make(chan struct{})
 	r := RaceWithTimeout(time.Second,
-		func() int { panic("racer broke") },
+		func() int { racer.Run(); return 0 },
 		func() int { <-release; return 7 },
 	)
 	deadline := time.Now().Add(2 * time.Second)
