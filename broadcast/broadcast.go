@@ -68,8 +68,9 @@ type BroadcastManager struct {
 
 	// noSecretWarned ensures the "authorizer without auth secret" warning
 	// is emitted at most once for the life of the manager, so a hot
-	// reconfigure loop cannot spam the log.
-	noSecretWarned sync.Once
+	// reconfigure loop cannot spam the log. It is claimed before the
+	// logger runs.
+	noSecretWarned fallbacklog.Once
 }
 
 // Driver defines the interface for broadcast drivers. Methods that fan out
@@ -356,14 +357,13 @@ var _ contract.LoggerAware = (*BroadcastManager)(nil)
 // most once. The logger is read under b.mu so a concurrent SetLogger is
 // observed safely; the fallback logger stands in for a nil one.
 func (b *BroadcastManager) warnAuthorizerWithoutSecret() {
-	b.noSecretWarned.Do(func() {
-		const msg = "broadcast: custom authorizer installed without an auth secret; " +
+	b.mu.RLock()
+	logger := b.logger
+	b.mu.RUnlock()
+	b.noSecretWarned.Write(logger, func(l contract.Logger) {
+		l.Warn("broadcast: custom authorizer installed without an auth secret; " +
 			"private/presence channels will be authorized without a socket-binding HMAC. " +
-			"Call SetAuthSecret to bind the authenticated user to the WebSocket connection."
-		b.mu.RLock()
-		logger := b.logger
-		b.mu.RUnlock()
-		fallbacklog.Resolve(logger).Warn(msg)
+			"Call SetAuthSecret to bind the authenticated user to the WebSocket connection.")
 	})
 }
 

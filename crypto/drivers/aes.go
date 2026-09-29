@@ -119,9 +119,11 @@ type AESDriver struct {
 	// handles a failed dispatch through the driver's logger.
 	events eventemit.Emitter
 	// mu guards logger.
-	mu             sync.RWMutex
-	logger         contract.Logger
-	legacyWarnOnce sync.Once
+	mu     sync.RWMutex
+	logger contract.Logger
+	// legacyWarned claims the one-time legacy warning before the logger
+	// runs, so a logger that decrypts a legacy value itself never waits.
+	legacyWarned fallbacklog.Once
 
 	// gcmOnce builds the AEAD for the primary key exactly once. The key is
 	// immutable after NewAESDriver, and a GCM cipher.AEAD is safe for
@@ -411,8 +413,8 @@ func (d *AESDriver) noteLegacyIfV0(version int) {
 	if version != 0 {
 		return
 	}
-	d.legacyWarnOnce.Do(func() {
-		d.log().Warn("velocity/crypto: legacy v0 payload decrypted; rotate before v2.0", "cipher", d.cipher)
+	d.legacyWarned.Write(d.log(), func(l contract.Logger) {
+		l.Warn("velocity/crypto: legacy v0 payload decrypted; rotate before v2.0", "cipher", d.cipher)
 	})
 	// Dispatch every time so operators can count/alert on the stream.
 	// The once-per-instance log is about noise, not signal. The event is

@@ -49,10 +49,10 @@ type BroadcastChannel struct {
 
 	authMu     sync.RWMutex
 	authorizer BroadcastChannelAuthorizer
-	// warnedOnce makes the missing-authorizer WARN log fire at most one
-	// time per channel instance so multi-tenant operators see the gap
-	// without spamming the log on every Send.
-	warnedOnce sync.Once
+	// warned makes the missing-authorizer WARN log fire at most one time
+	// per channel instance so multi-tenant operators see the gap without
+	// spamming the log on every Send. It is claimed before the logger runs.
+	warned fallbacklog.Once
 
 	// logMu guards logger, which SetLogger may replace while Send reads
 	// it.
@@ -110,8 +110,11 @@ func (c *BroadcastChannel) authorizerOrWarn(ctx context.Context) BroadcastChanne
 	if a != nil {
 		return a
 	}
-	c.warnedOnce.Do(func() {
-		c.log(ctx).Warn(
+	c.logMu.RLock()
+	logger := c.logger
+	c.logMu.RUnlock()
+	c.warned.Write(logger, func(l contract.Logger) {
+		l.With(trace.LogFields(ctx)...).Warn(
 			"velocity/notification: broadcast channel has no BroadcastChannelAuthorizer installed; outbound channel names are not authorized against the notifiable",
 		)
 	})

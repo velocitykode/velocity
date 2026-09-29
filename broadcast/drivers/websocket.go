@@ -61,9 +61,10 @@ type WebSocketDriver struct {
 	// is constructed with). Guarded by mu alongside authorizer/verifier.
 	// Consulted by handleSubscribe for the V2-17 missing-token warning.
 	customAuthorizer bool
-	// tokenWarnOnce makes the authorizer-without-token-verifier WARN
-	// (audit V2-17) fire at most once per driver instance.
-	tokenWarnOnce  sync.Once
+	// tokenWarned makes the authorizer-without-token-verifier WARN
+	// (audit V2-17) fire at most once per driver instance, claimed before
+	// the logger runs.
+	tokenWarned    fallbacklog.Once
 	mu             sync.RWMutex
 	droppedCount   atomic.Uint64
 	blockingSendTO time.Duration // 0 means non-blocking (drop on full)
@@ -897,9 +898,8 @@ func (d *WebSocketDriver) SetAuthorizer(fn ChannelAuthorizer) {
 // standalone fallback logger when SetLogger was never called, so the
 // warning is never silently lost.
 func (d *WebSocketDriver) warnAuthorizerWithoutVerifier() {
-	d.tokenWarnOnce.Do(func() {
-		const msg = "velocity/broadcast: private/presence channels are gated only by the channel authorizer; no auth-token verifier is installed, so subscribes are not cryptographically bound to authenticated users (call BroadcastManager.SetAuthSecret to enable token verification)"
-		d.log().Warn(msg)
+	d.tokenWarned.Write(d.log(), func(l contract.Logger) {
+		l.Warn("velocity/broadcast: private/presence channels are gated only by the channel authorizer; no auth-token verifier is installed, so subscribes are not cryptographically bound to authenticated users (call BroadcastManager.SetAuthSecret to enable token verification)")
 	})
 }
 

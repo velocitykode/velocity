@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/maintpath"
 	"github.com/velocitykode/velocity/router"
 )
@@ -27,7 +28,7 @@ func useTempMaintRoot(t *testing.T) string {
 	t.Cleanup(maintpath.Reset)
 	// Also reset the one-time WARN log gate so each test exercises the
 	// resolution log path identically (otherwise gate state would leak).
-	maintenancePathLogOnce = sync.Once{}
+	maintenancePathLogOnce = fallbacklog.Once{}
 	return root
 }
 
@@ -669,7 +670,7 @@ func TestMaintenance_RejectsInvalidEnvRoot(t *testing.T) {
 			t.Setenv(maintpath.EnvVar, tc.val)
 			maintpath.Reset()
 			t.Cleanup(maintpath.Reset)
-			maintenancePathLogOnce = sync.Once{}
+			maintenancePathLogOnce = fallbacklog.Once{}
 
 			mw := PreventRequestsDuringMaintenance()
 			handler := mw(func(c *router.Context) error {

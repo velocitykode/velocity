@@ -12,7 +12,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/crypto/hkdf"
@@ -52,8 +51,10 @@ const (
 // announcing which directory is being watched, removing the silent-cwd-drift
 // failure mode the M-39 finding flagged. The contract is one warn per process,
 // so the logger of the first middleware instance to resolve the path wins;
-// loggers configured on later instances do not re-emit this line.
-var maintenancePathLogOnce sync.Once
+// loggers configured on later instances do not re-emit this line. The line
+// is claimed before the logger runs, so a logger that runs the middleware
+// (or anything else that resolves the path) never waits on it.
+var maintenancePathLogOnce fallbacklog.Once
 
 // maintenanceMarkerPath returns the absolute path of the down-file. The
 // resolution policy lives in internal/maintpath so the console writer and
@@ -69,13 +70,13 @@ var maintenancePathLogOnce sync.Once
 // operator typo cannot accidentally pin the app into maintenance.
 func maintenanceMarkerPath(logger contract.Logger) (string, error) {
 	p, err := maintpath.MarkerPath()
-	maintenancePathLogOnce.Do(func() {
+	maintenancePathLogOnce.Write(logger, func(l contract.Logger) {
 		source := maintpath.Source()
 		msg, kvs := "maintenance marker path resolved", []any{"path", p, "source", source}
 		if err != nil {
 			msg, kvs = "maintenance marker path resolution failed", []any{"error", err.Error(), "source", source}
 		}
-		fallbacklog.Resolve(logger).Warn(msg, kvs...)
+		l.Warn(msg, kvs...)
 	})
 	return p, err
 }
