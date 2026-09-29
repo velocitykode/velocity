@@ -1093,7 +1093,7 @@ func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event any) err
 	// return.
 	if m.pump.Load() == nil {
 		p := newEventPump(m.events.Fail, m.events.FailLater)
-		p.start(m.dispatchEvent) //lock-held-ok: start only spawns the pump goroutines; listeners and the hook run on them, after this call returns and mu is released
+		p.start(m.dispatchEvent)
 		m.pump.Store(p)
 	}
 	m.hasDispatcher.Store(true)
