@@ -56,6 +56,16 @@ type Gateway struct {
 	// instead of constructing a second one. Guarded by mu.
 	building bool
 
+	// drained is made by the stop that ends a running gateway, the one that
+	// owns its drain, and closed when that stop's net/http Close or
+	// Shutdown returns. An overlapping Shutdown waits on it or its own ctx.
+	// Guarded by mu; nil until a stop ended a running gateway.
+	drained chan struct{}
+
+	// stops records the goroutines running the gateway's stop line, so a
+	// stop called back from there does not wait on it.
+	stops stopGuard
+
 	// HTTP server timeout/header bounds applied to httpServer in Build().
 	// Defaulted in NewGateway() to the conservative package constants so a
 	// zero-option Gateway is secure by default; overridable via GatewayWith*.
@@ -704,34 +714,80 @@ func (g *Gateway) StartAsyncWithContext(ctx context.Context) error {
 
 // Stop stops the HTTP gateway immediately. It changes the gateway's state
 // under its lock, then logs and closes the server without it, so the
-// logger may call the gateway's accessors.
+// logger may call the gateway's accessors. During a Shutdown it closes the
+// gateway, cutting the requests that Shutdown is draining.
 func (g *Gateway) Stop() {
-	g.mu.Lock()
-	server := g.httpServer
-	if server == nil || !g.running {
-		g.mu.Unlock()
-		return
+	server, owner, drained := g.beginStop()
+	switch {
+	case owner:
+		defer close(drained)
+		g.stops.run(func() {
+			fallbacklog.Write(g.logger, func(l contract.Logger) { l.Info("HTTP gateway stopping") })
+		})
+		_ = server.Close()
+	case server != nil:
+		_ = server.Close()
 	}
-	g.running = false
-	g.mu.Unlock()
-
-	fallbacklog.Write(g.logger, func(l contract.Logger) { l.Info("HTTP gateway stopping") })
-	_ = server.Close()
 }
 
-// Shutdown gracefully shuts down the HTTP gateway
+// Shutdown gracefully shuts down the HTTP gateway: it stops accepting
+// requests and waits for those in flight to finish until ctx is done. At
+// the deadline it returns the ctx error and closes the gateway, cutting
+// the requests still in flight. A Shutdown that overlaps one already
+// draining waits for that drain the same way, so a nil return always
+// means the requests in flight have finished.
+//
+// A Shutdown called from the gateway's own stop line cannot wait on the
+// stop it runs in: it returns an error wrapping http.ErrServerClosed at
+// once. A Shutdown called from a request handler waits for that handler
+// until its ctx is done.
 func (g *Gateway) Shutdown(ctx context.Context) error {
-	g.mu.Lock()
-	if g.httpServer == nil || !g.running {
-		g.mu.Unlock()
+	nested := g.stops.nested()
+	server, owner, drained := g.beginStop()
+	if server == nil {
 		return nil
 	}
-	server := g.httpServer
-	g.running = false
-	g.mu.Unlock()
+	var drainErr error
+	if owner {
+		g.stops.run(func() {
+			fallbacklog.Write(g.logger, func(l contract.Logger) { l.Info("HTTP gateway gracefully shutting down") })
+		})
+		// The drain outlives this caller's ctx, so an overlapping Shutdown
+		// with a later deadline still waits for it to end.
+		async.Go(func() {
+			defer close(drained)
+			drainErr = server.Shutdown(context.Background())
+		})
+	} else if nested && !closed(drained) {
+		return errGatewayShutdownNested
+	}
+	if err := awaitStop(ctx, drained, func() { _ = server.Close() }); err != nil {
+		return err
+	}
+	return drainErr // read after drained closed, which its write precedes
+}
 
-	fallbacklog.Write(g.logger, func(l contract.Logger) { l.Info("HTTP gateway gracefully shutting down") })
-	return server.Shutdown(ctx)
+// errGatewayShutdownNested is what a Shutdown called from the gateway's own
+// stop line returns: it cannot wait on the stop it runs in.
+var errGatewayShutdownNested = fmt.Errorf("velocity/grpc: Shutdown called from inside a stop of this gateway: %w", http.ErrServerClosed)
+
+// beginStop records a stop under the lock. A running gateway stops
+// running, and this stop owns its drain: server is returned with owner
+// set and a fresh drained. A gateway a stop already ended returns server
+// and that stop's drained, for a Shutdown to wait on and a Stop to force.
+// Otherwise server is nil. It calls no application code.
+func (g *Gateway) beginStop() (server *http.Server, owner bool, drained chan struct{}) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	switch {
+	case g.httpServer != nil && g.running:
+		g.running = false
+		g.drained = make(chan struct{})
+		return g.httpServer, true, g.drained
+	case g.httpServer != nil && g.drained != nil:
+		return g.httpServer, false, g.drained
+	}
+	return nil, false, nil
 }
 
 // logStarting writes the starting line through fallbacklog.Write, so a
