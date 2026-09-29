@@ -756,23 +756,29 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	if server == nil {
 		return nil
 	}
+	if !owner {
+		if nested && !drain.Closed(drained) {
+			return errGatewayShutdownNested
+		}
+		return g.stops.Await(ctx, drained, func() { _ = server.Close() })
+	}
+	// The owner's whole stop (its line and the drain) runs on a goroutine
+	// of its own, with a context no caller owns, so an overlapping
+	// Shutdown with a later deadline still waits for the drain, and a
+	// logger that blocks cannot hold this Shutdown past ctx.
 	var drainErr error
-	if owner {
+	finished := make(chan struct{})
+	async.Go(func() {
+		defer close(finished)
 		g.stops.Run(func() {
 			fallbacklog.Write(g.logger, func(l contract.Logger) { l.Info("HTTP gateway gracefully shutting down") })
 		})
-		// The drain outlives this caller's ctx, so an overlapping Shutdown
-		// with a later deadline still waits for it to end.
-		async.Go(func() {
-			g.stops.Drain(drained, func() { drainErr = server.Shutdown(context.Background()) })
-		})
-	} else if nested && !drain.Closed(drained) {
-		return errGatewayShutdownNested
-	}
-	if err := g.stops.Await(ctx, drained, func() { _ = server.Close() }); err != nil {
+		g.stops.Drain(drained, func() { drainErr = server.Shutdown(context.Background()) })
+	})
+	if err := g.stops.Await(ctx, finished, func() { _ = server.Close() }); err != nil {
 		return err
 	}
-	return drainErr // read after drained closed, which its write precedes
+	return drainErr // read after finished closed, which its write precedes
 }
 
 // errGatewayShutdownNested is what a Shutdown called from the gateway's own

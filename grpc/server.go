@@ -846,9 +846,9 @@ func (s *Server) GracefulStop() {
 	}
 }
 
-// ownStop runs the stop st owns: its line and grpc-go's stop run as stop
-// work, so a stop they call back into does not wait on them, then endStop
-// dispatches ServerStopped.
+// ownStop runs the stop st owns, in order: its line, grpc-go's stop, then
+// endStop, which dispatches ServerStopped once the drain has ended. Each
+// runs as stop work, so a stop they call back into does not wait on them.
 func (s *Server) ownStop(st stopPlan, line string, stop func(*grpc.Server)) {
 	s.stops.Run(func() { s.logLine(func(l contract.Logger) { l.Info(line) }) })
 	s.stops.Drain(st.drained, func() { stop(st.srv) })
@@ -961,11 +961,16 @@ func (s *Server) endStop(st stopPlan) {
 	if st.start.IsZero() || !s.events.Installed() {
 		return
 	}
+	// Only an owner's stop carries a start, and it ends here after its
+	// drain; the dispatch runs as stop work, so a listener that calls a
+	// stop back does not wait.
 	now := time.Now()
-	s.dispatchEvent(context.Background(), &grpcevents.ServerStopped{
-		EventMeta: contract.EventMeta{Context: context.Background(), At: now},
-		Port:      st.port,
-		Duration:  now.Sub(st.start),
+	s.stops.Run(func() {
+		s.dispatchEvent(context.Background(), &grpcevents.ServerStopped{
+			EventMeta: contract.EventMeta{Context: context.Background(), At: now},
+			Port:      st.port,
+			Duration:  now.Sub(st.start),
+		})
 	})
 }
 
@@ -1022,7 +1027,11 @@ func (s *Server) serverStartedLocked() *grpcevents.ServerStarted {
 // (google.golang.org/grpc) at once.
 //
 // Shutdown records the stop, logs it and dispatches ServerStopped itself,
-// once, before it returns, whichever stop ends the server. The goroutines
+// once, whichever stop ends the server: before it returns when the drain
+// ends within ctx, and otherwise when the drain really ends, on the
+// goroutine running it, which can be after Shutdown returned the ctx
+// error. The line and the event run on that goroutine too, so a logger or
+// listener that blocks cannot hold Shutdown past ctx. The goroutines
 // it leaves behind at the deadline (the graceful drain and the forced
 // stop, which grpc-go holds behind a drain waiting on handlers) touch only
 // the grpc-go server, so nothing the caller tears down next is used after
@@ -1035,12 +1044,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		async.Go(func() { s.ownStop(st, "gRPC server gracefully stopping", (*grpc.Server).GracefulStop) })
 		return errShutdownNested
 	case st.owner:
-		s.stops.Run(func() {
-			s.logLine(func(l contract.Logger) { l.Info("gRPC server gracefully stopping") })
-		})
+		// The owner's whole stop (its line, the drain, ServerStopped) runs
+		// on a goroutine of its own, so neither the drain nor a logger or
+		// listener that blocks holds this Shutdown past ctx.
+		finished := make(chan struct{})
 		async.Go(func() {
-			s.stops.Drain(st.drained, st.srv.GracefulStop)
+			defer close(finished)
+			s.ownStop(st, "gRPC server gracefully stopping", (*grpc.Server).GracefulStop)
 		})
+		return s.stops.Await(ctx, finished, st.srv.Stop)
 	case nested && st.drained != nil && !drain.Closed(st.drained):
 		return errShutdownNested
 	}
