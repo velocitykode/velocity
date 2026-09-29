@@ -7,14 +7,13 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // ErrEventBufferFull is returned by an async dispatcher when the worker
-// channel cannot accept more events. Callers of the event dispatcher in
-// the router currently ignore the error; this sentinel is exposed so
-// consumer code that wraps the dispatcher can observe drops.
+// channel cannot accept more events. The router hands the drop to the
+// failure policy (it is counted as a failed event); this sentinel is
+// exposed so consumer code that wraps the dispatcher can observe drops.
 var ErrEventBufferFull = errors.New("velocity/router: event buffer full, dropping event")
 
 // errEventDispatcherStopped is what an async dispatcher returns for an
@@ -22,7 +21,7 @@ var ErrEventBufferFull = errors.New("velocity/router: event buffer full, droppin
 // SetAsyncEventDispatcher) stopped its pool: a request still running past
 // the server's shutdown deadline dispatches its late events into a pool
 // that no longer accepts them. The router counts the drop like a full
-// buffer (DroppedEventCount, OnEventDispatchError).
+// buffer, as a failed event.
 var errEventDispatcherStopped = errors.New("velocity/router: event dispatcher stopped, dropping event")
 
 // SetAsyncEventDispatcher wires an event dispatcher that delivers events
@@ -63,7 +62,7 @@ func (r *VelocityRouterV2) SetAsyncEventDispatcher(fn func(ctx context.Context, 
 	q := &asyncEventQueue{ch: make(chan asyncDispatchItem, bufferSize)}
 	wg := r.startEventWorkers(q.ch, pool, workers)
 
-	r.eventDispatcher = q.enqueue
+	r.events.Set(q.enqueue)
 	r.stopEventDispatcher = makeDrainCloser(q, wg)
 	r.asyncPool = pool
 }
@@ -126,9 +125,9 @@ func (r *VelocityRouterV2) startEventWorkers(ch <-chan asyncDispatchItem, pool *
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		// Not async.Go: each invocation is wrapped by safeInvokeListener,
-		// which already recovers per listener and routes failures through
-		// r.onListenerFailure for drop accounting. async.Go would log
-		// panics in addition but bypass the drop counter.
+		// which already recovers per listener and hands failures to the
+		// router's failure policy (r.events.Fail). async.Go would log
+		// panics in addition but bypass the failure count.
 		go func() {
 			defer wg.Done()
 			r.runEventWorker(ch, pool)
@@ -145,26 +144,7 @@ func (r *VelocityRouterV2) runEventWorker(ch <-chan asyncDispatchItem, pool *asy
 		if t == nil {
 			continue
 		}
-		safeInvokeListener(*t, item.ctx, item.event, r.onListenerFailure)
-	}
-}
-
-// onListenerFailure is the error callback installed by the worker
-// pool. Shares the same drop-accounting as dispatchInstanceEvent so
-// metrics stay coherent across sync and async paths.
-func (r *VelocityRouterV2) onListenerFailure(err error, ev interface{}) {
-	r.droppedEvents.Add(1)
-	typedEvent, _ := ev.(contract.Event)
-	if r.OnEventDispatchError != nil {
-		r.OnEventDispatchError(err, typedEvent)
-		return
-	}
-	if r.firstDropLogged.CompareAndSwap(false, true) &&
-		r.services != nil && r.services.Log != nil {
-		r.services.Log.Warn(
-			"velocity: async listener error (first occurrence; poll Router.DroppedEventCount or set Router.OnEventDispatchError)",
-			"error", err.Error(),
-		)
+		safeInvokeListener(*t, item.ctx, item.event, r.events.Fail)
 	}
 }
 
@@ -255,8 +235,8 @@ func makeDrainCloser(q *asyncEventQueue, wg *sync.WaitGroup) func(context.Contex
 //
 // Events already queued when it is called are delivered to the pool's
 // target. An event dispatched after it was called (a request still
-// running past the server's shutdown deadline) is dropped and counted in
-// DroppedEventCount, and reported through OnEventDispatchError when set.
+// running past the server's shutdown deadline) is dropped and counted as a
+// failed event.
 //
 // If ctx expires before workers drain, ShutdownEventDispatcher returns
 // ctx.Err() and workers continue in the background until their channel
@@ -274,7 +254,10 @@ func (r *VelocityRouterV2) ShutdownEventDispatcher(ctx context.Context) error {
 
 // safeInvokeListener executes a listener, recovering from panics. Listener
 // errors and panic-converted errors are reported via onErr if set.
-func safeInvokeListener(fn func(ctx context.Context, event interface{}) error, ctx context.Context, ev interface{}, onErr func(error, interface{})) {
+func safeInvokeListener(fn func(ctx context.Context, event interface{}) error, ctx context.Context, ev interface{}, onErr func(context.Context, error, interface{})) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var err error
 	defer func() {
 		if p := recover(); p != nil {
@@ -282,11 +265,8 @@ func safeInvokeListener(fn func(ctx context.Context, event interface{}) error, c
 			err = panicerr.FromRecovered(p)
 		}
 		if err != nil && onErr != nil {
-			onErr(err, ev)
+			onErr(ctx, err, ev)
 		}
 	}()
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	err = fn(ctx, ev)
 }

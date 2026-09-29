@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventemit"
 )
 
 // ---------------------------------------------------------------------------
@@ -468,16 +469,18 @@ func TestStaticFallback_FilesServedWhenNoRoute(t *testing.T) {
 // Typed Event sanity check (task 8)
 // ---------------------------------------------------------------------------
 
-func TestTypedEvent_OnEventDispatchError(t *testing.T) {
+func TestTypedEvent_FailureHookSeesTheEvent(t *testing.T) {
 	r := NewV2()
 	r.SetEventDispatcher(func(_ context.Context, event interface{}) error { return ErrEventBufferFull })
 
 	var seenName string
-	r.OnEventDispatchError = func(err error, event contract.Event) {
-		if event != nil {
-			seenName = event.Name()
+	failures := &eventemit.Failures{}
+	failures.SetHook(func(err error, event any) {
+		if e, ok := event.(contract.Event); ok {
+			seenName = e.Name()
 		}
-	}
+	})
+	r.ShareEventFailures(failures)
 
 	r.dispatchInstanceEvent(context.Background(), &RequestStarted{RequestID: "abc"})
 

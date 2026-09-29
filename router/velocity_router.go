@@ -19,6 +19,7 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -55,8 +56,10 @@ type VelocityRouterV2 struct {
 	// Service container injected into every Context
 	services *app.Services
 
-	// Event dispatcher (instance-level, replaces package-level var)
-	eventDispatcher func(ctx context.Context, event interface{}) error
+	// events holds the router's event dispatcher (instance-level) and
+	// handles a failed dispatch: a listener that failed, or an event the
+	// async pool dropped (see internal/eventemit).
+	events eventemit.Emitter
 
 	// Populated by SetAsyncEventDispatcher; nil for the default sync mode.
 	// Called by ShutdownEventDispatcher to drain workers.
@@ -67,25 +70,8 @@ type VelocityRouterV2 struct {
 	// pool's own delivery target, so BindEventDispatcher re-points only
 	// the current pool; a retired pool still draining after a timed-out
 	// shutdown keeps delivering to its own target. Written only by the
-	// serialized configuration calls, like eventDispatcher.
+	// serialized configuration calls.
 	asyncPool *asyncEventPool
-
-	// OnEventDispatchError, if set, is invoked when the event dispatcher
-	// returns a non-nil error (most notably ErrEventBufferFull under an
-	// async dispatcher with a saturated buffer). If nil, the router
-	// increments DroppedEventCount and logs the first error at WARN via
-	// the services logger; subsequent errors are suppressed to avoid
-	// log spam. Set this to integrate with a metrics system — silent
-	// drops under saturation are the kind of failure mode that only
-	// surfaces during an incident.
-	//
-	// The event parameter is typed as contract.Event (instead of
-	// interface{}) so listener implementations can switch on concrete
-	// router events without a type assertion.
-	OnEventDispatchError func(err error, event contract.Event)
-
-	droppedEvents   atomic.Uint64
-	firstDropLogged atomic.Bool
 
 	// Context pool for reuse
 	ctxPool sync.Pool
@@ -191,6 +177,7 @@ func NewV2() *VelocityRouterV2 {
 		namedRoutes: make(map[string]*MatchResult),
 		rootGroup:   NewGroupDefinition("", nil),
 	}
+	r.events.UseLogger(r.eventLogger)
 	r.tree.Store(NewTree())
 	r.ctxPool.New = func() interface{} {
 		return &Context{
@@ -381,10 +368,10 @@ func (r *VelocityRouterV2) CloseFileRoot() error {
 // Dispatching is not a configuration call: when the HTTP server's drain
 // times out on Shutdown, a straggling handler may still dispatch while or
 // after ShutdownEventDispatcher runs, and under SetAsyncEventDispatcher
-// such an event is dropped and counted in DroppedEventCount.
+// such an event is dropped and counted as a failed event.
 func (r *VelocityRouterV2) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	r.asyncPool = nil
-	r.eventDispatcher = fn
+	r.events.Set(fn)
 }
 
 // BindEventDispatcher points the router's events at fn and keeps the
@@ -400,47 +387,44 @@ func (r *VelocityRouterV2) SetEventDispatcher(fn func(ctx context.Context, event
 // overlap serving (see SetEventDispatcher).
 func (r *VelocityRouterV2) BindEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
 	if r.asyncPool == nil {
-		r.eventDispatcher = fn
+		r.events.Set(fn)
 		return
 	}
 	r.asyncPool.setTarget(fn)
 }
 
-// dispatchInstanceEvent dispatches an event using the instance-level dispatcher.
-// Errors from the dispatcher (e.g. ErrEventBufferFull under an async dispatcher
-// with a saturated buffer) are routed to OnEventDispatchError if set, otherwise
-// counted via DroppedEventCount and logged once at WARN. The ctx is propagated
-// to the dispatcher so listeners observe the request-scoped values that ctx
-// already carries (request ID, trace IDs).
+// dispatchInstanceEvent dispatches an event using the instance-level
+// dispatcher. The ctx is propagated to the dispatcher so listeners observe
+// the request-scoped values that ctx already carries (request ID, trace
+// IDs). A failed dispatch (a listener failed, or ErrEventBufferFull under
+// an async dispatcher with a saturated buffer) goes to the failure policy:
+// it is counted in the app's failed event count and its event's first
+// failure is logged (see internal/eventemit).
 func (r *VelocityRouterV2) dispatchInstanceEvent(ctx context.Context, event contract.Event) {
-	if r.eventDispatcher == nil {
-		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	err := r.eventDispatcher(ctx, event)
-	if err == nil {
-		return
-	}
-	r.reportDispatchError(err, event)
+	r.events.Emit(ctx, event)
 }
 
-// reportDispatchError increments the drop counter and invokes the
-// configured callback (or falls back to a once-logged WARN).
-func (r *VelocityRouterV2) reportDispatchError(err error, event contract.Event) {
-	r.droppedEvents.Add(1)
-	if r.OnEventDispatchError != nil {
-		r.OnEventDispatchError(err, event)
-		return
+// eventLogger returns the logger the router logs a failed event dispatch
+// through: its own logger (SetLogger), else its services' logger, else nil
+// (the framework's standalone fallback logger).
+func (r *VelocityRouterV2) eventLogger() contract.Logger {
+	if r.logger != nil {
+		return r.logger
 	}
-	if r.firstDropLogged.CompareAndSwap(false, true) &&
-		r.services != nil && r.services.Log != nil {
-		r.services.Log.Warn(
-			"velocity: event dispatch error (first occurrence; subsequent errors suppressed — poll Router.DroppedEventCount or set Router.OnEventDispatchError)",
-			"error", err.Error(),
-		)
+	if r.services != nil {
+		return r.services.Log
 	}
+	return nil
+}
+
+// ShareEventFailures is the app's wiring seam for the failure policy: the
+// framework calls it in New to have the router record the events it drops
+// itself (a full async buffer, a stopped pool) in the app's failed event
+// count, beside the failures the app's dispatch function records. Its
+// argument is framework-internal, so nothing outside the framework can build
+// one; nil keeps the router recording into its own count.
+func (r *VelocityRouterV2) ShareEventFailures(f *eventemit.Failures) {
+	r.events.Share(f)
 }
 
 // ValidateConfig parses and validates router configuration that cannot
@@ -481,16 +465,6 @@ func (r *VelocityRouterV2) trustedProxiesOrParse() *TrustedProxies {
 	}
 	// Another goroutine populated it first; use that.
 	return r.parsedTrustedProxies.Load()
-}
-
-// DroppedEventCount returns the total number of events for which the
-// dispatcher returned a non-nil error since the router started. Each
-// increment means an event did not reach its listener — under
-// SetAsyncEventDispatcher that almost always indicates buffer saturation,
-// or an event a request dispatched after ShutdownEventDispatcher stopped
-// the pool. Expose as a metric/gauge in production.
-func (r *VelocityRouterV2) DroppedEventCount() uint64 {
-	return r.droppedEvents.Load()
 }
 
 // Get registers a GET route
@@ -736,7 +710,7 @@ func durationSince(start, end time.Time) time.Duration {
 // dispatchRequestStarted dispatches RequestStarted for req. The event is
 // built only when a dispatcher is installed.
 func (r *VelocityRouterV2) dispatchRequestStarted(req *http.Request, meta requestMeta) {
-	if r.eventDispatcher == nil {
+	if !r.events.Installed() {
 		return
 	}
 	r.dispatchInstanceEvent(req.Context(), &RequestStarted{
@@ -754,7 +728,7 @@ func (r *VelocityRouterV2) dispatchRequestStarted(req *http.Request, meta reques
 // without a matched route's params: a static file (route "[static]") or no
 // route at all. The event is built only when a dispatcher is installed.
 func (r *VelocityRouterV2) dispatchRequestRouted(req *http.Request, meta requestMeta, route string, matched bool) {
-	if r.eventDispatcher == nil {
+	if !r.events.Installed() {
 		return
 	}
 	r.dispatchInstanceEvent(req.Context(), &RequestRouted{
@@ -769,7 +743,7 @@ func (r *VelocityRouterV2) dispatchRequestRouted(req *http.Request, meta request
 // every answered request, with the status rw went out with. The event is
 // built only when a dispatcher is installed.
 func (r *VelocityRouterV2) dispatchRequestHandled(req *http.Request, rw *responseWriter, meta requestMeta, route string) {
-	if r.eventDispatcher == nil {
+	if !r.events.Installed() {
 		return
 	}
 	now := time.Now()
@@ -827,7 +801,7 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// Materialize the param map only when an event consumer exists; with
 	// no dispatcher wired the map is never built (R3 laziness).
-	if r.eventDispatcher != nil {
+	if r.events.Installed() {
 		r.dispatchInstanceEvent(req.Context(), &RequestRouted{
 			EventMeta: meta.eventMeta(req, time.Now()),
 			RequestID: meta.id,
@@ -859,7 +833,7 @@ func (r *VelocityRouterV2) beginRequest(req *http.Request) (requestMeta, *http.R
 	// (GetRequestID, trace.GetTraceID/GetSpanID) forces them (if ever).
 	// All paths share the same holders, so the event IDs and any later
 	// context read are guaranteed identical and stable.
-	if r.eventDispatcher != nil {
+	if r.events.Installed() {
 		meta.id = lazyID.ID()
 		meta.traceID, meta.spanID = lazyTrace.IDs()
 	}
@@ -1117,7 +1091,7 @@ func (r *VelocityRouterV2) enrichRequest(req *http.Request, rd *routeData) *http
 // logger or event dispatcher) returns req unchanged: nothing needs
 // either, and the request costs nothing more.
 func (r *VelocityRouterV2) servedRequest(req *http.Request) *http.Request {
-	if r.services == nil && r.errorHandler == nil && r.logger == nil && r.eventDispatcher == nil {
+	if r.services == nil && r.errorHandler == nil && r.logger == nil && !r.events.Installed() {
 		return req
 	}
 	return req.WithContext(servedContext{Context: req.Context(), services: r.services, router: r})
@@ -1294,7 +1268,7 @@ func (r *VelocityRouterV2) reportLate(c *Context, err error, f *errorFacts) {
 	var meta requestMeta
 	if req != nil {
 		reqCtx := req.Context()
-		if r.eventDispatcher != nil {
+		if r.events.Installed() {
 			meta.id = GetRequestID(req)
 		}
 		meta.traceID, meta.spanID = trace.GetTraceID(reqCtx), trace.GetSpanID(reqCtx)
@@ -1326,7 +1300,7 @@ type requestFailure struct {
 // dispatchRequestFailed dispatches RequestFailed for a failed request as
 // the boundary decided (see failureOf).
 func (r *VelocityRouterV2) dispatchRequestFailed(req *http.Request, meta requestMeta, failure requestFailure) {
-	if !failure.fire || r.eventDispatcher == nil {
+	if !failure.fire || !r.events.Installed() {
 		return
 	}
 	now := time.Now()
@@ -1447,7 +1421,7 @@ func (r *VelocityRouterV2) handleError(ctx *Context, rw *responseWriter, err err
 			writeDefaultError(ctx, err, res, info)
 		}
 	}
-	if r.eventDispatcher == nil {
+	if !r.events.Installed() {
 		return requestFailure{}
 	}
 	return failureOf(err, &f, rw, info.Committed)

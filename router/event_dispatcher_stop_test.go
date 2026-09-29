@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -47,24 +47,26 @@ func serveRecovering(r http.Handler, w http.ResponseWriter, req *http.Request) (
 // handler still running when ShutdownEventDispatcher returns (a straggler
 // past the server's shutdown deadline) finishes without a panic: its
 // RequestHandled, dispatched after the pool stopped, is dropped and counted
-// in DroppedEventCount and reported through OnEventDispatchError, while
+// as a failed event and handed to the failure hook, while
 // every event queued before the stop reaches the pool's target.
 func TestShutdownEventDispatcher_LateRequestEventIsCountedDrop(t *testing.T) {
 	col := &stopEventCollector{}
 	r := router.New()
+	failures := &eventemit.Failures{}
+	r.ShareEventFailures(failures)
 	r.SetAsyncEventDispatcher(col.dispatch, 2, 64)
 
 	var (
 		dropMu     sync.Mutex
 		dropErrs   []error
-		dropEvents []contract.Event
+		dropEvents []any
 	)
-	r.OnEventDispatchError = func(err error, ev contract.Event) {
+	failures.SetHook(func(err error, ev any) {
 		dropMu.Lock()
 		defer dropMu.Unlock()
 		dropErrs = append(dropErrs, err)
 		dropEvents = append(dropEvents, ev)
-	}
+	})
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -97,7 +99,7 @@ func TestShutdownEventDispatcher_LateRequestEventIsCountedDrop(t *testing.T) {
 	if got := col.count(); got != queuedBeforeStop {
 		t.Fatalf("delivered %d events before the stop returned, want %d", got, queuedBeforeStop)
 	}
-	before := r.DroppedEventCount()
+	before := failures.Count()
 
 	close(release)
 	select {
@@ -109,12 +111,12 @@ func TestShutdownEventDispatcher_LateRequestEventIsCountedDrop(t *testing.T) {
 		t.Fatal("straggler never finished")
 	}
 
-	if got := r.DroppedEventCount() - before; got != 1 {
-		t.Errorf("DroppedEventCount grew by %d, want 1 for the late RequestHandled", got)
+	if got := failures.Count() - before; got != 1 {
+		t.Errorf("failed event count grew by %d, want 1 for the late RequestHandled", got)
 	}
 	dropMu.Lock()
 	if len(dropEvents) != 1 {
-		t.Errorf("OnEventDispatchError calls = %d, want 1", len(dropEvents))
+		t.Errorf("failure hook calls = %d, want 1", len(dropEvents))
 	} else {
 		if _, ok := dropEvents[0].(*router.RequestHandled); !ok {
 			t.Errorf("dropped event = %T, want *router.RequestHandled", dropEvents[0])
@@ -138,6 +140,8 @@ func TestShutdownEventDispatcher_LateRequestEventIsCountedDrop(t *testing.T) {
 func TestShutdownEventDispatcher_TimeoutPanicAfterStopIsReported(t *testing.T) {
 	col := &stopEventCollector{}
 	r := router.New()
+	failures := &eventemit.Failures{}
+	r.ShareEventFailures(failures)
 	r.SetAsyncEventDispatcher(col.dispatch, 2, 64)
 
 	var (
@@ -178,7 +182,7 @@ func TestShutdownEventDispatcher_TimeoutPanicAfterStopIsReported(t *testing.T) {
 	if err := r.ShutdownEventDispatcher(context.Background()); err != nil {
 		t.Fatalf("ShutdownEventDispatcher: %v", err)
 	}
-	before := r.DroppedEventCount()
+	before := failures.Count()
 
 	close(release)
 	select {
@@ -204,35 +208,37 @@ func TestShutdownEventDispatcher_TimeoutPanicAfterStopIsReported(t *testing.T) {
 	if n != 1 {
 		t.Errorf("error sink reports of the late panic = %d, want 1 (%q)", n, lines)
 	}
-	if got := r.DroppedEventCount() - before; got != 1 {
-		t.Errorf("DroppedEventCount grew by %d, want 1 for the late RequestFailed", got)
+	if got := failures.Count() - before; got != 1 {
+		t.Errorf("failed event count grew by %d, want 1 for the late RequestFailed", got)
 	}
 }
 
 // TestShutdownEventDispatcher_ConcurrentSendersNeverPanic asserts that
 // requests dispatching while ShutdownEventDispatcher stops the pool never
 // panic, and that every event they dispatched is either delivered to the
-// pool's target or counted in DroppedEventCount (a full buffer or a
+// pool's target or counted as a failed event (a full buffer or a
 // stopped pool), none lost silently. One gated request is released only
 // after the stop returned, so at least one event is always dispatched on
 // the stopped pool whatever the stress senders' scheduling.
 func TestShutdownEventDispatcher_ConcurrentSendersNeverPanic(t *testing.T) {
 	col := &stopEventCollector{}
 	r := router.New()
+	failures := &eventemit.Failures{}
+	r.ShareEventFailures(failures)
 	r.SetAsyncEventDispatcher(col.dispatch, 2, 8)
 	r.Get("/", func(c *router.Context) error { return c.NoContent() })
 
 	var (
 		dropMu     sync.Mutex
 		dropErrs   []error
-		dropEvents []contract.Event
+		dropEvents []any
 	)
-	r.OnEventDispatchError = func(err error, ev contract.Event) {
+	failures.SetHook(func(err error, ev any) {
 		dropMu.Lock()
 		defer dropMu.Unlock()
 		dropErrs = append(dropErrs, err)
 		dropEvents = append(dropEvents, ev)
-	}
+	})
 
 	gateEntered, gate := make(chan struct{}), make(chan struct{})
 	r.Get("/gated", func(c *router.Context) error {
@@ -284,7 +290,7 @@ func TestShutdownEventDispatcher_ConcurrentSendersNeverPanic(t *testing.T) {
 
 	// Only the gated request is left; its RequestHandled is dispatched
 	// after the stop returned.
-	droppedBefore := r.DroppedEventCount()
+	droppedBefore := failures.Count()
 	dropMu.Lock()
 	callsBefore := len(dropEvents)
 	dropMu.Unlock()
@@ -297,12 +303,12 @@ func TestShutdownEventDispatcher_ConcurrentSendersNeverPanic(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the gated request never finished")
 	}
-	if got := r.DroppedEventCount() - droppedBefore; got != 1 {
-		t.Errorf("DroppedEventCount grew by %d after the stop, want 1 for the gated RequestHandled", got)
+	if got := failures.Count() - droppedBefore; got != 1 {
+		t.Errorf("failed event count grew by %d after the stop, want 1 for the gated RequestHandled", got)
 	}
 	dropMu.Lock()
 	if late := dropEvents[callsBefore:]; len(late) != 1 {
-		t.Errorf("OnEventDispatchError calls after the stop = %d, want 1", len(late))
+		t.Errorf("failure hook calls after the stop = %d, want 1", len(late))
 	} else {
 		if _, ok := late[0].(*router.RequestHandled); !ok {
 			t.Errorf("dropped event = %T, want *router.RequestHandled", late[0])
@@ -316,7 +322,7 @@ func TestShutdownEventDispatcher_ConcurrentSendersNeverPanic(t *testing.T) {
 	// RequestStarted, RequestRouted and RequestHandled per request,
 	// the gated one included.
 	const dispatched = (senders*perSender + 1) * 3
-	if got := uint64(col.count()) + r.DroppedEventCount(); got != dispatched {
-		t.Errorf("delivered %d + dropped %d = %d, want %d", col.count(), r.DroppedEventCount(), got, dispatched)
+	if got := uint64(col.count()) + failures.Count(); got != dispatched {
+		t.Errorf("delivered %d + dropped %d = %d, want %d", col.count(), failures.Count(), got, dispatched)
 	}
 }

@@ -91,7 +91,7 @@ func TestBindEventDispatcher_KeepsAsyncDelivery(t *testing.T) {
 	var dispatchErr error
 	go func() {
 		defer close(done)
-		dispatchErr = r.eventDispatcher(context.Background(), "after-bind")
+		dispatchErr = r.events.Dispatcher()(context.Background(), "after-bind")
 	}()
 	defer func() {
 		bound.release()
@@ -117,7 +117,7 @@ func TestBindEventDispatcher_SyncModeAssigns(t *testing.T) {
 	r := NewV2()
 	target := newRecordingTarget(t, false)
 	r.BindEventDispatcher(target.dispatch)
-	if err := r.eventDispatcher(context.Background(), "sync"); err != nil {
+	if err := r.events.Dispatcher()(context.Background(), "sync"); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	if got := target.got(); len(got) != 1 {
@@ -139,7 +139,7 @@ func TestBindEventDispatcher_RetiredPoolKeepsItsTarget(t *testing.T) {
 	oldTarget := newRecordingTarget(t, true)
 	r.SetAsyncEventDispatcher(oldTarget.dispatch, 1, 8)
 	for _, ev := range []string{"old-1", "old-2", "old-3"} {
-		if err := r.eventDispatcher(context.Background(), ev); err != nil {
+		if err := r.events.Dispatcher()(context.Background(), ev); err != nil {
 			t.Fatalf("dispatch %s: %v", ev, err)
 		}
 	}
@@ -172,7 +172,7 @@ func TestBindEventDispatcher_RetiredPoolKeepsItsTarget(t *testing.T) {
 		t.Errorf("target bound on the replacement pool received the retired pool's events %v", got)
 	}
 
-	if err := r.eventDispatcher(context.Background(), "new-1"); err != nil {
+	if err := r.events.Dispatcher()(context.Background(), "new-1"); err != nil {
 		t.Fatalf("dispatch new-1: %v", err)
 	}
 	waitForCount(t, boundTarget, 1, "bound target on the replacement pool")
