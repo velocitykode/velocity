@@ -191,9 +191,10 @@ func (c *TxCallbacks) setDispatcher(fn func(*TxRecover)) {
 // observability sink wired to *Manager would never see a hook panic.
 type txRecoverDispatcherKey struct{}
 
-// txRecoverLoggerKey is the ctx slot Manager.Save uses to make its logger
-// reachable from the same auto-commit branch, so a hook panic there is
-// written through the manager's logger like one a Transaction drains.
+// txRecoverLoggerKey is the ctx slot the ORM write routes fill (see
+// withHookLogger) to make their manager's logger reachable from the
+// auto-commit branch, so a hook failure there is written through the
+// manager's logger like one a Transaction drains.
 type txRecoverLoggerKey struct{}
 
 // withTxRecoverLogger attaches logger to ctx for the inline AfterCommit
