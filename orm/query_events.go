@@ -272,10 +272,10 @@ func (p *eventPump) awaitExit(ctx context.Context) error {
 
 // stop drains and shuts the pump down, returning the drain's error when
 // ctx ended before it finished (the pump stops all the same, delivering
-// what is queued on its own goroutines; a later flush waits for that). The channel is never closed, so
-// an enqueue racing with stop is discarded rather than panicking. Only the
-// first call drains and reports; later calls return nil, so an unfinished
-// drain is reported once.
+// what is queued on its own goroutines; a later flush waits for that).
+// The channel is never closed, so an enqueue racing with stop is discarded
+// rather than panicking. Only the first call drains and reports; later
+// calls return nil, so an unfinished drain is reported once.
 func (p *eventPump) stop(ctx context.Context) error {
 	var err error
 	p.stopOnce.Do(func() {
