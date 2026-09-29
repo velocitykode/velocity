@@ -44,11 +44,13 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // FailureMessage is the warn line Failures.Record writes for the first
 // failure of each event name. The line carries the event name under "event"
-// and the failure under "error".
+// and the failure under "error", after the request, trace and span ids the
+// dispatch's context carries (request_id, trace_id, span_id).
 const FailureMessage = "event dispatch failed; later failures of this event are counted, not logged"
 
 // maxLoggedNames bounds the set of event names Failures remembers having
@@ -65,7 +67,7 @@ type loggerSource func() contract.Logger
 
 // HookPanicMessage is the error line Failures.Record writes the first time
 // the hook panics. The line carries the event name under "event" and the
-// panic value under "panic".
+// panic value under "panic", after the ids the dispatch's context carries.
 const HookPanicMessage = "event failure hook panicked; the panic is counted as a failure"
 
 // Hook is called with every failure a Failures records: the error and the
@@ -92,19 +94,30 @@ type Failures struct {
 // name, and calls the hook. A panic in the hook is recovered and counted as
 // one more failure, and its first occurrence is logged at error level; it
 // never re-enters the policy, so the hook is not called for it. ctx is the
-// dispatch's context.
+// dispatch's context: both lines are bound to the request, trace and span
+// ids it carries, read only when a line is written.
 func (f *Failures) Record(ctx context.Context, logger contract.Logger, err error, event any) {
 	f.count.Add(1)
 	name := EventName(event)
 	if f.firstOf(name) {
-		fallbacklog.Resolve(logger).Warn(FailureMessage, "event", name, "error", err)
+		boundTo(ctx, logger).Warn(FailureMessage, "event", name, "error", err)
 	}
-	f.callHook(logger, err, event, name)
+	f.callHook(ctx, logger, err, event, name)
+}
+
+// boundTo returns logger (the fallback when nil) bound to the ids ctx
+// carries.
+func boundTo(ctx context.Context, logger contract.Logger) contract.Logger {
+	l := fallbacklog.Resolve(logger)
+	if fields := trace.LogFields(ctx); len(fields) > 0 {
+		return l.With(fields...)
+	}
+	return l
 }
 
 // callHook calls the hook, when one is set, with err and event, recovering
 // and counting a panic in it.
-func (f *Failures) callHook(logger contract.Logger, err error, event any, name string) {
+func (f *Failures) callHook(ctx context.Context, logger contract.Logger, err error, event any, name string) {
 	h := f.hook.Load()
 	if h == nil {
 		return
@@ -113,7 +126,7 @@ func (f *Failures) callHook(logger contract.Logger, err error, event any, name s
 		if p := recover(); p != nil {
 			f.count.Add(1)
 			if f.hookPanicLogged.CompareAndSwap(false, true) {
-				fallbacklog.Resolve(logger).Error(HookPanicMessage, "event", name, "panic", fmt.Sprint(p))
+				boundTo(ctx, logger).Error(HookPanicMessage, "event", name, "panic", fmt.Sprint(p))
 			}
 		}
 	}()

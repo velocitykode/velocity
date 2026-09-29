@@ -339,3 +339,46 @@ func TestFailedEventCount_DetachedListenerFailureNotCountedTwice(t *testing.T) {
 		t.Errorf("hook calls = %d, want 0", got)
 	}
 }
+
+// The app's failure line for a request event carries that request's
+// request_id, trace_id and span_id, like every request-time line.
+func TestEventFailureLine_CarriesTheRequestIDs(t *testing.T) {
+	a, capture := newLoggerWiringApp(t, nil)
+	a.Services.Events.Listen("router.request.completed", failingListener{name: "request"})
+	var reqID string
+	a.Router.Get("/ping", func(c *router.Context) error {
+		reqID = router.GetRequestID(c.Request)
+		return c.String(http.StatusOK, "ok")
+	})
+	a.Router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ping", nil))
+
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	found := false
+	for _, e := range capture.entries {
+		if e.level != "warn" {
+			continue
+		}
+		fields := map[string]any{}
+		for i := 0; i+1 < len(e.kvs); i += 2 {
+			if k, ok := e.kvs[i].(string); ok {
+				fields[k] = e.kvs[i+1]
+			}
+		}
+		if fields["event"] != "router.request.completed" {
+			continue
+		}
+		found = true
+		if reqID == "" || fields["request_id"] != reqID {
+			t.Errorf("request_id = %v, want the request's %q", fields["request_id"], reqID)
+		}
+		for _, k := range []string{"trace_id", "span_id"} {
+			if s, _ := fields[k].(string); s == "" {
+				t.Errorf("%s missing from the failure line: %v", k, e.kvs)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no failure line naming router.request.completed")
+	}
+}

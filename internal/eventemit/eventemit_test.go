@@ -11,6 +11,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // namedEvent is a framework-style event with a name.
@@ -426,5 +427,32 @@ func TestFailures_ConcurrentRecording(t *testing.T) {
 	wg.Wait()
 	if f.Count() != 3200 || hooked.Load() != 3200 || e.FailureCount() != 0 {
 		t.Errorf("Count = %d, hook = %d, emitter own = %d; want 3200, 3200, 0", f.Count(), hooked.Load(), e.FailureCount())
+	}
+}
+
+// The failure line and the hook-panic line carry the request, trace and
+// span ids of the dispatch's context, as every request-time line does; a
+// context without ids adds none.
+func TestFailures_LinesCarryTheContextIDs(t *testing.T) {
+	var f Failures
+	f.SetHook(func(error, any) { panic("hook broke") })
+	logger := &recordingLogger{}
+	ctx := trace.WithTrace(trace.WithRequestID(context.Background(), "req-1"), "trace-1", "span-1")
+	f.Record(ctx, logger, errListener, namedEvent{"router.request.completed"})
+	f.Record(context.Background(), logger, errListener, namedEvent{"cache.hit"})
+
+	warns, errs := logger.at("warn"), logger.at("error")
+	if len(warns) != 2 || len(errs) != 1 {
+		t.Fatalf("warn lines = %d, error lines = %d; want 2 and 1", len(warns), len(errs))
+	}
+	for _, ln := range []line{warns[0], errs[0]} {
+		for key, want := range map[string]string{"request_id": "req-1", "trace_id": "trace-1", "span_id": "span-1"} {
+			if got := ln.field(key); got != want {
+				t.Errorf("%q %s = %v, want %q", ln.msg, key, got, want)
+			}
+		}
+	}
+	if got := warns[1].field("request_id"); got != nil {
+		t.Errorf("line without ids carries request_id = %v", got)
 	}
 }
