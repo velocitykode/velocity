@@ -491,6 +491,8 @@ func (m *MemoryDriver) FailReservedCtx(ctx context.Context, token ReservationTok
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// The job's error is user code: its text is taken before the lock.
+	errText := jobErr.Error()
 
 	m.mu.Lock()
 	r, ok := m.reservations[token.ID]
@@ -506,7 +508,7 @@ func (m *MemoryDriver) FailReservedCtx(ctx context.Context, token ReservationTok
 	m.failed[queueName] = append(m.failed[queueName], &failedJob{
 		wrapper:  r.wrapper,
 		job:      job,
-		error:    jobErr.Error(),
+		error:    errText,
 		failedAt: time.Now(),
 	})
 	m.mu.Unlock()
@@ -628,6 +630,8 @@ func (m *MemoryDriver) FailedCtx(ctx context.Context, job Job, err error, queueN
 	if serr != nil {
 		return serr
 	}
+	// The job's error is user code: its text is taken before the lock.
+	errText := err.Error()
 
 	m.mu.Lock()
 
@@ -638,7 +642,7 @@ func (m *MemoryDriver) FailedCtx(ctx context.Context, job Job, err error, queueN
 	m.failed[queueName] = append(m.failed[queueName], &failedJob{
 		wrapper:  wrapper,
 		job:      job,
-		error:    err.Error(),
+		error:    errText,
 		failedAt: time.Now(),
 	})
 	m.mu.Unlock()

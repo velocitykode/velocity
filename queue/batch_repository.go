@@ -301,6 +301,12 @@ func (r *inMemoryBatchRepository) IncrementFailure(ctx context.Context, id Batch
 	if b == nil {
 		return nil, false, nil
 	}
+	// The job's error is user code: its text is taken before the counters
+	// move and before the batch's lock.
+	var errText string
+	if jobErr != nil {
+		errText = jobErr.Error()
+	}
 	// Conditional increment: same rationale as IncrementSuccess. A
 	// duplicate failure (e.g. the same job rerun by another worker on
 	// retry exhaustion) must not push failed_jobs past total_jobs.
@@ -310,7 +316,7 @@ func (r *inMemoryBatchRepository) IncrementFailure(ctx context.Context, id Batch
 	b.failedJobs.Add(1)
 	if jobErr != nil {
 		b.mu.Lock()
-		b.lastError = jobErr.Error()
+		b.lastError = errText
 		b.mu.Unlock()
 	}
 	justFinished := false
