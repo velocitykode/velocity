@@ -69,15 +69,20 @@ func NewMemoryStore(args ...any) *MemoryStore {
 //
 // Calling Start again cancels the previous cleanup goroutine and replaces
 // it, so repeated Start calls never leak goroutines.
+//
+// Deriving from ctx and cancelling the replaced goroutine's context can
+// run code of ctx's own (a custom context's Done, Value or Err), so both
+// happen with lifecycleMu released: such code may call Start or Shutdown.
 func (s *MemoryStore) Start(ctx context.Context) {
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	if s.cancel != nil {
-		s.cancel()
-	}
 	innerCtx, cancel := context.WithCancel(ctx)
+	s.lifecycleMu.Lock()
+	prev := s.cancel
 	s.cancel = cancel
 	async.Go(func() { s.cleanup(innerCtx) })
+	s.lifecycleMu.Unlock()
+	if prev != nil {
+		prev()
+	}
 }
 
 // Shutdown stops the background cleanup goroutine. It is safe to call
@@ -87,11 +92,12 @@ func (s *MemoryStore) Start(ctx context.Context) {
 // cancelled.
 func (s *MemoryStore) Shutdown(ctx context.Context) error {
 	s.lifecycleMu.Lock()
-	if s.cancel != nil {
-		s.cancel()
-		s.cancel = nil
-	}
+	cancel := s.cancel
+	s.cancel = nil
 	s.lifecycleMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}

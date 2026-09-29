@@ -181,10 +181,11 @@ func (s *SessionBagStore) Get(ctx context.Context, id string) (string, error) {
 // record has not expired.
 func (s *SessionBagStore) wasConsumed(t string) bool {
 	key := sha256.Sum256([]byte(t))
+	now := sessionclock.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	until, ok := s.consumed[key]
-	return ok && !sessionclock.Now().After(until)
+	return ok && !now.After(until)
 }
 
 // Set puts token in the session with id id. The session saves it with the
