@@ -394,15 +394,22 @@ func (m *MemoryDriver) PopCtxReserved(ctx context.Context, queueName string) (Jo
 		return nil, ReservationToken{}, tc, err
 	}
 	// Rebuilding the job may run the registered factory, user code, so it
-	// runs after the lock is released. A job that cannot be rebuilt is
-	// dropped with its reservation, and the error returned.
+	// runs after the lock is released. A job that cannot be rebuilt (an
+	// error, or a panic that goes on to the caller) is dropped with its
+	// reservation, so no reservation is left pinning its dedupe key.
+	kept := false
+	defer func() {
+		if !kept {
+			m.mu.Lock()
+			delete(m.reservations, token.ID)
+			m.mu.Unlock()
+		}
+	}()
 	job, err := getJobFromWrapper(wrapper)
 	if err != nil {
-		m.mu.Lock()
-		delete(m.reservations, token.ID)
-		m.mu.Unlock()
 		return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err)
 	}
+	kept = true
 	return job, token, tc, nil
 }
 

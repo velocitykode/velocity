@@ -121,29 +121,50 @@ func TestMemoryDriver_HydratesPoppedJobsWithoutTheLock(t *testing.T) {
 	}
 }
 
-// A reserved pop whose job cannot be rebuilt drops the job and returns the
-// error, and leaves no reservation behind.
-func TestMemoryDriver_PopCtxReservedHydrateErrorLeavesNoReservation(t *testing.T) {
+// A reserved pop whose job cannot be rebuilt, because the factory returns
+// an error or panics, drops the job and leaves no reservation behind (a
+// leftover one would pin the job's dedupe key until Clear). The error is
+// returned, and the panic reaches the caller.
+func TestMemoryDriver_PopCtxReservedHydrateFailureLeavesNoReservation(t *testing.T) {
 	registerHydrateHostileJob()
-	const q = "hydrate-error"
-	d := NewMemoryDriver()
-	t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
 	boom := errors.New("factory failed")
-	hook := func() error { return boom }
-	hydrateHook.Store(&hook)
-	t.Cleanup(func() { hydrateHook.Store(nil) })
-	pushBytesOnly(t, d, q)
+	for _, c := range []struct {
+		name string
+		hook func() error
+	}{
+		{"error", func() error { return boom }},
+		{"panic", func() error { panic(hostile.PanicValue) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			const q = "hydrate-failure"
+			d := NewMemoryDriver()
+			t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
+			hook := c.hook
+			hydrateHook.Store(&hook)
+			t.Cleanup(func() { hydrateHook.Store(nil) })
+			pushBytesOnly(t, d, q)
 
-	job, token, _, err := d.PopCtxReserved(context.Background(), q)
-	if !errors.Is(err, boom) || job != nil || !token.IsZero() {
-		t.Fatalf("PopCtxReserved = %v, %+v, %v; want nil, zero token, the factory's error", job, token, err)
-	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if n := len(d.reservations); n != 0 {
-		t.Errorf("reservations = %d, want 0", n)
-	}
-	if n := d.queues[q].Len(); n != 0 {
-		t.Errorf("queued jobs = %d, want the job dropped", n)
+			var job Job
+			var token ReservationToken
+			var err error
+			p := hostile.Within(t, hostile.Deadline, func() {
+				job, token, _, err = d.PopCtxReserved(context.Background(), q)
+			})
+			if c.name == "panic" {
+				if p != hostile.PanicValue {
+					t.Fatalf("PopCtxReserved panic = %v, want the factory's panic", p)
+				}
+			} else if !errors.Is(err, boom) || job != nil || !token.IsZero() {
+				t.Fatalf("PopCtxReserved = %v, %+v, %v; want nil, zero token, the factory's error", job, token, err)
+			}
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			if n := len(d.reservations); n != 0 {
+				t.Errorf("reservations = %d, want 0", n)
+			}
+			if n := d.queues[q].Len(); n != 0 {
+				t.Errorf("queued jobs = %d, want the job dropped", n)
+			}
+		})
 	}
 }
