@@ -62,9 +62,9 @@ type VelocityRouterV2 struct {
 	// async pool dropped (see internal/eventemit).
 	events eventemit.Emitter
 
-	// Populated by SetAsyncEventDispatcher; nil for the default sync mode.
-	// Called by ShutdownEventDispatcher to drain workers.
-	stopEventDispatcher func(context.Context) error
+	// asyncStop is the stop of the latest pool SetAsyncEventDispatcher
+	// started, nil when none was; ShutdownEventDispatcher drains it.
+	asyncStop *asyncEventStop
 
 	// asyncPool is the worker pool the current async delivery mode
 	// (SetAsyncEventDispatcher) feeds, nil in sync mode. It holds the

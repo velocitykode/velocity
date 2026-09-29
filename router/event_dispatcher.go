@@ -3,10 +3,14 @@ package router
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
 
+	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/internal/drain"
+	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -23,6 +27,12 @@ var ErrEventBufferFull = errors.New("velocity/router: event buffer full, droppin
 // that no longer accepts them. The router counts the drop like a full
 // buffer, as a failed event.
 var errEventDispatcherStopped = errors.New("velocity/router: event dispatcher stopped, dropping event")
+
+// errStopFromOwnListener is what a stop of an async pool called from one
+// of that pool's own listeners returns: the stop waits for the pool's
+// workers, and the listener runs on one of them, so the pool is stopped
+// without the call waiting for it.
+var errStopFromOwnListener = fmt.Errorf("velocity/router: event dispatcher stopped from its own listener; the pool drains without this call waiting for it: %w", errEventDispatcherStopped)
 
 // SetAsyncEventDispatcher wires an event dispatcher that delivers events
 // to fn from a pool of worker goroutines reading a buffered channel.
@@ -43,8 +53,9 @@ var errEventDispatcherStopped = errors.New("velocity/router: event dispatcher st
 // dispatcher. If a prior async dispatcher is running, it is stopped
 // first: it stops accepting events and the call waits for its workers to
 // deliver the events still buffered, to that pool's own target. When the
-// prior pool was already stopped with a deadline that expired, the call
-// does not wait again; that pool keeps draining in the background.
+// prior pool was already stopped (with a deadline that expired, say), or
+// the call comes from one of the prior pool's own listeners, it does not
+// wait; that pool keeps draining in the background.
 //
 // A later BindEventDispatcher (the framework re-wiring the app dispatcher
 // at a lifecycle boundary, see SetEventDispatcher) re-points this pool at
@@ -59,11 +70,11 @@ func (r *VelocityRouterV2) SetAsyncEventDispatcher(fn func(ctx context.Context, 
 
 	pool := &asyncEventPool{}
 	pool.setTarget(fn)
-	q := &asyncEventQueue{ch: make(chan asyncDispatchItem, bufferSize)}
-	wg := r.startEventWorkers(q.ch, pool, workers)
+	stop := &asyncEventStop{q: &asyncEventQueue{ch: make(chan asyncDispatchItem, bufferSize)}}
+	r.startEventWorkers(stop, pool, workers)
 
-	r.events.Set(q.enqueue)
-	r.stopEventDispatcher = makeDrainCloser(q, wg)
+	r.events.Set(stop.q.enqueue)
+	r.asyncStop = stop
 	r.asyncPool = pool
 }
 
@@ -108,32 +119,36 @@ func normalizeAsyncSizing(workers, bufferSize int) (int, int) {
 }
 
 // stopPriorAsyncDispatcher tears down any previously-installed async
-// dispatcher. Errors are intentionally swallowed — the caller is
-// overwriting the dispatcher wholesale.
+// dispatcher, waiting for its drain only when this call is the one that
+// stops it. Errors are intentionally swallowed: the caller is overwriting
+// the dispatcher wholesale.
 func (r *VelocityRouterV2) stopPriorAsyncDispatcher() {
-	if r.stopEventDispatcher != nil {
-		_ = r.stopEventDispatcher(context.Background())
+	if r.asyncStop != nil {
+		_ = r.asyncStop.stop(context.Background(), false)
 	}
 }
 
 // startEventWorkers spawns worker goroutines that consume events from
-// ch and invoke the pool's current target with panic recovery. Listener
-// failures route through the shared reporter so drops/panics surface via
-// the same metrics.
-func (r *VelocityRouterV2) startEventWorkers(ch <-chan asyncDispatchItem, pool *asyncEventPool, workers int) *sync.WaitGroup {
-	var wg sync.WaitGroup
+// the stop's queue and invoke the pool's current target with panic
+// recovery. Listener failures route through the shared reporter so
+// drops/panics surface via the same metrics. Each worker is recorded as
+// the pool's stop work while it runs, so a stop its listener calls knows
+// it cannot wait for the pool.
+func (r *VelocityRouterV2) startEventWorkers(stop *asyncEventStop, pool *asyncEventPool, workers int) {
 	for i := 0; i < workers; i++ {
-		wg.Add(1)
+		stop.workers.Add(1)
 		// Not async.Go: each invocation is wrapped by safeInvokeListener,
 		// which already recovers per listener and hands failures to the
 		// router's failure policy (r.events.Fail). async.Go would log
 		// panics in addition but bypass the failure count.
 		go func() {
-			defer wg.Done()
-			r.runEventWorker(ch, pool)
+			defer stop.workers.Done()
+			id := goroutine.ID()
+			stop.stops.Work().Enter(id)
+			defer stop.stops.Work().Leave(id)
+			r.runEventWorker(stop.q.ch, pool)
 		}()
 	}
-	return &wg
 }
 
 // runEventWorker drains a single channel until close, delivering each
@@ -196,37 +211,51 @@ func (q *asyncEventQueue) stop() {
 	}
 }
 
-// makeDrainCloser stops the queue and waits for workers to finish,
-// respecting ctx cancellation. Subsequent calls return the cached
-// result so repeated Shutdown invocations are safe.
-func makeDrainCloser(q *asyncEventQueue, wg *sync.WaitGroup) func(context.Context) error {
-	var (
-		stopOnce sync.Once
-		stopErr  error
-	)
-	return func(ctx context.Context) error {
-		stopOnce.Do(func() {
-			q.stop()
-			done := make(chan struct{})
-			// Not async.Go: must close(done) on panic so Shutdown never
-			// blocks waiting on a goroutine that already died.
-			go func() {
-				defer func() {
-					// Workers finish draining even if we panic below.
-					_ = recover()
-					close(done)
-				}()
-				wg.Wait()
-			}()
-			select {
-			case <-done:
-				stopErr = nil
-			case <-ctx.Done():
-				stopErr = ctx.Err()
-			}
-		})
-		return stopErr
+// asyncEventStop is one async worker pool's stop. The first stop owns
+// the drain: it stops the queue and waits, on a goroutine of its own, for
+// the workers to deliver what it still buffers. A stop that overlaps or
+// follows it waits for that drain or its own ctx, and a stop called from
+// one of the pool's listeners returns at once, since it runs on a worker
+// the drain waits for.
+type asyncEventStop struct {
+	q       *asyncEventQueue
+	workers sync.WaitGroup
+	// mu guards the drain the owning stop began (stops.Begin, Ended).
+	mu    sync.Mutex
+	stops drain.Coordinator
+}
+
+// stop stops the pool. The owning stop, and with joinWaits every later
+// one, waits for the drain until ctx is done and returns ctx.Err() then;
+// the workers keep draining in the background. Without joinWaits a stop
+// that joins a drain already under way returns at once.
+func (s *asyncEventStop) stop(ctx context.Context, joinWaits bool) error {
+	nested := s.stops.Nested()
+	owner, drained := s.begin()
+	if owner {
+		s.q.stop()
+		async.Go(func() { s.stops.Drain(drained, s.workers.Wait) })
 	}
+	switch {
+	case drain.Closed(drained):
+		return nil
+	case nested:
+		return errStopFromOwnListener
+	case !owner && !joinWaits:
+		return nil
+	}
+	return s.stops.Await(ctx, drained, nil)
+}
+
+// begin records a stop: the first owns the drain and gets a fresh drained
+// channel, a later one the owner's.
+func (s *asyncEventStop) begin() (owner bool, drained chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if d := s.stops.Ended(); d != nil {
+		return false, d
+	}
+	return true, s.stops.Begin()
 }
 
 // ShutdownEventDispatcher drains pending events and stops dispatcher
@@ -243,13 +272,16 @@ func makeDrainCloser(q *asyncEventQueue, wg *sync.WaitGroup) func(context.Contex
 // is empty; this is preferred over abrupt termination, which would drop
 // events mid-handle.
 //
-// After the first call, subsequent calls return the cached result
-// without re-draining.
+// The first call stops the pool; a call that overlaps or follows it
+// waits for that same drain, or its own ctx, and returns nil once the
+// drain is over. A call from one of the pool's own listeners cannot wait
+// for the workers it runs on: it stops the pool and returns an error at
+// once.
 func (r *VelocityRouterV2) ShutdownEventDispatcher(ctx context.Context) error {
-	if r.stopEventDispatcher == nil {
+	if r.asyncStop == nil {
 		return nil
 	}
-	return r.stopEventDispatcher(ctx)
+	return r.asyncStop.stop(ctx, true)
 }
 
 // safeInvokeListener executes a listener, recovering from panics. Listener
