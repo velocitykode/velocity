@@ -182,7 +182,8 @@ func (a *App) serveHTTP() error {
 // it unrun. A Shutdown that overlaps or follows the first waits for that
 // same teardown, or for its own ctx, and returns its result; none starts a
 // second teardown. A Shutdown called from inside the teardown (a module's
-// Shutdown, say) would wait on itself, and returns an error at once.
+// Shutdown, say) would wait on itself: the teardown goes on, and the call
+// returns an error at once.
 func (a *App) Shutdown(ctx context.Context) error {
 	t := &a.teardown
 	if t.stops.Nested() {

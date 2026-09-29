@@ -747,8 +747,8 @@ func (g *Gateway) Stop() {
 // means the requests in flight have finished.
 //
 // A Shutdown called from the gateway's own stop line cannot wait on the
-// stop it runs in: it returns an error wrapping http.ErrServerClosed at
-// once. A Shutdown called from a request handler waits for that handler
+// stop it runs in: that stop goes on, and the call returns an error
+// wrapping http.ErrServerClosed at once. A Shutdown called from a request handler waits for that handler
 // until its ctx is done.
 func (g *Gateway) Shutdown(ctx context.Context) error {
 	nested := g.stops.Nested()

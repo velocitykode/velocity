@@ -902,7 +902,7 @@ func (m *Manager) Begin(ctx context.Context) (*sql.Tx, error) {
 // lock, so a driver's Close may call back into the manager. A Shutdown
 // that overlaps it waits for those closes, or returns ctx's error when ctx
 // ends first; one called from inside a driver's Close returns an error at
-// once. A later Shutdown returns nil once the closes are done.
+// once while the closes go on. A later Shutdown returns nil once the closes are done.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	// A pump goroutine can only be running on a pump already published, so
 	// this unlocked read cannot miss the one the caller runs on.
