@@ -100,7 +100,7 @@ func (s *FileStore) CompareAndSwapCtx(ctx context.Context, key string, expected,
 		}
 	}
 	if s.swapMatchedHook != nil {
-		s.swapMatchedHook()
+		s.swapMatchedHook() //lock-held-ok: swapMatchedHook is a test-only hook, nil outside tests
 	}
 	if err := s.writeItemLocked(path, fileCacheItem{Value: valueData, Expiration: expirationFor(ttl)}); err != nil {
 		return false, err

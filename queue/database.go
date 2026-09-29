@@ -825,7 +825,7 @@ func (d *DatabaseDriver) Clear(queueName string) error {
 	}
 
 	dedupeQuery := d.rewriteQuery("DELETE FROM job_dedupe WHERE queue = $1")
-	if _, err := d.db.Exec(dedupeQuery, queueName); err != nil && !dedupeTableMissing(err) {
+	if _, err := d.db.Exec(dedupeQuery, queueName); err != nil && !dedupeTableMissing(err) { //lock-held-ok: err comes from the sql driver, and its Error text is read only to spot a missing table
 		return fmt.Errorf("velocity/queue: failed to clear queue dedupe keys: %w", err)
 	}
 

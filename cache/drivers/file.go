@@ -453,7 +453,7 @@ func (s *FileStore) removeIfEligible(path string) {
 	}
 
 	if item.expired() {
-		s.removeExpiredLocked(path)
+		s.removeExpiredLocked(path) //lock-held-ok: expiredRemoveHook is a test-only hook, nil outside tests
 	}
 }
 
@@ -652,7 +652,7 @@ func (s *FileStore) removeExpired(key, path string) {
 	}
 	var item fileCacheItem
 	if json.Unmarshal(data, &item) == nil && item.expired() {
-		s.removeExpiredLocked(path)
+		s.removeExpiredLocked(path) //lock-held-ok: expiredRemoveHook is a test-only hook, nil outside tests
 	}
 }
 
