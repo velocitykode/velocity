@@ -445,7 +445,7 @@ func (d *DefaultDispatcher) dispatch(ctx context.Context, event interface{}, det
 			}
 			return nil
 		}
-		return d.processListener(ctx, event, listener)
+		return d.handleListener(ctx, event, listener)
 	}
 	if detached {
 		d.deliverDetached(ctx, event, deliver)
@@ -487,7 +487,7 @@ func (d *DefaultDispatcher) dispatchNow(ctx context.Context, event interface{}, 
 		ctx = d.reportFailure(ctx, event)
 	}
 	deliver := func(listener Listener) error {
-		return d.processListener(ctx, event, listener)
+		return d.handleListener(ctx, event, listener)
 	}
 	if detached {
 		d.deliverDetached(ctx, event, deliver)
@@ -502,20 +502,39 @@ func (d *DefaultDispatcher) dispatchNow(ctx context.Context, event interface{}, 
 // AsyncFailed (see dispatchListenerFailure), and when any listener failed
 // the delivery is handed, once, with the listeners' failures joined, to
 // the recorder SetDetachedFailureRecorder installed.
+//
+// It runs on a goroutine no caller waits on (a timer, a debounce or
+// coalesce callback, the no-queue DispatchAsync goroutine), so nothing
+// user code does may escape it: each listener's delivery is contained
+// (see deliverContained), and a panic before any listener runs (the
+// event's Name while its listeners are resolved) is the delivery's
+// failure, recorded once with no AsyncFailed, since no listener failed.
 func (d *DefaultDispatcher) deliverDetached(ctx context.Context, event interface{}, deliver func(Listener) error) {
-	err := d.dispatchToListeners(event, func(listener Listener) error {
-		err := deliver(listener)
-		if err != nil {
-			d.dispatchListenerFailure(ctx, event, listener, err)
-		}
-		return err
-	})
+	err := d.dispatchDetached(ctx, event, deliver)
 	if err == nil {
 		return
 	}
 	if record := d.detachedFailures.Load(); record != nil {
 		containDetached(event, func() { (*record)(ctx, err, event) })
 	}
+}
+
+// dispatchDetached is deliverDetached's fan-out: it returns the listeners'
+// failures joined, or the recovered panic that ended the fan-out before
+// any listener ran.
+func (d *DefaultDispatcher) dispatchDetached(ctx context.Context, event interface{}, deliver func(Listener) error) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = panicerr.FromRecovered(p)
+		}
+	}()
+	return d.dispatchToListeners(event, func(listener Listener) error {
+		err := deliverContained(deliver, listener)
+		if err != nil {
+			d.dispatchListenerFailure(ctx, event, listener, err)
+		}
+		return err
+	})
 }
 
 // detachedPanicMessage is the fallback line written for a panic contained
@@ -870,25 +889,42 @@ func matchesPattern(name, pattern string) bool {
 // dispatchToListeners resolves listeners for an event and applies fn to each.
 // Errors from individual listeners are aggregated with errors.Join so a single
 // failure does not mask subsequent problems and callers can inspect every
-// listener result.
+// listener result. Each listener's delivery is contained (see
+// deliverContained): a panic in fn fails that listener only.
 func (d *DefaultDispatcher) dispatchToListeners(event interface{}, fn func(Listener) error) error {
 	var errs []error
 	for _, listener := range d.getListenersForEvent(event) {
-		if err := fn(listener); err != nil {
+		if err := deliverContained(fn, listener); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// processListener executes a listener, recovering from panics.
-func (d *DefaultDispatcher) processListener(ctx context.Context, event interface{}, listener Listener) (err error) {
+// deliverContained delivers to listener with deliver, returning a panic in
+// it as the typed panic error. It is the one containment of a listener's
+// delivery: everything a delivery calls on the listener (Async,
+// ShouldDispatchAfterCommit, ShouldHandle, Handle) and the queue push it
+// may make is user code, and a panic in any of them fails that listener
+// only, on every path (a synchronous dispatch, a queue push, a timer or a
+// detached goroutine).
+func deliverContained(deliver func(Listener) error, listener Listener) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = panicerr.FromRecovered(p)
 		}
 	}()
+	return deliver(listener)
+}
 
+// processListener executes a listener, recovering from panics.
+func (d *DefaultDispatcher) processListener(ctx context.Context, event interface{}, listener Listener) error {
+	return deliverContained(func(l Listener) error { return d.handleListener(ctx, event, l) }, listener)
+}
+
+// handleListener executes a listener: ShouldHandle, then Handle. It does
+// not recover; its callers run it inside deliverContained.
+func (d *DefaultDispatcher) handleListener(ctx context.Context, event interface{}, listener Listener) error {
 	// Check if listener should handle this event
 	if handler, ok := listener.(ShouldHandle); ok {
 		if !handler.ShouldHandle(event) {

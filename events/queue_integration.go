@@ -314,8 +314,9 @@ func (d *QueueIntegratedDispatcher) Dispatch(ctx context.Context, event interfac
 	ctx = d.reportFailure(ctx, event)
 	listeners := d.listenersFor(event)
 
-	var errs []error
-	for _, listener := range listeners {
+	// Each listener's whole delivery (its selectors, the queue push and
+	// the handler) is contained: a panic fails that listener only.
+	deliver := func(listener Listener) error {
 		// After-commit gate runs FIRST: a listener that opts into
 		// post-commit delivery must not reach the queue or inline branch
 		// while the transaction is still in flight. EnqueueAfterCommit
@@ -333,7 +334,7 @@ func (d *QueueIntegratedDispatcher) Dispatch(ctx context.Context, event interfac
 				}
 				return d.processListener(replayCtx, ev, ln)
 			}) {
-				continue
+				return nil
 			}
 			// Fall through: no queue installed or already drained; the
 			// listener fires inline / via queue just like a non-opt-in one.
@@ -342,13 +343,18 @@ func (d *QueueIntegratedDispatcher) Dispatch(ctx context.Context, event interfac
 		if listener.Async() {
 			// Enhanced queue integration
 			if err := d.pushToQueue(ctx, event, listener); err != nil {
-				errs = append(errs, fmt.Errorf("failed to queue listener: %w", err))
+				return fmt.Errorf("failed to queue listener: %w", err)
 			}
-		} else {
-			// Process synchronously
-			if err := d.processListener(ctx, event, listener); err != nil {
-				errs = append(errs, err)
-			}
+			return nil
+		}
+		// Process synchronously
+		return d.handleListener(ctx, event, listener)
+	}
+
+	var errs []error
+	for _, listener := range listeners {
+		if err := deliverContained(deliver, listener); err != nil {
+			errs = append(errs, err)
 		}
 	}
 
@@ -907,12 +913,16 @@ func (d *StoppablePropagationDispatcher) Dispatch(ctx context.Context, event int
 	}
 	listeners := d.getListenersForEvent(event)
 
-	var errs []error
-	for _, listener := range listeners {
+	// Each listener's whole delivery (the propagation check, its
+	// selectors, the queue push and the handler) is contained: a panic
+	// fails that listener only.
+	stopped := false
+	deliver := func(listener Listener) error {
 		// Check if we should stop propagation
 		if stoppable, ok := event.(StoppableEvent); ok {
 			if stoppable.ShouldStopPropagation() {
-				break
+				stopped = true
+				return nil
 			}
 		}
 
@@ -937,20 +947,28 @@ func (d *StoppablePropagationDispatcher) Dispatch(ctx context.Context, event int
 				}
 				return d.processListener(replayCtx, ev, ln)
 			}) {
-				continue
+				return nil
 			}
 		}
 
 		if listener.Async() {
 			// For queued listeners, we don't stop propagation since they're async
 			if err := d.pushToQueue(ctx, event, listener); err != nil {
-				errs = append(errs, fmt.Errorf("failed to queue listener: %w", err))
+				return fmt.Errorf("failed to queue listener: %w", err)
 			}
-		} else {
-			// Process synchronously
-			if err := d.processListener(ctx, event, listener); err != nil {
-				errs = append(errs, err)
-			}
+			return nil
+		}
+		// Process synchronously
+		return d.processListener(ctx, event, listener)
+	}
+
+	var errs []error
+	for _, listener := range listeners {
+		if err := deliverContained(deliver, listener); err != nil {
+			errs = append(errs, err)
+		}
+		if stopped {
+			break
 		}
 	}
 
