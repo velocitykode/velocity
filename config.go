@@ -235,7 +235,11 @@ func WithoutEvents() Option {
 // Per failed delivery, the failure is counted once and fn is called once,
 // however many of its listeners failed, detached deliveries included
 // (no-queue DispatchAsync or DispatchAfter, a debounced or coalesced
-// dispatch); the error handler reports each failed listener once.
+// dispatch); the error handler reports each failed listener once. The
+// listeners of a dispatch that wait for a transaction's commit
+// (ShouldDispatchAfterCommit) are a delivery of their own, run at the
+// commit: counted once and handed to fn once however many of them fail,
+// while the transaction returns their failure.
 //
 // The count is exact; for a statement event the ORM drops under overload,
 // fn is best-effort. The ORM counts the drop inside the statement and

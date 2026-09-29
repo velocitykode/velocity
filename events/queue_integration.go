@@ -316,24 +316,15 @@ func (d *QueueIntegratedDispatcher) Dispatch(ctx context.Context, event interfac
 
 	// Each listener's whole delivery (its selectors, the queue push and
 	// the handler) is contained: a panic fails that listener only.
+	var deferred *afterCommitDelivery
 	deliver := func(listener Listener) error {
 		// After-commit gate runs FIRST: a listener that opts into
 		// post-commit delivery must not reach the queue or inline branch
-		// while the transaction is still in flight. EnqueueAfterCommit
+		// while the transaction is still in flight. deferUntilCommit
 		// returns false when no queue is installed (or it already drained),
 		// collapsing the gate into the branches below.
 		if ac, ok := listener.(ShouldDispatchAfterCommit); ok && ac.ShouldDispatchAfterCommit() {
-			ev := event
-			ln := listener
-			if EnqueueAfterCommit(ctx, func(replayCtx context.Context) error {
-				if ln.Async() {
-					if err := d.pushToQueue(replayCtx, ev, ln); err != nil {
-						return fmt.Errorf("failed to queue listener: %w", err)
-					}
-					return nil
-				}
-				return d.processListener(replayCtx, ev, ln)
-			}) {
+			if d.deferUntilCommit(ctx, event, &deferred, listener, d.replayListener) {
 				return nil
 			}
 			// Fall through: no queue installed or already drained; the
@@ -359,6 +350,18 @@ func (d *QueueIntegratedDispatcher) Dispatch(ctx context.Context, event interfac
 	}
 
 	return errors.Join(errs...)
+}
+
+// replayListener delivers listener, an after-commit listener of event, at
+// commit time: through the queue when it is Async, inline otherwise.
+func (d *QueueIntegratedDispatcher) replayListener(ctx context.Context, event interface{}, listener Listener) error {
+	if listener.Async() {
+		if err := d.pushToQueue(ctx, event, listener); err != nil {
+			return fmt.Errorf("failed to queue listener: %w", err)
+		}
+		return nil
+	}
+	return d.handleListener(ctx, event, listener)
 }
 
 // pushToQueue pushes a listener to the queue with proper event serialization.
@@ -917,6 +920,7 @@ func (d *StoppablePropagationDispatcher) Dispatch(ctx context.Context, event int
 	// selectors, the queue push and the handler) is contained: a panic
 	// fails that listener only.
 	stopped := false
+	var deferred *afterCommitDelivery
 	deliver := func(listener Listener) error {
 		// Check if we should stop propagation
 		if stoppable, ok := event.(StoppableEvent); ok {
@@ -927,26 +931,10 @@ func (d *StoppablePropagationDispatcher) Dispatch(ctx context.Context, event int
 		}
 
 		// After-commit gate runs before the queue / inline branches, exactly
-		// as in QueueIntegratedDispatcher.Dispatch. The replay closure uses
-		// this type's processListener (propagation-aware) for the inline path.
+		// as in QueueIntegratedDispatcher.Dispatch. The replay uses this
+		// type's processListener (propagation-aware) for the inline path.
 		if ac, ok := listener.(ShouldDispatchAfterCommit); ok && ac.ShouldDispatchAfterCommit() {
-			ev := event
-			ln := listener
-			if EnqueueAfterCommit(ctx, func(replayCtx context.Context) error {
-				// Re-check propagation at replay time so an earlier after-commit
-				// StoppablePropagationListener that called StopPropagation halts
-				// the already-enqueued later listeners, matching the inline path.
-				if stoppable, ok := ev.(StoppableEvent); ok && stoppable.ShouldStopPropagation() {
-					return nil
-				}
-				if ln.Async() {
-					if err := d.pushToQueue(replayCtx, ev, ln); err != nil {
-						return fmt.Errorf("failed to queue listener: %w", err)
-					}
-					return nil
-				}
-				return d.processListener(replayCtx, ev, ln)
-			}) {
+			if d.deferUntilCommit(ctx, event, &deferred, listener, d.replayListener) {
 				return nil
 			}
 		}
@@ -973,6 +961,23 @@ func (d *StoppablePropagationDispatcher) Dispatch(ctx context.Context, event int
 	}
 
 	return errors.Join(errs...)
+}
+
+// replayListener delivers listener, an after-commit listener of event, at
+// commit time. Propagation is re-checked first, so an earlier after-commit
+// StoppablePropagationListener that called StopPropagation halts the later
+// deferred listeners, matching the inline path.
+func (d *StoppablePropagationDispatcher) replayListener(ctx context.Context, event interface{}, listener Listener) error {
+	if stoppable, ok := event.(StoppableEvent); ok && stoppable.ShouldStopPropagation() {
+		return nil
+	}
+	if listener.Async() {
+		if err := d.pushToQueue(ctx, event, listener); err != nil {
+			return fmt.Errorf("failed to queue listener: %w", err)
+		}
+		return nil
+	}
+	return d.processListener(ctx, event, listener)
 }
 
 // StoppablePropagationListener can signal to stop event propagation

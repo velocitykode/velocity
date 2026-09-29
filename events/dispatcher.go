@@ -394,45 +394,18 @@ func (d *DefaultDispatcher) dispatch(ctx context.Context, event interface{}, det
 	d.mu.RLock()
 	q := d.queue
 	d.mu.RUnlock()
+	// deferred collects this dispatch's after-commit listeners (see
+	// deferUntilCommit); it stays nil unless one meets a live queue.
+	var deferred *afterCommitDelivery
 	deliver := func(listener Listener) error {
 		// After-commit gate runs FIRST: a listener that opts into
 		// post-commit delivery should never reach the queue or the
 		// inline branch while the transaction is still in flight.
-		// EnqueueAfterCommit returns false when no queue is installed
+		// deferUntilCommit returns false when no queue is installed
 		// or the queue has already drained, which collapses the gate
 		// into the existing inline / queue branches below.
 		if ac, ok := listener.(ShouldDispatchAfterCommit); ok && ac.ShouldDispatchAfterCommit() {
-			// Capture the listener and event for replay at commit
-			// time. The replay uses commit-time ctx (not the in-flight
-			// tx ctx) so listeners see post-transaction values.
-			//
-			// At commit time we re-check Async and the live queue
-			// handle: a listener that opts into BOTH after-commit AND
-			// queueing must still take the queue branch when the
-			// transaction lands. Without this gate an Async
-			// listener that also implements ShouldDispatchAfterCommit
-			// would run synchronously on the commit goroutine, blocking
-			// the orm wrapper return and silently changing the listener's
-			// declared async semantics.
-			ev := event
-			ln := listener
-			if EnqueueAfterCommit(ctx, func(replayCtx context.Context) error {
-				if ln.Async() {
-					d.mu.RLock()
-					replayQueue := d.queue
-					d.mu.RUnlock()
-					if replayQueue != nil {
-						if err := replayQueue.Push(replayCtx, ev, ln, 0); err != nil {
-							return fmt.Errorf("failed to queue listener: %w", err)
-						}
-						return nil
-					}
-					// Queue was unwired between dispatch and commit
-					// (rare). Fall through to inline so the listener
-					// still runs rather than silently disappearing.
-				}
-				return d.processListener(replayCtx, ev, ln)
-			}) {
+			if d.deferUntilCommit(ctx, event, &deferred, listener, d.replayListener) {
 				return nil
 			}
 			// Fall through: no queue installed (no transaction) or
@@ -452,6 +425,96 @@ func (d *DefaultDispatcher) dispatch(ctx context.Context, event interface{}, det
 		return nil
 	}
 	return d.dispatchToListeners(event, deliver)
+}
+
+// replayListener delivers listener, an after-commit listener of event, at
+// commit time under the commit-time ctx, so it sees post-transaction
+// values. Async and the live queue are re-checked: a listener that opts
+// into BOTH after-commit AND queueing must still take the queue branch
+// when the transaction lands, instead of running synchronously on the
+// commit goroutine and silently changing its declared async semantics.
+func (d *DefaultDispatcher) replayListener(ctx context.Context, event interface{}, listener Listener) error {
+	if listener.Async() {
+		d.mu.RLock()
+		q := d.queue
+		d.mu.RUnlock()
+		if q != nil {
+			if err := q.Push(ctx, event, listener, 0); err != nil {
+				return fmt.Errorf("failed to queue listener: %w", err)
+			}
+			return nil
+		}
+		// Queue was unwired between dispatch and commit (rare). Fall
+		// through to inline so the listener still runs rather than
+		// silently disappearing.
+	}
+	return d.handleListener(ctx, event, listener)
+}
+
+// afterCommitDelivery is the part of one dispatch deferred to the commit
+// of the surrounding transaction: the dispatch's after-commit listeners,
+// delivered by one after-commit task. mu guards listeners and closed, for
+// a dispatch racing the commit on another goroutine.
+type afterCommitDelivery struct {
+	mu        sync.Mutex
+	listeners []Listener
+	closed    bool
+}
+
+// deferUntilCommit defers listener, an after-commit listener of event, to
+// the commit of the transaction ctx carries, as part of *group, the
+// deferred part of this dispatch: the first listener creates the group and
+// enqueues its one task, later ones join it. It reports false when there
+// is no live after-commit queue (no transaction, or it already committed)
+// or the group was already delivered: the listener then runs now, as a
+// listener that does not wait for the commit would.
+//
+// At commit the task delivers each listener with replay, contained (see
+// deliverContained), and returns their failures joined, so the
+// transaction returns them. The deferred part is its own delivery, whose
+// failure no dispatch caller receives: it is handed once, with the
+// failures joined, to the recorder SetDetachedFailureRecorder installed.
+func (d *DefaultDispatcher) deferUntilCommit(ctx context.Context, event interface{}, group **afterCommitDelivery, listener Listener, replay func(context.Context, interface{}, Listener) error) bool {
+	if g := *group; g != nil {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		if g.closed {
+			return false
+		}
+		g.listeners = append(g.listeners, listener)
+		return true
+	}
+	g := &afterCommitDelivery{listeners: []Listener{listener}}
+	if !EnqueueAfterCommit(ctx, func(commitCtx context.Context) error {
+		return d.deliverAfterCommit(commitCtx, event, g, replay)
+	}) {
+		return false
+	}
+	*group = g
+	return true
+}
+
+// deliverAfterCommit delivers g, the deferred part of a dispatch of event,
+// at commit (see deferUntilCommit).
+func (d *DefaultDispatcher) deliverAfterCommit(ctx context.Context, event interface{}, g *afterCommitDelivery, replay func(context.Context, interface{}, Listener) error) error {
+	g.mu.Lock()
+	g.closed = true
+	listeners := g.listeners
+	g.mu.Unlock()
+
+	var errs []error
+	for _, listener := range listeners {
+		if err := deliverContained(func(l Listener) error { return replay(ctx, event, l) }, listener); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	err := errors.Join(errs...)
+	if err != nil {
+		if record := d.detachedFailures.Load(); record != nil {
+			containDetached(event, func() { (*record)(ctx, err, event) })
+		}
+	}
+	return err
 }
 
 // dispatchLater delivers event, which a public call accepted and returned
@@ -574,7 +637,11 @@ func (d *DefaultDispatcher) reportDetached(ctx context.Context, event interface{
 // SetDetachedFailureRecorder installs fn as the recorder of detached
 // deliveries that failed: the no-queue fallbacks of DispatchAsync and
 // DispatchAfter, the later deliveries of a debouncing or coalescing
-// dispatcher, and the delivery of an AsyncFailed. No caller receives such
+// dispatcher, and the delivery of an AsyncFailed. It also records the
+// part of a dispatch deferred to a transaction's commit (its
+// ShouldDispatchAfterCommit listeners), once however many of them failed;
+// no AsyncFailed is dispatched for those, as the commit returns their
+// failure to the transaction's caller. No caller receives such
 // a delivery's result, so fn is called once per delivery a listener
 // failed on (however many did), with the listeners' failures joined, on
 // the goroutine that delivered it, after each failure was dispatched as
@@ -915,11 +982,6 @@ func deliverContained(deliver func(Listener) error, listener Listener) (err erro
 		}
 	}()
 	return deliver(listener)
-}
-
-// processListener executes a listener, recovering from panics.
-func (d *DefaultDispatcher) processListener(ctx context.Context, event interface{}, listener Listener) error {
-	return deliverContained(func(l Listener) error { return d.handleListener(ctx, event, l) }, listener)
 }
 
 // handleListener executes a listener: ShouldHandle, then Handle. It does

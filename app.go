@@ -980,7 +980,8 @@ func (a *App) Version() string {
 // WithFailedEventHook installed. A detached delivery a listener failed on
 // (no-queue DispatchAsync or DispatchAfter, a debounced or coalesced
 // dispatch, the delivery of an AsyncFailed), whoever dispatched it, counts
-// once as well. The unit is the failed delivery: per failed delivery the
+// once as well, and so does the part of a dispatch deferred to a
+// transaction's commit (its ShouldDispatchAfterCommit listeners). The unit is the failed delivery: per failed delivery the
 // count grows by one and the WithFailedEventHook hook runs once, while the
 // error handler receives one report per failed listener, so a detached
 // delivery two listeners failed on counts once, reaches the hook once and

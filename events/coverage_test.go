@@ -179,7 +179,7 @@ func TestGetEventNameEmptyTypeName(t *testing.T) {
 	}
 }
 
-// Test processListener with ShouldHandle interface
+// Test handleListener with ShouldHandle interface
 func TestProcessListenerShouldHandle(t *testing.T) {
 	d := NewDispatcher()
 
@@ -187,14 +187,14 @@ func TestProcessListenerShouldHandle(t *testing.T) {
 	listener := &shouldHandleListener{shouldHandle: false}
 
 	// Should return nil when ShouldHandle returns false
-	err := d.processListener(context.Background(), "event", listener)
+	err := d.handleListener(context.Background(), "event", listener)
 	if err != nil {
 		t.Errorf("Expected nil when ShouldHandle is false, got %v", err)
 	}
 
 	// Test with ShouldHandle returning true
 	listener.shouldHandle = true
-	err = d.processListener(context.Background(), "event", listener)
+	err = d.handleListener(context.Background(), "event", listener)
 	if err != nil {
 		t.Errorf("Expected nil when handling succeeds, got %v", err)
 	}

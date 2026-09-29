@@ -463,7 +463,7 @@ func TestQueueIntegratedDispatcherDispatch(t *testing.T) {
 	}
 }
 
-// Test processListener in QueueIntegratedDispatcher
+// Test handleListener in QueueIntegratedDispatcher
 func TestQueueIntegratedProcessListener(t *testing.T) {
 	dispatcher := NewQueueIntegratedDispatcher()
 
@@ -473,9 +473,9 @@ func TestQueueIntegratedProcessListener(t *testing.T) {
 	}
 
 	event := "test.event"
-	err := dispatcher.processListener(context.Background(), event, listener)
+	err := dispatcher.handleListener(context.Background(), event, listener)
 	if err != nil {
-		t.Errorf("processListener failed: %v", err)
+		t.Errorf("handleListener failed: %v", err)
 	}
 
 	// Verify Handle was not called
@@ -488,9 +488,9 @@ func TestQueueIntegratedProcessListener(t *testing.T) {
 		shouldHandle: true,
 	}
 
-	err = dispatcher.processListener(context.Background(), event, listener2)
+	err = dispatcher.handleListener(context.Background(), event, listener2)
 	if err != nil {
-		t.Errorf("processListener failed: %v", err)
+		t.Errorf("handleListener failed: %v", err)
 	}
 
 	// Verify Handle was called
