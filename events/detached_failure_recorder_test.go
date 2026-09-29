@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // detachedRecords captures SetDetachedFailureRecorder calls.
@@ -29,9 +31,9 @@ func (r *detachedRecords) count() int {
 	return len(r.errs)
 }
 
-// waitFor polls cond for up to two seconds.
+// waitFor polls cond until it holds, for up to hostile.Deadline.
 func waitFor(cond func() bool) {
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline) && !cond(); time.Sleep(2 * time.Millisecond) {
+	for deadline := time.Now().Add(hostile.Deadline); time.Now().Before(deadline) && !cond(); time.Sleep(2 * time.Millisecond) {
 	}
 }
 

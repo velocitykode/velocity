@@ -2,7 +2,8 @@ package bus
 
 import (
 	"testing"
-	"time"
+
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 type reentryCmd struct{}
@@ -23,21 +24,18 @@ func TestFakeBus_AssertCallbackMayDispatch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := NewFakeBus()
 			tc.record(f)
-			done := make(chan error, 1)
-			go func() {
-				done <- tc.assert(f, func(Command) bool {
+			var err error
+			if p := hostile.Within(t, hostile.Deadline, func() {
+				err = tc.assert(f, func(Command) bool {
 					_ = f.Dispatch(reentryCmd{})
 					_ = f.DispatchAsync(reentryCmd{})
 					return true
 				})
-			}()
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatalf("%s = %v", tc.name, err)
-				}
-			case <-time.After(2 * time.Second):
-				t.Fatalf("%s deadlocked on a callback that dispatches", tc.name)
+			}); p != nil {
+				t.Fatalf("%s panicked: %v", tc.name, p)
+			}
+			if err != nil {
+				t.Fatalf("%s = %v", tc.name, err)
 			}
 		})
 	}

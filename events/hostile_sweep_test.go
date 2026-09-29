@@ -233,7 +233,8 @@ func TestHostileListener_DetachedDispatchPaths(t *testing.T) {
 					waitFor(func() bool { return seen.Load() == 1 })
 					if mode == hostile.Panic {
 						waitFor(func() bool { return recorded.Load() > 0 })
-						// Give a second record, or an escaped panic, time to show.
+						// Give a second record, or an escaped panic, time to
+						// show; a slow machine can only make this pass falsely.
 						time.Sleep(20 * time.Millisecond)
 					}
 					if got := seen.Load(); got != 1 {

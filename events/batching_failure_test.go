@@ -68,7 +68,9 @@ func TestBatchingBackgroundFlush_FailuresAreDeliveredDetached(t *testing.T) {
 		t.Fatalf("Dispatch = %v", err)
 	}
 	waitFor(func() bool { return recorded.Load() > 0 })
-	// Several more ticks: a requeued entry would be delivered again.
+	// Several more ticks: a requeued entry would be delivered again. A slow
+	// machine runs fewer ticks here, which can only make this pass
+	// falsely, never fail.
 	time.Sleep(50 * time.Millisecond)
 
 	if got := handled.Load(); got != 1 {
@@ -102,7 +104,7 @@ func TestBatchingStop_FromTheFlushGoroutineReturns(t *testing.T) {
 	}
 	select {
 	case <-stopped:
-	case <-time.After(2 * time.Second):
+	case <-time.After(hostile.Deadline):
 		t.Fatal("Stop called from the flush goroutine deadlocked")
 	}
 	within(t, "Stop after the loop stopped itself", d.Stop)
@@ -111,13 +113,18 @@ func TestBatchingStop_FromTheFlushGoroutineReturns(t *testing.T) {
 // A debounced delivery whose listener dispatches the same event again
 // leaves the new pending delivery in place, so Stop still cancels it.
 func TestDebouncing_RedispatchFromAListenerStaysPending(t *testing.T) {
-	d := NewDebouncingDispatcher(50 * time.Millisecond)
+	d := NewDebouncingDispatcher(time.Millisecond)
 	var handled atomic.Int32
-	first := make(chan struct{})
+	redispatched := make(chan struct{})
 	d.Listen("evt", listenerFunc(func(ctx context.Context, event interface{}) error {
 		if handled.Add(1) == 1 {
+			// The re-dispatch waits an hour, so it is pending, not fired,
+			// however slow the machine.
+			d.timersMu.Lock()
+			d.debounce = time.Hour
+			d.timersMu.Unlock()
 			_ = d.Dispatch(ctx, event)
-			close(first)
+			close(redispatched)
 		}
 		return nil
 	}))
@@ -125,18 +132,20 @@ func TestDebouncing_RedispatchFromAListenerStaysPending(t *testing.T) {
 		t.Fatalf("Dispatch = %v", err)
 	}
 	select {
-	case <-first:
-	case <-time.After(2 * time.Second):
+	case <-redispatched:
+	case <-time.After(hostile.Deadline):
 		t.Fatal("the first debounced delivery never ran")
 	}
-	// Let the first delivery's timer callback finish.
-	time.Sleep(10 * time.Millisecond)
+	// The first timer's callback finishes after the listener returns; a
+	// broken callback then deletes the re-dispatch's entry. Settle so that
+	// happens before the check. A correct tree shows 1 at any moment, so a
+	// slow machine can only make this pass falsely, never fail.
+	time.Sleep(20 * time.Millisecond)
 	if got := d.GetPendingCount(); got != 1 {
 		t.Errorf("pending = %d, want 1 (the listener's dispatch)", got)
 	}
 	d.Stop()
-	time.Sleep(100 * time.Millisecond)
-	if got := handled.Load(); got != 1 {
-		t.Errorf("listener handled %d events after Stop, want 1", got)
+	if got := d.GetPendingCount(); got != 0 {
+		t.Errorf("pending after Stop = %d, want 0", got)
 	}
 }

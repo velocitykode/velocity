@@ -72,7 +72,8 @@ func detachedScenario(t *testing.T, name string) (recorded int32) {
 		stop = d.Stop
 	}
 	waitFor(func() bool { return calls.Load() > 0 })
-	// Give an escaped panic time to end the process.
+	// Give an escaped panic time to end the process; a slow machine can
+	// only make this pass falsely.
 	time.Sleep(50 * time.Millisecond)
 	if stop != nil {
 		stop()

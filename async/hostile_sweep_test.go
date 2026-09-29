@@ -84,7 +84,13 @@ func TestHostileFn_Helpers(t *testing.T) {
 					want := int32(0)
 					if mode == hostile.Panic {
 						want = 1
-						// Give a second report, or an escaped panic, time to show.
+						// The hook runs on fn's goroutine, which may finish
+						// after the helper returned: wait for it, then give a
+						// second report time to show (a slow machine can only
+						// make that part pass falsely).
+						for deadline := time.Now().Add(hostile.Deadline); hooked.Load() == 0 && time.Now().Before(deadline); {
+							time.Sleep(time.Millisecond)
+						}
 						time.Sleep(20 * time.Millisecond)
 					}
 					if got := hooked.Load(); got != want {
