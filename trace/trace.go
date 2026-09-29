@@ -114,27 +114,45 @@ func GenerateSpanID() (string, error) {
 // momentarily unavailable. Code paths that can propagate errors should
 // prefer GenerateTraceID.
 func MustGenerateTraceID() string {
+	id, fellBack := mustTraceID()
+	if fellBack {
+		warnRandUnavailable()
+	}
+	return id
+}
+
+// mustTraceID is MustGenerateTraceID without the warning: it reports
+// whether it fell back, so a caller holding a lock (LazyTrace's Once)
+// warns once it released it.
+func mustTraceID() (id string, fellBack bool) {
 	if id, err := generateHexID(16); err == nil {
-		return id
+		return id, false
 	}
 	if id, err := generateHexID(16); err == nil {
-		return id
+		return id, false
 	}
-	warnRandUnavailable()
-	return fallbackTraceID()
+	return fallbackTraceID(), true
 }
 
 // MustGenerateSpanID returns a fresh span ID. Mirrors MustGenerateTraceID
 // for the span case: one retry then a per-call non-hex fallback ID.
 func MustGenerateSpanID() string {
+	id, fellBack := mustSpanID()
+	if fellBack {
+		warnRandUnavailable()
+	}
+	return id
+}
+
+// mustSpanID is MustGenerateSpanID without the warning (see mustTraceID).
+func mustSpanID() (id string, fellBack bool) {
 	if id, err := generateHexID(8); err == nil {
-		return id
+		return id, false
 	}
 	if id, err := generateHexID(8); err == nil {
-		return id
+		return id, false
 	}
-	warnRandUnavailable()
-	return fallbackSpanID()
+	return fallbackSpanID(), true
 }
 
 // fallbackTraceID returns a per-call trace ID that does not require
@@ -311,11 +329,21 @@ type LazyTrace struct {
 
 // IDs materializes the trace and span IDs on first call and returns the
 // cached pair thereafter. Safe for concurrent use.
+//
+// The entropy warning (see MustGenerateTraceID) is written after the Once
+// is done, by the call that generated the pair: the package logger may
+// read this request's ids, which would wait on the Once for good.
 func (l *LazyTrace) IDs() (traceID, spanID string) {
+	var fellBack bool
 	l.once.Do(func() {
-		l.traceID = MustGenerateTraceID()
-		l.spanID = MustGenerateSpanID()
+		var traceFell, spanFell bool
+		l.traceID, traceFell = mustTraceID()
+		l.spanID, spanFell = mustSpanID()
+		fellBack = traceFell || spanFell
 	})
+	if fellBack {
+		warnRandUnavailable()
+	}
 	return l.traceID, l.spanID
 }
 
