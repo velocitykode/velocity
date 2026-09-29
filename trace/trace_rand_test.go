@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
 // failingReader always returns an error, simulating a sandboxed or
@@ -25,10 +27,10 @@ func withRandReader(t *testing.T, r io.Reader) {
 	t.Helper()
 	prev := randReader
 	randReader = r
-	randFallbackWarnOnce = sync.Once{}
+	randFallbackWarnOnce = fallbacklog.Once{}
 	t.Cleanup(func() {
 		randReader = prev
-		randFallbackWarnOnce = sync.Once{}
+		randFallbackWarnOnce = fallbacklog.Once{}
 	})
 }
 

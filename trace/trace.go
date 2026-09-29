@@ -69,9 +69,10 @@ const FallbackSpanIDPrefix = "velocity_span_norand_"
 // one-shot warn on entropy failure, while str.Random returns an error.
 var randReader io.Reader = rand.Reader
 
-// randFallbackWarnOnce guards the one-time WARN log emitted by the Must*
-// helpers when crypto/rand is unavailable.
-var randFallbackWarnOnce sync.Once
+// randFallbackWarnOnce claims the one-time WARN log emitted by the Must*
+// helpers when crypto/rand is unavailable. The first caller writes it; the
+// others return at once instead of waiting on the logger.
+var randFallbackWarnOnce fallbacklog.Once
 
 // fallbackCounter is a monotonic counter that distinguishes per-call
 // fallback IDs within a single process. atomic.Uint64 is safe across
@@ -187,8 +188,8 @@ func generateHexID(byteLength int) (string, error) {
 // package logger (see SetLogger). Spamming the logger on every request
 // would amplify the original failure, so the one-shot is intentional.
 func warnRandUnavailable() {
-	randFallbackWarnOnce.Do(func() {
-		GetLogger().Warn("velocity/trace: crypto/rand unavailable; emitting fallback trace markers. APM correlation is impossible until entropy is restored")
+	randFallbackWarnOnce.Write(GetLogger(), func(l contract.Logger) {
+		l.Warn("velocity/trace: crypto/rand unavailable; emitting fallback trace markers. APM correlation is impossible until entropy is restored")
 	})
 }
 
