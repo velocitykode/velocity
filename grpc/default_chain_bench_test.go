@@ -81,3 +81,42 @@ func benchDefaultChain(b *testing.B, dispatcher bool) {
 		_, _ = h(ctx, nil)
 	}
 }
+
+// benchStream is a server stream that only carries a context.
+type benchStream struct {
+	grpcgo.ServerStream
+	ctx context.Context
+}
+
+func (s benchStream) Context() context.Context { return s.ctx }
+
+// BenchmarkDefaultChain_Stream measures one stream call through the
+// default chain with two pass-through user interceptors, each wrapped in
+// interceptors.ContainStream as Build wraps them, composed as grpc-go
+// composes a stream chain, without an event dispatcher.
+func BenchmarkDefaultChain_Stream(b *testing.B) {
+	quiet, _ := log.NewLogger(log.LogConfig{Driver: "null"})
+	s := NewServer(WithLogger(quiet))
+	calls := s.defaultCallLifecycle(s.logger, s.reporter, nil)
+	pass := func(srv any, ss grpcgo.ServerStream, _ *grpcgo.StreamServerInfo, h grpcgo.StreamHandler) error {
+		return h(srv, ss)
+	}
+	chain := []grpcgo.StreamServerInterceptor{calls.Stream, interceptors.ContainStream(pass), interceptors.ContainStream(pass), calls.Stream}
+	info := &grpcgo.StreamServerInfo{FullMethod: "/svc.Bench/Stream"}
+	final := func(any, grpcgo.ServerStream) error { return nil }
+	var next func(curr int) grpcgo.StreamHandler
+	next = func(curr int) grpcgo.StreamHandler {
+		if curr == len(chain)-1 {
+			return final
+		}
+		return func(srv any, ss grpcgo.ServerStream) error {
+			return chain[curr+1](srv, ss, info, next(curr+1))
+		}
+	}
+	ss := benchStream{ctx: context.Background()}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		_ = chain[0](nil, ss, info, next(0))
+	}
+}

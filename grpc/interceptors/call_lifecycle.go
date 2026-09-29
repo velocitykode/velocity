@@ -18,6 +18,7 @@ import (
 	"github.com/velocitykode/velocity/grpc/internal/callhook"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -274,12 +275,20 @@ func ContainUnary(next grpc.UnaryServerInterceptor) grpc.UnaryServerInterceptor 
 }
 
 // ContainStream is ContainUnary for a stream interceptor: the owner is
-// found in the stream's context.
+// found in the stream's context, which it reads once, after its recovery
+// is in place. A stream whose Context panics (a broken wrapper an earlier
+// interceptor made) ends the call with codes.Internal and a line on the
+// framework's standalone fallback logger; the recovery never reads it
+// again.
 func ContainStream(next grpc.StreamServerInterceptor) grpc.StreamServerInterceptor {
 	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
+		var ctx context.Context
 		defer func() {
 			if p := recover(); p != nil {
-				ctx := ss.Context()
+				if ctx == nil {
+					err = streamContextPanicked(nil, p)
+					return
+				}
 				c := callOf(ctx)
 				if c == nil {
 					panic(p)
@@ -287,8 +296,21 @@ func ContainStream(next grpc.StreamServerInterceptor) grpc.StreamServerIntercept
 				err = c.recoverDownstream(ctx, p)
 			}
 		}()
+		ctx = ss.Context()
 		return next(srv, ss, info, handler)
 	}
+}
+
+// streamContextPanicked handles panic p from a user stream's Context,
+// raised before the call it belongs to could be found: it writes one line
+// through logger (the standalone fallback logger when nil) and returns the
+// codes.Internal the layer ends with. The call's owner then sees that
+// error and reports it as the call's one report.
+func streamContextPanicked(logger contract.Logger, p interface{}) error {
+	fallbacklog.Write(logger, func(l contract.Logger) {
+		l.Error("gRPC stream context panicked", "panic", p)
+	})
+	return status.Error(codes.Internal, "internal server error")
 }
 
 // callKey carries, in a call's context, the call its owner built. It does
@@ -440,16 +462,35 @@ func callsUnary(cfg *CallConfig) grpc.UnaryServerInterceptor {
 
 func callsStream(cfg *CallConfig) grpc.StreamServerInterceptor {
 	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
-		if c := callOf(ss.Context()); c != nil {
-			defer func() {
+		// The stream may be a wrapper an earlier interceptor made: its
+		// Context is read once, after this recovery is in place, and the
+		// recovery never reads it again. tail is set once the call this
+		// layer runs inside is known; the owner branch recovers through
+		// its own end.
+		var (
+			ctx  context.Context
+			tail *call
+		)
+		defer func() {
+			if tail != nil {
 				if p := recover(); p != nil {
-					err = c.recoverDownstream(ss.Context(), p)
+					err = tail.recoverDownstream(ctx, p)
 				}
-			}()
-			c.publish(ss.Context())
+				return
+			}
+			if ctx == nil {
+				if p := recover(); p != nil {
+					err = streamContextPanicked(cfg.Logger, p)
+				}
+			}
+		}()
+		ctx = ss.Context()
+		if c := callOf(ctx); c != nil {
+			tail = c
+			c.publish(ctx)
 			return handler(srv, ss)
 		}
-		c := beginCall(ss.Context(), info.FullMethod, true, cfg)
+		c := beginCall(ctx, info.FullMethod, true, cfg)
 		defer func() {
 			err = c.end(recover(), err)
 		}()
