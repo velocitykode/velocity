@@ -166,8 +166,12 @@ func WithStackTrace(enabled bool) CallOption {
 // its correlation, panic recovery, request line, lifecycle events and one
 // error report, all from one effective context.
 //
-// Install the pair at both ends of the chain, as a framework-built server
-// does:
+// Install the pair once, at both ends of the chain, as a framework-built
+// server does; on such a server configure the default one with
+// grpc.WithCallOptions instead of adding another. A CallLifecycle nested
+// inside a call another one owns passes the call through to that owner,
+// so the call still ends once, and the nested one's options have no
+// effect:
 //
 //	calls := interceptors.CallLifecycle(interceptors.WithReporter(reporter))
 //	grpc.ChainUnaryInterceptor(calls.Unary, auth.Unary, ..., calls.Unary)
@@ -182,8 +186,10 @@ func WithStackTrace(enabled bool) CallOption {
 // may come from the context the handler received, which interceptors
 // between the two occurrences (Auth, say) extend; correlation never does.
 //
-// The last occurrence contains a panic on the goroutine that runs the
-// handler, which may not be the owner's: an interceptor that runs the rest
+// Every later occurrence (the last one, and any nested CallLifecycle)
+// publishes the context it passes on and contains a panic below it, for
+// the owner's call. The last occurrence contains a panic on the goroutine
+// that runs the handler, which may not be the owner's: an interceptor that runs the rest
 // of the chain on a goroutine of its own (a timeout, say) cannot pass a
 // panic there back to the owner. The call's error report is claimed once:
 // whichever layer reports first (a panic, or the owner's Internal or
@@ -207,8 +213,10 @@ func CallLifecycle(opts ...CallOption) InterceptorPair {
 	}
 }
 
-// callKey carries, in a call's context, the call the owner built with cfg.
-type callKey struct{ cfg *CallConfig }
+// callKey carries, in a call's context, the call its owner built. It does
+// not name the owner's config: any CallLifecycle that finds a call in its
+// context is inside that call, not a second owner of it.
+type callKey struct{}
 
 // call is what the owner of one call shares, through its context, with
 // the last occurrence, which runs next to the handler. Every field is set
@@ -262,21 +270,20 @@ func beginCall(ctx context.Context, method string, stream bool, cfg *CallConfig)
 		stream:   stream,
 		observed: !shouldSkip(method, cfg),
 	}
-	c.ctx = context.WithValue(correlate(ctx), callKey{cfg: cfg}, c)
+	c.ctx = context.WithValue(correlate(ctx), callKey{}, c)
 	c.start = time.Now()
 	return c
 }
 
-// callOf returns the call the owner built with cfg, or nil when ctx is
-// not inside one.
-func callOf(ctx context.Context, cfg *CallConfig) *call {
-	c, _ := ctx.Value(callKey{cfg: cfg}).(*call)
+// callOf returns the call ctx is inside, or nil when it is inside none.
+func callOf(ctx context.Context) *call {
+	c, _ := ctx.Value(callKey{}).(*call)
 	return c
 }
 
 func callsUnary(cfg *CallConfig) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
-		if c := callOf(ctx, cfg); c != nil {
+		if c := callOf(ctx); c != nil {
 			defer func() {
 				if p := recover(); p != nil {
 					resp, err = nil, c.recoverDownstream(ctx, p)
@@ -300,7 +307,7 @@ func callsUnary(cfg *CallConfig) grpc.UnaryServerInterceptor {
 
 func callsStream(cfg *CallConfig) grpc.StreamServerInterceptor {
 	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
-		if c := callOf(ss.Context(), cfg); c != nil {
+		if c := callOf(ss.Context()); c != nil {
 			defer func() {
 				if p := recover(); p != nil {
 					err = c.recoverDownstream(ss.Context(), p)

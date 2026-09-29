@@ -75,23 +75,17 @@ func TestCallLifecycle_ContextErrorsGetTheirStatus(t *testing.T) {
 				evs := &statusEvents{}
 				lines := newBoundLogger()
 				reports := &ctxErrorReports{}
-				logging := interceptors.CallLifecycle(interceptors.WithRequestLine(),
+				calls := interceptors.CallLifecycle(interceptors.WithRequestLine(),
 					interceptors.WithLogger(lines),
 					interceptors.WithEventDispatcher(evs.dispatch),
+					interceptors.WithReporter(reports),
 				)
-				rec := interceptors.CallLifecycle(interceptors.WithReporter(reports))
 				if kind == "unary" {
-					_, _ = rec.Unary(context.Background(), nil, mockUnaryServerInfo("/svc.Work/Do"),
-						func(ctx context.Context, req any) (any, error) {
-							return logging.Unary(ctx, req, mockUnaryServerInfo("/svc.Work/Do"),
-								func(context.Context, any) (any, error) { return nil, tc.err })
-						})
+					_, _ = calls.Unary(context.Background(), nil, mockUnaryServerInfo("/svc.Work/Do"),
+						func(context.Context, any) (any, error) { return nil, tc.err })
 				} else {
-					_ = rec.Stream(nil, &mockServerStream{ctx: context.Background()}, mockStreamServerInfo("/svc.Work/Watch"),
-						func(srv any, ss grpc.ServerStream) error {
-							return logging.Stream(srv, ss, mockStreamServerInfo("/svc.Work/Watch"),
-								func(any, grpc.ServerStream) error { return tc.err })
-						})
+					_ = calls.Stream(nil, &mockServerStream{ctx: context.Background()}, mockStreamServerInfo("/svc.Work/Watch"),
+						func(any, grpc.ServerStream) error { return tc.err })
 				}
 				evs.mu.Lock()
 				got := append([]codes.Code(nil), evs.codes...)

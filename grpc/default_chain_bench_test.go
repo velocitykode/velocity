@@ -12,11 +12,22 @@ import (
 
 // BenchmarkDefaultChain_Unary measures one successful unary call through
 // the interceptors Build installs by default (no user interceptors, no
-// event dispatcher, no reporter), the chain composed once as grpc-go's
-// chained interceptor composes it.
+// reporter), the chain composed once as grpc-go's chained interceptor
+// composes it: without an event dispatcher, and with an app dispatcher
+// that has no listener for the gRPC events.
 func BenchmarkDefaultChain_Unary(b *testing.B) {
+	b.Run("no dispatcher", func(b *testing.B) { benchDefaultChain(b, false) })
+	b.Run("dispatcher without listeners", func(b *testing.B) { benchDefaultChain(b, true) })
+}
+
+func benchDefaultChain(b *testing.B, dispatcher bool) {
 	quiet, _ := log.NewLogger(log.LogConfig{Driver: "null"})
 	s := NewServer(WithLogger(quiet))
+	if dispatcher {
+		// A dispatcher with nothing listening: the events are built and
+		// handed over, and dropped.
+		s.SetEventDispatcher(func(context.Context, any) error { return nil })
+	}
 	calls := interceptors.CallLifecycle(
 		interceptors.WithLogger(s.logger),
 		interceptors.WithEventDispatcher(s.eventDispatchFunc()),

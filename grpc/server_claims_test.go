@@ -157,3 +157,115 @@ func TestServerChain_UserFieldsFromAuthReachTheLineAndEvents(t *testing.T) {
 		})
 	}
 }
+
+// countingLines counts request lines (lines that carry a status code).
+type countingLines struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (l *countingLines) record(kvs []any) {
+	for i := 0; i+1 < len(kvs); i += 2 {
+		if kvs[i] == "code" {
+			l.mu.Lock()
+			l.n++
+			l.mu.Unlock()
+		}
+	}
+}
+
+func (l *countingLines) Debug(_ string, kvs ...any)      { l.record(kvs) }
+func (l *countingLines) Info(_ string, kvs ...any)       { l.record(kvs) }
+func (l *countingLines) Warn(_ string, kvs ...any)       { l.record(kvs) }
+func (l *countingLines) Error(_ string, kvs ...any)      { l.record(kvs) }
+func (l *countingLines) Fatal(_ string, kvs ...any)      { l.record(kvs) }
+func (l *countingLines) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
+func (l *countingLines) count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.n
+}
+
+// A CallLifecycle an app adds to a framework-built server, which already
+// installs one by default, does not become a second owner of the call: a
+// panicking call still gets exactly one request line, one failed and
+// completed pair and one report across both configurations.
+func TestServerChain_NestedCallLifecycleKeepsOneOwner(t *testing.T) {
+	for _, kind := range []string{"unary", "stream"} {
+		t.Run(kind, func(t *testing.T) {
+			lines, userLines := &countingLines{}, &countingLines{}
+			evs, userEvs := &grpcEventLog{}, &grpcEventLog{}
+			reports, userReports := &chainReports{}, &chainReports{}
+			lis, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			quiet, _ := log.NewLogger(log.LogConfig{Driver: "null"})
+			s := NewServer(WithListener(lis), WithLogger(quiet), WithEnvironment("testing"), WithReporter(reports), WithCallOptions(
+				interceptors.WithRequestLine(), interceptors.WithLogger(lines), interceptors.WithEventDispatcher(evs.dispatch),
+			))
+			s.UseAll(interceptors.CallLifecycle(
+				interceptors.WithRequestLine(), interceptors.WithLogger(userLines),
+				interceptors.WithEventDispatcher(userEvs.dispatch), interceptors.WithReporter(userReports),
+			))
+			s.MarkAuthConfigured()
+			s.RegisterService(func(g interface{}) {
+				g.(*grpcgo.Server).RegisterService(&chainDesc, &chainServer{outcome: "panic"})
+			})
+			if err := s.StartAsync(); err != nil {
+				t.Fatalf("StartAsync: %v", err)
+			}
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = s.Shutdown(ctx)
+			})
+			conn, err := grpcgo.NewClient(lis.Addr().String(), grpcgo.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				t.Fatalf("client: %v", err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			var callErr error
+			if kind == "unary" {
+				callErr = conn.Invoke(ctx, chainDoMethod, &emptypb.Empty{}, &emptypb.Empty{})
+			} else {
+				st, err := conn.NewStream(ctx, &chainDesc.Streams[0], chainWatchMethod)
+				if err != nil {
+					t.Fatalf("NewStream: %v", err)
+				}
+				_ = st.SendMsg(&emptypb.Empty{})
+				_ = st.CloseSend()
+				callErr = st.RecvMsg(&emptypb.Empty{})
+			}
+			if status.Code(callErr) != codes.Internal {
+				t.Fatalf("code = %v (%v), want Internal", status.Code(callErr), callErr)
+			}
+
+			if n := lines.count() + userLines.count(); n != 1 {
+				t.Errorf("request lines = %d (default %d, nested %d), want 1", n, lines.count(), userLines.count())
+			}
+			var ends int
+			for _, log := range []*grpcEventLog{evs, userEvs} {
+				log.mu.Lock()
+				for _, ev := range log.events {
+					switch ev.(type) {
+					case *grpcevents.RequestFailed, *grpcevents.RequestCompleted, *grpcevents.StreamFailed, *grpcevents.StreamCompleted:
+						ends++
+					}
+				}
+				log.mu.Unlock()
+			}
+			if ends != 2 {
+				t.Errorf("failed and completed events = %d, want one pair", ends)
+			}
+			a, _ := reports.all()
+			b, _ := userReports.all()
+			if len(a)+len(b) != 1 {
+				t.Errorf("reports = %d (default %d, nested %d), want 1", len(a)+len(b), len(a), len(b))
+			}
+		})
+	}
+}
