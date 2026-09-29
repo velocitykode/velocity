@@ -9,6 +9,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // TxCallback is the signature for callbacks registered against a
@@ -412,7 +413,7 @@ func runCallbackSafe(ctx context.Context, fn TxCallback, phase string, logger co
 	logger = fallbacklog.Resolve(logger)
 	defer func() {
 		if p := recover(); p != nil {
-			logger.Error("velocity/orm: tx callback panicked",
+			logger.With(trace.LogFields(ctx)...).Error("velocity/orm: tx callback panicked",
 				"phase", phase, "error", async.FromRecovered(p))
 			if dispatcher != nil {
 				dispatcher(&TxRecover{
@@ -424,7 +425,7 @@ func runCallbackSafe(ctx context.Context, fn TxCallback, phase string, logger co
 		}
 	}()
 	if err := fn(ctx); err != nil {
-		logger.Warn("velocity/orm: tx callback returned error",
+		logger.With(trace.LogFields(ctx)...).Warn("velocity/orm: tx callback returned error",
 			"phase", phase, "error", err.Error())
 	}
 }

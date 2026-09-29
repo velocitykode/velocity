@@ -672,7 +672,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 				// Surface the rollback failure through the logger (the
 				// fallback logger without one), and fire a typed event so
 				// callers with a dispatcher wired up observe it too.
-				logger.Error("velocity/orm: rollback failed after panic", sqlerr.Key, sqlerr.Kind(rbErr), "panic", fmt.Sprint(p))
+				logger.With(trace.LogFields(txTraceCtx)...).Error("velocity/orm: rollback failed after panic", sqlerr.Key, sqlerr.Kind(rbErr), "panic", fmt.Sprint(p))
 				dispatchTxRecover(&TxRecover{
 					Cause:       "panic",
 					PanicValue:  fmt.Sprint(p),
@@ -693,7 +693,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		buffer.Drop()
 		dropAfterCommit()
 		if rbErr := doRollback(); rbErr != nil {
-			logger.Error("velocity/orm: rollback failed", sqlerr.Key, sqlerr.Kind(rbErr), "original_"+sqlerr.Key, sqlerr.Kind(err))
+			logger.With(trace.LogFields(txTraceCtx)...).Error("velocity/orm: rollback failed", sqlerr.Key, sqlerr.Kind(rbErr), "original_"+sqlerr.Key, sqlerr.Kind(err))
 			dispatchTxRecover(&TxRecover{
 				Cause:       "error",
 				OriginalErr: err,

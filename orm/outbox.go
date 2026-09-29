@@ -43,6 +43,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/sqlerr"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // OutboxTableName is the canonical outbox table name. Callers must apply the
@@ -252,7 +253,7 @@ func (m *Manager) TransactionWithOutbox(ctx context.Context, fn func(tx *sql.Tx,
 	defer func() {
 		if r := recover(); r != nil {
 			if rbErr := tx.Rollback(); rbErr != nil {
-				logger.Error("velocity/orm: rollback failed after panic in outbox tx", sqlerr.Key, sqlerr.Kind(rbErr), "panic", fmt.Sprint(r))
+				logger.With(trace.LogFields(ctx)...).Error("velocity/orm: rollback failed after panic in outbox tx", sqlerr.Key, sqlerr.Kind(rbErr), "panic", fmt.Sprint(r))
 				m.dispatchTxRecover(ctx, &TxRecover{
 					Cause:       "panic",
 					PanicValue:  fmt.Sprint(r),
@@ -269,7 +270,7 @@ func (m *Manager) TransactionWithOutbox(ctx context.Context, fn func(tx *sql.Tx,
 
 	if err := fn(tx, pendingFor(p, driverName)); err != nil {
 		if rbErr := tx.Rollback(); rbErr != nil {
-			logger.Error("velocity/orm: rollback failed in outbox tx", sqlerr.Key, sqlerr.Kind(rbErr), "original_"+sqlerr.Key, sqlerr.Kind(err))
+			logger.With(trace.LogFields(ctx)...).Error("velocity/orm: rollback failed in outbox tx", sqlerr.Key, sqlerr.Kind(rbErr), "original_"+sqlerr.Key, sqlerr.Kind(err))
 			m.dispatchTxRecover(ctx, &TxRecover{
 				Cause:       "error",
 				OriginalErr: err,
