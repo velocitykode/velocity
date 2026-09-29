@@ -543,7 +543,7 @@ func (s *Scheduler) ValidateJobs() {
 // and changes nothing: it would wait on its caller.
 //
 // Past that check, cancelling the scheduler's internal run-context is
-// the first thing Shutdown does. Any Locker.Acquire that is in-flight on
+// the first thing Shutdown does once it has stopped admitting runs. Any Locker.Acquire that is in-flight on
 // a slow remote backend, plus any RunInBackground waiter goroutine,
 // observe the cancellation and unwind promptly so runWg can drain. Without this,
 // a stuck Acquire could let a job start AFTER Shutdown's caller
@@ -577,12 +577,16 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 	if s.ticker != nil {
 		s.ticker.Stop()
 	}
-	if s.runCancel != nil {
-		s.runCancel()
-	}
+	cancelRun := s.runCancel
 	close(s.stop)
 	pending := s.stops.Begin()
 	s.mu.Unlock()
+	// Cancel the run's context once the lock is released: running is
+	// already false, so no tick admits a run past this point, and an
+	// Acquire in flight on a slow Locker unwinds now.
+	if cancelRun != nil {
+		cancelRun()
+	}
 
 	// This Shutdown owns the drain: its lines and the wait for the
 	// admitted runs happen on a goroutine of its own, as the scheduler's

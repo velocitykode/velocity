@@ -116,3 +116,32 @@ func TestInMemoryLocker_TTLExpiry(t *testing.T) {
 		t.Fatalf("expected successful re-acquire after TTL, got %v", err)
 	}
 }
+
+// The locker reads its clock before taking its lock: a clock that calls
+// back into the locker (a fake clock releasing a lock, say) does not
+// deadlock Acquire.
+func TestInMemoryLocker_ClockMayCallTheLocker(t *testing.T) {
+	l := NewInMemoryLocker()
+	held, err := l.Acquire(context.Background(), "held", time.Minute)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	real := l.nowFn
+	l.nowFn = func() time.Time {
+		_ = held.Release(context.Background())
+		return real()
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := l.Acquire(context.Background(), "other", time.Minute)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Acquire = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Acquire deadlocked on a clock that calls the locker")
+	}
+}

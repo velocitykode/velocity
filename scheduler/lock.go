@@ -124,10 +124,12 @@ func (l *inMemoryLock) Release(ctx context.Context) error {
 // is considered free once its TTL expires; this matches typical Redis/ZK
 // timeout-based semantics.
 func (l *InMemoryLocker) Acquire(ctx context.Context, name string, ttl time.Duration) (Lock, error) {
+	// The clock is a func field (a test's fake clock among them): read it
+	// before taking the lock.
+	now := l.nowFn()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	now := l.nowFn()
 	if existing, ok := l.locks[name]; ok && now.Before(existing.expires) {
 		return nil, fmt.Errorf("velocity/scheduler: lock %q: %w", name, ErrLockHeld)
 	}
