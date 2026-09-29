@@ -77,14 +77,14 @@ func TestStackLogger_HostileChildSweep(t *testing.T) {
 // and Shutdown proceed, re-entry returns, and once the factory behaves the
 // channel is created.
 func TestManager_HostileDriverFactorySweep(t *testing.T) {
-	var mu sync.Mutex
-	codes := map[string]*hostile.Code{}
-	Drivers().Register("hostile-sweep", func(_ context.Context, cfg LogConfig) (Logger, error) {
-		mu.Lock()
-		code := codes[cfg.Config["id"].(string)]
-		mu.Unlock()
-		code.Run()
-		return NewNullLogger(), nil
+	registerSweepDriver.Do(func() {
+		Drivers().Register("hostile-sweep", func(_ context.Context, cfg LogConfig) (Logger, error) {
+			sweepCodesMu.Lock()
+			code := sweepCodes[cfg.Config["id"].(string)]
+			sweepCodesMu.Unlock()
+			code.Run()
+			return NewNullLogger(), nil
+		})
 	})
 	for _, mode := range hostile.Modes() {
 		t.Run(mode.String(), func(t *testing.T) {
@@ -96,9 +96,9 @@ func TestManager_HostileDriverFactorySweep(t *testing.T) {
 				_, _ = m.Channel("console")
 				_ = m.Shutdown(context.Background())
 			})
-			mu.Lock()
-			codes[t.Name()] = code
-			mu.Unlock()
+			sweepCodesMu.Lock()
+			sweepCodes[t.Name()] = code
+			sweepCodesMu.Unlock()
 			runHostileCaller(t, mode, code, func() { _, _ = m.Channel("hostile") })
 			hostile.Within(t, hostile.Deadline, func() {
 				if _, err := m.Channel("hostile"); err != nil {
@@ -109,23 +109,37 @@ func TestManager_HostileDriverFactorySweep(t *testing.T) {
 	}
 }
 
+// The sweep's driver is registered once per test binary (the registry is
+// process-wide and refuses a second registration); each subtest's code is
+// looked up by the subtest's name.
+var (
+	registerSweepDriver sync.Once
+	sweepCodesMu        sync.Mutex
+	sweepCodes          = map[string]*hostile.Code{}
+)
+
 // runHostile runs call against user code that is contained: a panic must
 // not escape it. In Block mode it checks that other runs while call is
 // blocked (when other is not nil), then releases it. Afterwards the code is disarmed and call runs
 // again, as the retry.
 func runHostile(t *testing.T, mode hostile.Mode, code *hostile.Code, call, other func()) {
 	t.Helper()
+	blocked := make(chan struct{})
 	if mode == hostile.Block {
-		go call()
+		go func() { defer close(blocked); call() }()
 		<-code.Entered()
 		if other != nil {
 			hostile.Within(t, hostile.Deadline, other)
 		}
-	} else if p := hostile.Within(t, hostile.Deadline, call); p != nil {
-		t.Fatalf("a panic escaped: %v", p)
+	} else {
+		close(blocked)
+		if p := hostile.Within(t, hostile.Deadline, call); p != nil {
+			t.Fatalf("a panic escaped: %v", p)
+		}
 	}
 	code.Disarm()
 	code.Release()
+	hostile.Within(t, hostile.Deadline, func() { <-blocked })
 	if p := hostile.Within(t, hostile.Deadline, call); p != nil {
 		t.Fatalf("retry panicked: %v", p)
 	}

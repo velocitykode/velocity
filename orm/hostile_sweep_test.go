@@ -20,15 +20,20 @@ import (
 // is then disarmed and released, and call runs again as the retry.
 func runContained(t *testing.T, mode hostile.Mode, code *hostile.Code, call, other func()) {
 	t.Helper()
+	blocked := make(chan struct{})
 	if mode == hostile.Block {
-		go call()
+		go func() { defer close(blocked); call() }()
 		<-code.Entered()
 		hostile.Within(t, hostile.Deadline, other)
-	} else if p := hostile.Within(t, hostile.Deadline, call); p != nil {
-		t.Fatalf("a panic escaped: %v", p)
+	} else {
+		close(blocked)
+		if p := hostile.Within(t, hostile.Deadline, call); p != nil {
+			t.Fatalf("a panic escaped: %v", p)
+		}
 	}
 	code.Disarm()
 	code.Release()
+	hostile.Within(t, hostile.Deadline, func() { <-blocked })
 	if p := hostile.Within(t, hostile.Deadline, call); p != nil {
 		t.Fatalf("retry panicked: %v", p)
 	}
