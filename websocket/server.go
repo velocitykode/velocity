@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -137,19 +138,23 @@ func (s *Server) log() contract.Logger {
 	return fallbacklog.Resolve(v.(loggerHolder).Logger)
 }
 
-// logInfo emits an info-level event.
+// logInfo emits an info-level event. Like logWarn and logError it
+// contains a logger that panics (the line goes to the framework's
+// standalone fallback logger): the server logs from inside its recovers
+// and on its run loop, fanout and pump goroutines, which a panicking
+// logger must not end.
 func (s *Server) logInfo(msg string, kvs ...any) {
-	s.log().Info(msg, kvs...)
+	fallbacklog.Write(s.log(), func(l contract.Logger) { l.Info(msg, kvs...) })
 }
 
-// logWarn emits a warn-level event.
+// logWarn emits a warn-level event (see logInfo).
 func (s *Server) logWarn(msg string, kvs ...any) {
-	s.log().Warn(msg, kvs...)
+	fallbacklog.Write(s.log(), func(l contract.Logger) { l.Warn(msg, kvs...) })
 }
 
-// logError emits an error-level event.
+// logError emits an error-level event (see logInfo).
 func (s *Server) logError(msg string, kvs ...any) {
-	s.log().Error(msg, kvs...)
+	fallbacklog.Write(s.log(), func(l contract.Logger) { l.Error(msg, kvs...) })
 }
 
 // New creates a new WebSocket server.
@@ -799,16 +804,22 @@ func (s *Server) On(messageType string, handler MessageHandler) {
 	if handler == nil {
 		panic(contract.NewRegistrationError("websocket", fmt.Sprintf("nil handler for message type %q", messageType)))
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// The middleware registered so far wraps the handler. Each middleware
+	// is user code, so the chain is built with s.mu released: a
+	// middleware may call back into the server (Use, GetClient, a logger
+	// that reaches a group).
+	s.mu.RLock()
+	middleware := slices.Clone(s.middleware)
+	s.mu.RUnlock()
 
-	// Apply middleware
 	finalHandler := handler
-	for i := len(s.middleware) - 1; i >= 0; i-- {
-		finalHandler = s.middleware[i](finalHandler)
+	for i := len(middleware) - 1; i >= 0; i-- {
+		finalHandler = middleware[i](finalHandler)
 	}
 
+	s.mu.Lock()
 	s.handlers[messageType] = finalHandler
+	s.mu.Unlock()
 }
 
 // Use adds middleware.

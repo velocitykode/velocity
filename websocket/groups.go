@@ -6,6 +6,16 @@ import (
 
 // JoinGroup adds a client to a group
 func (s *Server) JoinGroup(clientID, groupName string) error {
+	if err := s.joinGroup(clientID, groupName); err != nil {
+		return err
+	}
+	s.logInfo("Client joined group", "client_id", sanitizeForLog(clientID), "group", sanitizeForLog(groupName))
+	return nil
+}
+
+// joinGroup is JoinGroup's change under s.mu; the line is logged once the
+// lock is released, so a logger may call back into the server.
+func (s *Server) joinGroup(clientID, groupName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -24,13 +34,20 @@ func (s *Server) JoinGroup(clientID, groupName string) error {
 	client.mu.Lock()
 	client.Groups[groupName] = true
 	client.mu.Unlock()
-
-	s.logInfo("Client joined group", "client_id", sanitizeForLog(clientID), "group", sanitizeForLog(groupName))
 	return nil
 }
 
 // LeaveGroup removes a client from a group
 func (s *Server) LeaveGroup(clientID, groupName string) error {
+	if err := s.leaveGroup(clientID, groupName); err != nil {
+		return err
+	}
+	s.logInfo("Client left group", "client_id", sanitizeForLog(clientID), "group", sanitizeForLog(groupName))
+	return nil
+}
+
+// leaveGroup is LeaveGroup's change under s.mu (see joinGroup).
+func (s *Server) leaveGroup(clientID, groupName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -51,8 +68,6 @@ func (s *Server) LeaveGroup(clientID, groupName string) error {
 	client.mu.Lock()
 	delete(client.Groups, groupName)
 	client.mu.Unlock()
-
-	s.logInfo("Client left group", "client_id", sanitizeForLog(clientID), "group", sanitizeForLog(groupName))
 	return nil
 }
 
