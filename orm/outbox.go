@@ -42,6 +42,8 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/goroutine"
+	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/internal/sqlerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -253,7 +255,12 @@ func (m *Manager) TransactionWithOutbox(ctx context.Context, fn func(tx *sql.Tx,
 	defer func() {
 		if r := recover(); r != nil {
 			if rbErr := tx.Rollback(); rbErr != nil {
-				logger.With(trace.LogFields(ctx)...).Error("velocity/orm: rollback failed after panic in outbox tx", sqlerr.Key, sqlerr.Kind(rbErr), "panic", fmt.Sprint(r))
+				// Through fallbacklog.Write: a panicking logger must not
+				// escape this recover and undo the panic-to-error contract.
+				fields := trace.LogFields(ctx)
+				fallbacklog.Write(logger, func(l contract.Logger) {
+					l.With(fields...).Error("velocity/orm: rollback failed after panic in outbox tx", sqlerr.Key, sqlerr.Kind(rbErr), "panic", fmt.Sprint(r))
+				})
 				m.dispatchTxRecover(ctx, &TxRecover{
 					Cause:       "panic",
 					PanicValue:  fmt.Sprint(r),
@@ -270,7 +277,10 @@ func (m *Manager) TransactionWithOutbox(ctx context.Context, fn func(tx *sql.Tx,
 
 	if err := fn(tx, pendingFor(p, driverName)); err != nil {
 		if rbErr := tx.Rollback(); rbErr != nil {
-			logger.With(trace.LogFields(ctx)...).Error("velocity/orm: rollback failed in outbox tx", sqlerr.Key, sqlerr.Kind(rbErr), "original_"+sqlerr.Key, sqlerr.Kind(err))
+			fields := trace.LogFields(ctx)
+			fallbacklog.Write(logger, func(l contract.Logger) {
+				l.With(fields...).Error("velocity/orm: rollback failed in outbox tx", sqlerr.Key, sqlerr.Kind(rbErr), "original_"+sqlerr.Key, sqlerr.Kind(err))
+			})
 			m.dispatchTxRecover(ctx, &TxRecover{
 				Cause:       "error",
 				OriginalErr: err,
@@ -571,7 +581,17 @@ type Relay struct {
 	doneCh           chan struct{}
 	inFlight         sync.WaitGroup
 	activePart       sync.Map // partition_key (string) -> struct{} for ordering claim
+	// own holds the relay's loop and worker goroutines, each entered
+	// before it runs user code (a callback, a logger), so a Stop from one
+	// of them, which would wait on itself, is refused at once.
+	own goroutine.Set
 }
+
+// errStopFromRelay is what Stop returns, at once and changing nothing,
+// when called from the relay's own goroutines: a dispatch callback, or a
+// logger writing a relay line. Stop waits for those goroutines to finish,
+// so it would wait on itself.
+var errStopFromRelay = errors.New("velocity/orm: relay Stop called from a relay callback or logger; stop the relay from another goroutine")
 
 // NewRelay constructs a Relay. The relay does not start until Start is called.
 func NewRelay(mgr *Manager, callbacks RelayCallbacks, cfg RelayConfig) *Relay {
@@ -627,6 +647,14 @@ func (r *Relay) SetLogger(l contract.Logger) {
 	r.logger.Store(relayLoggerHolder{Logger: l})
 }
 
+// writeLine writes one relay line through the relay's logger, contained
+// by fallbacklog.Write: the logger is user code, and a panic in it must not
+// kill the loop or a worker, nor skip the failure recording and partition
+// release that follow a line.
+func (r *Relay) writeLine(write func(contract.Logger)) {
+	fallbacklog.Write(r.log(), write)
+}
+
 // log returns the relay's own logger, else its manager's logger, else the
 // framework's standalone fallback logger.
 func (r *Relay) log() contract.Logger {
@@ -676,9 +704,14 @@ func (r *Relay) Start(ctx context.Context) error {
 	// the panic is logged with the relay's own structured logger.
 	go func() { //safe-goroutine: close(r.doneCh) on panic + relay-scoped logger, see comment above
 		defer close(r.doneCh)
+		id := goroutine.ID()
+		r.own.Enter(id)
+		defer r.own.Leave(id)
 		defer func() {
 			if rec := recover(); rec != nil {
-				r.log().Error("velocity/orm: relay loop panic", "panic", fmt.Sprint(rec))
+				r.writeLine(func(l contract.Logger) {
+					l.Error("velocity/orm: relay loop panic", "panic", fmt.Sprint(rec))
+				})
 			}
 		}()
 		r.loop(loopCtx)
@@ -691,7 +724,17 @@ func (r *Relay) Start(ctx context.Context) error {
 // the relay-scoped shutdownCtx is also cancelled, which interrupts any
 // dispatch callbacks and recordSuccess / recordFailure DB writes still in
 // flight so Stop cannot hang indefinitely.
+//
+// Stop honours ctx on every path: when ctx ends before the loop and every
+// in-flight dispatch have finished, it cancels the shutdown ctx and returns
+// ctx's error without waiting further, so a nil return means they all
+// finished. Called from the relay's own goroutines (a dispatch callback, or
+// a logger writing a relay line), which Stop would wait for, it returns an
+// error at once and changes nothing: stop the relay from another goroutine.
 func (r *Relay) Stop(ctx context.Context) error {
+	if r.own.Contains(goroutine.ID()) {
+		return errStopFromRelay
+	}
 	r.mu.Lock()
 	if !r.running {
 		r.mu.Unlock()
@@ -711,6 +754,7 @@ func (r *Relay) Stop(ctx context.Context) error {
 	// relay open beyond grace, even if the caller hands us a Background ctx.
 	graceTimer := time.NewTimer(grace)
 	defer graceTimer.Stop()
+	graceC := graceTimer.C
 	cancelOnce := sync.Once{}
 	cancelShutdown := func() {
 		cancelOnce.Do(func() {
@@ -721,15 +765,28 @@ func (r *Relay) Stop(ctx context.Context) error {
 	}
 	defer cancelShutdown()
 
-	// Wait for the loop goroutine to exit.
+	// await waits for ch, cancelling the shutdown ctx once grace elapses,
+	// and gives up with ctx's error when ctx ends first.
+	await := func(ch <-chan struct{}) error {
+		for {
+			select {
+			case <-ch:
+				return nil
+			case <-ctx.Done():
+				cancelShutdown()
+				return ctx.Err()
+			case <-graceC:
+				cancelShutdown()
+				graceC = nil
+			}
+		}
+	}
+
+	// Wait for the loop goroutine to exit: it adds to inFlight, so the
+	// wait below starts only once it can add no more.
 	if done != nil {
-		select {
-		case <-done:
-		case <-ctx.Done():
-			cancelShutdown()
-			return ctx.Err()
-		case <-graceTimer.C:
-			cancelShutdown()
+		if err := await(done); err != nil {
+			return err
 		}
 	}
 	// Wait for any in-flight dispatch goroutines.
@@ -739,19 +796,7 @@ func (r *Relay) Stop(ctx context.Context) error {
 		r.inFlight.Wait()
 		close(wait)
 	}()
-	select {
-	case <-wait:
-		return nil
-	case <-ctx.Done():
-		cancelShutdown()
-		// Drain remaining workers with cancellation now signalled.
-		<-wait
-		return ctx.Err()
-	case <-graceTimer.C:
-		cancelShutdown()
-		<-wait
-		return nil
-	}
+	return await(wait)
 }
 
 // loop is the polling driver.
@@ -778,7 +823,9 @@ func (r *Relay) loop(ctx context.Context) {
 func (r *Relay) tick(ctx context.Context, sem chan struct{}) {
 	rows, err := r.claimBatch(ctx)
 	if err != nil {
-		r.log().Warn("velocity/orm: relay claim batch failed", sqlerr.Key, sqlerr.Kind(err))
+		r.writeLine(func(l contract.Logger) {
+			l.Warn("velocity/orm: relay claim batch failed", sqlerr.Key, sqlerr.Kind(err))
+		})
 		return
 	}
 	for i, row := range rows {
@@ -805,13 +852,15 @@ func (r *Relay) tick(ctx context.Context, sem chan struct{}) {
 		go func() { //safe-goroutine: per-row resource release on panic, see comment above
 			defer r.inFlight.Done()
 			defer func() { <-sem }()
+			id := goroutine.ID()
+			r.own.Enter(id)
+			defer r.own.Leave(id)
+			// The partition is released in a defer of its own, so it is
+			// released whatever the failure recording below does.
+			defer r.releasePartitions([]outboxRow{row})
 			defer func() {
 				if rec := recover(); rec != nil {
-					r.log().Error("velocity/orm: relay worker panic", "panic", fmt.Sprint(rec), "row_id", row.ID)
-					_ = r.recordFailure(r.writebackCtx(), row, fmt.Errorf("panic: %v", rec))
-				}
-				if row.PartitionKey != "" {
-					r.activePart.Delete(row.PartitionKey)
+					r.failPanicked(row, rec)
 				}
 			}()
 			// Hand the worker the relay-scoped shutdown ctx. This survives
@@ -821,6 +870,25 @@ func (r *Relay) tick(ctx context.Context, sem chan struct{}) {
 			r.dispatch(r.shutdownCtx, row)
 		}()
 	}
+}
+
+// failPanicked records a dispatch that panicked with rec as a failure of
+// row. The line is contained (writeLine), and so is the failure write, whose
+// driver is user code: a panic there is written as a line, not left to kill
+// the process.
+func (r *Relay) failPanicked(row outboxRow, rec any) {
+	r.writeLine(func(l contract.Logger) {
+		l.Error("velocity/orm: relay worker panic", "panic", fmt.Sprint(rec), "row_id", row.ID)
+	})
+	defer func() {
+		if p := recover(); p != nil {
+			err := panicerr.FromRecovered(p)
+			r.writeLine(func(l contract.Logger) {
+				l.Error("velocity/orm: relay record failure panicked", "row_id", row.ID, "error", err)
+			})
+		}
+	}()
+	_ = r.recordFailure(r.writebackCtx(), row, fmt.Errorf("panic: %v", rec))
 }
 
 // releasePartitions clears the activePart reservations for rows that were
@@ -892,7 +960,9 @@ func (r *Relay) claimBatch(ctx context.Context) ([]outboxRow, error) {
 			if part != "" {
 				r.activePart.Delete(part)
 			}
-			r.log().Warn("velocity/orm: relay claim row failed", sqlerr.Key, sqlerr.Kind(err), "row_id", id)
+			r.writeLine(func(l contract.Logger) {
+				l.Warn("velocity/orm: relay claim row failed", sqlerr.Key, sqlerr.Kind(err), "row_id", id)
+			})
 			continue
 		}
 		if !ok {
@@ -1019,7 +1089,9 @@ func (r *Relay) dispatch(ctx context.Context, row outboxRow) {
 		return
 	}
 	if err := r.recordSuccess(ctx, row); err != nil {
-		r.log().Warn("velocity/orm: relay record success failed", sqlerr.Key, sqlerr.Kind(err), "row_id", row.ID)
+		r.writeLine(func(l contract.Logger) {
+			l.Warn("velocity/orm: relay record success failed", sqlerr.Key, sqlerr.Kind(err), "row_id", row.ID)
+		})
 	}
 }
 

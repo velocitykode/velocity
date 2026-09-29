@@ -411,24 +411,43 @@ func (c *TxCallbacks) runCommitFailure(ctx context.Context, logger contract.Logg
 // keeps callback panic logs symmetric with goroutine panic logs
 // elsewhere in the framework.
 func runCallbackSafe(ctx context.Context, fn TxCallback, phase string, logger contract.Logger, dispatcher func(*TxRecover)) {
-	logger = fallbacklog.Resolve(logger)
+	cause, p, err := callCallback(ctx, fn)
+	fields := trace.LogFields(ctx)
+	switch {
+	case cause != nil:
+		// The logger and the dispatcher are user code too: the line goes
+		// through fallbacklog.Write and the event through the manager's
+		// emitter, which contains a dispatcher panic, so neither can stop
+		// the callbacks after this one.
+		fallbacklog.Write(logger, func(l contract.Logger) {
+			l.With(fields...).Error("velocity/orm: tx callback panicked", "phase", phase, "error", cause)
+		})
+		if dispatcher != nil {
+			dispatcher(&TxRecover{
+				EventMeta:  eventmeta.Current(ctx),
+				Cause:      "callback_panic",
+				PanicValue: fmt.Sprintf("%s: %v", phase, p),
+			})
+		}
+	case err != nil:
+		fallbacklog.Write(logger, func(l contract.Logger) {
+			l.With(fields...).Warn("velocity/orm: tx callback returned error", "phase", phase, "error", err.Error())
+		})
+	}
+}
+
+// callCallback runs fn, recovering a panic in it and in it alone, so a
+// failure the diagnostics after it cause is never mistaken for the
+// callback's. On a panic, cause is the recovered value as an error
+// (async.FromRecovered, taken while the panicking stack is still there)
+// and p the value itself; otherwise err is what fn returned.
+func callCallback(ctx context.Context, fn TxCallback) (cause error, p any, err error) {
 	defer func() {
-		if p := recover(); p != nil {
-			logger.With(trace.LogFields(ctx)...).Error("velocity/orm: tx callback panicked",
-				"phase", phase, "error", async.FromRecovered(p))
-			if dispatcher != nil {
-				dispatcher(&TxRecover{
-					EventMeta:  eventmeta.Current(ctx),
-					Cause:      "callback_panic",
-					PanicValue: fmt.Sprintf("%s: %v", phase, p),
-				})
-			}
+		if r := recover(); r != nil {
+			cause, p = async.FromRecovered(r), r
 		}
 	}()
-	if err := fn(ctx); err != nil {
-		logger.With(trace.LogFields(ctx)...).Warn("velocity/orm: tx callback returned error",
-			"phase", phase, "error", err.Error())
-	}
+	return nil, nil, fn(ctx)
 }
 
 // txCallbacksHolder is the slot stored on ctx that PrepareTxCallbacks
