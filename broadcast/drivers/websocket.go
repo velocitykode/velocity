@@ -15,6 +15,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/websocket"
 )
 
@@ -376,18 +377,25 @@ func (d *WebSocketDriver) snapshotTargets(channels []string, exceptSocketID stri
 // that window for every typical disconnect, but a snapshot taken in the
 // narrow race between listener-fire and close(Send) would still trigger a
 // panic on the send case (a closed channel is "ready" for send, beating the
-// default case in the non-blocking select). We recover, count the failure
-// as a drop, and re-run purgeClient synchronously so a misbehaving consumer
-// or a missed listener cannot leave the map poisoned for subsequent
-// broadcasts.
+// default case in the non-blocking select). The deferred recover handles
+// that panic: it purges the client first, so a drop report that broadcasts
+// again cannot reach the closed client, then counts the drop and writes the
+// line.
+//
+// The recover is meant for a send on a closed channel only. User code in
+// the body (onDrop, the logger) must be contained where it is called, as
+// recordDrop does, or its panic would be taken for a closed send and purge
+// a healthy client. A closed send whose drop report panics writes two
+// lines, the report's panic and the closed send: they are two events.
 func (d *WebSocketDriver) sendOrDrop(client *websocket.Client, channel, event string, data interface{}) {
 	defer func() {
 		if r := recover(); r != nil {
-			// Count the dropped message and clear the stale pointer.
-			d.recordDrop(client.ID, channel, event)
 			d.purgeClient(client.ID)
-			d.log().Warn("velocity/broadcast: recovered from send-on-closed-channel; purged client",
-				"client_id", client.ID, "channel", channel, "event", event, "panic", fmt.Sprintf("%v", r))
+			d.recordDrop(client.ID, channel, event)
+			fallbacklog.Write(d.log(), func(l contract.Logger) {
+				l.Warn("velocity/broadcast: recovered from send-on-closed-channel; purged client",
+					"client_id", client.ID, "channel", channel, "event", event, "panic", fmt.Sprintf("%v", r))
+			})
 		}
 	}()
 
@@ -448,13 +456,33 @@ func (d *WebSocketDriver) purgeClient(clientID string) {
 	d.clientEventMu.Unlock()
 }
 
+// recordDrop counts one dropped message and reports it to the onDrop
+// callback, or as a line when there is none. Both are user code: a panic in
+// either is contained here, so the drop is counted once and Broadcast goes
+// on.
 func (d *WebSocketDriver) recordDrop(clientID, channel, event string) {
 	d.droppedCount.Add(1)
 	if d.onDrop != nil {
-		d.onDrop(clientID, channel, event)
+		d.callOnDrop(clientID, channel, event)
 		return
 	}
-	d.log().Warn("velocity/broadcast: dropped message", "client_id", clientID, "channel", channel, "event", event)
+	fallbacklog.Write(d.log(), func(l contract.Logger) {
+		l.Warn("velocity/broadcast: dropped message", "client_id", clientID, "channel", channel, "event", event)
+	})
+}
+
+// callOnDrop runs the onDrop callback; a panic in it is written as one line.
+func (d *WebSocketDriver) callOnDrop(clientID, channel, event string) {
+	defer func() {
+		if r := recover(); r != nil {
+			err := panicerr.FromRecovered(r)
+			fallbacklog.Write(d.log(), func(l contract.Logger) {
+				l.Warn("velocity/broadcast: onDrop callback panicked",
+					"client_id", clientID, "channel", channel, "event", event, "error", err)
+			})
+		}
+	}()
+	d.onDrop(clientID, channel, event)
 }
 
 // DroppedCount returns the total number of messages dropped due to full send
