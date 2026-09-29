@@ -12,6 +12,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/latency"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -22,16 +23,17 @@ type LoggingConfig struct {
 	// lines (failed and slow requests) to standard error.
 	Logger contract.Logger
 
-	// LogPayloads enables logging of request/response payloads
-	LogPayloads bool
-
 	// SkipMethods is a list of methods to skip logging
 	SkipMethods map[string]bool
 
 	// SkipHealthChecks skips logging for health check endpoints
 	SkipHealthChecks bool
 
-	// SlowThreshold logs requests slower than this duration at warn level
+	// SlowThreshold writes a successful call that ran longer than it at
+	// warn level ("gRPC request (slow)") instead of info. Zero disables
+	// the rule. The ORM's DB_SLOW_QUERY_THRESHOLD follows the same rule
+	// (internal/latency), and both lines write the duration as
+	// duration_ms. Logging defaults it to 5s.
 	SlowThreshold time.Duration
 
 	// ExtraFields adds extra fields to log entries
@@ -52,13 +54,6 @@ func WithLoggingLogger(logger contract.Logger) LoggingOption {
 	}
 }
 
-// WithLogPayloads enables payload logging
-func WithLogPayloads(enabled bool) LoggingOption {
-	return func(c *LoggingConfig) {
-		c.LogPayloads = enabled
-	}
-}
-
 // WithSkipMethods sets methods to skip logging
 func WithSkipMethods(methods ...string) LoggingOption {
 	return func(c *LoggingConfig) {
@@ -76,7 +71,8 @@ func WithSkipHealthChecks(skip bool) LoggingOption {
 	}
 }
 
-// WithSlowThreshold sets the slow request threshold
+// WithSlowThreshold sets the slow request threshold (see
+// LoggingConfig.SlowThreshold); zero disables it.
 func WithSlowThreshold(d time.Duration) LoggingOption {
 	return func(c *LoggingConfig) {
 		c.SlowThreshold = d
@@ -159,7 +155,7 @@ func logRequest(ctx context.Context, method string, start time.Time, err error, 
 	fields := []interface{}{
 		"method", method,
 		"code", code.String(),
-		"duration_ms", duration.Milliseconds(),
+		latency.Key, latency.Millis(duration),
 	}
 
 	// Add user info from context if available
@@ -183,7 +179,7 @@ func logRequest(ctx context.Context, method string, start time.Time, err error, 
 		} else {
 			logger.Warn("gRPC request", fields...)
 		}
-	} else if cfg.SlowThreshold > 0 && duration > cfg.SlowThreshold {
+	} else if latency.Slow(duration, cfg.SlowThreshold) {
 		logger.Warn("gRPC request (slow)", fields...)
 	} else {
 		logger.Info("gRPC request", fields...)
