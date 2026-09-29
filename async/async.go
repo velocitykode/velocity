@@ -63,10 +63,11 @@ func GetLogger() contract.Logger {
 // installs one reporting to the app's error handler, the newest live app's
 // hook is the installed one, and an app's Shutdown hands it back to the
 // previous live app's hook, or none. A panic in a goroutine an older app
-// started is therefore reported to the newest app while that app lives. A hook that returns normally takes the
-// panic over: the package does not also log it (velocity.New installs a
-// hook that reports the panic to the app's error handler, whose log
-// reporter writes the one entry). The hook itself is panic-safe: if it
+// started is therefore reported to the newest app while that app lives.
+//
+// A hook that returns normally takes the panic over: the package does not
+// also log it (velocity.New installs a hook that reports the panic to the
+// app's error handler, whose log reporter writes the one entry). The hook itself is panic-safe: if it
 // panics, that panic is swallowed and the package logs the recovered panic
 // as it does with no hook. GoWithLogger logs to the logger it was given,
 // and a GoWithRecover or GoWithRecoverE recover function runs, with a hook
