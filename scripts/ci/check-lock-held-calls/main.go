@@ -42,6 +42,19 @@
 //     and a func literal it only passes along or returns (a middleware
 //     wrapper, a hook it installs) do not.
 //
+// Closed parameters: a func parameter of an unexported function or method
+// is closed when every call site of it in the package's non-test files
+// passes a func literal or a declared function (test files are outside the
+// scope, so a test passing a hostile func does not open it). Calling a
+// closed parameter counts as calling those bodies: it is reported as reach
+// only when one of them reaches user code. The parameter is open (a call
+// through it is a func call as above) when any call site passes another
+// value (a variable, a field, a call result, a literal stored first), when
+// the function is used other than by calling it (a method value, a method
+// expression), when its name is a method of an interface in the package,
+// when a call site spreads or forwards a tuple, or when the body assigns
+// to the parameter or takes its address.
+//
 // Known limits: an error argument to fmt.Errorf is not flagged (wrapping is
 // everywhere, and a framework error formats framework text); a plain
 // interface method call is not flagged (io.Writer, hash.Hash, drivers); a
@@ -277,6 +290,10 @@ type unit struct {
 	// otherwise, so identity holds within the unit); nil when absent.
 	logger   *types.Interface
 	fallback types.Type
+
+	// closed maps each closed func parameter (see the package comment) to
+	// the keys of the bodies its call sites pass, in a.funcs.
+	closed map[*types.Var][]string
 }
 
 var (
@@ -358,6 +375,9 @@ func (a *analysis) run() []string {
 // and the module functions it calls, then propagates reach to a fixpoint.
 func (a *analysis) summarize() {
 	for _, u := range a.units {
+		a.closeParams(u)
+	}
+	for _, u := range a.units {
 		for _, f := range u.files {
 			for _, d := range f.Decls {
 				fd, ok := d.(*ast.FuncDecl)
@@ -368,42 +388,7 @@ func (a *analysis) summarize() {
 				if obj == nil {
 					continue
 				}
-				s := &funcSummary{}
-				a.funcs[funcKey(obj)] = s
-				// Only the literals that run during the call count; a
-				// call is visited before its operands, so it marks them
-				// first.
-				runs := map[*ast.FuncLit]bool{}
-				ast.Inspect(fd.Body, func(n ast.Node) bool {
-					switch n := n.(type) {
-					case *ast.GoStmt:
-						return false
-					case *ast.FuncLit:
-						return runs[n]
-					}
-					call, ok := n.(*ast.CallExpr)
-					if !ok {
-						return true
-					}
-					if lit, ok := ast.Unparen(call.Fun).(*ast.FuncLit); ok {
-						runs[lit] = true
-					}
-					if op, _ := syncOp(u, call); op == "do" {
-						for _, arg := range call.Args {
-							if lit, ok := ast.Unparen(arg).(*ast.FuncLit); ok {
-								runs[lit] = true
-							}
-						}
-					}
-					if k, d := classify(u, call); k != "" && k != kindIface && s.direct == "" {
-						s.direct = k + " " + d
-					}
-					if c := staticCallee(u, call); c != nil {
-						s.callees = append(s.callees, funcKey(c))
-					}
-					return true
-				})
-				s.reach = s.direct
+				a.funcs[funcKey(obj)] = summarizeBody(u, fd.Body)
 			}
 		}
 	}
@@ -435,6 +420,256 @@ func (a *analysis) summarize() {
 	}
 }
 
+// summarizeBody records the user code body calls and the module functions
+// it calls, counting only the code that runs during the call.
+func summarizeBody(u *unit, body *ast.BlockStmt) *funcSummary {
+	s := &funcSummary{}
+	// Only the literals that run during the call count; a call is visited
+	// before its operands, so it marks them first.
+	runs := map[*ast.FuncLit]bool{}
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.GoStmt:
+			return false
+		case *ast.FuncLit:
+			return runs[n]
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if lit, ok := ast.Unparen(call.Fun).(*ast.FuncLit); ok {
+			runs[lit] = true
+		}
+		if op, _ := syncOp(u, call); op == "do" {
+			for _, arg := range call.Args {
+				if lit, ok := ast.Unparen(arg).(*ast.FuncLit); ok {
+					runs[lit] = true
+				}
+			}
+		}
+		if k, d := classify(u, call); k != "" && k != kindIface && s.direct == "" {
+			s.direct = k + " " + d
+		}
+		if c := staticCallee(u, call); c != nil {
+			s.callees = append(s.callees, funcKey(c))
+		}
+		s.callees = append(s.callees, u.closedCall(call)...)
+		return true
+	})
+	s.reach = s.direct
+	return s
+}
+
+// closeParams finds u's closed func parameters (see the package comment)
+// and summarizes the func literals their call sites pass, keyed in a.funcs
+// by position.
+func (a *analysis) closeParams(u *unit) {
+	u.closed = map[*types.Var][]string{}
+	decls := map[*types.Func]*ast.FuncDecl{}
+	ifaceMethods := map[string]bool{}
+	for _, f := range u.files {
+		for _, d := range f.Decls {
+			if fd, ok := d.(*ast.FuncDecl); ok && fd.Body != nil && !fd.Name.IsExported() {
+				if obj, _ := u.info.Defs[fd.Name].(*types.Func); obj != nil {
+					decls[obj] = fd
+				}
+			}
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			if it, ok := n.(*ast.InterfaceType); ok {
+				for _, m := range it.Methods.List {
+					for _, name := range m.Names {
+						ifaceMethods[name.Name] = true
+					}
+				}
+			}
+			return true
+		})
+	}
+	if len(decls) == 0 {
+		return
+	}
+	// calls holds each function's call sites; open marks the functions
+	// used other than by a plain call.
+	calls := map[*types.Func][]*ast.CallExpr{}
+	called := map[*ast.Ident]bool{}
+	open := map[*types.Func]bool{}
+	for _, f := range u.files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			fn := staticCallee(u, call)
+			if fn == nil {
+				return true
+			}
+			fn = fn.Origin()
+			if _, ok := decls[fn]; !ok {
+				return true
+			}
+			if id := calleeIdent(call.Fun); id != nil {
+				called[id] = true
+			}
+			if call.Ellipsis.IsValid() {
+				open[fn] = true
+			}
+			calls[fn] = append(calls[fn], call)
+			return true
+		})
+	}
+	for id, obj := range u.info.Uses {
+		if fn, ok := obj.(*types.Func); ok && !called[id] {
+			open[fn.Origin()] = true
+		}
+	}
+	// Walk the declarations in source order so literal keys and summaries
+	// are the same on every run.
+	fns := make([]*types.Func, 0, len(decls))
+	for fn := range decls {
+		fns = append(fns, fn)
+	}
+	sort.Slice(fns, func(i, j int) bool { return fns[i].Pos() < fns[j].Pos() })
+	for _, fn := range fns {
+		fd := decls[fn]
+		if open[fn] || ifaceMethods[fn.Name()] {
+			continue
+		}
+		sig := fn.Type().(*types.Signature)
+		if sig.Variadic() {
+			// Keep it simple: a variadic function's arguments may not map
+			// one to one onto its parameters.
+			continue
+		}
+		reassigned := assignedParams(u, fd.Body)
+		for i := 0; i < sig.Params().Len(); i++ {
+			param := sig.Params().At(i)
+			if _, ok := param.Type().Underlying().(*types.Signature); !ok || param.Name() == "" || param.Name() == "_" || reassigned[param] {
+				continue
+			}
+			var keys []string
+			closed := true
+			for _, call := range calls[fn] {
+				if len(call.Args) != sig.Params().Len() {
+					closed = false
+					break
+				}
+				key := a.bodyKey(u, call.Args[i])
+				if key == "" {
+					closed = false
+					break
+				}
+				keys = append(keys, key)
+			}
+			if closed {
+				sort.Strings(keys)
+				u.closed[param] = slicesCompact(keys)
+			}
+		}
+	}
+}
+
+// calleeIdent returns the identifier naming the function a call's Fun
+// expression calls, nil when there is none.
+func calleeIdent(fun ast.Expr) *ast.Ident {
+	switch f := ast.Unparen(fun).(type) {
+	case *ast.Ident:
+		return f
+	case *ast.SelectorExpr:
+		return f.Sel
+	case *ast.IndexExpr:
+		return calleeIdent(f.X)
+	case *ast.IndexListExpr:
+		return calleeIdent(f.X)
+	}
+	return nil
+}
+
+// bodyKey returns the a.funcs key of the body arg names when arg is a func
+// literal (summarized here) or a declared function or concrete method, ""
+// otherwise.
+func (a *analysis) bodyKey(u *unit, arg ast.Expr) string {
+	switch x := ast.Unparen(arg).(type) {
+	case *ast.FuncLit:
+		p := a.fset.Position(x.Pos())
+		key := fmt.Sprintf("func literal at %s:%d:%d", a.rel(p.Filename), p.Line, p.Column)
+		if _, ok := a.funcs[key]; !ok {
+			a.funcs[key] = summarizeBody(u, x.Body)
+		}
+		return key
+	case *ast.Ident:
+		if fn, ok := u.info.Uses[x].(*types.Func); ok {
+			return funcKey(fn)
+		}
+	case *ast.SelectorExpr:
+		if s, ok := u.info.Selections[x]; ok {
+			if s.Kind() == types.MethodVal && !types.IsInterface(s.Recv()) {
+				if fn, ok := s.Obj().(*types.Func); ok {
+					return funcKey(fn)
+				}
+			}
+			return ""
+		}
+		if fn, ok := u.info.Uses[x.Sel].(*types.Func); ok {
+			return funcKey(fn)
+		}
+	}
+	return ""
+}
+
+// assignedParams returns the variables body assigns to or takes the
+// address of.
+func assignedParams(u *unit, body *ast.BlockStmt) map[*types.Var]bool {
+	out := map[*types.Var]bool{}
+	mark := func(e ast.Expr) {
+		if id, ok := ast.Unparen(e).(*ast.Ident); ok {
+			if v, ok := u.info.Uses[id].(*types.Var); ok {
+				out[v] = true
+			}
+		}
+	}
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.AssignStmt:
+			for _, e := range n.Lhs {
+				mark(e)
+			}
+		case *ast.UnaryExpr:
+			if n.Op == token.AND {
+				mark(n.X)
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// slicesCompact drops adjacent duplicates from a sorted slice.
+func slicesCompact(s []string) []string {
+	out := s[:0]
+	for i, v := range s {
+		if i == 0 || v != s[i-1] {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// closedCall returns the body keys of the closed parameter call calls
+// through, nil when it calls something else.
+func (u *unit) closedCall(call *ast.CallExpr) []string {
+	id, ok := ast.Unparen(call.Fun).(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	v, ok := u.info.Uses[id].(*types.Var)
+	if !ok {
+		return nil
+	}
+	return u.closed[v]
+}
+
 const (
 	kindLogger = "logger"
 	kindFunc   = "func"
@@ -453,7 +688,10 @@ func classify(u *unit, call *ast.CallExpr) (kind, desc string) {
 	case *ast.FuncLit:
 		return "", ""
 	case *ast.Ident:
-		if _, ok := u.info.Uses[f].(*types.Var); ok {
+		if v, ok := u.info.Uses[f].(*types.Var); ok {
+			if _, closed := u.closed[v]; closed {
+				return "", ""
+			}
 			return kindFunc, f.Name
 		}
 		return "", ""
@@ -1000,6 +1238,13 @@ func (w *walker) call(call *ast.CallExpr, h held) {
 	if fn := staticCallee(w.u, call); fn != nil {
 		if s, ok := w.a.funcs[funcKey(fn)]; ok && s.reach != "" {
 			w.report(call.Pos(), h, kindReach, fn.Name()+": "+s.reach)
+		}
+		return
+	}
+	for _, k := range w.u.closedCall(call) {
+		if s, ok := w.a.funcs[k]; ok && s.reach != "" {
+			w.report(call.Pos(), h, kindReach, types.ExprString(call.Fun)+": "+shortName(k)+" -> "+s.reach)
+			return
 		}
 	}
 }
