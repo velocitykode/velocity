@@ -106,12 +106,30 @@ func TestEventEmitterImportsOnlyItsLeaves(t *testing.T) {
 		module + "/internal/eventemit":   true,
 		module + "/contract":             true,
 		module + "/internal/fallbacklog": true,
+		module + "/internal/goroutine":   true,
 		module + "/internal/panicerr":    true,
 		module + "/trace":                true,
 	}
 	for _, dep := range strings.Fields(string(out)) {
 		if !allowed[dep] {
-			t.Errorf("internal/eventemit links %s; it may import only the standard library, contract, internal/fallbacklog, internal/panicerr and trace", dep)
+			t.Errorf("internal/eventemit links %s; it may import only the standard library, contract, internal/fallbacklog, internal/goroutine, internal/panicerr and trace", dep)
+		}
+	}
+}
+
+// internal/goroutine backs the re-entry guards of eventemit, events, the
+// ORM and the scheduler, and so sits under router: it stays a leaf.
+func TestGoroutineImportsOnlyTheStandardLibrary(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go tool not on PATH")
+	}
+	out, err := exec.Command("go", "list", "-deps", "-f", "{{if not .Standard}}{{.ImportPath}}{{end}}", "./internal/goroutine").Output()
+	if err != nil {
+		t.Fatalf("go list -deps ./internal/goroutine: %v", err)
+	}
+	for _, dep := range strings.Fields(string(out)) {
+		if dep != "github.com/velocitykode/velocity/internal/goroutine" {
+			t.Errorf("internal/goroutine links %s; it may import only the standard library", dep)
 		}
 	}
 }
