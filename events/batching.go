@@ -278,9 +278,9 @@ func NewDebouncingDispatcher(debounce time.Duration) *DebouncingDispatcher {
 // reset a timer, and the actual fan-out happens on a background goroutine
 // after the debounce window elapses without further activity.
 //
-// Context semantics: the ctx is captured but stripped of cancellation and
-// deadline via context.WithoutCancel before being held by the debounce
-// timer, because the underlying dispatch fires on a background goroutine
+// Context semantics: the ctx is captured and, when the delivery fires,
+// stripped of cancellation and deadline via context.WithoutCancel,
+// because the underlying dispatch fires on a background goroutine
 // that may run long after the caller has returned. Request-scoped values
 // like trace IDs survive; the caller's cancellation does NOT propagate to
 // listeners. A canceled parent ctx will not stop the pending dispatch.
@@ -292,7 +292,6 @@ func (d *DebouncingDispatcher) Dispatch(ctx context.Context, event interface{}) 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	bgCtx := context.WithoutCancel(ctx)
 	eventName := d.getEventName(event)
 
 	d.timersMu.Lock()
@@ -309,7 +308,9 @@ func (d *DebouncingDispatcher) Dispatch(ctx context.Context, event interface{}) 
 	d.timerGen++
 	gen := d.timerGen
 	d.timers[eventName] = debounceTimer{gen: gen, timer: time.AfterFunc(d.debounce, func() {
-		d.dispatchLater(bgCtx, event)
+		// Detached only when it fires, so a dispatch superseded within
+		// the window never pays for the wrapper.
+		d.dispatchLater(context.WithoutCancel(ctx), event)
 		d.timersMu.Lock()
 		if d.timers[eventName].gen == gen {
 			delete(d.timers, eventName)
