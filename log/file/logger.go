@@ -208,22 +208,53 @@ func (f *FileLogger) With(kvs ...any) contract.Logger {
 	return &FileLogger{level: f.level, fields: append(fields, kvs...), base: f.owner()}
 }
 
-// log writes a formatted message to the log file with proper locking
+// log writes a formatted message to the log file with proper locking.
+// After Shutdown the line goes to the framework's standalone fallback
+// logger instead (see writeLate).
 func (f *FileLogger) log(level, msg string, kvs ...any) {
+	if f.writeFile(level, msg, kvs) {
+		return
+	}
+	f.writeLate(level, msg, kvs)
+}
+
+// writeLate writes a line that arrived after Shutdown to the framework's
+// standalone fallback logger, with the pairs f binds before the line's
+// own. Shutdown is terminal, so the file is not reopened, but a warning or
+// error a late writer (a goroutine still holding this logger) sends is not
+// lost: it is often the last report of a failure during shutdown. The
+// fallback writes WARN and ERROR (FATAL as ERROR) and drops Debug and Info.
+// It runs after the owner's lock is released.
+func (f *FileLogger) writeLate(level, msg string, kvs []any) {
+	pairs := make([]any, 0, len(f.fields)+len(kvs))
+	pairs = append(pairs, f.fields...)
+	pairs = append(pairs, kvs...)
+	fb := fallbacklog.Logger{}
+	switch level {
+	case "WARN":
+		fb.Warn(msg, pairs...)
+	case "ERROR", "FATAL":
+		fb.Error(msg, pairs...)
+	}
+}
+
+// writeFile writes a formatted message to the log file under the owner's
+// lock. It reports false, writing nothing, once the owner is shut down:
+// Shutdown is terminal, and a late writer must not reopen the file and
+// leave a descriptor open.
+func (f *FileLogger) writeFile(level, msg string, kvs []any) bool {
 	o := f.owner()
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	// Shutdown is terminal: a late writer (a goroutine still holding this
-	// logger) must not reopen the file and leave a descriptor open.
 	if o.closed {
-		return
+		return false
 	}
 	if err := o.ensureFile(); err != nil {
 		// The file driver cannot write through itself: the failure goes to
 		// the framework's standalone fallback logger (standard error).
 		fallbacklog.Logger{}.Error("velocity/log: open log file failed; the line is dropped", "error", err)
-		return
+		return true
 	}
 
 	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
@@ -256,10 +287,8 @@ func (f *FileLogger) log(level, msg string, kvs ...any) {
 		// data loss.
 	}
 
-	_, err := fmt.Fprintln(o.file, logLine)
-	if err != nil {
-		return
-	}
+	_, _ = fmt.Fprintln(o.file, logLine)
+	return true
 }
 
 // appendPairs appends each complete key-value pair of kvs to line as
@@ -345,9 +374,11 @@ func (f *FileLogger) cleanup() {
 	}
 }
 
-// Shutdown closes the underlying file handle. It is terminal: every later
-// write, through f or a logger With returned from it, is dropped rather
-// than reopening the file, and a second Shutdown returns nil. A logger With
+// Shutdown closes the underlying file handle. It is terminal: a later
+// write, through f or a logger With returned from it, never reopens the
+// file; a warning or error goes to the framework's standalone fallback
+// logger instead, and Debug and Info are dropped. A second Shutdown
+// returns nil. A logger With
 // returned owns no file and closes nothing.
 func (f *FileLogger) Shutdown(ctx context.Context) error {
 	if f.base != nil {
