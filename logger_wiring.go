@@ -5,11 +5,9 @@ import (
 )
 
 // wireInstanceLoggers hands the logger a.Services.Log holds now to every
-// service in loggerWiringCandidates that takes one (contract.LoggerAware),
-// and records it as a's logger for the async package, which writes
-// recovered goroutine panics, and the trace package, which writes its
-// entropy-outage warning. Those two loggers are process-wide: the newest
-// live app's is installed (see package_state.go).
+// service in loggerWiringCandidates that takes one (contract.LoggerAware).
+// The async and trace package loggers are process-wide and recorded
+// separately, with the async panic hook, by installPackageState.
 // Services that own other logger-aware values pass it on: the ORM manager
 // to its connections' query logger, the view engine to its bond, the auth
 // manager to its schemes and hasher, the CSRF instance to its token store,
@@ -38,7 +36,6 @@ func wireInstanceLoggers(a *App) {
 			la.SetLogger(l)
 		}
 	}
-	installPackageLoggers(a, l)
 }
 
 // loggerCandidate is one Services field the logger sweep offers the app

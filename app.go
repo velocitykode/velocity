@@ -103,6 +103,12 @@ type App struct {
 	// events disabled from the start (WithoutEvents) is never touched.
 	// Only the lifecycle goroutine (New, bootstrap) touches it.
 	eventsWired bool
+	// packageInstall is the app's registration in the process-wide
+	// package state (the async panic hook and the async and trace package
+	// loggers, see package_state.go): its token, set by the first
+	// installPackageState and cleared by releasePackageState. Guarded by
+	// packageStateMu.
+	packageInstall *packageInstall
 	// eventFailures is the app's one failure policy for framework event
 	// dispatches: the dispatch function every component is handed records
 	// each failure it returns here (see buildEventDispatch), and the router
@@ -820,12 +826,12 @@ func New(opts ...Option) (*App, error) {
 	a.Validator = validation.NewValidator()
 
 	// The sweep below records a.Log as the async and trace packages'
-	// logger (see wireInstanceLoggers) and installs the async package's
-	// panic hook on the error handler (see wireFailureReporters), so a
-	// panic recovered in a framework goroutine reaches the Reporter chain.
-	// Both are process-wide and owned by the newest live app; a failed New
-	// releases this app's installation as Shutdown does, leaving another
-	// app's in place (see package_state.go).
+	// logger and the async package's panic hook on the error handler, in
+	// one step (see installPackageState), so a panic recovered in a
+	// framework goroutine reaches the Reporter chain. Both are
+	// process-wide and owned by the newest live app; a failed New
+	// releases this app's installation as Shutdown does, through the same
+	// token, leaving another app's in place (see package_state.go).
 	cleanups = append(cleanups, func() { releasePackageState(a) })
 
 	// Wire event dispatchers into service instances

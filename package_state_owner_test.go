@@ -156,10 +156,19 @@ func (failingInitModule) Shutdown(context.Context) error { return nil }
 // installation only: the live app that owned the state before it keeps it.
 func TestPackageState_FailedNewRestoresTheLiveOwner(t *testing.T) {
 	a := newOwnedApp(t)
+	packageStateMu.Lock()
+	before := len(packageStack)
+	packageStateMu.Unlock()
 
 	cfg := Config{Env: "testing", Port: "0", Cache: CacheConfig{Driver: "memory"}, Queue: QueueConfig{Driver: "memory"}}
 	if _, err := New(WithConfig(cfg), WithModules(failingInitModule{})); !errors.Is(err, errOwnerInitFailed) {
 		t.Fatalf("New = %v, want the module's Init error", err)
+	}
+	packageStateMu.Lock()
+	after := len(packageStack)
+	packageStateMu.Unlock()
+	if after != before {
+		t.Errorf("stack holds %d installations after the failed New, want %d: its cleanup did not release its own", after, before)
 	}
 	assertPackageOwner(t, "after the failed New", a)
 }
@@ -212,14 +221,15 @@ func TestPackageState_ConcurrentInstallAndRelease(t *testing.T) {
 		appsWG.Add(1)
 		go func() {
 			defer appsWG.Done()
-			a := &App{}
+			a := &App{Services: &app.Services{}}
 			for j := 0; j < 50; j++ {
-				l := &levelLogger{}
-				installPanicHook(a, func(context.Context, any) {})
-				installPackageLoggers(a, l)
+				a.Services.Log = &levelLogger{}
+				installPackageState(a)
+				installPackageState(a)
 				if j%3 == 0 {
 					async.Go(func() { panic("stress") })
 				}
+				releasePackageState(a)
 				releasePackageState(a)
 			}
 		}()
@@ -245,9 +255,10 @@ func TestPackageState_ConcurrentInstallAndRelease(t *testing.T) {
 // Releasing an app that never wired, or releasing twice, changes nothing.
 func TestPackageState_ReleaseWithoutEntryIsNoop(t *testing.T) {
 	baseline := packageBaseline()
-	owner, stranger := &App{}, &App{}
+	owner, stranger := &App{Services: &app.Services{}}, &App{Services: &app.Services{}}
 	l := &levelLogger{}
-	installPackageLoggers(owner, l)
+	owner.Services.Log = l
+	installPackageState(owner)
 	t.Cleanup(func() { releasePackageState(owner) })
 	releasePackageState(stranger)
 	releasePackageState(nil)

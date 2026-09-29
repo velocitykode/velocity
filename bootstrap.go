@@ -204,8 +204,9 @@ func (a *App) runBootstrap() error {
 // gets the dispatcher set on its instance; subsystems that don't implement
 // the contract are skipped silently (e.g. when a feature is disabled). It
 // also (re)installs the background failure reporters on the current error
-// handler (see wireFailureReporters) and hands the app logger out (see
-// wireInstanceLoggers).
+// handler (see wireFailureReporters), hands the app logger out (see
+// wireInstanceLoggers) and records the app's process-wide async panic hook
+// and package loggers (see installPackageState).
 //
 // The closure it hands out is bound to the dispatcher a.Services.Events
 // holds now (see buildEventDispatch), so it runs, unconditionally, at every
@@ -236,6 +237,8 @@ func wireInstanceEvents(a *App) {
 	wireFailureReporters(a)
 	// The app logger goes out at the same boundaries, events or not.
 	wireInstanceLoggers(a)
+	// The process-wide async panic hook and package loggers, in one step.
+	installPackageState(a)
 
 	dispatch := buildEventDispatch(a)
 	if dispatch == nil && !a.eventsWired {
@@ -301,8 +304,8 @@ func wireInstanceEvents(a *App) {
 	wireComponentEvents(a, dispatch)
 }
 
-// wireFailureReporters installs the three reporters background failures
-// reach the error handler through, all bound to the handler
+// wireFailureReporters installs the two per-app reporters background
+// failures reach the error handler through, both bound to the handler
 // a.Services.Errors holds now, read once:
 //
 //   - the dispatcher's failure-report bridge, which reports every
@@ -317,14 +320,12 @@ func wireInstanceEvents(a *App) {
 //   - the queued-listener failure reporter a queued listener's Failed hook
 //     calls once it has exhausted its retries. Installed with or without
 //     events: a worker can run listener jobs another process queued.
-//   - the async package's panic hook, which reports a panic recovered in
-//     any goroutine the async helpers run (worker pumps, the ORM query
-//     pump, the server, the dispatcher's detached deliveries). The hook is
-//     process-wide: the newest live app's hook is installed, and an app's
-//     Shutdown (or its failed New) hands it back to the previous live app
-//     (see package_state.go).
 //
-// All three close over the handler value rather than reading
+// The third, the async package's panic hook (see buildPanicHook), is
+// process-wide and installed together with the package loggers by
+// installPackageState, which wireInstanceEvents calls right after this.
+//
+// Both close over the handler value rather than reading
 // a.Services.Errors when a failure happens: a worker a module Start
 // launched runs on its own goroutine, and a later module Start replacing
 // s.Errors would otherwise be an unsynchronized write against the worker's
@@ -348,7 +349,6 @@ func wireFailureReporters(a *App) {
 	// stays, so a factory a module's Start registered for the job is not
 	// overwritten by a re-install.
 	eventqueue.SetFailureReporter(buildQueuedListenerReporter(h))
-	wirePanicHook(a, h)
 }
 
 // backgroundErrorContext returns the ErrorContext a failure of background
@@ -400,16 +400,6 @@ func buildFailureReporter(h contract.ErrorHandler) func(ctx context.Context, eve
 	}
 }
 
-// wirePanicHook records the async package's panic hook reporting to h as
-// a's (see installPanicHook): the newest live app's hook is the installed
-// one. A nil h records no hook for a. While a hook is installed the async
-// package does not also log the panics it recovers: the hook's report is
-// the one entry (the handler's LogReporter writes it through the app
-// logger).
-func wirePanicHook(a *App, h contract.ErrorHandler) {
-	installPanicHook(a, buildPanicHook(h))
-}
-
 // buildPanicHook returns the async panic hook for h: it reports a panic
 // recovered in a background goroutine to h.Report as a recovered panic
 // (the error carries the contract.RecoveredPanic facet) with the stack of
@@ -417,7 +407,11 @@ func wirePanicHook(a *App, h contract.ErrorHandler) {
 // the request, trace and span ids of ctx, the context the helper ran the
 // work under (context.Background for the helpers that take none). The
 // hook runs inside the recovering goroutine's deferred recover, so the
-// stack is the panic site's. It returns nil when h is nil.
+// stack is the panic site's. It returns nil (no hook) when h is nil. While
+// a hook is installed the async package does not also log the panics it
+// recovers: the hook's report is the one entry (the handler's LogReporter
+// writes it through the app logger). installPackageState records it as
+// the app's process-wide hook.
 func buildPanicHook(h contract.ErrorHandler) func(context.Context, any) {
 	if h == nil {
 		return nil
