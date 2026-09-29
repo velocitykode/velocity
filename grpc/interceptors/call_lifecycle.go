@@ -55,7 +55,9 @@ type CallConfig struct {
 
 	// EventDispatcher receives the call's lifecycle events (RequestStarted,
 	// RequestFailed, RequestCompleted and their stream counterparts) and
-	// PanicRecovered. Nil dispatches none.
+	// PanicRecovered. Nil dispatches none. On the server's default chain,
+	// leaving it nil uses the server's dispatcher; WithEventDispatcher(nil)
+	// turns the call's events off.
 	EventDispatcher grpcevents.EventDispatchFunc
 
 	// Reporter, when set, receives the call's one error report: a
@@ -78,9 +80,11 @@ type CallConfig struct {
 	EnableStackTrace bool
 
 	// events holds EventDispatcher and applies the failure policy to a
-	// failed dispatch; CallLifecycle builds it once the options are applied,
-	// unless a framework-built server handed over its own emitter (see
-	// callhook.WithEmitter), whose dispatcher it reads on each call.
+	// failed dispatch; CallLifecycle builds it once the options are applied.
+	// When the final EventDispatcher is nil and a framework-built server
+	// handed over its own emitter (see callhook.WithEmitter) that no
+	// WithEventDispatcher cleared, it is that emitter, whose dispatcher it
+	// reads on each call.
 	events *eventemit.Emitter
 }
 
@@ -227,7 +231,11 @@ func CallLifecycle(opts ...CallOption) InterceptorPair {
 	for _, opt := range opts {
 		opt(cfg)
 	}
-	if cfg.events == nil {
+	// A non-nil final EventDispatcher wins however it was set, by
+	// WithEventDispatcher or a CallOption of the caller's own. Without one
+	// the events go through the emitter a framework-built server handed
+	// over, unless WithEventDispatcher(nil) cleared it, or nowhere.
+	if cfg.EventDispatcher != nil || cfg.events == nil {
 		cfg.events = newEventEmitter(cfg.EventDispatcher, cfg.Logger)
 	}
 

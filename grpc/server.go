@@ -289,8 +289,11 @@ func WithoutDefaultCallLifecycle() ServerOption {
 // WithCallOptions configures the call lifecycle interceptor Build installs by
 // default, applied after the server's logger (WithLogger), reporter
 // (WithReporter) and event dispatcher (SetEventDispatcher), so an option
-// here wins. The request line is off by default: turn it on with
-// interceptors.WithRequestLine().
+// here wins. A non-nil EventDispatcher set here, by
+// interceptors.WithEventDispatcher or a CallOption of the caller's own,
+// replaces the server's dispatcher for the call's events, and
+// interceptors.WithEventDispatcher(nil) turns them off. The request line is off by default: turn it on
+// with interceptors.WithRequestLine().
 func WithCallOptions(opts ...interceptors.CallOption) ServerOption {
 	return func(s *Server) {
 		s.callOptions = append(s.callOptions, opts...)
