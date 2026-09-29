@@ -661,9 +661,9 @@ type instrumentedRows struct {
 	// serialises the two behind its own mutex; the atomic makes the
 	// ordering explicit rather than inherited.
 	count atomic.Int64
-	// streamErr records the first non-EOF error Next returned, so a result
-	// set that fails mid-stream is reported as a failure rather than a
-	// short success.
+	// streamErr records the first non-EOF error Next or NextResultSet
+	// returned, so a result set that fails mid-stream is reported as a
+	// failure rather than a short success.
 	streamErr atomic.Pointer[error]
 	// emitted guards the event: Close is not required to be called only
 	// once, and database/sql closes rows both on exhaustion and
@@ -714,11 +714,16 @@ func (r *instrumentedRows) Next(dest []driver.Value) error {
 	case errors.Is(err, io.EOF):
 		// Normal exhaustion; the close that follows reports the event.
 	default:
-		if r.streamErr.Load() == nil {
-			r.streamErr.Store(&err)
-		}
+		r.recordStreamErr(err)
 	}
 	return err
+}
+
+// recordStreamErr keeps the first failure the result set reported while it
+// was read, so the close reports the statement as failed rather than as a
+// short success.
+func (r *instrumentedRows) recordStreamErr(err error) {
+	r.streamErr.CompareAndSwap(nil, &err)
 }
 
 func (r *instrumentedRows) Close() error {
@@ -757,11 +762,20 @@ func (r *instrumentedRows) HasNextResultSet() bool {
 	return false
 }
 
+// NextResultSet forwards the move to the next result set. A failure other
+// than io.EOF (no further set) is the statement's failure, kept like a
+// failing Next, so the close reports the statement as failed even when the
+// close itself succeeds.
 func (r *instrumentedRows) NextResultSet() error {
-	if nrs, ok := r.inner.(driver.RowsNextResultSet); ok {
-		return nrs.NextResultSet()
+	nrs, ok := r.inner.(driver.RowsNextResultSet)
+	if !ok {
+		return io.EOF
 	}
-	return io.EOF
+	err := nrs.NextResultSet()
+	if err != nil && !errors.Is(err, io.EOF) {
+		r.recordStreamErr(err)
+	}
+	return err
 }
 
 func (r *instrumentedRows) ColumnTypeScanType(index int) reflect.Type {

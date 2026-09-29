@@ -62,7 +62,9 @@ func (e kvEntry) value(key string) any {
 	return nil
 }
 
-func (e kvEntry) String() string { return e.level + " " + e.msg + " " + strings.TrimSpace(fmt.Sprintln(e.kvs...)) }
+func (e kvEntry) String() string {
+	return e.level + " " + e.msg + " " + strings.TrimSpace(fmt.Sprintln(e.kvs...))
+}
 
 // echoedSecret stands in for a value a driver echoes in its error text.
 const echoedSecret = "hunter2@example.com"
