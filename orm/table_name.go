@@ -14,16 +14,16 @@ import (
 // MetaFor caches ModelMeta. Holds the FINAL string, including any
 // TableName() override result.
 //
-// The map value is a *tableNameEntry whose sync.Once serializes the miss
-// path, so concurrent cold misses for the same type run resolveTableName
-// (and thus any custom TableName()) exactly once.
-var tableNameCache sync.Map // map[reflect.Type]*tableNameEntry
-
-// tableNameEntry holds the once-derived table name for a single type.
-type tableNameEntry struct {
-	once sync.Once
-	name string
-}
+// The map value is the name itself. A miss derives it with no lock or
+// sync.Once held, then stores it with LoadOrStore, so the first stored name
+// wins: TableName() is user code, and running it under a per-type Once
+// would deadlock a TableName() that derives its own type's table, and a
+// TableName() that panicked would leave the Once done with no name, an
+// empty table name for the life of the process. Instead its panic reaches
+// the caller and the next call derives the name again. Concurrent cold
+// misses for one type may each call TableName(); it must return the same
+// name every time, which the cache has always assumed.
+var tableNameCache sync.Map // map[reflect.Type]string
 
 // deriveTableName resolves the table name for a model type. It honors a
 // TableName() string method declared on EITHER the value or the pointer
@@ -55,15 +55,11 @@ func deriveTableName(t reflect.Type) string {
 		t = t.Elem()
 	}
 
-	v, ok := tableNameCache.Load(t)
-	if !ok {
-		v, _ = tableNameCache.LoadOrStore(t, &tableNameEntry{})
+	if v, ok := tableNameCache.Load(t); ok {
+		return v.(string)
 	}
-	entry := v.(*tableNameEntry)
-	entry.once.Do(func() {
-		entry.name = resolveTableName(t)
-	})
-	return entry.name
+	v, _ := tableNameCache.LoadOrStore(t, resolveTableName(t))
+	return v.(string)
 }
 
 // resolveTableName performs the uncached derivation for an already-deref'd
