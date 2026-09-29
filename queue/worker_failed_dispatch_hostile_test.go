@@ -49,7 +49,7 @@ func TestWorker_PanickingFailedDispatchIsContained(t *testing.T) {
 		t.Fatalf("push: %v", err)
 	}
 	w.Start(context.Background())
-	t.Cleanup(w.Stop)
+	t.Cleanup(func() { _ = w.Stop() })
 
 	hostile.Eventually(t, hostile.Deadline, "the failed dispatch's panic recorded", func() bool {
 		return recorded.Load() >= 1

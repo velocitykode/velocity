@@ -34,7 +34,7 @@ func TestWorker_PanickingLoggerIsContained(t *testing.T) {
 		t.Fatalf("push: %v", err)
 	}
 	w.Start(context.Background())
-	t.Cleanup(w.Stop)
+	t.Cleanup(func() { _ = w.Stop() })
 
 	hostile.Eventually(t, hostile.Deadline, "the failing job recorded as failed", func() bool {
 		failed, err := d.GetFailed(queueName)
@@ -47,7 +47,7 @@ func TestWorker_PanickingLoggerIsContained(t *testing.T) {
 	hostile.Eventually(t, hostile.Deadline, "the worker running the next job", func() bool {
 		return ran.Load() > before
 	})
-	hostile.Within(t, hostile.Deadline, w.Stop)
+	hostile.Within(t, hostile.Deadline, func() { _ = w.Stop() })
 	if n := out.Count("INFO", "Retrying job") + out.Count("ERROR", "Job failed"); n == 0 {
 		t.Errorf("no worker line reached the fallback logger:\n%s", out.String())
 	}

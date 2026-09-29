@@ -12,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -82,7 +83,11 @@ type Worker struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
-	logger      contract.Logger
+	// stops records the pump goroutines as the worker's own work, so a
+	// Stop called from one of them (a listener, logger or hook the pump
+	// runs) returns instead of waiting on itself.
+	stops  drain.Coordinator
+	logger contract.Logger
 
 	// events holds the event dispatcher and handles a failed dispatch
 	// through the worker's logger. SetEventDispatcher may be called
@@ -237,18 +242,33 @@ func (w *Worker) Start(ctx context.Context) {
 		id := i
 		async.Go(func() {
 			defer w.wg.Done()
-			w.work(id)
+			w.stops.Run(func() { w.work(id) })
 		})
 	}
 }
 
-// Stop gracefully stops the worker. Safe to call before Start (no-op) or
+// Stop gracefully stops the worker and waits for its pumps to finish the
+// jobs in flight, returning nil. Safe to call before Start (no-op) or
 // multiple times.
-func (w *Worker) Stop() {
+//
+// Called from one of the worker's pumps (a job event listener, the
+// worker's logger, a batch callback or a Failed hook, which the pump runs),
+// Stop cannot wait for the pump it runs on: it signals the stop and returns
+// an error wrapping contract.ErrStopFromOwnWork at once; a Stop from
+// outside then waits for the drain. A goroutine the job starts on its own
+// is not recognised as the worker's work.
+func (w *Worker) Stop() error {
+	if w.stops.Nested() {
+		if w.cancel != nil {
+			w.cancel()
+		}
+		return fmt.Errorf("velocity/queue: Stop called from a pump of this worker; the worker stops without this call waiting for it: %w", contract.ErrStopFromOwnWork)
+	}
 	if w.cancel != nil {
 		w.cancel()
 	}
 	w.wg.Wait()
+	return nil
 }
 
 // work is the main worker loop. Caller is responsible for wg bookkeeping

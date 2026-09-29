@@ -69,7 +69,7 @@ func TestBatch_CrossProcess_OnCompleteFiresViaQueueJob(t *testing.T) {
 	callbackWorker := NewWorker(callbackDriver, "default", func(j Job) error { return j.Handle() },
 		WithInterval(5*time.Millisecond), WithMaxRetries(0))
 	callbackWorker.Start(context.Background())
-	t.Cleanup(callbackWorker.Stop)
+	t.Cleanup(func() { _ = callbackWorker.Stop() })
 
 	// Simulate the "remote worker" by calling IncrementSuccess
 	// directly against the dispatcher repo for both jobs. The second
@@ -137,7 +137,7 @@ func TestBatch_CrossProcess_OnFailedAndOnFinally(t *testing.T) {
 	callbackWorker := NewWorker(callbackDriver, "default", func(j Job) error { return j.Handle() },
 		WithInterval(5*time.Millisecond), WithMaxRetries(0))
 	callbackWorker.Start(context.Background())
-	t.Cleanup(callbackWorker.Stop)
+	t.Cleanup(func() { _ = callbackWorker.Stop() })
 
 	jobsDriver := newMemoryDriver()
 	batch, err := NewBatch(&testBatchJob{}, &testBatchJob{}).
