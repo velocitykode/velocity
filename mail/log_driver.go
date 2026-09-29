@@ -55,10 +55,12 @@ func NewLogDriver() *LogDriver {
 }
 
 // Send logs the email instead of sending it.
+//
+// The summary is built and the line written with no lock held: only the
+// append to the retained log takes the driver's lock, so a logger that
+// reads the log, replaces the logger or sends another message never waits
+// on it. A panicking logger falls back to the standalone logger.
 func (d *LogDriver) Send(ctx context.Context, msg *Message) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	// parts is the retained entry; kvs is the same summary as log
 	// key-value pairs.
 	var parts []string
@@ -127,13 +129,19 @@ func (d *LogDriver) Send(ctx context.Context, msg *Message) error {
 	}
 
 	logEntry := strings.Join(parts, " | ")
+	d.mu.Lock()
 	d.log = append(d.log, logEntry)
 	if len(d.log) > logDriverMaxEntries {
 		retained := make([]string, logDriverMaxEntries)
 		copy(retained, d.log[len(d.log)-logDriverMaxEntries:])
 		d.log = retained
 	}
-	fallbacklog.Resolve(d.logger).With(trace.LogFields(ctx)...).Info("velocity/mail: message logged, not sent (log driver)", kvs...)
+	logger := d.logger
+	d.mu.Unlock()
+
+	fallbacklog.Write(logger, func(l contract.Logger) {
+		l.With(trace.LogFields(ctx)...).Info("velocity/mail: message logged, not sent (log driver)", kvs...)
+	})
 	return nil
 }
 
