@@ -13,7 +13,6 @@ import (
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/latency"
-	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -144,19 +143,13 @@ func eventsInstalled(events *eventemit.Emitter) bool {
 }
 
 // dispatchEvent hands event to the dispatcher events holds. A failed
-// dispatch, an error or a panic, goes to the failure policy (counted, its
-// event's first failure logged) and never reaches the request: an event
-// sink must never fail or panic a request.
+// dispatch, an error or a panic, goes to the emitter's failure policy
+// (counted, its event's first failure logged) and never reaches the
+// request: an event sink must never fail or panic a request.
 func dispatchEvent(ctx context.Context, events *eventemit.Emitter, event interface{}) {
-	if !eventsInstalled(events) {
-		return
+	if events != nil {
+		events.Emit(ctx, event)
 	}
-	defer func() {
-		if p := recover(); p != nil {
-			events.Fail(ctx, panicerr.FromRecovered(p), event)
-		}
-	}()
-	events.Emit(ctx, event)
 }
 
 // detectProtocol determines if the request came via HTTP gateway or direct gRPC

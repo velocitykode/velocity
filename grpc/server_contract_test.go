@@ -24,7 +24,7 @@ func TestServer_ImplementsEventDispatcherAware(t *testing.T) {
 
 // TestServer_SetEventDispatcher_SafeToRecall exercises the mutex guard:
 // repeated SetEventDispatcher calls from multiple goroutines, interleaved
-// with dispatchEvent calls, must not race. Run under `-race` to confirm.
+// with Emit calls, must not race. Run under `-race` to confirm.
 func TestServer_SetEventDispatcher_SafeToRecall(t *testing.T) {
 	s := NewServer()
 
@@ -33,11 +33,11 @@ func TestServer_SetEventDispatcher_SafeToRecall(t *testing.T) {
 	s.SetEventDispatcher(nil)
 	s.SetEventDispatcher(func(_ context.Context, event any) error { return nil })
 
-	// dispatchEvent with nil-cleared dispatcher must be a no-op (no panic).
+	// Emit with a nil-cleared dispatcher must be a no-op (no panic).
 	s.SetEventDispatcher(nil)
-	s.dispatchEvent(context.Background(), "noop")
+	s.events.Emit(context.Background(), "noop")
 
-	// Concurrent recalls + reads via dispatchEvent. The race detector
+	// Concurrent recalls + reads via Emit. The race detector
 	// catches a missing lock on either side.
 	var seen atomic.Int64
 	dispatcher := func(_ context.Context, event any) error {
@@ -62,7 +62,7 @@ func TestServer_SetEventDispatcher_SafeToRecall(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range iters {
-				s.dispatchEvent(context.Background(), "probe")
+				s.events.Emit(context.Background(), "probe")
 			}
 		}()
 	}
@@ -71,9 +71,9 @@ func TestServer_SetEventDispatcher_SafeToRecall(t *testing.T) {
 	// Final state: a non-nil dispatcher should still be able to fire.
 	s.SetEventDispatcher(dispatcher)
 	before := seen.Load()
-	s.dispatchEvent(context.Background(), "final")
+	s.events.Emit(context.Background(), "final")
 	if seen.Load() != before+1 {
-		t.Fatalf("dispatchEvent did not invoke dispatcher: before=%d after=%d", before, seen.Load())
+		t.Fatalf("Emit did not invoke dispatcher: before=%d after=%d", before, seen.Load())
 	}
 }
 

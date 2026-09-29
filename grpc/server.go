@@ -732,7 +732,7 @@ func (s *Server) Start() error {
 	// so it runs as stop work: a stop from there must not wait on it.
 	s.stops.Run(func() {
 		if started != nil {
-			s.dispatchEvent(context.Background(), started)
+			s.events.Emit(context.Background(), started)
 		}
 		s.logStarting(lis)
 		err = srv.Serve(lis)
@@ -781,7 +781,7 @@ func (s *Server) StartAsync() error {
 		// As in Start, the serve loop runs as stop work.
 		s.stops.Run(func() {
 			if started != nil {
-				s.dispatchEvent(context.Background(), started)
+				s.events.Emit(context.Background(), started)
 			}
 			s.logStarting(lis)
 			if err := srv.Serve(lis); err != nil {
@@ -985,7 +985,7 @@ func (s *Server) endStop(st stopPlan) {
 	// stop back does not wait.
 	now := time.Now()
 	s.stops.Run(func() {
-		s.dispatchEvent(context.Background(), &grpcevents.ServerStopped{
+		s.events.Emit(context.Background(), &grpcevents.ServerStopped{
 			EventMeta: contract.EventMeta{Context: context.Background(), At: now},
 			Port:      st.port,
 			Duration:  now.Sub(st.start),
@@ -1105,24 +1105,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // no-op emission state.
 func (s *Server) SetEventDispatcher(fn func(ctx context.Context, event any) error) {
 	s.events.Set(fn)
-}
-
-// dispatchEvent fires an event if a dispatcher is configured. The
-// caller-supplied ctx is propagated so listeners observe request-scoped
-// values. A failed dispatch, an error or a panic, goes to the failure
-// policy (counted, its event's first failure logged through the Server's
-// logger) and never reaches the caller: the gRPC request path must never
-// fail because of an event sink.
-func (s *Server) dispatchEvent(ctx context.Context, evt any) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	defer func() {
-		if p := recover(); p != nil {
-			s.events.Fail(ctx, panicerr.FromRecovered(p), evt)
-		}
-	}()
-	s.events.Emit(ctx, evt)
 }
 
 // defaultCallLifecycle builds the call lifecycle interceptor Build installs
