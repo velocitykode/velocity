@@ -149,6 +149,8 @@ jobs:
         with:
           go-version: "1.26.x"
           check-latest: true
+      - name: Test the lock-held checker against its golden cases
+        run: go test -count=1 ./scripts/ci/check-lock-held-calls/
       - name: Check for user code called under a lock
         run: |
           set -e

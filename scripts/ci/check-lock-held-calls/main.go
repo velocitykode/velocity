@@ -8,9 +8,12 @@
 // Held regions (per function, following statement order):
 //
 //   - x.Lock() / x.RLock() on a sync.Mutex or sync.RWMutex up to the
-//     matching x.Unlock() / x.RUnlock() in the same block; nested blocks
-//     inherit what is held, and an unlock inside a nested block ends the
-//     region for the rest of that block only;
+//     matching x.Unlock() / x.RUnlock(); nested blocks inherit what is
+//     held. After an if or a switch, a lock is held when it is held at the
+//     end of any branch that falls through (a branch that returns, panics,
+//     continues or jumps does not count), so a lock released on every
+//     branch is no longer held; a loop body's unlocks end the region inside
+//     the body only;
 //   - defer x.Unlock(): held to the end of the function, including the
 //     deferred calls registered after it (they run first, lock still held);
 //   - once.Do(f), sync.OnceFunc(f), sync.OnceValue(f), sync.OnceValues(f):
@@ -19,16 +22,19 @@
 // A func literal that is not invoked in place, and a go statement's body,
 // start with nothing held.
 //
-// Calls flagged inside a held region:
+// Calls flagged inside a held region, told apart by type only (never by
+// the name of a variable, field or package-local type):
 //
-//   - logger: Debug, Info, Warn, Error, Fatal or With on a value with the
-//     logger method set, except the concrete fallback logger
-//     (internal/fallbacklog.Logger, framework code writing to stderr);
+//   - logger: a method of contract.Logger called on a value whose type
+//     implements contract.Logger (the module's contract package), except
+//     the concrete fallback logger internal/fallbacklog.Logger (framework
+//     code writing to stderr);
 //   - func: a call through a func-typed variable, field, parameter, map or
 //     slice element, or call result (not a declared function or method,
 //     not a literal);
 //   - format: an fmt call with an interface-typed argument other than
-//     error, and Error() or String() called on an interface value;
+//     error, and the error or fmt.Stringer method called on an interface
+//     value;
 //   - reach: a call to a function of the module whose body makes one of the
 //     calls above, directly or through other module functions. Only code
 //     that runs during the call counts: the body itself, func literals it
@@ -44,7 +50,9 @@
 //
 // Suppression: a call that is fine under the lock carries a same-line
 // `//lock-held-ok: <rationale>` comment, the rationale at least 5
-// characters. A bare `//lock-held-ok:` does not suppress.
+// characters. A bare `//lock-held-ok:` does not suppress, and the hit on
+// its line says so. A marker that suppresses nothing is stale; stale
+// markers are listed by -all only and never fail the check.
 //
 // Scope: the non-test files of the packages the patterns name, except test
 // infrastructure, excluded by directory: any directory whose name ends in
@@ -59,9 +67,11 @@
 // importer, so the tool needs no dependency outside the standard library.
 //
 // Usage: go run ./scripts/ci/check-lock-held-calls [packages]
-// Prints "file:line: kind: call while holding lock" per offender and exits
-// 1 when there is any; prints nothing and exits 0 otherwise. -all prints
-// every call to user code, held or not (for inventories).
+// Prints "file:line: kind: call while holding lock" per offender, then on
+// stderr how to fix each kind reported and the marker syntax, and exits 1
+// when there is any; prints nothing and exits 0 otherwise. -all prints
+// every call to user code, held or not, and the stale markers (for
+// inventories).
 package main
 
 import (
@@ -100,8 +110,36 @@ func main() {
 		fmt.Println(h)
 	}
 	if len(hits) > 0 {
+		if !*all {
+			fmt.Fprint(os.Stderr, hints(hits))
+		}
 		os.Exit(1)
 	}
+}
+
+// fixes says, per kind, how to take the call out of the held region.
+var fixes = []struct{ kind, fix string }{
+	{kindLogger, "logger: read the logger under the lock, unlock, then write through fallbacklog.Write (or a fallbacklog.Contain logger)"},
+	{kindFunc, "func: copy the func under the lock and call it after unlocking; claim any state it guards atomically first"},
+	{kindFormat, "format: format the value (its Error or String text) before taking the lock"},
+	{kindReach, "reach: call the function after unlocking, or take the user-code call out of it (the chain after the name shows where it is)"},
+}
+
+// hints returns the fix lines for the kinds in hits, and the marker
+// syntax.
+func hints(hits []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d call(s) to user code while a lock or sync.Once is held. User code can panic, block, or call back into this component.\n", len(hits))
+	for _, f := range fixes {
+		for _, h := range hits {
+			if strings.Contains(h, ": "+f.kind+": ") {
+				b.WriteString("  " + f.fix + "\n")
+				break
+			}
+		}
+	}
+	b.WriteString("  a call that is safe under the lock: same-line //lock-held-ok: <rationale of at least 5 characters>\n")
+	return b.String()
 }
 
 type listedPackage struct {
@@ -188,12 +226,14 @@ func check(dir string, patterns []string, all bool) ([]string, error) {
 				typeErr = err
 			}
 		}}
-		if _, err := conf.Check(p.ImportPath, fset, u.files, u.info); err != nil && typeErr == nil {
+		pkg, err := conf.Check(p.ImportPath, fset, u.files, u.info)
+		if err != nil && typeErr == nil {
 			typeErr = err
 		}
 		if typeErr != nil {
 			return nil, fmt.Errorf("type-check %s: %w", p.ImportPath, typeErr)
 		}
+		u.resolve(pkg, imp, mod.Path)
 		a.units = append(a.units, u)
 	}
 	return a.run(), nil
@@ -231,6 +271,39 @@ type unit struct {
 	files  []*ast.File
 	info   *types.Info
 	report bool // named by the patterns, not only a dependency of one
+
+	// The module's logger interface and fallback logger as this unit sees
+	// them (its own objects when it declares them, the imported ones
+	// otherwise, so identity holds within the unit); nil when absent.
+	logger   *types.Interface
+	fallback types.Type
+}
+
+var (
+	errorIface = types.Universe.Lookup("error").Type().Underlying().(*types.Interface)
+	stringer   = types.NewInterfaceType([]*types.Func{types.NewFunc(token.NoPos, nil, "String",
+		types.NewSignatureType(nil, nil, nil, nil, types.NewTuple(types.NewVar(token.NoPos, nil, "", types.Typ[types.String])), false))}, nil).Complete()
+)
+
+// resolve looks up the logger interface and the fallback logger for u.
+func (u *unit) resolve(pkg *types.Package, imp types.Importer, module string) {
+	lookup := func(path, name string) types.Type {
+		p := pkg
+		if pkg.Path() != path {
+			var err error
+			if p, err = imp.Import(path); err != nil {
+				return nil
+			}
+		}
+		if tn, ok := p.Scope().Lookup(name).(*types.TypeName); ok {
+			return tn.Type()
+		}
+		return nil
+	}
+	if t := lookup(module+"/contract", "Logger"); t != nil {
+		u.logger, _ = t.Underlying().(*types.Interface)
+	}
+	u.fallback = lookup(module+"/internal/fallbacklog", "Logger")
 }
 
 // funcSummary is what one declared function does that counts as user code.
@@ -247,10 +320,15 @@ type analysis struct {
 	funcs map[string]*funcSummary
 	all   bool
 	hits  map[string]bool
+
+	lines map[string][]string     // file contents by line, for markers
+	used  map[string]map[int]bool // marker lines that suppressed a held call
 }
 
 func (a *analysis) run() []string {
 	a.hits = map[string]bool{}
+	a.lines = map[string][]string{}
+	a.used = map[string]map[int]bool{}
 	a.summarize()
 	for _, u := range a.units {
 		if !u.report {
@@ -264,6 +342,9 @@ func (a *analysis) run() []string {
 				}
 			}
 		}
+	}
+	if a.all {
+		a.staleMarkers()
 	}
 	out := make([]string, 0, len(a.hits))
 	for h := range a.hits {
@@ -326,9 +407,17 @@ func (a *analysis) summarize() {
 			}
 		}
 	}
+	// Walk the functions in a fixed order so the chain each reports is the
+	// same on every run.
+	keys := make([]string, 0, len(a.funcs))
+	for k := range a.funcs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
 	for changed := true; changed; {
 		changed = false
-		for _, s := range a.funcs {
+		for _, k := range keys {
+			s := a.funcs[k]
 			if s.reach != "" {
 				continue
 			}
@@ -375,11 +464,11 @@ func classify(u *unit, call *ast.CallExpr) (kind, desc string) {
 				return kindFunc, types.ExprString(f)
 			case types.MethodVal:
 				recv, name := sel.Recv(), f.Sel.Name
-				if isLoggerMethod(name) && isUserLogger(recv) {
+				if u.loggerCall(recv, name) {
 					return kindLogger, types.ExprString(f)
 				}
 				if types.IsInterface(recv) {
-					if name == "Error" || name == "String" {
+					if formatCall(recv, name) {
 						return kindFormat, types.ExprString(f)
 					}
 					return kindIface, types.ExprString(f)
@@ -404,31 +493,47 @@ func classify(u *unit, call *ast.CallExpr) (kind, desc string) {
 	return kindFunc, types.ExprString(fun)
 }
 
-func isLoggerMethod(name string) bool {
-	switch name {
-	case "Debug", "Info", "Warn", "Error", "Fatal", "With":
+// loggerCall reports whether calling method name on recv is a call to
+// the logger interface: recv (or a pointer to it) implements it, name is
+// one of its methods, and recv is not the fallback logger.
+func (u *unit) loggerCall(recv types.Type, name string) bool {
+	if u.logger == nil || !hasMethod(u.logger, name) {
+		return false
+	}
+	if u.fallback != nil {
+		base := recv
+		if p, ok := base.(*types.Pointer); ok {
+			base = p.Elem()
+		}
+		if types.Identical(base, u.fallback) {
+			return false
+		}
+	}
+	if types.Implements(recv, u.logger) {
 		return true
+	}
+	_, isPtr := recv.(*types.Pointer)
+	return !isPtr && !types.IsInterface(recv) && types.Implements(types.NewPointer(recv), u.logger)
+}
+
+// formatCall reports whether calling method name on the interface type
+// recv is the error or fmt.Stringer method, which formats a value.
+func formatCall(recv types.Type, name string) bool {
+	for _, iface := range []*types.Interface{errorIface, stringer} {
+		if hasMethod(iface, name) && types.Implements(recv, iface) {
+			return true
+		}
 	}
 	return false
 }
 
-// isUserLogger reports whether t has the logger method set and is not the
-// concrete fallback logger.
-func isUserLogger(t types.Type) bool {
-	ms := types.NewMethodSet(t)
-	if _, isPtr := t.(*types.Pointer); !isPtr && !types.IsInterface(t) {
-		ms = types.NewMethodSet(types.NewPointer(t))
-	}
-	names := map[string]bool{}
-	for i := 0; i < ms.Len(); i++ {
-		names[ms.At(i).Obj().Name()] = true
-	}
-	for _, n := range []string{"Debug", "Info", "Warn", "Error", "Fatal", "With"} {
-		if !names[n] {
-			return false
+func hasMethod(iface *types.Interface, name string) bool {
+	for i := 0; i < iface.NumMethods(); i++ {
+		if iface.Method(i).Name() == name {
+			return true
 		}
 	}
-	return !strings.HasSuffix(t.String(), "internal/fallbacklog.Logger")
+	return false
 }
 
 // formatsInterface reports whether an fmt call has an interface-typed
@@ -573,6 +678,9 @@ func syncOp(u *unit, call *ast.CallExpr) (op, key string) {
 	return "", ""
 }
 
+// onceFuncs are the sync functions whose argument runs inside a Once.
+var onceFuncs = map[string]bool{"OnceFunc": true, "OnceValue": true, "OnceValues": true}
+
 type walker struct {
 	a        *analysis
 	u        *unit
@@ -599,31 +707,69 @@ func (w *walker) walkFunc(body *ast.BlockStmt, h held) {
 	}
 }
 
-func (w *walker) block(stmts []ast.Stmt, h held) {
+// block walks stmts in order with h held, updating h to what is held at
+// the end, and reports whether control never falls out of the end.
+func (w *walker) block(stmts []ast.Stmt, h held) (terminates bool) {
 	for _, s := range stmts {
-		w.stmt(s, h)
+		if w.stmt(s, h) {
+			return true
+		}
 	}
+	return false
 }
 
-func (w *walker) stmt(s ast.Stmt, h held) {
+// join sets h to the locks held at the end of any path that falls
+// through (a nil path terminates) and reports whether none does.
+func join(h held, paths ...held) (terminates bool) {
+	for k := range h {
+		delete(h, k)
+	}
+	terminates = true
+	for _, p := range paths {
+		if p == nil {
+			continue
+		}
+		terminates = false
+		for k := range p {
+			h[k] = true
+		}
+	}
+	return terminates
+}
+
+// branch walks one branch on a copy of h and returns what it holds at
+// its end, nil when it does not fall through.
+func (w *walker) branch(walk func(held) bool, h held) held {
+	c := h.copy()
+	if walk(c) {
+		return nil
+	}
+	return c
+}
+
+// stmt walks s with h held, updating h, and reports whether control never
+// falls out of s.
+func (w *walker) stmt(s ast.Stmt, h held) (terminates bool) {
 	switch s := s.(type) {
 	case *ast.ExprStmt:
 		if call, ok := s.X.(*ast.CallExpr); ok {
 			switch op, key := syncOp(w.u, call); op {
 			case "lock":
 				h[key] = true
-				return
+				return false
 			case "unlock":
 				delete(h, key)
-				return
+				return false
 			}
+			w.expr(s.X, h)
+			return w.isPanic(call)
 		}
 		w.expr(s.X, h)
 	case *ast.DeferStmt:
 		op, key := syncOp(w.u, s.Call)
 		if op == "unlock" {
 			w.deferred[key] = true
-			return
+			return false
 		}
 		for _, arg := range s.Call.Args {
 			w.expr(arg, h)
@@ -634,7 +780,7 @@ func (w *walker) stmt(s ast.Stmt, h held) {
 			if !unlocks(w.u, lit.Body) {
 				w.pending = append(w.pending, pendingBody{lit.Body, w.deferred.copy()})
 			}
-			return
+			return false
 		}
 		w.call(s.Call, w.deferred.copy())
 	case *ast.GoStmt:
@@ -645,16 +791,18 @@ func (w *walker) stmt(s ast.Stmt, h held) {
 			w.expr(arg, h)
 		}
 	case *ast.BlockStmt:
-		w.block(s.List, h.copy())
+		return w.block(s.List, h)
 	case *ast.IfStmt:
 		if s.Init != nil {
 			w.stmt(s.Init, h)
 		}
 		w.expr(s.Cond, h)
-		w.block(s.Body.List, h.copy())
+		body := w.branch(func(c held) bool { return w.block(s.Body.List, c) }, h)
+		els := h.copy()
 		if s.Else != nil {
-			w.stmt(s.Else, h.copy())
+			els = w.branch(func(c held) bool { return w.stmt(s.Else, c) }, h)
 		}
+		return join(h, body, els)
 	case *ast.ForStmt:
 		if s.Init != nil {
 			w.stmt(s.Init, h)
@@ -672,31 +820,52 @@ func (w *walker) stmt(s ast.Stmt, h held) {
 			w.stmt(s.Init, h)
 		}
 		w.expr(s.Tag, h)
+		var paths []held
+		hasDefault := false
 		for _, c := range s.Body.List {
 			cc := c.(*ast.CaseClause)
 			for _, e := range cc.List {
 				w.expr(e, h)
 			}
-			w.block(cc.Body, h.copy())
+			hasDefault = hasDefault || cc.List == nil
+			paths = append(paths, w.branch(func(c held) bool { return w.block(cc.Body, c) }, h))
 		}
+		if !hasDefault {
+			paths = append(paths, h.copy())
+		}
+		return join(h, paths...)
 	case *ast.TypeSwitchStmt:
 		if s.Init != nil {
 			w.stmt(s.Init, h)
 		}
 		w.stmt(s.Assign, h)
+		var paths []held
+		hasDefault := false
 		for _, c := range s.Body.List {
-			w.block(c.(*ast.CaseClause).Body, h.copy())
+			cc := c.(*ast.CaseClause)
+			hasDefault = hasDefault || cc.List == nil
+			paths = append(paths, w.branch(func(c held) bool { return w.block(cc.Body, c) }, h))
 		}
+		if !hasDefault {
+			paths = append(paths, h.copy())
+		}
+		return join(h, paths...)
 	case *ast.SelectStmt:
+		var paths []held
 		for _, c := range s.Body.List {
 			cc := c.(*ast.CommClause)
 			if cc.Comm != nil {
 				w.stmt(cc.Comm, h)
 			}
-			w.block(cc.Body, h.copy())
+			paths = append(paths, w.branch(func(c held) bool { return w.block(cc.Body, c) }, h))
 		}
+		return join(h, paths...)
 	case *ast.LabeledStmt:
-		w.stmt(s.Stmt, h)
+		return w.stmt(s.Stmt, h)
+	case *ast.BranchStmt:
+		// break leaves the enclosing statement with what is held; the
+		// others go elsewhere.
+		return s.Tok != token.BREAK
 	case *ast.AssignStmt:
 		for _, e := range s.Rhs {
 			w.expr(e, h)
@@ -708,6 +877,7 @@ func (w *walker) stmt(s ast.Stmt, h held) {
 		for _, e := range s.Results {
 			w.expr(e, h)
 		}
+		return true
 	case *ast.DeclStmt:
 		ast.Inspect(s, func(n ast.Node) bool {
 			if e, ok := n.(ast.Expr); ok {
@@ -722,6 +892,13 @@ func (w *walker) stmt(s ast.Stmt, h held) {
 	case *ast.IncDecStmt:
 		w.expr(s.X, h)
 	}
+	return false
+}
+
+// isPanic reports whether call is the panic builtin.
+func (w *walker) isPanic(call *ast.CallExpr) bool {
+	id, ok := ast.Unparen(call.Fun).(*ast.Ident)
+	return ok && w.u.info.Uses[id] == types.Universe.Lookup("panic")
 }
 
 // unlocks reports whether body unlocks something (a deferred closure that
@@ -763,7 +940,7 @@ func (w *walker) expr(e ast.Expr, h held) {
 				return false
 			}
 			if fn := staticCallee(w.u, x); fn != nil && fn.Pkg() != nil && fn.Pkg().Path() == "sync" &&
-				strings.HasPrefix(fn.Name(), "Once") {
+				onceFuncs[fn.Name()] {
 				w.onceBody(x.Args, h.with("sync."+fn.Name()))
 				return false
 			}
@@ -827,37 +1004,74 @@ func (w *walker) call(call *ast.CallExpr, h held) {
 	}
 }
 
+const markerPrefix = "//lock-held-ok:"
+
 var markerRE = regexp.MustCompile(`//lock-held-ok:\s*\S.{4,}`)
 
 func (w *walker) report(pos token.Pos, h held, kind, desc string) {
 	p := w.a.fset.Position(pos)
-	if suppressed(p.Filename, p.Line) {
+	text := w.a.line(p.Filename, p.Line)
+	if len(h) > 0 && markerRE.MatchString(text) {
+		if w.a.used[p.Filename] == nil {
+			w.a.used[p.Filename] = map[int]bool{}
+		}
+		w.a.used[p.Filename][p.Line] = true
 		return
 	}
-	rel, err := filepath.Rel(w.a.root, p.Filename)
-	if err != nil {
-		rel = p.Filename
-	}
-	line := fmt.Sprintf("%s:%d: %s: %s", filepath.ToSlash(rel), p.Line, kind, desc)
+	line := fmt.Sprintf("%s:%d: %s: %s", w.a.rel(p.Filename), p.Line, kind, desc)
 	if len(h) > 0 {
 		line += " while holding " + h.String()
+		if strings.Contains(text, markerPrefix) {
+			line += " (the //lock-held-ok: marker here has no rationale of at least 5 characters, so it does not suppress)"
+		}
 	}
 	w.a.hits[line] = true
 }
 
-var fileLines = map[string][]string{}
+func (a *analysis) rel(file string) string {
+	rel, err := filepath.Rel(a.root, file)
+	if err != nil {
+		rel = file
+	}
+	return filepath.ToSlash(rel)
+}
 
-// suppressed reports whether line of file carries the marker with a
-// rationale.
-func suppressed(file string, line int) bool {
-	lines, ok := fileLines[file]
+// line returns line n of file, "" when it cannot be read.
+func (a *analysis) line(file string, n int) string {
+	lines, ok := a.lines[file]
 	if !ok {
 		b, err := os.ReadFile(file)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return false
+			return ""
 		}
 		lines = strings.Split(string(b), "\n")
-		fileLines[file] = lines
+		a.lines[file] = lines
 	}
-	return line-1 < len(lines) && markerRE.MatchString(lines[line-1])
+	if n-1 < len(lines) {
+		return lines[n-1]
+	}
+	return ""
+}
+
+// staleMarkers adds, for -all, every marker in a reported package that
+// suppressed no call under a lock.
+func (a *analysis) staleMarkers() {
+	for _, u := range a.units {
+		if !u.report {
+			continue
+		}
+		for _, f := range u.files {
+			for _, cg := range f.Comments {
+				for _, c := range cg.List {
+					if !strings.HasPrefix(c.Text, markerPrefix) {
+						continue
+					}
+					p := a.fset.Position(c.Pos())
+					if !a.used[p.Filename][p.Line] {
+						a.hits[fmt.Sprintf("%s:%d: stale: the //lock-held-ok: marker suppresses no call under a lock", a.rel(p.Filename), p.Line)] = true
+					}
+				}
+			}
+		}
+	}
 }

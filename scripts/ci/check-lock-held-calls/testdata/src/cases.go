@@ -6,17 +6,11 @@ import (
 	"fmt"
 	"sync"
 
+	"example.com/lockheld/contract"
 	"example.com/lockheld/sub"
 )
 
-type Logger interface {
-	Debug(msg string, kvs ...any)
-	Info(msg string, kvs ...any)
-	Warn(msg string, kvs ...any)
-	Error(msg string, kvs ...any)
-	Fatal(msg string, kvs ...any)
-	With(kvs ...any) Logger
-}
+type Logger = contract.Logger
 
 type C struct {
 	mu     sync.RWMutex

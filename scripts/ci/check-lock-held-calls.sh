@@ -12,8 +12,10 @@
 # Suppression: a same-line `//lock-held-ok: <rationale>` comment, the
 # rationale at least 5 characters.
 #
-# Prints "file:line: kind: call while holding lock" per offender and exits
-# non-zero when there is any. Prints nothing on success.
+# Prints "file:line: kind: call while holding lock" per offender, then on
+# stderr how to fix each kind reported, and exits non-zero when there is
+# any. Prints nothing on success. Stale markers never fail the check; run
+# the checker with -all to list them.
 
 set -euo pipefail
 
