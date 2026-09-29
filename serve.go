@@ -16,6 +16,7 @@ import (
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/eventqueue"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
@@ -114,9 +115,9 @@ func (a *App) serveHTTP() error {
 	// already-closed services.
 	if a.runScheduler && a.Scheduler != nil {
 		async.Go(func() {
-			a.Log.Info("Scheduler started in-process")
+			fallbacklog.Write(a.Log, func(l contract.Logger) { l.Info("Scheduler started in-process") })
 			if err := a.Scheduler.Run(context.Background()); err != nil && err != context.Canceled {
-				a.Log.Error("Scheduler exited with error", "error", err)
+				fallbacklog.Write(a.Log, func(l contract.Logger) { l.Error("Scheduler exited with error", "error", err) })
 			}
 		})
 	}
@@ -125,7 +126,7 @@ func (a *App) serveHTTP() error {
 	// ListenAndServe so the main goroutine's select is never starved.
 	errCh := make(chan error, 1)
 	async.Go(func() {
-		a.Log.Info("Velocity server started", "version", a.version, "addr", addr)
+		fallbacklog.Write(a.Log, func(l contract.Logger) { l.Info("Velocity server started", "version", a.version, "addr", addr) })
 		if err := a.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
@@ -145,7 +146,7 @@ func (a *App) serveHTTP() error {
 		}
 		return serveErr
 	case sig := <-quit:
-		a.Log.Info("Shutting down server", "signal", sig.String())
+		fallbacklog.Write(a.Log, func(l contract.Logger) { l.Info("Shutting down server", "signal", sig.String()) })
 	}
 
 	// Graceful shutdown with timeout
@@ -167,7 +168,9 @@ func (a *App) serveHTTP() error {
 // queue/cache/DB (so a component can still reach core services during its own
 // teardown); the registry owns teardown of registered values.
 // Every subsystem's Shutdown is called even if an earlier one fails; all errors
-// are aggregated via errors.Join.
+// are aggregated via errors.Join. Each step runs contained: a step that
+// panics (a module's Shutdown, a service's, the logger's) contributes the
+// panic as its error, and the steps after it still run.
 func (a *App) Shutdown(ctx context.Context) error {
 	var errs []error
 	collect := func(err error) {
@@ -175,6 +178,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
+	// step runs one teardown step contained and collects its error; do
+	// runs one that returns none.
+	step := func(fn func() error) { collect(safeStep(fn)) }
+	do := func(fn func()) { step(func() error { fn(); return nil }) }
 
 	// 1. Stop accepting new connections and drain the in-flight requests
 	// until they finish or ctx ends. Then cancel the shutdown context,
@@ -183,30 +190,30 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// deadline sees its context done, and the error boundary answers it
 	// 503 (not the empty 200 a client-gone cancel gets).
 	if a.server != nil {
-		collect(a.server.Shutdown(ctx))
+		step(func() error { return a.server.Shutdown(ctx) })
 	}
 	if a.shutdownCancel != nil {
-		a.shutdownCancel(contract.ErrServerShuttingDown)
+		do(func() { a.shutdownCancel(contract.ErrServerShuttingDown) })
 	}
 
 	// 2. Drain async event dispatcher workers (no-op if running sync).
 	if a.Router != nil {
-		collect(a.Router.ShutdownEventDispatcher(ctx))
+		step(func() error { return a.Router.ShutdownEventDispatcher(ctx) })
 		// 2a. Release the *os.Root file descriptor used by Context.File,
 		// Context.Download and Context.SaveFile. Idempotent; safe even
 		// if no file root was ever opened.
-		collect(a.Router.CloseFileRoot())
+		step(a.Router.CloseFileRoot)
 	}
 
 	// 3. Stop scheduler
 	if a.Scheduler != nil {
-		collect(a.Scheduler.Shutdown(ctx))
+		step(func() error { return a.Scheduler.Shutdown(ctx) })
 	}
 
 	// 3a. Stop outbox relay (must run before queue/DB teardown so in-flight
 	// dispatches reach the queue and DB before they close).
 	if a.outboxRelay != nil {
-		collect(a.outboxRelay.Stop(ctx))
+		step(func() error { return a.outboxRelay.Stop(ctx) })
 	}
 
 	// 4. Shutdown chain modules in reverse order, then WithModules
@@ -216,10 +223,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// this matches the New() failure path, where the module-unwind
 	// closure is pushed last onto the cleanup stack and runs first.
 	for i := len(a.chainModules) - 1; i >= 0; i-- {
-		collect(a.chainModules[i].Shutdown(ctx))
+		m := a.chainModules[i]
+		step(func() error { return m.Shutdown(ctx) })
 	}
 	for i := len(a.modules) - 1; i >= 0; i-- {
-		collect(a.modules[i].Shutdown(ctx))
+		m := a.modules[i]
+		step(func() error { return m.Shutdown(ctx) })
 	}
 
 	// 4a. Sweep registry components in reverse registration order. The
@@ -228,11 +237,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// app.Register). This runs after module Shutdown so a module can
 	// flush using a value it registered, and before queue/cache/DB close so
 	// a component can still reach core services during its own teardown.
-	shutdownComponents(ctx, a.Services, collect)
+	do(func() { shutdownComponents(ctx, a.Services, collect) })
 
 	// 5. Close queue driver
 	if a.Queue != nil {
-		collect(a.Queue.Shutdown(ctx))
+		step(func() error { return a.Queue.Shutdown(ctx) })
 	}
 
 	// 5a. C-03-fb2 HIGH 2: drop any auto-installed batch repository
@@ -246,9 +255,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// callback queue pointer so they do not retain references to the
 	// torn-down services. Both setters accept nil as the "uninstall"
 	// signal.
-	queue.ResetAutoInstalledBatchRepository()
-	queue.SetGlobalEventDispatcher(nil)
-	queue.SetBatchCallbackQueue(nil, "")
+	do(func() {
+		queue.ResetAutoInstalledBatchRepository()
+		queue.SetGlobalEventDispatcher(nil)
+		queue.SetBatchCallbackQueue(nil, "")
+	})
 	// H-22: clear the queued-listener failure reporter so a new app
 	// instance does not inherit a stale callback bound to the
 	// torn-down error handler; mirrors the New() failure-path
@@ -257,54 +268,56 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// logger (nil-safe setter), and the payload encryptor installed
 	// when QUEUE_ENCRYPT=true so it does not retain the torn-down
 	// app's encryptor.
-	eventqueue.InitializeQueueIntegration(nil, nil, nil)
-	queue.SetSigningLogger(nil)
-	queue.SetPayloadEncryptor(nil)
+	do(func() {
+		eventqueue.InitializeQueueIntegration(nil, nil, nil)
+		queue.SetSigningLogger(nil)
+		queue.SetPayloadEncryptor(nil)
+	})
 
 	// 6. Close cache connections
 	if a.Cache != nil {
-		collect(a.Cache.Shutdown(ctx))
+		step(func() error { return a.Cache.Shutdown(ctx) })
 	}
 
 	// 6a. Close CSRF store (stops cleanup goroutine).
 	if a.CSRF != nil {
 		if sd, ok := a.CSRF.(contract.ShutdownAware); ok {
-			collect(sd.Shutdown(ctx))
+			step(func() error { return sd.Shutdown(ctx) })
 		}
 	}
 
 	// 6b. Shutdown mail manager.
 	if a.Mail != nil {
 		if sd, ok := a.Mail.(contract.ShutdownAware); ok {
-			collect(sd.Shutdown(ctx))
+			step(func() error { return sd.Shutdown(ctx) })
 		}
 	}
 
 	// 6c. Shutdown storage manager.
 	if a.Storage != nil {
 		if sd, ok := a.Storage.(contract.ShutdownAware); ok {
-			collect(sd.Shutdown(ctx))
+			step(func() error { return sd.Shutdown(ctx) })
 		}
 	}
 
 	// 6d. Shutdown notification manager.
 	if a.Notification != nil {
 		if sd, ok := a.Notification.(contract.ShutdownAware); ok {
-			collect(sd.Shutdown(ctx))
+			step(func() error { return sd.Shutdown(ctx) })
 		}
 	}
 
 	// 6e. Shutdown view engine; mirrors the New() failure-path cleanup.
 	if a.View != nil {
 		if sd, ok := a.View.(contract.ShutdownAware); ok {
-			collect(sd.Shutdown(ctx))
+			step(func() error { return sd.Shutdown(ctx) })
 		}
 	}
 
 	// 7. Close database connections
 	if a.DB != nil {
-		collect(a.DB.Shutdown(ctx))
-		orm.ResetDefault()
+		step(func() error { return a.DB.Shutdown(ctx) })
+		do(orm.ResetDefault)
 	}
 
 	// 8. Release the process-wide state this app installed (the async
@@ -315,12 +328,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// still reach the logger after it is closed (the built-in file logger
 	// sends a late warning or error to the standalone fallback logger).
 	// Then close the logger last so all prior steps can still log.
-	releasePackageState(a)
+	do(func() { releasePackageState(a) })
 	if a.Log != nil {
 		if sd, ok := a.Log.(contract.ShutdownAware); ok {
-			collect(sd.Shutdown(ctx))
+			step(func() error { return sd.Shutdown(ctx) })
 		} else if closer, ok := a.Log.(interface{ Close() error }); ok {
-			collect(closer.Close())
+			step(closer.Close)
 		}
 	}
 
@@ -344,8 +357,8 @@ func (a *App) Shutdown(ctx context.Context) error {
 // be rare since registered values are typically pointers (always distinct
 // unless actually the same instance).
 //
-// Each Shutdown call is panic-guarded (see safeComponentShutdown) so a
-// misbehaving third-party Close cannot abort the remaining teardown. The
+// Each Shutdown call is panic-guarded (see safeStep) so a misbehaving
+// third-party Close cannot abort the remaining teardown. The
 // sweep runs after module Shutdowns and before core services close, so
 // hooks may still flush through the queue, cache, or DB.
 func shutdownComponents(ctx context.Context, s *app.Services, collect func(error)) {
@@ -375,7 +388,7 @@ func shutdownComponents(ctx context.Context, s *app.Services, collect func(error
 			}
 			seen[v] = struct{}{}
 		}
-		collect(safeComponentShutdown(ctx, sd))
+		collect(safeStep(func() error { return sd.Shutdown(ctx) }))
 	}
 
 	for i := len(entries) - 1; i >= 0; i-- {
@@ -386,13 +399,14 @@ func shutdownComponents(ctx context.Context, s *app.Services, collect func(error
 	}
 }
 
-// safeComponentShutdown calls sd.Shutdown(ctx), converting a panic from a
-// third-party Close into an error so one bad component cannot abort the sweep.
-func safeComponentShutdown(ctx context.Context, sd contract.ShutdownAware) (err error) {
+// safeStep runs one teardown step, converting a panic in it into its
+// error, so one bad module, service or component cannot abort the rest of
+// App.Shutdown.
+func safeStep(step func() error) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = panicerr.FromRecovered(r)
 		}
 	}()
-	return sd.Shutdown(ctx)
+	return step()
 }
