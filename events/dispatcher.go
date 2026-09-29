@@ -546,18 +546,14 @@ const detachedPanicMessage = "velocity/events: failure reporting panicked on a d
 func containDetached(event interface{}, fn func()) {
 	defer func() {
 		if p := recover(); p != nil {
-			writeDetachedPanic(event, p)
+			// Formatting a panic value can panic in turn (an error whose
+			// Error method panics); fallbacklog.Write contains that too.
+			fallbacklog.Write(nil, func(l contract.Logger) {
+				l.Error(detachedPanicMessage, "event", eventemit.EventName(event), "panic", fmt.Sprint(p))
+			})
 		}
 	}()
 	fn()
-}
-
-// writeDetachedPanic writes the fallback line for panic p, contained on a
-// detached delivery of event. Formatting a panic value can panic in turn
-// (an error whose Error method panics), which is contained here too.
-func writeDetachedPanic(event interface{}, p any) {
-	defer func() { _ = recover() }()
-	fallbacklog.Logger{}.Error(detachedPanicMessage, "event", eventemit.EventName(event), "panic", fmt.Sprint(p))
 }
 
 // reportDetached is reportFailure for a detached delivery: a failure
