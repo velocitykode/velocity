@@ -64,10 +64,11 @@ type CSRF struct {
 	// handles a failed dispatch through the instance's logger.
 	events eventemit.Emitter
 
-	// logMu guards logger, which SetLogger may replace while requests
-	// read it.
-	logMu  sync.RWMutex
-	logger contract.Logger
+	// logger forwards to the logger SetLogger installed (none means the
+	// fallback logger). The token store is handed the forwarder itself,
+	// so it follows every later SetLogger and no lock is held while the
+	// store's SetLogger runs.
+	logger fallbacklog.Forwarder
 }
 
 // New creates a new CSRF instance with the given configuration.
@@ -155,27 +156,24 @@ func (c *CSRF) SetEventDispatcher(fn func(ctx context.Context, event interface{}
 	c.events.Set(fn)
 }
 
-// currentLogger returns the installed logger under logMu, or nil.
+// currentLogger returns the installed logger, or nil.
 func (c *CSRF) currentLogger() contract.Logger {
-	c.logMu.RLock()
-	defer c.logMu.RUnlock()
-	return c.logger
+	return c.logger.Installed()
 }
 
 // SetLogger installs the logger the CSRF instance writes its warnings and
-// token-store failures to, and hands it to the token store when the store
-// takes one (contract.LoggerAware). No line names a session id. Unset or
-// nil, they go through the framework's standalone fallback logger. Safe to
-// call while requests are served. The store is handed the logger under the
-// same lock, so concurrent calls leave the instance and its store on the
-// same logger.
+// token-store failures to, and hands the token store, when it takes one
+// (contract.LoggerAware), a logger that forwards to it. No line names a
+// session id. Unset or nil, they go through the framework's standalone
+// fallback logger. Safe to call while requests are served: the store
+// follows the instance's logger whatever order concurrent calls run in,
+// and the store's SetLogger runs with no lock held, so it may call back
+// into the instance.
 func (c *CSRF) SetLogger(l contract.Logger) {
-	c.logMu.Lock()
-	defer c.logMu.Unlock()
-	c.logger = l
+	c.logger.Set(l)
 	if c.config != nil {
 		if la, ok := c.config.Store.(contract.LoggerAware); ok {
-			la.SetLogger(l)
+			la.SetLogger(&c.logger)
 		}
 	}
 }
@@ -185,10 +183,7 @@ var _ contract.LoggerAware = (*CSRF)(nil)
 // log returns the installed logger, or the fallback logger when none is,
 // bound to the request, trace and span ids ctx carries.
 func (c *CSRF) log(ctx context.Context) contract.Logger {
-	c.logMu.RLock()
-	l := fallbacklog.Resolve(c.logger)
-	c.logMu.RUnlock()
-	return l.With(trace.LogFields(ctx)...)
+	return fallbacklog.Resolve(c.currentLogger()).With(trace.LogFields(ctx)...)
 }
 
 // dispatchEvent fires an event if a dispatcher is configured. The
@@ -555,8 +550,11 @@ func (c *CSRF) validateToken(w http.ResponseWriter, r *http.Request) error {
 		if c.singleUseScopeLogged.CompareAndSwap(false, true) {
 			c.log(ctx).Warn("velocity/csrf: SingleUse is exact per process only: the Store does not implement AtomicConsumer, so two processes can each accept the same token once")
 		}
-		c.singleUseMu.Lock()
-		defer c.singleUseMu.Unlock()
+		err, deleteErr := c.consumeInProcess(ctx, sessionID, requestToken)
+		if deleteErr != nil {
+			c.log(ctx).Error("velocity/csrf: delete single-use token failed; the token stays valid until it expires", "error", deleteErr)
+		}
+		return err
 	}
 
 	expectedToken, err := c.config.Store.Get(ctx, sessionID)
@@ -569,15 +567,21 @@ func (c *CSRF) validateToken(w http.ResponseWriter, r *http.Request) error {
 	if !ValidateToken(requestToken, expectedToken) {
 		return ErrTokenInvalid
 	}
-
-	// Single-use tokens on a store without AtomicConsumer (per process).
-	if c.config.SingleUse {
-		if err := c.config.Store.Delete(ctx, sessionID); err != nil {
-			c.log(ctx).Error("velocity/csrf: delete single-use token failed; the token stays valid until it expires", "error", err)
-		}
-	}
-
 	return nil
+}
+
+// consumeInProcess validates requestToken against the token held for
+// sessionID and deletes it, under singleUseMu, for a store without
+// AtomicConsumer. err is the validation result; deleteErr a failed delete
+// of an accepted token, which the caller logs once the lock is released.
+func (c *CSRF) consumeInProcess(ctx context.Context, sessionID, requestToken string) (err, deleteErr error) {
+	c.singleUseMu.Lock()
+	defer c.singleUseMu.Unlock()
+	expectedToken, getErr := c.config.Store.Get(ctx, sessionID)
+	if getErr != nil || !ValidateToken(requestToken, expectedToken) {
+		return ErrTokenInvalid, nil
+	}
+	return nil, c.config.Store.Delete(ctx, sessionID)
 }
 
 // getTokenFromRequest extracts the CSRF token from the request.

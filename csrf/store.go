@@ -12,6 +12,14 @@ import (
 // keep the token in the request's session: stores.SessionBagStore, which
 // velocity.New installs, does. stores.MemoryStore keys a map by id instead
 // and is the session-less default of NewE.
+//
+// A store is called while CSRF holds a lock for the request (reading a
+// token single-flights per request) or, for single-use tokens on a store
+// without AtomicConsumer, a lock for the whole process; a session scheme
+// rotating or revoking a token calls it under the request's
+// authentication lock. A store must therefore not call back into CSRF
+// validation or token reads, or into the session scheme, for the request
+// it is serving: that call waits on the lock its own caller holds.
 type Store interface {
 	// Get returns the token held for session id, or
 	// stores.ErrTokenNotFound when none is held.

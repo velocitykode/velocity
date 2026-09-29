@@ -384,7 +384,8 @@ func (s *loggerStore) SetLogger(l contract.Logger) {
 }
 
 // Concurrent SetLogger calls leave the instance and its store on the same
-// logger: the store is handed it under the instance's lock.
+// logger: the store is handed the instance's forwarding logger, so it
+// writes through whichever logger the instance installed last.
 func TestCSRF_ConcurrentSetLoggerKeepsTheStoreInStep(t *testing.T) {
 	for round := 0; round < 50; round++ {
 		store := &loggerStore{nonAtomicStore: newNonAtomicStore()}
@@ -401,14 +402,11 @@ func TestCSRF_ConcurrentSetLoggerKeepsTheStoreInStep(t *testing.T) {
 			}()
 		}
 		wg.Wait()
-		c.logMu.RLock()
-		want := c.logger
-		c.logMu.RUnlock()
 		store.mu.Lock()
 		got := store.logger
 		store.mu.Unlock()
-		if got != want {
-			t.Fatalf("round %d: store holds %p, the instance %p", round, got, want)
+		if got != contract.Logger(&c.logger) {
+			t.Fatalf("round %d: store holds %p, not the instance's forwarding logger", round, got)
 		}
 	}
 }
