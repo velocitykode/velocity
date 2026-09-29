@@ -8,7 +8,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
-	"github.com/velocitykode/velocity/internal/eventemit"
+	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -78,12 +78,10 @@ type eventPump struct {
 	stopped  atomic.Bool
 	stopOnce sync.Once
 
-	// deliverer and reporter are the goroutine ids of the delivery and
-	// reporter goroutines (eventemit.GoroutineID), each stored once by the
-	// goroutine itself before it runs any user code, so a flush can tell
-	// it was called from one of them.
-	deliverer atomic.Uint64
-	reporter  atomic.Uint64
+	// own holds the delivery and the reporter goroutine, each entered by
+	// the goroutine itself before it runs any user code, so a flush can
+	// tell it was called from one of them.
+	own goroutine.Set
 }
 
 // newEventPump returns a pump that hands each recovered listener panic to
@@ -106,12 +104,16 @@ func newEventPump(fail func(ctx context.Context, err error, event any), failLate
 func (p *eventPump) start(dispatch func(context.Context, contract.Event)) {
 	async.Go(func() {
 		defer close(p.delivered)
-		p.deliverer.Store(eventemit.GoroutineID())
+		id := goroutine.ID()
+		p.own.Enter(id)
+		defer p.own.Leave(id)
 		p.run(dispatch)
 	})
 	async.Go(func() {
 		defer close(p.reported)
-		p.reporter.Store(eventemit.GoroutineID())
+		id := goroutine.ID()
+		p.own.Enter(id)
+		defer p.own.Leave(id)
 		p.runReports()
 	})
 }
@@ -119,8 +121,7 @@ func (p *eventPump) start(dispatch func(context.Context, contract.Event)) {
 // onPumpGoroutine reports whether the caller runs on the delivery or the
 // reporter goroutine, where a flush would wait on itself.
 func (p *eventPump) onPumpGoroutine() bool {
-	id := eventemit.GoroutineID()
-	return id == p.deliverer.Load() || id == p.reporter.Load()
+	return p.own.Contains(goroutine.ID())
 }
 
 // runReports runs the drop reports enqueue hands over, in order, until

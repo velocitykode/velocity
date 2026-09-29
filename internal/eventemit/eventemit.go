@@ -42,12 +42,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
 	"sync"
 	"sync/atomic"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -94,8 +94,8 @@ type Failures struct {
 
 	mu     sync.Mutex
 	logged map[string]struct{}
-	// hooking holds the goroutines running the hook now (GoroutineID).
-	hooking map[uint64]struct{}
+	// hooking holds the goroutines running the hook now.
+	hooking goroutine.Set
 }
 
 // Record applies the policy to one failed delivery of event, however many
@@ -167,11 +167,12 @@ func (f *Failures) callHook(ctx context.Context, logger contract.Logger, err err
 	if h == nil {
 		return
 	}
-	gid := GoroutineID()
-	if !f.enterHook(gid) {
+	gid := goroutine.ID()
+	if f.hooking.Contains(gid) {
 		return
 	}
-	defer f.leaveHook(gid)
+	f.hooking.Enter(gid)
+	defer f.hooking.Leave(gid)
 	defer func() {
 		if p := recover(); p != nil {
 			f.count.Add(1)
@@ -185,39 +186,13 @@ func (f *Failures) callHook(ctx context.Context, logger contract.Logger, err err
 	(*h)(err, event)
 }
 
-// enterHook marks goroutine gid as running the hook. It reports false,
-// marking nothing, when gid is running it already.
-func (f *Failures) enterHook(gid uint64) bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if _, running := f.hooking[gid]; running {
-		return false
-	}
-	if f.hooking == nil {
-		f.hooking = make(map[uint64]struct{})
-	}
-	f.hooking[gid] = struct{}{}
-	return true
-}
-
-// leaveHook unmarks goroutine gid.
-func (f *Failures) leaveHook(gid uint64) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	delete(f.hooking, gid)
-}
-
 // hookRunningHere reports whether the calling goroutine is running the
 // hook.
 func (f *Failures) hookRunningHere() bool {
 	if f.hook.Load() == nil {
 		return false
 	}
-	gid := GoroutineID()
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	_, running := f.hooking[gid]
-	return running
+	return f.hooking.Contains(goroutine.ID())
 }
 
 // firstOf reports whether name has not been logged before, and remembers it.
@@ -441,47 +416,4 @@ func (e *Emitter) log() contract.Logger {
 		return (*p)()
 	}
 	return nil
-}
-
-// gidParseFallback feeds GoroutineID's failure path with unique sentinels.
-// Sentinels live above 1<<63 so they can never collide with a real goroutine
-// ID within the lifetime of a process.
-var gidParseFallback atomic.Uint64
-
-// GoroutineID returns the running goroutine's ID by parsing the first line
-// of runtime.Stack ("goroutine N [...]"). Used only on failure paths, which
-// are rare by construction; the cost is acceptable there and the
-// per-goroutine re-entry guards it enables (the failure hook's, the event
-// dispatcher's failure-report bridge's) cannot be built from a context,
-// which a re-entrant call need not carry.
-//
-// The header format is not a formally stable runtime API (though it has been
-// stable in practice for many releases and is relied on by widely used
-// libraries), so the failure mode is chosen deliberately: if parsing ever
-// fails, the function returns a process-unique sentinel instead of a shared
-// zero value. A shared zero would make every unparsed goroutine look like
-// the same goroutine and falsely suppress unrelated work whenever a guard is
-// held; a unique sentinel merely degrades the guard to a no-op for that one
-// call, which errs on the side of reporting rather than suppressing.
-func GoroutineID() uint64 {
-	var buf [64]byte
-	n := runtime.Stack(buf[:], false)
-	const prefix = "goroutine "
-	s := buf[:n]
-	if len(s) <= len(prefix) {
-		return 1<<63 | gidParseFallback.Add(1)
-	}
-	var id uint64
-	digits := 0
-	for _, c := range s[len(prefix):] {
-		if c < '0' || c > '9' {
-			break
-		}
-		id = id*10 + uint64(c-'0')
-		digits++
-	}
-	if digits == 0 {
-		return 1<<63 | gidParseFallback.Add(1)
-	}
-	return id
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -66,13 +67,12 @@ type DefaultDispatcher struct {
 	// listener delivery may be asynchronous or best-effort.
 	failureReporter func(ctx context.Context, event interface{}, err error)
 
-	// reportingMu guards reporting. reporting holds the IDs of goroutines
-	// currently inside a failureReporter call; reportFailure consults it so
-	// a reporter that synchronously re-dispatches a failure event cannot
-	// recurse through the bridge EVEN IF it swaps in a fresh context
-	// (context.Background()), which the ctx marker alone cannot catch.
-	reportingMu sync.Mutex
-	reporting   map[uint64]struct{}
+	// reporting holds the goroutines currently inside a failureReporter
+	// call; reportFailure consults it so a reporter that synchronously
+	// re-dispatches a failure event cannot recurse through the bridge EVEN
+	// IF it swaps in a fresh context (context.Background()), which the ctx
+	// marker alone cannot catch.
+	reporting goroutine.Set
 
 	// detachedFailures, when set, records each detached delivery a
 	// listener failed on (see SetDetachedFailureRecorder).
@@ -186,11 +186,8 @@ func (d *DefaultDispatcher) reportFailure(ctx context.Context, event interface{}
 		return ctx
 	}
 
-	gid := eventemit.GoroutineID()
-	d.reportingMu.Lock()
-	_, inReporter := d.reporting[gid]
-	d.reportingMu.Unlock()
-	if inReporter {
+	gid := goroutine.ID()
+	if d.reporting.Contains(gid) {
 		return ctx
 	}
 
@@ -207,18 +204,8 @@ func (d *DefaultDispatcher) reportFailure(ctx context.Context, event interface{}
 
 	marked := context.WithValue(ctx, failureReportedKey{}, event)
 
-	d.reportingMu.Lock()
-	if d.reporting == nil {
-		d.reporting = make(map[uint64]struct{})
-	}
-	d.reporting[gid] = struct{}{}
-	d.reportingMu.Unlock()
-	defer func() {
-		d.reportingMu.Lock()
-		delete(d.reporting, gid)
-		d.reportingMu.Unlock()
-	}()
-
+	d.reporting.Enter(gid)
+	defer d.reporting.Leave(gid)
 	report(marked, event, err)
 	return marked
 }
