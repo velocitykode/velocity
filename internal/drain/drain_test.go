@@ -57,15 +57,15 @@ func TestCoordinator_DrainAndNested(t *testing.T) {
 	}
 }
 
-// At its ctx, Await returns the ctx error and starts force without
-// waiting on it; with a nil force it only returns.
+// At its ctx, Await returns the ctx error and starts force, as stop work,
+// without waiting on it; with a nil force it only returns.
 func TestCoordinator_AwaitForcesAtItsDeadline(t *testing.T) {
 	var c drain.Coordinator
 	d := c.Begin()
 	var forced atomic.Bool
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if err := c.Await(ctx, d, func() { forced.Store(true) }); !errors.Is(err, context.DeadlineExceeded) {
+	if err := c.Await(ctx, d, func() { forced.Store(c.Nested()) }); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Await = %v, want the deadline", err)
 	}
 	for range 200 {
@@ -75,7 +75,7 @@ func TestCoordinator_AwaitForcesAtItsDeadline(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	if !forced.Load() {
-		t.Error("force did not run")
+		t.Error("force did not run as stop work")
 	}
 	if err := c.Await(ctx, d, nil); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("Await without force = %v, want the deadline", err)

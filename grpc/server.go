@@ -802,11 +802,14 @@ func (s *Server) Stop() {
 	case st.owner:
 		s.ownStop(st, "gRPC server stopping", (*grpc.Server).Stop)
 	default:
+		// A forced stop runs as stop work too: grpc-go calls a
+		// caller-supplied listener's Close from it, under grpc-go's own
+		// lock, and a stop called back from there must not wait.
 		if st.srv != nil {
 			if nested {
-				async.Go(st.srv.Stop)
+				async.Go(func() { s.stops.Run(st.srv.Stop) })
 			} else {
-				st.srv.Stop()
+				s.stops.Run(st.srv.Stop)
 			}
 		}
 		s.endStop(st)

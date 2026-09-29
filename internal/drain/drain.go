@@ -71,9 +71,9 @@ func (c *Coordinator) Nested() bool {
 }
 
 // Await waits until done is closed or ctx is done. At ctx, unless done
-// closed meanwhile, it starts force, when there is one, on a goroutine of
-// its own, without waiting on it, and returns ctx.Err(); otherwise it
-// returns nil.
+// closed meanwhile, it starts force, when there is one, as stop work on a
+// goroutine of its own, without waiting on it, and returns ctx.Err();
+// otherwise it returns nil.
 func (c *Coordinator) Await(ctx context.Context, done <-chan struct{}, force func()) error {
 	select {
 	case <-done:
@@ -84,7 +84,7 @@ func (c *Coordinator) Await(ctx context.Context, done <-chan struct{}, force fun
 		return nil
 	}
 	if force != nil {
-		async.Go(force)
+		async.Go(func() { c.Run(force) })
 	}
 	return ctx.Err()
 }
