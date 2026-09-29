@@ -3,11 +3,13 @@ package orm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/eventemit"
 )
 
@@ -189,6 +191,88 @@ func TestQueryEventPump_ConcurrentOverflowAndFlush(t *testing.T) {
 	close(release)
 	if err := m.Shutdown(context.Background()); err != nil {
 		t.Fatalf("shutdown: %v", err)
+	}
+	if shared.Count() == 0 {
+		t.Fatal("no statement event was dropped")
+	}
+	if got, want := hooked.Load(), int64(shared.Count()); got != want {
+		t.Errorf("hook calls = %d, want %d (one per drop)", got, want)
+	}
+}
+
+// The pump's reporter goroutine reads the manager's logger (Manager.log,
+// under mu) while SetLogger and AddConnection hand loggers off under the
+// wiring mutex, and a hook that itself calls SetLogger runs on it; flushes
+// and Shutdown race all of them (run under -race). Nothing deadlocks, and
+// every drop is counted and hooked once.
+func TestQueryEventPump_ReporterRacesTheLoggerHandoff(t *testing.T) {
+	m := newTestManager(t)
+	loggers := []contract.Logger{&fakeLogger{}, &fakeLogger{}, nil}
+	shared := &eventemit.Failures{}
+	var hooked atomic.Int64
+	shared.SetHook(func(error, any) {
+		if hooked.Add(1)%7 == 0 {
+			m.SetLogger(loggers[0])
+		}
+	})
+	m.ShareEventFailures(shared)
+	release := make(chan struct{})
+	var first sync.Once
+	entered := make(chan struct{})
+	m.SetEventDispatcher(func(context.Context, any) error {
+		first.Do(func() { close(entered) })
+		<-release
+		return nil
+	})
+	if _, err := m.Exec(context.Background(), "SELECT 1"); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	<-entered
+
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 400; i++ {
+				if _, err := m.Exec(context.Background(), "SELECT 1"); err != nil {
+					t.Errorf("exec: %v", err)
+					return
+				}
+			}
+		}()
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				m.SetLogger(loggers[(g+i)%len(loggers)])
+				m.AddConnection(fmt.Sprintf("seam-%d-%d", g, i), &gateDriver{})
+			}
+		}(g)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			defer cancel()
+			_ = m.FlushQueryEvents(ctx)
+		}()
+	}
+	wg.Wait()
+	close(release)
+
+	done := make(chan error, 1)
+	go func() {
+		if err := m.FlushQueryEvents(context.Background()); err != nil {
+			done <- err
+			return
+		}
+		done <- m.Shutdown(context.Background())
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("flush/shutdown: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("FlushQueryEvents or Shutdown deadlocked against the logger handoff")
 	}
 	if shared.Count() == 0 {
 		t.Fatal("no statement event was dropped")
