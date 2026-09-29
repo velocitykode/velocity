@@ -35,17 +35,10 @@ func newOwnedApp(t *testing.T) ownedApp {
 	return ownedApp{app: a, logger: l, reports: r}
 }
 
-// restorePackageState puts the async and trace loggers and the panic hook
-// back after a test that moves them.
-func restorePackageState(t *testing.T) {
-	t.Helper()
-	prevAsync, prevTrace := async.GetLogger(), trace.GetLogger()
-	t.Cleanup(func() {
-		async.SetPanicHook(nil)
-		async.SetLogger(prevAsync)
-		trace.SetLogger(prevTrace)
-	})
-}
+// packageBaseline returns the package logger installed before a test:
+// another test's app that was never shut down may own the state, and the
+// state returns to it once the test's apps shut down.
+func packageBaseline() contract.Logger { return async.GetLogger() }
 
 // assertPackageOwner checks the async and trace package loggers are want's
 // logger and a panic an async helper recovers is reported to want alone.
@@ -75,15 +68,17 @@ func assertPackageOwner(t *testing.T, step string, want ownedApp, others ...owne
 	}
 }
 
-// assertNoPackageOwner checks both package loggers are the fallback and a
-// recovered panic is logged through the fallback, reported to no app.
-func assertNoPackageOwner(t *testing.T, step string, fallback *fallbacklogtest.Output, apps ...ownedApp) {
+// assertPreviousOwner checks both package loggers are back on baseline,
+// the logger installed before the test, and a recovered panic is reported
+// to none of apps; with no owner before the test it is logged through the
+// fallback.
+func assertPreviousOwner(t *testing.T, step string, fallback *fallbacklogtest.Output, baseline contract.Logger, apps ...ownedApp) {
 	t.Helper()
-	if _, ok := async.GetLogger().(fallbacklog.Logger); !ok {
-		t.Errorf("%s: async logger = %T, want fallbacklog.Logger", step, async.GetLogger())
+	if got := async.GetLogger(); got != baseline {
+		t.Errorf("%s: async logger = %T, want the logger installed before the test (%T)", step, got, baseline)
 	}
-	if _, ok := trace.GetLogger().(fallbacklog.Logger); !ok {
-		t.Errorf("%s: trace logger = %T, want fallbacklog.Logger", step, trace.GetLogger())
+	if got := trace.GetLogger(); got != baseline {
+		t.Errorf("%s: trace logger = %T, want the logger installed before the test (%T)", step, got, baseline)
 	}
 	counts := make([]int, len(apps))
 	for i, a := range apps {
@@ -91,8 +86,12 @@ func assertNoPackageOwner(t *testing.T, step string, fallback *fallbacklogtest.O
 	}
 	logged := fallback.Count("ERROR", "async: panic recovered")
 	async.Go(func() { panic("unowned panic: " + step) })
-	if n := fallback.Wait("ERROR", "async: panic recovered", logged+1, 2*time.Second); n != logged+1 {
-		t.Errorf("%s: fallback panic lines = %d, want %d", step, n, logged+1)
+	if _, unowned := baseline.(fallbacklog.Logger); unowned {
+		if n := fallback.Wait("ERROR", "async: panic recovered", logged+1, 2*time.Second); n != logged+1 {
+			t.Errorf("%s: fallback panic lines = %d, want %d", step, n, logged+1)
+		}
+	} else {
+		time.Sleep(50 * time.Millisecond)
 	}
 	for i, a := range apps {
 		if n := a.reports.count() - counts[i]; n != 0 {
@@ -105,8 +104,8 @@ func assertNoPackageOwner(t *testing.T, step string, fallback *fallbacklogtest.O
 // package loggers. Shutting down the older one leaves the newer one's
 // installation in place; shutting down the newer one then leaves none.
 func TestPackageState_OlderAppShutdownKeepsTheNewerOwner(t *testing.T) {
-	restorePackageState(t)
 	fallback := fallbacklogtest.Capture(t)
+	baseline := packageBaseline()
 	a := newOwnedApp(t)
 	b := newOwnedApp(t)
 	assertPackageOwner(t, "A then B", b, a)
@@ -119,15 +118,15 @@ func TestPackageState_OlderAppShutdownKeepsTheNewerOwner(t *testing.T) {
 	if err := b.app.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown B: %v", err)
 	}
-	assertNoPackageOwner(t, "after B's Shutdown", fallback, a, b)
+	assertPreviousOwner(t, "after B's Shutdown", fallback, baseline, a, b)
 }
 
 // Shutting down the newer app hands the process-wide state back to the
 // older live app, not to the fallback; the older app's Shutdown then
 // leaves none.
 func TestPackageState_NewerAppShutdownRestoresTheOlderOwner(t *testing.T) {
-	restorePackageState(t)
 	fallback := fallbacklogtest.Capture(t)
+	baseline := packageBaseline()
 	a := newOwnedApp(t)
 	b := newOwnedApp(t)
 
@@ -139,7 +138,7 @@ func TestPackageState_NewerAppShutdownRestoresTheOlderOwner(t *testing.T) {
 	if err := a.app.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown A: %v", err)
 	}
-	assertNoPackageOwner(t, "after A's Shutdown", fallback, a, b)
+	assertPreviousOwner(t, "after A's Shutdown", fallback, baseline, a, b)
 }
 
 // failingInitModule fails its Init, after New's first wiring boundary has
@@ -155,7 +154,6 @@ func (failingInitModule) Shutdown(context.Context) error { return nil }
 // A New that fails after its first wiring boundary cleans up its own
 // installation only: the live app that owned the state before it keeps it.
 func TestPackageState_FailedNewRestoresTheLiveOwner(t *testing.T) {
-	restorePackageState(t)
 	a := newOwnedApp(t)
 
 	cfg := Config{Env: "testing", Port: "0", Cache: CacheConfig{Driver: "memory"}, Queue: QueueConfig{Driver: "memory"}}
@@ -168,7 +166,6 @@ func TestPackageState_FailedNewRestoresTheLiveOwner(t *testing.T) {
 // An app wiring again at a later boundary while a newer app lives keeps
 // its own installation current without taking the state over.
 func TestPackageState_OlderAppRewireDoesNotTakeOver(t *testing.T) {
-	restorePackageState(t)
 	a := newOwnedApp(t)
 	b := newOwnedApp(t)
 	if err := a.app.Bootstrap(); err != nil {
@@ -186,8 +183,11 @@ func TestPackageState_OlderAppRewireDoesNotTakeOver(t *testing.T) {
 // readers and recovered panics leave the stack consistent: once every app
 // has released, nothing is installed.
 func TestPackageState_ConcurrentInstallAndRelease(t *testing.T) {
-	restorePackageState(t)
 	fallbacklogtest.Capture(t)
+	packageStateMu.Lock()
+	before := len(packageStack)
+	packageStateMu.Unlock()
+	baseline := packageBaseline()
 	const apps = 16
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
@@ -230,20 +230,20 @@ func TestPackageState_ConcurrentInstallAndRelease(t *testing.T) {
 	packageStateMu.Lock()
 	n := len(packageStack)
 	packageStateMu.Unlock()
-	if n != 0 {
-		t.Fatalf("package stack holds %d entries after every app released, want 0", n)
+	if n != before {
+		t.Fatalf("package stack holds %d entries after every app released, want %d", n, before)
 	}
-	if _, ok := async.GetLogger().(fallbacklog.Logger); !ok {
-		t.Errorf("async logger = %T, want fallbacklog.Logger", async.GetLogger())
+	if got := async.GetLogger(); got != baseline {
+		t.Errorf("async logger = %T, want the one installed before the test", got)
 	}
-	if _, ok := trace.GetLogger().(fallbacklog.Logger); !ok {
-		t.Errorf("trace logger = %T, want fallbacklog.Logger", trace.GetLogger())
+	if got := trace.GetLogger(); got != baseline {
+		t.Errorf("trace logger = %T, want the one installed before the test", got)
 	}
 }
 
 // Releasing an app that never wired, or releasing twice, changes nothing.
 func TestPackageState_ReleaseWithoutEntryIsNoop(t *testing.T) {
-	restorePackageState(t)
+	baseline := packageBaseline()
 	owner, stranger := &App{}, &App{}
 	l := &levelLogger{}
 	installPackageLoggers(owner, l)
@@ -255,8 +255,8 @@ func TestPackageState_ReleaseWithoutEntryIsNoop(t *testing.T) {
 	}
 	releasePackageState(owner)
 	releasePackageState(owner)
-	if _, ok := async.GetLogger().(fallbacklog.Logger); !ok {
-		t.Errorf("async logger after release = %T, want fallbacklog.Logger", async.GetLogger())
+	if got := async.GetLogger(); got != baseline {
+		t.Errorf("async logger after release = %T, want the one installed before the test", got)
 	}
 }
 
@@ -264,7 +264,6 @@ func TestPackageState_ReleaseWithoutEntryIsNoop(t *testing.T) {
 // file driver shut down, and writes after, does not reopen the closed log
 // file.
 func TestShutdown_LateWriteThroughTheOldPackageLoggerDoesNotReopenTheLogFile(t *testing.T) {
-	restorePackageState(t)
 	dir := filepath.Join(t.TempDir(), "logs")
 	cfg := Config{
 		Env:   "testing",

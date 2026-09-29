@@ -58,9 +58,19 @@ func TestAsyncPanic_ReachesReporterNotStdlibLog(t *testing.T) {
 	if err := app.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
+	// The hook goes back to the app that owned it before this one (an
+	// app another test never shut down), or none: with none, the panic
+	// is logged through the fallback.
+	packageStateMu.Lock()
+	unowned := len(packageStack) == 0
+	packageStateMu.Unlock()
 	async.Go(func() { panic("after shutdown") })
-	if n := fallback.Wait("ERROR", "async: panic recovered", 1, 2*time.Second); n != 1 {
-		t.Errorf("panic after Shutdown logged through the fallback %d times, want 1", n)
+	if unowned {
+		if n := fallback.Wait("ERROR", "async: panic recovered", 1, 2*time.Second); n != 1 {
+			t.Errorf("panic after Shutdown logged through the fallback %d times, want 1", n)
+		}
+	} else {
+		time.Sleep(50 * time.Millisecond)
 	}
 	if n := reports.count(); n != 1 {
 		t.Errorf("panic after Shutdown reported: %d reports, want 1", n)

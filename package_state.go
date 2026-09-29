@@ -2,6 +2,7 @@ package velocity
 
 import (
 	"sync"
+	"weak"
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
@@ -26,7 +27,9 @@ import (
 //
 // Known limit: the hook and loggers are per process, not per goroutine. A
 // panic recovered in a goroutine an older app started, while a newer app
-// lives, is reported to the newer app's error handler.
+// lives, is reported to the newer app's error handler. An app never shut
+// down counts as live: when a newer app shuts down, the state returns to
+// it.
 var (
 	packageStateMu sync.Mutex
 	packageStack   []*packageInstall
@@ -35,8 +38,12 @@ var (
 // packageInstall is one app's values for the process-wide package state.
 // The logger and the hook are recorded by two steps of the same wiring
 // boundary; a nil field is installed as nil (the package default).
+//
+// The app is held weakly, for identity only: an app dropped without
+// Shutdown is not kept alive by its entry (its entry, holding only its
+// logger and hook, stays until the process ends, still counted live).
 type packageInstall struct {
-	app    *App
+	app    weak.Pointer[App]
 	logger contract.Logger
 	hook   func(any)
 }
@@ -44,12 +51,13 @@ type packageInstall struct {
 // packageEntry returns a's entry, pushing a new one (a becomes the newest
 // app) when a has none. packageStateMu must be held.
 func packageEntry(a *App) *packageInstall {
+	key := weak.Make(a)
 	for _, e := range packageStack {
-		if e.app == a {
+		if e.app == key {
 			return e
 		}
 	}
-	e := &packageInstall{app: a}
+	e := &packageInstall{app: key}
 	packageStack = append(packageStack, e)
 	return e
 }
@@ -97,11 +105,15 @@ func installPanicHook(a *App, hook func(any)) {
 // the logger they replace has been written, so the caller may close that
 // logger afterwards.
 func releasePackageState(a *App) {
+	if a == nil {
+		return
+	}
+	key := weak.Make(a)
 	packageStateMu.Lock()
 	defer packageStateMu.Unlock()
 	idx := -1
 	for i, e := range packageStack {
-		if e.app == a {
+		if e.app == key {
 			idx = i
 			break
 		}

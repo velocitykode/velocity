@@ -309,8 +309,10 @@ func TestNew_ReHandsTheLoggerAModuleSwapsIn(t *testing.T) {
 	}
 }
 
-// App.Shutdown puts the async and trace packages back on the standalone
-// fallback logger, so neither writes to the app logger it closes.
+// App.Shutdown takes the app logger back out of the async and trace
+// packages, so neither writes to the app logger it closes: they return to
+// the logger installed before the app (another live app's, or the
+// standalone fallback logger when none).
 func TestShutdown_PutsThePackageLoggersBackOnTheFallback(t *testing.T) {
 	prevAsync, prevTrace := async.GetLogger(), trace.GetLogger()
 	t.Cleanup(func() { async.SetLogger(prevAsync); trace.SetLogger(prevTrace) })
@@ -322,10 +324,16 @@ func TestShutdown_PutsThePackageLoggersBackOnTheFallback(t *testing.T) {
 	if err := a.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
-	if _, ok := trace.GetLogger().(fallbacklog.Logger); !ok {
-		t.Errorf("trace logger after Shutdown = %T, want fallbacklog.Logger", trace.GetLogger())
+	if got := trace.GetLogger(); got != prevTrace {
+		t.Errorf("trace logger after Shutdown = %T, want the one installed before the app (%T)", got, prevTrace)
 	}
-	if _, ok := async.GetLogger().(fallbacklog.Logger); !ok {
-		t.Errorf("async logger after Shutdown = %T, want fallbacklog.Logger", async.GetLogger())
+	if got := async.GetLogger(); got != prevAsync {
+		t.Errorf("async logger after Shutdown = %T, want the one installed before the app (%T)", got, prevAsync)
+	}
+	packageStateMu.Lock()
+	unowned := len(packageStack) == 0
+	packageStateMu.Unlock()
+	if _, ok := trace.GetLogger().(fallbacklog.Logger); unowned && !ok {
+		t.Errorf("trace logger after Shutdown = %T, want fallbacklog.Logger with no live app", trace.GetLogger())
 	}
 }
