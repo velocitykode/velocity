@@ -1,6 +1,7 @@
 package grpc_test
 
 import (
+	"context"
 	"errors"
 	"net"
 	"sync"
@@ -8,8 +9,14 @@ import (
 	"testing"
 	"time"
 
+	grpcgo "google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health"
+	"google.golang.org/grpc/health/grpc_health_v1"
+
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc"
+	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/grpc/interceptors"
 )
 
@@ -208,4 +215,223 @@ func TestServerBuild_PanickingRegistrationLeavesNoBuildInProgress(t *testing.T) 
 		t.Fatalf("Build after the panic = %v, want nil", err)
 	}
 	s.Stop()
+}
+
+// startHealth starts s serving the health service and returns a client.
+func startHealth(t *testing.T, s *grpc.Server) grpc_health_v1.HealthClient {
+	t.Helper()
+	s.RegisterService(func(srv any) {
+		grpc_health_v1.RegisterHealthServer(srv.(*grpcgo.Server), health.NewServer())
+	})
+	if err := s.StartAsync(); err != nil {
+		t.Fatalf("StartAsync: %v", err)
+	}
+	stopOnCleanup(t, s)
+	conn, err := grpcgo.NewClient(s.Address(), grpcgo.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return grpc_health_v1.NewHealthClient(conn)
+}
+
+// GracefulStop waits for in-flight calls without holding the server's
+// lock: a call that reads a server accessor while the server drains
+// completes, and so does the stop.
+func TestServerGracefulStop_InFlightCallMayCallTheServer(t *testing.T) {
+	var ref atomic.Pointer[grpc.Server]
+	entered, stopping := make(chan struct{}), make(chan struct{})
+	s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s.Use(func(ctx context.Context, req any, _ *grpcgo.UnaryServerInfo, h grpcgo.UnaryHandler) (any, error) {
+		close(entered)
+		<-stopping
+		time.Sleep(50 * time.Millisecond) // let GracefulStop reach its drain
+		_ = ref.Load().Address()
+		_ = ref.Load().IsRunning()
+		return h(ctx, req)
+	})
+	ref.Store(s)
+	client := startHealth(t, s)
+
+	callDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err := client.Check(ctx, &grpc_health_v1.HealthCheckRequest{})
+		callDone <- err
+	}()
+	<-entered
+	close(stopping)
+	within(t, 3*time.Second, "GracefulStop", s.GracefulStop)
+	if err := <-callDone; err != nil {
+		t.Errorf("in-flight call = %v, want it to complete", err)
+	}
+	if s.IsRunning() {
+		t.Error("server still running after GracefulStop")
+	}
+}
+
+// Shutdown returns the ctx error at its deadline while a handler that
+// ignores its context still runs: the drain no longer holds the return,
+// and the forced stop it starts neither holds the server's lock nor
+// blocks the return. The handler, released afterwards, ends normally.
+func TestServerShutdown_ReturnsAtItsDeadlineWithAHangingCall(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	handlerDone := make(chan struct{})
+	s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s.Use(func(ctx context.Context, req any, _ *grpcgo.UnaryServerInfo, h grpcgo.UnaryHandler) (any, error) {
+		defer close(handlerDone)
+		close(entered)
+		<-release // ignores ctx
+		return h(ctx, req)
+	})
+	client := startHealth(t, s)
+	go func() {
+		_, _ = client.Check(context.Background(), &grpc_health_v1.HealthCheckRequest{})
+	}()
+	<-entered
+
+	const deadline = 200 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	began := time.Now()
+	var err error
+	within(t, 2*time.Second, "Shutdown", func() { err = s.Shutdown(ctx) })
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Shutdown = %v, want the deadline", err)
+	}
+	if took := time.Since(began); took > deadline+500*time.Millisecond {
+		t.Errorf("Shutdown took %v, want about its %v deadline", took, deadline)
+	}
+	close(release)
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("released handler did not end")
+	}
+}
+
+// A handler that honours its context ends through the forced stop's
+// transport close once Shutdown's deadline passes.
+func TestServerShutdown_DeadlineCancelsAHandlerThatHonoursItsContext(t *testing.T) {
+	entered, handlerDone := make(chan struct{}), make(chan struct{})
+	s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s.Use(func(ctx context.Context, req any, _ *grpcgo.UnaryServerInfo, h grpcgo.UnaryHandler) (any, error) {
+		defer close(handlerDone)
+		close(entered)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	client := startHealth(t, s)
+	go func() {
+		_, _ = client.Check(context.Background(), &grpc_health_v1.HealthCheckRequest{})
+	}()
+	<-entered
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	var err error
+	within(t, 2*time.Second, "Shutdown", func() { err = s.Shutdown(ctx) })
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Shutdown = %v, want the deadline", err)
+	}
+	select {
+	case <-handlerDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler honouring its context was not cancelled by the forced stop")
+	}
+}
+
+// stoppedCounter counts ServerStopped events.
+type stoppedCounter struct{ n atomic.Int32 }
+
+func (c *stoppedCounter) dispatch(_ context.Context, ev any) error {
+	if _, ok := ev.(*grpcevents.ServerStopped); ok {
+		c.n.Add(1)
+	}
+	return nil
+}
+
+// ServerStopped is dispatched exactly once however the stops race: a
+// Shutdown whose deadline forces the stop, a Stop and a GracefulStop, all
+// at once, with a call in flight.
+func TestServerStop_RacingStopsDispatchServerStoppedOnce(t *testing.T) {
+	for range 10 {
+		entered, release := make(chan struct{}), make(chan struct{})
+		var enteredOnce sync.Once
+		s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+		counter := &stoppedCounter{}
+		s.SetEventDispatcher(counter.dispatch)
+		s.Use(func(ctx context.Context, req any, _ *grpcgo.UnaryServerInfo, h grpcgo.UnaryHandler) (any, error) {
+			enteredOnce.Do(func() { close(entered) })
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return h(ctx, req)
+		})
+		client := startHealth(t, s)
+		go func() {
+			_, _ = client.Check(context.Background(), &grpc_health_v1.HealthCheckRequest{})
+		}()
+		<-entered
+
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		var wg sync.WaitGroup
+		for _, stop := range []func(){
+			func() { _ = s.Shutdown(ctx) },
+			s.Stop,
+			s.GracefulStop,
+		} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				stop()
+			}()
+		}
+		time.Sleep(100 * time.Millisecond)
+		close(release)
+		within(t, 3*time.Second, "the racing stops", wg.Wait)
+		cancel()
+		if got := counter.n.Load(); got != 1 {
+			t.Fatalf("ServerStopped dispatched %d times, want 1", got)
+		}
+	}
+}
+
+// reentrantListener calls back into the server when it is closed or asked
+// for its address.
+type reentrantListener struct {
+	net.Listener
+	server *atomic.Pointer[grpc.Server]
+	closed atomic.Bool
+}
+
+func (l *reentrantListener) Close() error {
+	if s := l.server.Load(); s != nil {
+		_ = s.IsRunning()
+	}
+	l.closed.Store(true)
+	return l.Listener.Close()
+}
+
+// Stop releases a caller-supplied listener of a built but never served
+// server without holding the server's lock: a listener whose Close calls
+// the server still lets Stop return.
+func TestServerStop_ListenerCloseMayCallTheServer(t *testing.T) {
+	for name, stop := range map[string]func(*grpc.Server){"Stop": (*grpc.Server).Stop, "GracefulStop": (*grpc.Server).GracefulStop} {
+		t.Run(name, func(t *testing.T) {
+			var ref atomic.Pointer[grpc.Server]
+			lis := &reentrantListener{Listener: loopback(t), server: &ref}
+			s := grpc.NewServer(grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+			ref.Store(s)
+			if err := s.Build(); err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			within(t, 2*time.Second, name, func() { stop(s) })
+			if !lis.closed.Load() {
+				t.Error("listener not closed")
+			}
+		})
+	}
 }

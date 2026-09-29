@@ -690,65 +690,110 @@ func (s *Server) StartAsync() error {
 // Stop stops the gRPC server immediately. It also releases a listener that was
 // bound by Build but never served (Build succeeded, Start was never called, or
 // the caller abandoned the server), so a built-but-unstarted server does not
-// leak its socket.
+// leak its socket. It interrupts a GracefulStop in progress, which is how
+// Shutdown's deadline cuts a drain short.
+//
+// Stop changes the server's state under its lock and then stops grpc-go,
+// closes the listener and logs without it, so a call still in flight, a
+// caller-supplied listener or the logger may call the server's accessors.
 func (s *Server) Stop() {
-	s.mu.Lock()
-	var stopped *grpcevents.ServerStopped
-	if s.grpcServer != nil && s.running {
+	st := s.beginStop(true)
+	if st.log {
 		s.logger.Info("gRPC server stopping")
+	}
+	if st.srv != nil {
+		st.srv.Stop()
+	}
+	s.endStop(st)
+}
+
+// GracefulStop gracefully stops the gRPC server: it waits for the calls in
+// flight to finish. Like Stop, it also releases a listener bound by Build but
+// never served, so a built-but-unstarted server does not leak its socket. The
+// wait runs without the server's lock, so those calls may call the
+// server's accessors, and a Stop may interrupt it.
+func (s *Server) GracefulStop() {
+	st := s.beginStop(false)
+	if st.log {
+		s.logger.Info("gRPC server gracefully stopping")
+	}
+	if st.srv != nil {
+		st.srv.GracefulStop()
+	}
+	s.endStop(st)
+}
+
+// stopPlan is what one Stop or GracefulStop does after it released the
+// lock.
+type stopPlan struct {
+	// srv is the grpc-go server to stop, nil when there is none to stop.
+	srv *grpc.Server
+	// log is set when this stop ended a running server.
+	log bool
+	// start is when the server this stop ended started, zero when it
+	// emits no ServerStopped event.
+	start time.Time
+	// unserved is the listener of a built but never served server, to
+	// close.
+	unserved net.Listener
+	// port labels the ServerStopped event.
+	port string
+}
+
+// beginStop records a stop under the lock and returns what to do after
+// it. A running server stops running; force (Stop) stops a server that
+// was served even when it no longer runs, so it interrupts a GracefulStop
+// in progress (grpc-go allows Stop during GracefulStop, and a repeated
+// Stop is a no-op). A built but never served server gives up its
+// listener, and grpcServer is reset so it never outlives that listener,
+// or a later Build() early-returns and Start() panics on a nil listener.
+// It calls no application code.
+func (s *Server) beginStop(force bool) stopPlan {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := stopPlan{port: s.port}
+	switch {
+	case s.grpcServer != nil && s.running:
 		// grpc-go closes the serving listener. Do NOT touch s.listener here: the
 		// StartAsync serve goroutine reads it without the lock, so writing it
 		// would race that read.
-		s.grpcServer.Stop()
+		st.srv, st.log = s.grpcServer, true
 		s.running = false
-		stopped = s.stoppedEventLocked()
-	} else if !s.served && s.listener != nil {
+		st.start = s.startTime
+		s.startTime = time.Time{}
+	case force && s.grpcServer != nil && s.served:
+		st.srv = s.grpcServer
+	case !s.served && s.listener != nil:
 		// Built but never served (Start/StartAsync never ran): grpc-go never took
 		// ownership of this listener, so the bound socket leaks until exit unless
 		// closed here. Gated on !served, not merely !running, so a second Stop
 		// after a running server stopped does NOT enter here and race the serve
-		// goroutine's unlocked read of s.listener. Reset grpcServer too so the
-		// state stays all-or-nothing: a non-nil grpcServer must never outlive its
-		// listener, or a later Build() early-returns and Start() panics on a nil
-		// listener.
-		_ = s.listener.Close()
+		// goroutine's unlocked read of s.listener.
+		st.unserved = s.listener
 		s.listener = nil
 		s.grpcServer = nil
 	}
-	s.mu.Unlock()
-
-	if stopped != nil {
-		s.dispatchEvent(context.Background(), stopped)
-	}
+	return st
 }
 
-// GracefulStop gracefully stops the gRPC server. Like Stop, it also releases a
-// listener bound by Build but never served, so a built-but-unstarted server does
-// not leak its socket.
-func (s *Server) GracefulStop() {
-	s.mu.Lock()
-	var stopped *grpcevents.ServerStopped
-	if s.grpcServer != nil && s.running {
-		s.logger.Info("gRPC server gracefully stopping")
-		// grpc-go closes the serving listener; leave s.listener untouched to
-		// avoid racing the StartAsync serve goroutine's unlocked read.
-		s.grpcServer.GracefulStop()
-		s.running = false
-		stopped = s.stoppedEventLocked()
-	} else if !s.served && s.listener != nil {
-		// Built but never served: release the bound socket grpc-go never owned,
-		// and reset grpcServer so it never outlives its listener. Gated on
-		// !served so a second GracefulStop after a running stop cannot race the
-		// serve goroutine's unlocked listener read.
-		_ = s.listener.Close()
-		s.listener = nil
-		s.grpcServer = nil
+// endStop finishes the stop st after grpc-go stopped: it closes an unserved
+// listener and dispatches ServerStopped for a stop that ended a running
+// server, with its uptime, once (startTime was cleared under the lock, so
+// Shutdown delegating to GracefulStop, or its deadline falling back to
+// Stop, emits no second event).
+func (s *Server) endStop(st stopPlan) {
+	if st.unserved != nil {
+		_ = st.unserved.Close()
 	}
-	s.mu.Unlock()
-
-	if stopped != nil {
-		s.dispatchEvent(context.Background(), stopped)
+	if st.start.IsZero() || !s.events.Installed() {
+		return
 	}
+	now := time.Now()
+	s.dispatchEvent(context.Background(), &grpcevents.ServerStopped{
+		EventMeta: contract.EventMeta{Context: context.Background(), At: now},
+		Port:      st.port,
+		Duration:  now.Sub(st.start),
+	})
 }
 
 // serverStartedLocked builds the ServerStarted event for the start just
@@ -764,53 +809,38 @@ func (s *Server) serverStartedLocked() *grpcevents.ServerStarted {
 	}
 }
 
-// stoppedEventLocked builds the ServerStopped event for the current uptime
-// and clears startTime so a subsequent stop path (e.g. Shutdown delegating
-// to GracefulStop, or the Shutdown timeout falling back to Stop) emits
-// nothing. Returns nil when no start was recorded or no event dispatcher
-// is installed. Caller must hold s.mu; the event is dispatched after the
-// lock is released so a listener that calls back into the Server cannot
-// deadlock.
-func (s *Server) stoppedEventLocked() *grpcevents.ServerStopped {
-	if s.startTime.IsZero() {
-		return nil
-	}
-	start := s.startTime
-	s.startTime = time.Time{}
-	if !s.events.Installed() {
-		return nil
-	}
-	now := time.Now()
-	return &grpcevents.ServerStopped{
-		EventMeta: contract.EventMeta{Context: context.Background(), At: now},
-		Port:      s.port,
-		Duration:  now.Sub(start),
-	}
-}
-
-// Shutdown gracefully stops the server with a context deadline
+// Shutdown gracefully stops the server, waiting for the calls in flight
+// until ctx is done. At the deadline it returns the ctx error and forces
+// the stop; a handler that ignores its context may still run after
+// Shutdown returns.
+//
+// Shutdown records the stop, logs it and dispatches ServerStopped itself,
+// once, before it returns, whichever stop ends the server. The goroutines
+// it leaves behind at the deadline (the graceful drain and the forced
+// stop, which grpc-go holds behind a drain waiting on handlers) touch only
+// the grpc-go server, so nothing the caller tears down next is used after
+// Shutdown returns.
 func (s *Server) Shutdown(ctx context.Context) error {
-	done := make(chan struct{})
-
-	// Run GracefulStop through async.GoWithRecover. The inner defer
-	// close(done) runs in both normal return and panic paths (Go defers
-	// fire LIFO before the panic propagates to the wrapper's recover), so
-	// the select below always unblocks; no need to close(done) in the
-	// recover callback, which would double-close.
-	async.GoWithRecover(func() {
-		defer close(done)
-		s.GracefulStop()
-	}, func(r any) {
-		s.logger.Error("gRPC graceful stop panic recovered", "error", panicerr.FromRecovered(r))
-	})
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		s.Stop()
-		return ctx.Err()
+	st := s.beginStop(false)
+	if st.log {
+		s.logger.Info("gRPC server gracefully stopping")
 	}
+	var err error
+	if srv := st.srv; srv != nil {
+		done := make(chan struct{})
+		async.Go(func() {
+			defer close(done)
+			srv.GracefulStop()
+		})
+		select {
+		case <-done:
+		case <-ctx.Done():
+			async.Go(srv.Stop)
+			err = ctx.Err()
+		}
+	}
+	s.endStop(st)
+	return err
 }
 
 // SetEventDispatcher wires an event dispatcher into the Server. Safe to
@@ -857,10 +887,12 @@ func (s *Server) eventDispatchFunc() grpcevents.EventDispatchFunc {
 // Returns empty string if server hasn't been built yet.
 func (s *Server) Address() string {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	lis := s.listener
+	s.mu.RUnlock()
 
-	if s.listener != nil {
-		return s.listener.Addr().String()
+	// A caller-supplied listener's Addr runs without the lock.
+	if lis != nil {
+		return lis.Addr().String()
 	}
 	return ""
 }
