@@ -22,7 +22,9 @@ func TestBroadcastManager_SecretWarningWithHostileLogger(t *testing.T) {
 
 			if mode == hostile.Block {
 				go set()
-				<-code.Entered()
+				if !code.AwaitEntered(t) {
+					return
+				}
 			}
 			if p := hostile.Within(t, hostile.Deadline, set); p != nil {
 				t.Fatalf("SetAuthorizer panicked: %v", p)
@@ -66,7 +68,9 @@ func TestBroadcastManager_AuthWithHostileCallbacks(t *testing.T) {
 					auth := func() { _, _ = b.Auth("presence-room", "1.1", "user") }
 					if mode == hostile.Block {
 						go auth()
-						<-code.Entered()
+						if !code.AwaitEntered(t) {
+							return
+						}
 						hostile.Within(t, hostile.Deadline, func() { entry(b) })
 					} else {
 						hostile.Within(t, hostile.Deadline, auth)

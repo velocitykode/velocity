@@ -28,7 +28,9 @@ func TestBroadcastChannel_NoAuthorizerWarningWithHostileLogger(t *testing.T) {
 
 			if mode == hostile.Block {
 				go send()
-				<-code.Entered()
+				if !code.AwaitEntered(t) {
+					return
+				}
 			}
 			if p := hostile.Within(t, hostile.Deadline, send); p != nil {
 				t.Fatalf("Send panicked: %v", p)

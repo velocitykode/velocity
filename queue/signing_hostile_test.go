@@ -35,7 +35,9 @@ func TestConfigureSigning_HostileLogger(t *testing.T) {
 				}
 				if mode == hostile.Block {
 					go configure()
-					<-code.Entered()
+					if !code.AwaitEntered(t) {
+						return
+					}
 					if name != "ConfigureSigning" {
 						hostile.Within(t, hostile.Deadline, entry)
 					}

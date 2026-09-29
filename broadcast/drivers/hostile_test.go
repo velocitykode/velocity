@@ -33,7 +33,9 @@ func TestWebSocketDriver_VerifierWarningWithHostileLogger(t *testing.T) {
 
 			if mode == hostile.Block {
 				go subscribe()
-				<-code.Entered()
+				if !code.AwaitEntered(t) {
+					return
+				}
 			}
 			if p := hostile.Within(t, hostile.Deadline, subscribe); p != nil {
 				t.Fatalf("subscribe panicked: %v", p)

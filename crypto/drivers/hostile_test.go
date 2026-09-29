@@ -29,7 +29,9 @@ func TestAESDriver_LegacyWarningWithHostileLogger(t *testing.T) {
 
 			if mode == hostile.Block {
 				go decrypt()
-				<-code.Entered()
+				if !code.AwaitEntered(t) {
+					return
+				}
 			}
 			if p := hostile.Within(t, hostile.Deadline, decrypt); p != nil {
 				t.Fatalf("Decrypt panicked: %v", p)

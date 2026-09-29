@@ -3,7 +3,6 @@ package mail
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 	"github.com/velocitykode/velocity/internal/hostile"
@@ -38,15 +37,15 @@ func TestLogDriver_HostileLogger(t *testing.T) {
 				}
 				if mode == hostile.Block {
 					go send()
-					<-code.Entered()
+					if !code.AwaitEntered(t) {
+						return
+					}
 					if name == "Send" {
 						// The second Send runs the same blocking logger:
 						// it must reach it, not wait on the driver.
 						go entry(d)
-						hostile.Within(t, hostile.Deadline, func() {
-							for code.Calls() < 2 {
-								time.Sleep(time.Millisecond)
-							}
+						hostile.Eventually(t, hostile.Deadline, "the second Send reaching the logger", func() bool {
+							return code.Calls() >= 2
 						})
 					} else {
 						hostile.Within(t, hostile.Deadline, func() { entry(d) })

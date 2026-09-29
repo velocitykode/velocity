@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -236,5 +237,77 @@ func TestIsolated_EscapedPanicFails(t *testing.T) {
 func TestRunPattern(t *testing.T) {
 	if got := runPattern("TestA/sub_(x)"); got != `^TestA$/^sub_\(x\)$` {
 		t.Fatalf("runPattern = %q", got)
+	}
+}
+
+func TestDeadline_Scales(t *testing.T) {
+	env := func(kv map[string]string) func(string) string { return func(k string) string { return kv[k] } }
+	base := 5 * time.Second
+	if raceEnabled {
+		base *= 2
+	}
+	if got := deadline(env(nil)); got != base {
+		t.Errorf("deadline = %v, want %v", got, base)
+	}
+	if got := deadline(env(map[string]string{"CI": "true"})); got != 2*base {
+		t.Errorf("deadline under CI = %v, want %v", got, 2*base)
+	}
+	if got := deadline(env(map[string]string{deadlineEnv: "90s", "CI": "true"})); got != 90*time.Second {
+		t.Errorf("deadline with the override = %v, want 90s", got)
+	}
+	if got := deadline(env(map[string]string{deadlineEnv: "nonsense"})); got != base {
+		t.Errorf("deadline with a bad override = %v, want %v", got, base)
+	}
+}
+
+// deadlineTB records failures and reports a deadline, for the helpers' own
+// failure paths.
+type deadlineTB struct {
+	testing.TB
+	end    time.Time
+	failed bool
+}
+
+func (f *deadlineTB) Helper()                     {}
+func (f *deadlineTB) Errorf(string, ...any)       { f.failed = true }
+func (f *deadlineTB) Deadline() (time.Time, bool) { return f.end, !f.end.IsZero() }
+
+func TestClamp_EndsBeforeTheTestTimeout(t *testing.T) {
+	if got := clamp(&deadlineTB{}, time.Hour); got != time.Hour {
+		t.Errorf("clamp without a deadline = %v, want 1h", got)
+	}
+	if got := clamp(&deadlineTB{end: time.Now().Add(3 * time.Second)}, time.Hour); got > 2*time.Second {
+		t.Errorf("clamp = %v, want at most 2s", got)
+	}
+	if got := clamp(&deadlineTB{end: time.Now()}, time.Hour); got <= 0 {
+		t.Errorf("clamp past the deadline = %v, want a small positive wait", got)
+	}
+}
+
+func TestEventually(t *testing.T) {
+	var n atomic.Int32
+	go func() { //safe-goroutine: bumps a counter the test polls
+		for range 3 {
+			n.Add(1)
+		}
+	}()
+	if !Eventually(t, Deadline, "three bumps", func() bool { return n.Load() == 3 }) {
+		t.Fatal("Eventually gave up on a condition that held")
+	}
+	f := &deadlineTB{}
+	if Eventually(f, 20*time.Millisecond, "never", func() bool { return false }) || !f.failed {
+		t.Fatal("Eventually did not fail on a condition that never held")
+	}
+}
+
+func TestAwaitEntered(t *testing.T) {
+	c := New(t, Block, nil)
+	go c.Run() //safe-goroutine: blocks until the cleanup releases it
+	if !c.AwaitEntered(t) {
+		t.Fatal("AwaitEntered missed a running Code")
+	}
+	f := &deadlineTB{end: time.Now().Add(1100 * time.Millisecond)}
+	if New(t, Block, nil).AwaitEntered(f) || !f.failed {
+		t.Fatal("AwaitEntered did not fail for a Code that never ran")
 	}
 }

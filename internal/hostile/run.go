@@ -12,8 +12,79 @@ import (
 	"time"
 )
 
-// Deadline is the default time Within allows before it calls a call hung.
-const Deadline = 5 * time.Second
+// Deadline is the time a call that should return promptly gets before
+// Within, Eventually or AwaitEntered call it hung. It only bounds a
+// failure, so it is generous: a call that returns passes as soon as it
+// does. It is 5s, doubled under the race detector and doubled again when
+// CI is set; VELOCITY_HOSTILE_DEADLINE (a Go duration) overrides it.
+var Deadline = deadline(os.Getenv)
+
+// deadlineEnv overrides Deadline.
+const deadlineEnv = "VELOCITY_HOSTILE_DEADLINE"
+
+func deadline(getenv func(string) string) time.Duration {
+	if d, err := time.ParseDuration(getenv(deadlineEnv)); err == nil && d > 0 {
+		return d
+	}
+	d := 5 * time.Second
+	if raceEnabled {
+		d *= 2
+	}
+	if getenv("CI") != "" {
+		d *= 2
+	}
+	return d
+}
+
+// clamp shortens d so it ends before the test binary's own timeout, which
+// would otherwise end the run with a bare panic in place of the hung
+// call's stacks.
+func clamp(t testing.TB, d time.Duration) time.Duration {
+	dt, ok := t.(interface{ Deadline() (time.Time, bool) })
+	if !ok {
+		return d
+	}
+	end, ok := dt.Deadline()
+	if !ok {
+		return d
+	}
+	if left := time.Until(end) - time.Second; left < d {
+		return max(left, 10*time.Millisecond)
+	}
+	return d
+}
+
+// Eventually waits until cond holds, polling it, and fails the test when
+// it has not within d. It is for waiting on evidence (a count reached, a
+// goroutine parked, a state published), never for ordering by time.
+func Eventually(t testing.TB, d time.Duration, what string, cond func() bool) bool {
+	t.Helper()
+	end := time.Now().Add(clamp(t, d))
+	for pause := 50 * time.Microsecond; !cond(); pause = min(2*pause, 10*time.Millisecond) {
+		if time.Now().After(end) {
+			t.Errorf("hostile: %s did not happen within %v", what, d)
+			return false
+		}
+		time.Sleep(pause)
+	}
+	return true
+}
+
+// AwaitEntered waits until Run has started, and fails the test when it has
+// not within Deadline: the component never called the user code, so a
+// test waiting on it would hang to the binary's timeout instead.
+func (c *Code) AwaitEntered(t testing.TB) bool {
+	t.Helper()
+	timer := time.NewTimer(clamp(t, Deadline))
+	defer timer.Stop()
+	select {
+	case <-c.entered:
+		return true
+	case <-timer.C:
+		t.Errorf("hostile: the user code was never called within %v", Deadline)
+		return false
+	}
+}
 
 // Within runs fn on a goroutine of its own and waits for it. When fn has
 // not returned within d, it fails the test with every goroutine's stack
@@ -34,7 +105,7 @@ func Within(t testing.TB, d time.Duration, fn func()) (panicked any) {
 		}()
 		fn()
 	}()
-	timer := time.NewTimer(d)
+	timer := time.NewTimer(clamp(t, d))
 	defer timer.Stop()
 	select {
 	case r := <-done:

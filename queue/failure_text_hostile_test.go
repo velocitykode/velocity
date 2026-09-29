@@ -39,7 +39,9 @@ func TestMemoryDriver_FailureRecordWithHostileError(t *testing.T) {
 				err := hostile.NewValue(code, "job failed")
 				if mode == hostile.Block {
 					go fail(m, err)
-					<-code.Entered()
+					if !code.AwaitEntered(t) {
+						return
+					}
 					hostile.Within(t, hostile.Deadline, size)
 				} else {
 					hostile.Within(t, hostile.Deadline, func() { fail(m, err) })
@@ -74,7 +76,9 @@ func TestBatchRepository_IncrementFailureWithHostileError(t *testing.T) {
 			fail := func() { _, _, _ = r.IncrementFailure(context.Background(), b.id, err) }
 			if mode == hostile.Block {
 				go fail()
-				<-code.Entered()
+				if !code.AwaitEntered(t) {
+					return
+				}
 				hostile.Within(t, hostile.Deadline, read)
 			} else {
 				hostile.Within(t, hostile.Deadline, fail)

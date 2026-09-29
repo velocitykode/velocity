@@ -26,10 +26,11 @@ type Group[V any] struct {
 
 // call is one build in progress.
 type call[V any] struct {
-	owner uint64 // the goroutine running the build
-	done  chan struct{}
-	v     V
-	err   error
+	owner  uint64 // the goroutine running the build
+	joined int    // callers that waited on it, under Group.mu
+	done   chan struct{}
+	v      V
+	err    error
 }
 
 // Do runs build for key on the calling goroutine, with no lock held, and
@@ -54,11 +55,13 @@ func (g *Group[V]) Do(ctx context.Context, key string, build func() (V, error)) 
 	id := goroutine.ID()
 	g.mu.Lock()
 	if c, ok := g.calls[key]; ok {
-		g.mu.Unlock()
 		if c.owner == id {
+			g.mu.Unlock()
 			var zero V
 			return zero, errors.New("requested from inside its own build")
 		}
+		c.joined++
+		g.mu.Unlock()
 		select {
 		case <-c.done:
 			return c.v, c.err
@@ -94,6 +97,18 @@ func (g *Group[V]) Do(ctx context.Context, key string, build func() (V, error)) 
 	c.v, c.err = build()
 	finished = true
 	return c.v, c.err
+}
+
+// Joined returns how many callers have joined the build of key in
+// progress to wait for its result, 0 when none is in progress. A test uses
+// it to know every caller is waiting before it lets the build finish.
+func (g *Group[V]) Joined(key string) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if c, ok := g.calls[key]; ok {
+		return c.joined
+	}
+	return 0
 }
 
 // finish frees key and wakes the waiters of c.

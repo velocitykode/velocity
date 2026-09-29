@@ -26,7 +26,9 @@ func TestMaintenanceMarkerPath_WarningWithHostileLogger(t *testing.T) {
 
 			if mode == hostile.Block {
 				go resolve()
-				<-code.Entered()
+				if !code.AwaitEntered(t) {
+					return
+				}
 			}
 			if p := hostile.Within(t, hostile.Deadline, resolve); p != nil {
 				t.Fatalf("maintenanceMarkerPath panicked: %v", p)

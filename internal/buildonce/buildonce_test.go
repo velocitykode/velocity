@@ -38,22 +38,20 @@ func TestDo_BuildsOnceUnderConcurrency(t *testing.T) {
 			results <- v
 		})
 	}
-	for builds.Load() == 0 {
-		time.Sleep(time.Millisecond)
-	}
-	time.Sleep(10 * time.Millisecond)
+	hostile.Eventually(t, hostile.Deadline, "every other caller waiting on the build", func() bool {
+		return g.Joined("k") == 63
+	})
 	close(release)
-	wg.Wait()
+	hostile.Within(t, hostile.Deadline, wg.Wait)
 	close(results)
 	for v := range results {
 		if v != 42 {
 			t.Fatalf("a caller got %d, want 42", v)
 		}
 	}
-	// Late arrivals may start a second build after the first finished;
-	// while it ran, it was the only one.
-	if n := builds.Load(); n < 1 {
-		t.Fatalf("builds = %d", n)
+	// Every caller joined the one build before it finished.
+	if n := builds.Load(); n != 1 {
+		t.Fatalf("builds = %d, want 1", n)
 	}
 }
 
@@ -78,7 +76,7 @@ func TestDo_WaitersDoNotBuild(t *testing.T) {
 		})
 		got <- v
 	}()
-	time.Sleep(10 * time.Millisecond)
+	hostile.Eventually(t, hostile.Deadline, "the waiter joining the build", func() bool { return g.Joined("k") == 1 })
 	close(release)
 	if v := <-got; v != "v" {
 		t.Fatalf("waiter got %q, want v", v)
@@ -165,7 +163,7 @@ func TestDo_PanicFreesTheKey(t *testing.T) {
 		_, err := g.Do(context.Background(), "k", func() (int, error) { return 0, nil })
 		waiterErr <- err
 	}()
-	time.Sleep(10 * time.Millisecond)
+	hostile.Eventually(t, hostile.Deadline, "the waiter joining the build", func() bool { return g.Joined("k") == 1 })
 	close(release)
 	if p := <-panicked; p != hostile.PanicValue {
 		t.Fatalf("the builder's caller got %v, want the panic", p)
@@ -235,3 +233,35 @@ func TestImports(t *testing.T) {
 }
 
 func runtimeGoexit() { runtime.Goexit() }
+
+// Joined counts the callers waiting on the build in progress, and is 0
+// once it finished.
+func TestJoined(t *testing.T) {
+	var g Group[int]
+	if n := g.Joined("k"); n != 0 {
+		t.Fatalf("Joined with no build = %d", n)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = g.Do(context.Background(), "k", func() (int, error) {
+			close(started)
+			<-release
+			return 1, nil
+		})
+	}()
+	<-started
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Go(func() { _, _ = g.Do(context.Background(), "k", nil) })
+	}
+	hostile.Eventually(t, hostile.Deadline, "three joined", func() bool { return g.Joined("k") == 3 })
+	close(release)
+	hostile.Within(t, hostile.Deadline, wg.Wait)
+	<-done
+	if n := g.Joined("k"); n != 0 {
+		t.Fatalf("Joined after the build = %d, want 0", n)
+	}
+}

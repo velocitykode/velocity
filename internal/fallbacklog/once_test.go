@@ -54,7 +54,9 @@ func TestOnce_BlockedLineDoesNotHoldCallers(t *testing.T) {
 	code := hostile.New(t, hostile.Block, nil)
 	l := hostile.NewLogger(code)
 	go warnOnce(&o, l)
-	<-code.Entered()
+	if !code.AwaitEntered(t) {
+		return
+	}
 	hostile.Within(t, hostile.Deadline, func() { warnOnce(&o, l) })
 	code.Release()
 }

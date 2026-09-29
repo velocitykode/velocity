@@ -38,7 +38,9 @@ func TestManager_ConfigureWithHostileFactory(t *testing.T) {
 				configure := func() { _ = m.Configure(cfg) }
 				if mode == hostile.Block {
 					go configure()
-					<-code.Entered()
+					if !code.AwaitEntered(t) {
+						return
+					}
 					hostile.Within(t, hostile.Deadline, func() { entry(m) })
 				} else {
 					hostile.Within(t, hostile.Deadline, configure)

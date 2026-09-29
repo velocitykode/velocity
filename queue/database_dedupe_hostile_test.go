@@ -59,7 +59,9 @@ func TestDatabaseDriver_DedupePushWithHostileUserCode(t *testing.T) {
 					}
 					if mode == hostile.Block {
 						go push()
-						<-code.Entered()
+						if !code.AwaitEntered(t) {
+							return
+						}
 						if !(source == "listener" && strings.HasPrefix(name, "Push")) {
 							hostile.Within(t, hostile.Deadline, func() { entry(d) })
 						}

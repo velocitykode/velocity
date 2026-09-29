@@ -6,7 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
@@ -69,7 +68,9 @@ func TestManager_HandsItsLoggerWithHostileChannel(t *testing.T) {
 				hand := func() { m.SetLogger(hostile.NewLogger(nil)) }
 				if mode == hostile.Block {
 					go hand()
-					<-code.Entered()
+					if !code.AwaitEntered(t) {
+						return
+					}
 					hostile.Within(t, hostile.Deadline, func() { entry(m) })
 				} else {
 					hostile.Within(t, hostile.Deadline, hand)
@@ -102,7 +103,9 @@ func TestManager_ChannelCreationWithHostileFactory(t *testing.T) {
 				create := func() { _, _ = m.Channel(name) }
 				if mode == hostile.Block {
 					go create()
-					<-code.Entered()
+					if !code.AwaitEntered(t) {
+						return
+					}
 					if entryName != "Channel" {
 						hostile.Within(t, hostile.Deadline, func() { managerEntries(name)[entryName](m) })
 					}
@@ -111,15 +114,9 @@ func TestManager_ChannelCreationWithHostileFactory(t *testing.T) {
 				}
 				code.Release()
 				code.Disarm()
-				hostile.Within(t, hostile.Deadline, func() {
-					var err error
-					for range 100 {
-						if _, err = m.Channel(name); err == nil {
-							return
-						}
-						time.Sleep(time.Millisecond)
-					}
-					t.Errorf("Channel after a retry: %v", err)
+				hostile.Eventually(t, hostile.Deadline, "a Channel after the release", func() bool {
+					_, err := m.Channel(name)
+					return err == nil
 				})
 			})
 		}
@@ -160,10 +157,14 @@ func TestManager_ChannelCreatedOnceUnderConcurrency(t *testing.T) {
 			got <- ch
 		})
 	}
-	<-code.Entered()
-	time.Sleep(20 * time.Millisecond)
+	if !code.AwaitEntered(t) {
+		return
+	}
+	hostile.Eventually(t, hostile.Deadline, "every other caller waiting on the build", func() bool {
+		return m.builds.Joined(name) == 31
+	})
 	code.Release()
-	wg.Wait()
+	hostile.Within(t, hostile.Deadline, wg.Wait)
 	close(got)
 	var first Channel
 	for ch := range got {

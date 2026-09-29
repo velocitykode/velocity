@@ -6,7 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/velocitykode/velocity/cache/drivers"
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
@@ -68,7 +67,9 @@ func TestManager_StoreBuildWithHostileFactory(t *testing.T) {
 				switch mode {
 				case hostile.Block:
 					go build()
-					<-code.Entered()
+					if !code.AwaitEntered(t) {
+						return
+					}
 					if name != "Store same name" && name != "Get" {
 						hostile.Within(t, hostile.Deadline, func() { entry(m) })
 					}
@@ -77,20 +78,11 @@ func TestManager_StoreBuildWithHostileFactory(t *testing.T) {
 				}
 				code.Release()
 				code.Disarm()
-				hostile.Within(t, hostile.Deadline, func() {
-					var store Store
-					var err error
-					// A build in flight at Release may still publish or
-					// be discarded by a Shutdown; retry until it settles.
-					for range 100 {
-						if store, err = m.Store("main"); err == nil {
-							break
-						}
-						time.Sleep(time.Millisecond)
-					}
-					if err != nil || store == nil {
-						t.Errorf("Store after a retry = %v, %v", store, err)
-					}
+				// A build in flight at Release may still publish or be
+				// discarded by a Shutdown; retry until it settles.
+				hostile.Eventually(t, hostile.Deadline, "a Store after the release", func() bool {
+					store, err := m.Store("main")
+					return err == nil && store != nil
 				})
 			})
 		}
@@ -129,10 +121,14 @@ func TestManager_StoreBuildsOnceUnderConcurrency(t *testing.T) {
 			stores <- s
 		})
 	}
-	<-code.Entered()
-	time.Sleep(20 * time.Millisecond)
+	if !code.AwaitEntered(t) {
+		return
+	}
+	hostile.Eventually(t, hostile.Deadline, "every other caller waiting on the build", func() bool {
+		return m.builds.Joined("main") == 31
+	})
 	code.Release()
-	wg.Wait()
+	hostile.Within(t, hostile.Deadline, wg.Wait)
 	close(stores)
 	var first Store
 	for s := range stores {
@@ -158,7 +154,9 @@ func TestManager_StoreBuiltAcrossShutdownIsNotPublished(t *testing.T) {
 		_, err := m.Store("main")
 		errc <- err
 	}()
-	<-code.Entered()
+	if !code.AwaitEntered(t) {
+		return
+	}
 	hostile.Within(t, hostile.Deadline, func() { _ = m.Shutdown(context.Background()) })
 	code.Release()
 	if err := <-errc; err == nil || !strings.Contains(err.Error(), "shut down while the store was built") {
