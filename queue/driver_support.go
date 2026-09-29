@@ -89,7 +89,8 @@ func DispatchJobQueued(dispatch func(context.Context, interface{}), ctx context.
 }
 
 // DispatchJobFailed dispatches a JobFailed lifecycle event through the
-// supplied dispatcher (a no-op when dispatch is nil).
+// supplied dispatcher (a no-op when dispatch is nil). The event carries no
+// job id: a driver calls it for a payload it could not hydrate into a job.
 func DispatchJobFailed(dispatch func(context.Context, interface{}), ctx context.Context, jobType, queue string, err error, duration time.Duration) {
-	dispatchJobFailed(dispatch, ctx, jobType, queue, err, duration)
+	dispatchJobFailed(dispatch, ctx, jobType, queue, "", err, duration)
 }

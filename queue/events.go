@@ -51,8 +51,12 @@ func (e *JobProcessed) Name() string {
 // JobFailed is dispatched when a job fails
 type JobFailed struct {
 	contract.EventMeta
-	JobType  string
-	Queue    string
+	JobType string
+	Queue   string
+	// JobID is the failed job's id when it has one (Identifiable), empty
+	// otherwise: a job without an id, or a payload a driver could not
+	// hydrate.
+	JobID    string `json:",omitempty"`
 	Duration time.Duration
 
 	// Err is the failure itself: the error the job returned (or the
@@ -189,8 +193,9 @@ func dispatchJobProcessed(dispatch func(context.Context, interface{}), ctx conte
 	})
 }
 
-// dispatchJobFailed dispatches a JobFailed event
-func dispatchJobFailed(dispatch func(context.Context, interface{}), ctx context.Context, jobType, queue string, err error, duration time.Duration) {
+// dispatchJobFailed dispatches a JobFailed event; jobID is the job's id,
+// empty when it has none.
+func dispatchJobFailed(dispatch func(context.Context, interface{}), ctx context.Context, jobType, queue, jobID string, err error, duration time.Duration) {
 	if dispatch == nil {
 		return
 	}
@@ -198,6 +203,7 @@ func dispatchJobFailed(dispatch func(context.Context, interface{}), ctx context.
 		EventMeta: eventmeta.Current(ctx),
 		JobType:   jobType,
 		Queue:     queue,
+		JobID:     jobID,
 		Err:       err,
 		Duration:  duration,
 	})

@@ -271,7 +271,7 @@ func TestDispatchJobFailed(t *testing.T) {
 		ctx := context.Background()
 		err := errors.New("connection refused")
 		duration := 50 * time.Millisecond
-		dispatchJobFailed(dispatch, ctx, "*queue.TestJob", "default", err, duration)
+		dispatchJobFailed(dispatch, ctx, "*queue.TestJob", "default", "", err, duration)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -293,7 +293,7 @@ func TestDispatchJobFailed(t *testing.T) {
 	t.Run("with nil error", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
-		dispatchJobFailed(dispatch, ctx, "*queue.TestJob", "default", nil, 100*time.Millisecond)
+		dispatchJobFailed(dispatch, ctx, "*queue.TestJob", "default", "", nil, 100*time.Millisecond)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -307,7 +307,7 @@ func TestDispatchJobFailed(t *testing.T) {
 		captured = nil
 		ctx := trace.WithTrace(context.Background(), "trace-fail", "parent-fail")
 		ctx = trace.WithSpan(ctx, "span-fail")
-		dispatchJobFailed(dispatch, ctx, "*queue.NotificationJob", "notifications", errors.New("timeout"), 5*time.Second)
+		dispatchJobFailed(dispatch, ctx, "*queue.NotificationJob", "notifications", "", errors.New("timeout"), 5*time.Second)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")

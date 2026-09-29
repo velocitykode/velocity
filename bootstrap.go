@@ -17,6 +17,7 @@ import (
 	"github.com/velocitykode/velocity/internal/eventqueue"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
+	"github.com/velocitykode/velocity/scheduler"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -366,7 +367,9 @@ func backgroundErrorContext(ctx context.Context, source contract.ErrorSource) *c
 // backgroundErrorContext builds from the dispatch ctx (request, trace and
 // span ids) under the source the event names, with the event name; a
 // listener's failure also names the listener type and the event the
-// listener was handling. It returns nil (no bridge) when h is nil.
+// listener was handling, a job's failure its job_type, queue and, when it
+// has one, job_id, and a scheduled task's failure its task_name. It
+// returns nil (no bridge) when h is nil.
 func buildFailureReporter(h contract.ErrorHandler) func(ctx context.Context, event interface{}, err error) {
 	if h == nil {
 		return nil
@@ -380,9 +383,18 @@ func buildFailureReporter(h contract.ErrorHandler) func(ctx context.Context, eve
 		if n, ok := event.(interface{ Name() string }); ok {
 			exCtx.Extra["event"] = n.Name()
 		}
-		if failed, ok := event.(*events.AsyncFailed); ok {
+		switch failed := event.(type) {
+		case *events.AsyncFailed:
 			exCtx.Extra["event_name"] = failed.EventName
 			exCtx.Extra["listener_type"] = failed.ListenerName
+		case *queue.JobFailed:
+			exCtx.Extra["job_type"] = failed.JobType
+			exCtx.Extra["queue"] = failed.Queue
+			if failed.JobID != "" {
+				exCtx.Extra["job_id"] = failed.JobID
+			}
+		case *scheduler.ScheduledTaskFailed:
+			exCtx.Extra["task_name"] = failed.TaskName
 		}
 		h.Report(err, exCtx)
 	}

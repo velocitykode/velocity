@@ -423,3 +423,19 @@ func TestDatabaseDriver_FailedHookRunsOnceAfterRecording(t *testing.T) {
 		})
 	}
 }
+
+// The queue.job.failed event carries the failed job's id when it has one,
+// and none when it does not.
+func TestWorker_JobFailedCarriesTheJobID(t *testing.T) {
+	event := runUntilJobFailed(t, newStartedMemoryDriver(t), &identifiedFailingJob{ID: "job-77"})
+	if event.JobID != "job-77" {
+		t.Errorf("JobID = %q, want job-77", event.JobID)
+	}
+	if event.JobType == "" || event.Queue != "failure-report" {
+		t.Errorf("event = type %q queue %q, want the job's type and queue", event.JobType, event.Queue)
+	}
+	anon := runUntilJobFailed(t, newStartedMemoryDriver(t), &failingAnonymousJob{})
+	if anon.JobID != "" {
+		t.Errorf("JobID of a job without an id = %q, want empty", anon.JobID)
+	}
+}

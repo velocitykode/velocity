@@ -844,7 +844,7 @@ func (w *Worker) failJob(ctx context.Context, log contract.Logger, job Job, jobT
 		if err := dispatch(ctx, event); err != nil {
 			w.events.Fail(ctx, err, event)
 		}
-	}, ctx, jobType, w.queueName, failure, duration)
+	}, ctx, jobType, w.queueName, jobIDOf(job), failure, duration)
 }
 
 // failureForEvent returns the error the queue.job.failed event carries for a job
