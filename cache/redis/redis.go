@@ -62,7 +62,8 @@ func NewRedisStore(ctx context.Context, prefix string, host string, port int, pa
 // newRedisStore is NewRedisStore writing its startup warnings through
 // logger (the fallback logger when nil).
 func newRedisStore(ctx context.Context, prefix string, host string, port int, password string, database int, tlsEnabled bool, logger contract.Logger) (*RedisStore, error) {
-	logger = fallbacklog.Resolve(logger)
+	// Contained: a panicking logger must not leak the connected client.
+	logger = fallbacklog.Contain(logger)
 	if host == "" {
 		return nil, fmt.Errorf("velocity/cache: redis driver requires host")
 	}
@@ -133,7 +134,7 @@ func warnIfInsecure(logger contract.Logger, host, password string, tlsEnabled bo
 	if isLoopbackHost(host) {
 		return
 	}
-	logger = fallbacklog.Resolve(logger)
+	logger = fallbacklog.Contain(logger)
 	if !tlsEnabled {
 		logger.Warn(
 			"velocity/cache: redis store connecting to non-loopback host without TLS; traffic (including the password and cached values) is sent in cleartext. Set REDIS_TLS=true or per-store TLS.",

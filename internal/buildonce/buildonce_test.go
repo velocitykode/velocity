@@ -1,0 +1,237 @@
+package buildonce
+
+import (
+	"context"
+	"errors"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/velocitykode/velocity/internal/hostile"
+)
+
+// Many goroutines asking for one key at once: one build, one value.
+func TestDo_BuildsOnceUnderConcurrency(t *testing.T) {
+	var g Group[int]
+	var builds atomic.Int32
+	release := make(chan struct{})
+	build := func() (int, error) {
+		builds.Add(1)
+		<-release
+		return 42, nil
+	}
+	var wg sync.WaitGroup
+	results := make(chan int, 64)
+	for range 64 {
+		wg.Go(func() {
+			v, err := g.Do(context.Background(), "k", build)
+			if err != nil {
+				t.Error(err)
+			}
+			results <- v
+		})
+	}
+	for builds.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(10 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	close(results)
+	for v := range results {
+		if v != 42 {
+			t.Fatalf("a caller got %d, want 42", v)
+		}
+	}
+	// Late arrivals may start a second build after the first finished;
+	// while it ran, it was the only one.
+	if n := builds.Load(); n < 1 {
+		t.Fatalf("builds = %d", n)
+	}
+}
+
+// While one build runs, the other callers wait and do not build.
+func TestDo_WaitersDoNotBuild(t *testing.T) {
+	var g Group[string]
+	started := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		_, _ = g.Do(context.Background(), "k", func() (string, error) {
+			close(started)
+			<-release
+			return "v", nil
+		})
+	}()
+	<-started
+	got := make(chan string)
+	go func() {
+		v, _ := g.Do(context.Background(), "k", func() (string, error) {
+			t.Error("a waiter built the value")
+			return "", nil
+		})
+		got <- v
+	}()
+	time.Sleep(10 * time.Millisecond)
+	close(release)
+	if v := <-got; v != "v" {
+		t.Fatalf("waiter got %q, want v", v)
+	}
+}
+
+// A waiter returns at its ctx; the build carries on.
+func TestDo_WaiterHonoursCtx(t *testing.T) {
+	var g Group[int]
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	go func() {
+		_, _ = g.Do(context.Background(), "k", func() (int, error) {
+			close(started)
+			<-release
+			return 1, nil
+		})
+	}()
+	<-started
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	hostile.Within(t, hostile.Deadline, func() {
+		if _, err := g.Do(ctx, "k", func() (int, error) { return 0, nil }); !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("err = %v, want the ctx deadline", err)
+		}
+	})
+}
+
+// A build that asks for its own key gets an error at once instead of
+// waiting on itself; other keys build normally.
+func TestDo_ReentryReturnsAnError(t *testing.T) {
+	var g Group[int]
+	hostile.Within(t, hostile.Deadline, func() {
+		v, err := g.Do(context.Background(), "k", func() (int, error) {
+			if _, err := g.Do(context.Background(), "k", func() (int, error) { return 0, nil }); err == nil ||
+				!strings.Contains(err.Error(), "inside its own build") {
+				t.Errorf("re-entrant Do err = %v, want the re-entry error", err)
+			}
+			other, err := g.Do(context.Background(), "other", func() (int, error) { return 2, nil })
+			if err != nil || other != 2 {
+				t.Errorf("another key from inside a build = %d, %v", other, err)
+			}
+			return 1, nil
+		})
+		if err != nil || v != 1 {
+			t.Errorf("Do = %d, %v", v, err)
+		}
+	})
+}
+
+// A failed build frees the key: waiters get the error, the next Do builds
+// again.
+func TestDo_ErrorFreesTheKey(t *testing.T) {
+	var g Group[int]
+	boom := errors.New("boom")
+	if _, err := g.Do(context.Background(), "k", func() (int, error) { return 0, boom }); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want boom", err)
+	}
+	v, err := g.Do(context.Background(), "k", func() (int, error) { return 3, nil })
+	if err != nil || v != 3 {
+		t.Fatalf("retry = %d, %v", v, err)
+	}
+}
+
+// A panicking build reaches its caller, frees the key, and wakes waiters
+// with an error.
+func TestDo_PanicFreesTheKey(t *testing.T) {
+	var g Group[int]
+	started := make(chan struct{})
+	release := make(chan struct{})
+	panicked := make(chan any, 1)
+	go func() {
+		defer func() { panicked <- recover() }()
+		_, _ = g.Do(context.Background(), "k", func() (int, error) {
+			close(started)
+			<-release
+			panic(hostile.PanicValue)
+		})
+	}()
+	<-started
+	waiterErr := make(chan error, 1)
+	go func() {
+		_, err := g.Do(context.Background(), "k", func() (int, error) { return 0, nil })
+		waiterErr <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+	close(release)
+	if p := <-panicked; p != hostile.PanicValue {
+		t.Fatalf("the builder's caller got %v, want the panic", p)
+	}
+	if err := <-waiterErr; err == nil || !strings.Contains(err.Error(), "panicked") {
+		t.Fatalf("waiter err = %v, want the panic as an error", err)
+	}
+	v, err := g.Do(context.Background(), "k", func() (int, error) { return 4, nil })
+	if err != nil || v != 4 {
+		t.Fatalf("retry = %d, %v", v, err)
+	}
+}
+
+// A build that exits its goroutine (runtime.Goexit, as t.FailNow does)
+// frees the key and wakes waiters.
+func TestDo_GoexitFreesTheKey(t *testing.T) {
+	var g Group[int]
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = g.Do(context.Background(), "k", func() (int, error) {
+			runtimeGoexit()
+			return 0, nil
+		})
+	}()
+	<-done
+	hostile.Within(t, hostile.Deadline, func() {
+		v, err := g.Do(context.Background(), "k", func() (int, error) { return 5, nil })
+		if err != nil || v != 5 {
+			t.Errorf("retry = %d, %v", v, err)
+		}
+	})
+}
+
+func TestDo_NilCtx(t *testing.T) {
+	var g Group[int]
+	//lint:ignore SA1012 Do accepts a nil ctx, and this test checks it
+	v, err := g.Do(nil, "k", func() (int, error) { return 6, nil })
+	if err != nil || v != 6 {
+		t.Fatalf("Do(nil ctx) = %d, %v", v, err)
+	}
+}
+
+// TestImports keeps the package a leaf: the standard library and
+// internal/goroutine only.
+func TestImports(t *testing.T) {
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, parser.ImportsOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pkg := range pkgs {
+		for name, f := range pkg.Files {
+			for _, imp := range f.Imports {
+				p, _ := strconv.Unquote(imp.Path.Value)
+				if p == "github.com/velocitykode/velocity/internal/goroutine" {
+					continue
+				}
+				if first, _, _ := strings.Cut(p, "/"); strings.Contains(first, ".") {
+					t.Errorf("%s imports %s", name, p)
+				}
+			}
+		}
+	}
+}
+
+func runtimeGoexit() { runtime.Goexit() }

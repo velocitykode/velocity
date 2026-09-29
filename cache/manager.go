@@ -10,6 +10,7 @@ import (
 	"github.com/velocitykode/velocity/cache/drivers"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/driverregistry"
+	"github.com/velocitykode/velocity/internal/buildonce"
 	"github.com/velocitykode/velocity/internal/eventemit"
 )
 
@@ -48,6 +49,11 @@ type Manager struct {
 	events eventemit.Emitter
 	// logger is handed to each store the manager builds (StoreConfig.Logger).
 	logger contract.Logger
+	// builds builds each store once at a time, with no lock held.
+	builds buildonce.Group[Store]
+	// generation counts Shutdowns, so a store built across one is not
+	// published into the emptied manager. Guarded by mu.
+	generation uint64
 }
 
 // SetLogger installs the logger the manager hands to every store it builds
@@ -182,29 +188,50 @@ func (m *Manager) StoreWithContext(ctx context.Context, name string) (Store, err
 // as opaque connection errors later. ctx is forwarded to the driver factory
 // so a misconfigured remote driver (e.g. unreachable Redis) fails under the
 // caller's deadline rather than a hardcoded background context.
+//
+// The store is built with no lock held: the driver factory and the store's
+// startup warnings run user code (a third-party factory, the logger), which
+// may call back into the manager. Each name is still built once at a time:
+// concurrent first uses of one name wait for that build (or their ctx),
+// and a lookup of a name from inside its own build returns an error at
+// once. A store whose build finishes after a Shutdown that began after it
+// started is shut down, not published, and the caller gets an error.
 func (m *Manager) createStore(ctx context.Context, name string) (Store, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	store, err := m.builds.Do(ctx, name, func() (Store, error) {
+		return m.buildStore(ctx, name)
+	})
+	if err != nil && !isStoreBuildError(err) {
+		return nil, fmt.Errorf("velocity/cache: store %q: %w", name, err)
+	}
+	return store, err
+}
 
-	// Check again in case another goroutine created it
+// buildStore builds the store name and publishes it, unless another build
+// published it first or the manager was shut down meanwhile.
+func (m *Manager) buildStore(ctx context.Context, name string) (Store, error) {
+	m.mu.RLock()
 	if store, exists := m.stores[name]; exists {
+		m.mu.RUnlock()
 		return store, nil
 	}
-
 	config, exists := m.config.Stores[name]
+	prefix := m.config.Prefix
+	logger := m.logger
+	generation := m.generation
+	m.mu.RUnlock()
+
 	if !exists {
-		return nil, fmt.Errorf("velocity/cache: store %q not configured: %w", name, ErrStoreNotFound)
+		return nil, &storeBuildError{fmt.Errorf("velocity/cache: store %q not configured: %w", name, ErrStoreNotFound)}
 	}
 
 	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("velocity/cache: store %q invalid: %w", name, err)
+		return nil, &storeBuildError{fmt.Errorf("velocity/cache: store %q invalid: %w", name, err)}
 	}
 
 	// Combine global and store-specific prefix; mutate a copy of the
 	// per-store config so the registry-resolved factory sees the merged
 	// prefix without the manager mutating the user-supplied Config.
 	resolved := config
-	prefix := m.config.Prefix
 	if config.Prefix != "" {
 		if prefix != "" {
 			prefix = prefix + ":" + config.Prefix
@@ -214,20 +241,42 @@ func (m *Manager) createStore(ctx context.Context, name string) (Store, error) {
 	}
 	resolved.Prefix = prefix
 	if resolved.Logger == nil {
-		resolved.Logger = m.logger
+		resolved.Logger = logger
 	}
 
 	store, err := driverRegistry.Resolve(ctx, config.Driver, resolved)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/cache: store %q: %w", name, err)
+		return nil, &storeBuildError{fmt.Errorf("velocity/cache: store %q: %w", name, err)}
 	}
 
 	if starter, ok := store.(interface{ Start() }); ok {
 		starter.Start()
 	}
 
+	m.mu.Lock()
+	if m.generation != generation {
+		m.mu.Unlock()
+		if sd, ok := store.(contract.ShutdownAware); ok {
+			_ = sd.Shutdown(ctx)
+		}
+		return nil, &storeBuildError{fmt.Errorf("velocity/cache: store %q: the manager was shut down while the store was built", name)}
+	}
 	m.stores[name] = store
+	m.mu.Unlock()
 	return store, nil
+}
+
+// storeBuildError marks an error buildStore returned, which already names
+// the store, from one the build group returned (a re-entrant lookup, a
+// waiter's ctx), which createStore wraps.
+type storeBuildError struct{ err error }
+
+func (e *storeBuildError) Error() string { return e.err.Error() }
+func (e *storeBuildError) Unwrap() error { return e.err }
+
+func isStoreBuildError(err error) bool {
+	var b *storeBuildError
+	return errors.As(err, &b)
 }
 
 // DefaultStore returns the default cache store. See Store for the ctx
@@ -253,6 +302,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
 	stores := m.stores
 	m.stores = make(map[string]Store)
+	m.generation++
 	m.mu.Unlock()
 
 	var errs []error
