@@ -115,3 +115,36 @@ func TestBatchingStop_FromTheFlushGoroutineReturns(t *testing.T) {
 	}
 	within(t, "Stop after the loop stopped itself", d.Stop)
 }
+
+// A debounced delivery whose listener dispatches the same event again
+// leaves the new pending delivery in place, so Stop still cancels it.
+func TestDebouncing_RedispatchFromAListenerStaysPending(t *testing.T) {
+	d := NewDebouncingDispatcher(50 * time.Millisecond)
+	var handled atomic.Int32
+	first := make(chan struct{})
+	d.Listen("evt", listenerFunc(func(ctx context.Context, event interface{}) error {
+		if handled.Add(1) == 1 {
+			_ = d.Dispatch(ctx, event)
+			close(first)
+		}
+		return nil
+	}))
+	if err := d.Dispatch(context.Background(), "evt"); err != nil {
+		t.Fatalf("Dispatch = %v", err)
+	}
+	select {
+	case <-first:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the first debounced delivery never ran")
+	}
+	// Let the first delivery's timer callback finish.
+	time.Sleep(10 * time.Millisecond)
+	if got := d.GetPendingCount(); got != 1 {
+		t.Errorf("pending = %d, want 1 (the listener's dispatch)", got)
+	}
+	d.Stop()
+	time.Sleep(100 * time.Millisecond)
+	if got := handled.Load(); got != 1 {
+		t.Errorf("listener handled %d events after Stop, want 1", got)
+	}
+}

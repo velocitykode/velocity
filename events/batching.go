@@ -250,9 +250,18 @@ func (d *BatchingDispatcher) GetBatchSize() int {
 type DebouncingDispatcher struct {
 	*DefaultDispatcher
 	debounce time.Duration
-	timers   map[string]*time.Timer
+	timers   map[string]debounceTimer
 	timersMu sync.RWMutex
+	// timerGen numbers the timers, so a fired timer can tell whether the
+	// entry for its name is still its own.
+	timerGen uint64
 	stopCh   chan struct{}
+}
+
+// debounceTimer is a pending debounced delivery: its timer and its number.
+type debounceTimer struct {
+	gen   uint64
+	timer *time.Timer
 }
 
 // NewDebouncingDispatcher creates a new debouncing dispatcher
@@ -260,7 +269,7 @@ func NewDebouncingDispatcher(debounce time.Duration) *DebouncingDispatcher {
 	return &DebouncingDispatcher{
 		DefaultDispatcher: NewDispatcher(),
 		debounce:          debounce,
-		timers:            make(map[string]*time.Timer),
+		timers:            make(map[string]debounceTimer),
 		stopCh:            make(chan struct{}),
 	}
 }
@@ -290,17 +299,23 @@ func (d *DebouncingDispatcher) Dispatch(ctx context.Context, event interface{}) 
 	defer d.timersMu.Unlock()
 
 	// Cancel existing timer if any
-	if timer, exists := d.timers[eventName]; exists {
-		timer.Stop()
+	if pending, exists := d.timers[eventName]; exists {
+		pending.timer.Stop()
 	}
 
-	// Create new timer
-	d.timers[eventName] = time.AfterFunc(d.debounce, func() {
+	// Create new timer. Once it has fired, it removes its own entry only:
+	// a listener, or a concurrent Dispatch, may have installed a newer
+	// timer for the name, which stays pending (and stoppable).
+	d.timerGen++
+	gen := d.timerGen
+	d.timers[eventName] = debounceTimer{gen: gen, timer: time.AfterFunc(d.debounce, func() {
 		d.dispatchLater(bgCtx, event)
 		d.timersMu.Lock()
-		delete(d.timers, eventName)
+		if d.timers[eventName].gen == gen {
+			delete(d.timers, eventName)
+		}
 		d.timersMu.Unlock()
-	})
+	})}
 
 	return nil
 }
@@ -313,8 +328,8 @@ func (d *DebouncingDispatcher) DispatchNow(ctx context.Context, event interface{
 	eventName := d.getEventName(event)
 
 	d.timersMu.Lock()
-	if timer, exists := d.timers[eventName]; exists {
-		timer.Stop()
+	if pending, exists := d.timers[eventName]; exists {
+		pending.timer.Stop()
 		delete(d.timers, eventName)
 	}
 	d.timersMu.Unlock()
@@ -327,10 +342,10 @@ func (d *DebouncingDispatcher) Stop() {
 	d.timersMu.Lock()
 	defer d.timersMu.Unlock()
 
-	for _, timer := range d.timers {
-		timer.Stop()
+	for _, pending := range d.timers {
+		pending.timer.Stop()
 	}
-	d.timers = make(map[string]*time.Timer)
+	d.timers = make(map[string]debounceTimer)
 }
 
 // GetPendingCount returns the number of pending debounced events
