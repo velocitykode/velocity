@@ -229,7 +229,7 @@ func (d *DebouncingDispatcher) Dispatch(ctx context.Context, event interface{}) 
 
 	// Create new timer
 	d.timers[eventName] = time.AfterFunc(d.debounce, func() {
-		d.DefaultDispatcher.Dispatch(bgCtx, event)
+		d.dispatchLater(bgCtx, event)
 		d.timersMu.Lock()
 		delete(d.timers, eventName)
 		d.timersMu.Unlock()
@@ -511,7 +511,7 @@ func (d *CoalescingDispatcher) dispatchCoalesced(eventName string) {
 	delete(d.pending, eventName)
 	d.pendingMu.Unlock()
 
-	d.DefaultDispatcher.Dispatch(ce.ctx, ce.event)
+	d.dispatchLater(ce.ctx, ce.event)
 }
 
 // GetCoalescedCount returns how many times an event has been coalesced

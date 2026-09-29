@@ -502,6 +502,22 @@ func (d *DefaultDispatcher) dispatch(ctx context.Context, event interface{}, det
 	return d.dispatchToListeners(event, deliver)
 }
 
+// dispatchLater delivers event, which a public call accepted and returned
+// for before its delivery (a debounced or coalesced dispatch), under ctx.
+// The failure-report bridge sees a FailureEvent now, when it is delivered,
+// so an event debounced away is never reported; and the delivery is
+// detached (see dispatch): each listener's error or recovered panic, which
+// no caller would receive, is dispatched as its own AsyncFailed and
+// reported, instead of being lost.
+func (d *DefaultDispatcher) dispatchLater(ctx context.Context, event interface{}) {
+	if event == nil {
+		return
+	}
+	// A detached dispatch returns an error only for a nil event, excluded
+	// above: every listener failure became an AsyncFailed.
+	_ = d.dispatch(d.reportFailure(ctx, event), event, true)
+}
+
 // DispatchNow fires an event synchronously to all listeners.
 func (d *DefaultDispatcher) DispatchNow(ctx context.Context, event interface{}) error {
 	return d.dispatchNow(ctx, event, false)
