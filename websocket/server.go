@@ -14,7 +14,9 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -93,6 +95,16 @@ type Server struct {
 	// pump so Shutdown can wait for them to drain within a caller-supplied
 	// deadline.
 	wg sync.WaitGroup
+
+	// stops coordinates the Shutdowns: the first owns the drain (waiting
+	// on wg), a later one waits for it or its own ctx, and one called from
+	// a goroutine wg tracks (recorded in stops' work set while it runs)
+	// does not wait for itself. Begin and Ended are guarded by s.mu.
+	stops drain.Coordinator
+	// runLoop is the run-loop goroutine's id, so a Broadcast it makes (from
+	// a connect callback) delivers inline instead of waiting for itself to
+	// drain the broadcast channel.
+	runLoop atomic.Uint64
 
 	// logger is stored in an atomic.Value so it can be read from paths
 	// that already hold s.mu (e.g. JoinGroup) without risking deadlock
@@ -245,7 +257,10 @@ func (s *Server) Start() error {
 	s.wg.Add(1)
 	async.Go(func() {
 		defer s.wg.Done()
-		s.run()
+		s.serveWork(func() {
+			s.runLoop.Store(goroutine.ID())
+			s.run()
+		})
 	})
 
 	// Dedicated fan-out goroutine. handleBroadcast snapshots clients under
@@ -257,10 +272,24 @@ func (s *Server) Start() error {
 	s.wg.Add(1)
 	async.Go(func() {
 		defer s.wg.Done()
-		s.fanoutLoop()
+		s.serveWork(s.fanoutLoop)
 	})
 	return nil
 }
+
+// serveWork runs fn, the body of a goroutine Shutdown waits for, recorded
+// as the server's work so a Shutdown it calls does not wait for itself.
+func (s *Server) serveWork(fn func()) {
+	id := goroutine.ID()
+	s.stops.Work().Enter(id)
+	defer s.stops.Work().Leave(id)
+	fn()
+}
+
+// errShutdownNested is what a Shutdown called from one of the server's
+// own goroutines returns: the drain waits for that goroutine, so the call
+// stops the server without waiting for it.
+var errShutdownNested = fmt.Errorf("websocket: Shutdown called from a server goroutine (run loop, fan-out or a client pump); the server drains without this call waiting for it: %w", ErrServerClosed)
 
 // Shutdown gracefully stops the server and waits for the run-loop goroutine
 // and every per-client read/write pump to drain, bounded by ctx.
@@ -268,14 +297,21 @@ func (s *Server) Start() error {
 // It closes the stop channel (which both the run loop and every writePump
 // select on) and every live client connection (which unblocks readPump's
 // ReadJSON), then waits on the server's WaitGroup. If ctx fires before the
-// goroutines finish, Shutdown returns ctx.Err(); otherwise it returns nil.
-// Shutdown is safe to call more than once - subsequent calls are no-ops that
-// return nil.
+// goroutines finish, Shutdown returns ctx.Err() and they go on draining;
+// otherwise it returns nil. Shutdown is safe to call more than once: a call
+// that overlaps or follows the first waits for the same drain, or its own
+// ctx, and returns nil once it is over.
+//
+// A Shutdown called from one of the server's own goroutines (a connect or
+// disconnect callback on the run loop, a message handler on a client's read
+// pump, the broadcast fan-out) cannot wait for the goroutine it runs on: it
+// stops the server and returns an error wrapping ErrServerClosed at once.
 //
 // Shutdown is terminal: it marks the server stopped so a later Start returns
 // ErrServerClosed. The lifecycle is one-shot - create a new Server with New to
 // run again.
 func (s *Server) Shutdown(ctx context.Context) error {
+	nested := s.stops.Nested()
 	s.mu.Lock()
 	// Mark the lifecycle terminal regardless of whether the server ever
 	// started: any Shutdown is one-shot, so a later Start must return
@@ -289,10 +325,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.running = false
 	s.stopped = true
 	if alreadyStopped {
+		drained := s.stops.Ended()
 		s.mu.Unlock()
-		return nil
+		return s.awaitDrain(ctx, drained, nested)
 	}
 	close(s.stopChan)
+	var drained chan struct{}
+	if wasRunning {
+		drained = s.stops.Begin()
+	}
 	s.mu.Unlock()
 
 	if !wasRunning {
@@ -309,19 +350,20 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	s.mu.RUnlock()
 
-	done := make(chan struct{})
-	// Not async.Go: trivial WaitGroup waiter, no user code runs here.
-	go func() { //safe-goroutine: trivial WaitGroup waiter, no user code runs here
-		s.wg.Wait()
-		close(done)
-	}()
+	async.Go(func() { s.stops.Drain(drained, s.wg.Wait) })
+	return s.awaitDrain(ctx, drained, nested)
+}
 
-	select {
-	case <-done:
+// awaitDrain waits for the drain a Shutdown began, nil when the server
+// never ran, or ctx; a nested Shutdown does not wait.
+func (s *Server) awaitDrain(ctx context.Context, drained chan struct{}, nested bool) error {
+	switch {
+	case drained == nil || drain.Closed(drained):
 		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	case nested:
+		return errShutdownNested
 	}
+	return s.stops.Await(ctx, drained, nil)
 }
 
 // run is the main event loop.
@@ -491,11 +533,11 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	pumpsStarted = true
 	async.Go(func() {
 		defer s.wg.Done()
-		client.writePump()
+		s.serveWork(client.writePump)
 	})
 	async.Go(func() {
 		defer s.wg.Done()
-		client.readPump()
+		s.serveWork(client.readPump)
 	})
 
 	// The connect callback is NOT invoked here. It fires at the end of
@@ -916,7 +958,22 @@ func (s *Server) OnError(fn func(*Client, error)) {
 // fills. Broadcast selects on stopChan (closed exactly once by Shutdown and
 // never reassigned, so the read is race-free) and drops the message instead of
 // wedging the caller.
+//
+// Called on the run loop itself (from a connect or disconnect callback) with
+// the channel full, it hands the message to the fan-out directly: the run loop
+// is the only goroutine draining the channel, so it cannot wait for it.
 func (s *Server) Broadcast(message Message) {
+	select {
+	case s.broadcast <- message:
+		return
+	case <-s.stopChan:
+		return
+	default:
+	}
+	if id := s.runLoop.Load(); id != 0 && id == goroutine.ID() {
+		s.handleBroadcast(message)
+		return
+	}
 	select {
 	case s.broadcast <- message:
 	case <-s.stopChan:
