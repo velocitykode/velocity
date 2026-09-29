@@ -65,18 +65,15 @@ type Set struct {
 	ids map[uint64]int
 }
 
-// Enter adds goroutine id, the caller's ID(), to s and reports whether it
-// entered for the first time: false means it was in s already, the
-// re-entry a guard refuses.
-func (s *Set) Enter(id uint64) (first bool) {
+// Enter adds goroutine id, the caller's ID(), to s, once more if it is
+// in s already. A guard that refuses re-entry checks Contains first.
+func (s *Set) Enter(id uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.ids == nil {
 		s.ids = make(map[uint64]int)
 	}
-	n := s.ids[id]
-	s.ids[id] = n + 1
-	return n == 0
+	s.ids[id]++
 }
 
 // Leave undoes one Enter by goroutine id; the goroutine leaves s when it

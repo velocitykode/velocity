@@ -34,12 +34,11 @@ func TestSet_ZeroValueIsEmpty(t *testing.T) {
 func TestSet_EnterLeaveNested(t *testing.T) {
 	var s Set
 	id := ID()
-	if first := s.Enter(id); !first || !s.Contains(ID()) {
-		t.Fatalf("first Enter: first=%v contains=%v, want true true", first, s.Contains(ID()))
+	s.Enter(id)
+	if !s.Contains(id) {
+		t.Fatal("the caller is not in the set after Enter")
 	}
-	if first := s.Enter(id); first {
-		t.Fatal("nested Enter reported a first entry")
-	}
+	s.Enter(id)
 	s.Leave(id)
 	if !s.Contains(ID()) {
 		t.Fatal("the caller left at the inner Leave; it must stay until the outer one")
@@ -70,8 +69,12 @@ func TestSet_Concurrent(t *testing.T) {
 		wg.Go(func() {
 			for range 200 {
 				id := ID()
-				if first := s.Enter(id); !first || !s.Contains(ID()) {
-					t.Error("a goroutine did not see its own first Enter")
+				if s.Contains(id) {
+					t.Error("a goroutine is in the set before it entered")
+				}
+				s.Enter(id)
+				if !s.Contains(ID()) {
+					t.Error("a goroutine did not see its own Enter")
 				}
 				s.Leave(id)
 				if s.Contains(ID()) {
