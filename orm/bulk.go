@@ -286,6 +286,7 @@ func (q *Query[T]) bulkPrepareHooks(ctx context.Context, op BulkOp) (bulkHookPla
 		}
 		return bulkHookPlan{
 			afterFn: func(_ []any) {
+				ctx := withModelHookLogger[T](ctx, q.mgr)
 				for i := range rows {
 					registerModelAfterCommit(ctx, &rows[i])
 				}
@@ -313,7 +314,7 @@ func (q *Query[T]) bulkPrepareHooks(ctx context.Context, op BulkOp) (bulkHookPla
 		return bulkHookPlan{
 			ReturningPK: pkCol,
 			afterFn: func(ids []any) {
-				dispatchBulkAfterCommit(ctx, hook, ids, op)
+				dispatchBulkAfterCommit(withHookLogger(ctx, q.mgr), hook, ids, op)
 			},
 		}, nil
 	}
@@ -330,7 +331,7 @@ func (q *Query[T]) bulkPrepareHooks(ctx context.Context, op BulkOp) (bulkHookPla
 	}
 	return bulkHookPlan{
 		afterFn: func(_ []any) {
-			dispatchBulkAfterCommit(ctx, hook, ids, op)
+			dispatchBulkAfterCommit(withHookLogger(ctx, q.mgr), hook, ids, op)
 		},
 	}, nil
 }

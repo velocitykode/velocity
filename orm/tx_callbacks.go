@@ -207,6 +207,28 @@ func withTxRecoverLogger(ctx context.Context, logger contract.Logger) context.Co
 	return context.WithValue(ctx, txRecoverLoggerKey{}, logger)
 }
 
+// withHookLogger attaches m's logger to ctx for the after-commit hooks a
+// write runs inline, which happens when ctx carries no transaction
+// callback list (inside one, the hooks run when the transaction drains it,
+// through the transaction's logger). A nil m, a detached query builder's,
+// leaves ctx unchanged, and so does a ctx the inline branch will not see.
+func withHookLogger(ctx context.Context, m *Manager) context.Context {
+	if m == nil || lookupTxCallbacks(ctx) != nil {
+		return ctx
+	}
+	return withTxRecoverLogger(ctx, m.log())
+}
+
+// withModelHookLogger is withHookLogger for a write of a T model: it binds
+// the logger only when T has an AfterCommit hook to run, so a write of a
+// model without one costs nothing.
+func withModelHookLogger[T any](ctx context.Context, m *Manager) context.Context {
+	if _, ok := any((*T)(nil)).(AfterCommitHook); !ok {
+		return ctx
+	}
+	return withHookLogger(ctx, m)
+}
+
 // lookupTxRecoverLogger returns the logger attached to ctx by
 // withTxRecoverLogger, or nil (runCallbackSafe then writes through the
 // fallback logger).

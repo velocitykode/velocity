@@ -86,6 +86,7 @@ func firstOrCreate[T any](ctx context.Context, conditions map[string]any, values
 	if tx, ok := TxFromContext(ctx); ok {
 		drv = &txDriver{Driver: drv, tx: tx}
 	}
+	ctx = withModelHookLogger[T](ctx, Default())
 	return firstOrCreateWithDriver[T](ctx, drv, conditions, values)
 }
 
@@ -144,6 +145,7 @@ func updateOrCreate[T any](ctx context.Context, conditions map[string]any, value
 	if tx, ok := TxFromContext(ctx); ok {
 		drv = &txDriver{Driver: drv, tx: tx}
 	}
+	ctx = withModelHookLogger[T](ctx, Default())
 	return updateOrCreateWithDriver[T](ctx, drv, conditions, values)
 }
 

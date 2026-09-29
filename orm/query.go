@@ -1117,6 +1117,7 @@ func (q *Query[T]) Save(ctx context.Context, model *T) error {
 	if err := q.bindTxFromContextValue(ctx); err != nil {
 		return err
 	}
+	ctx = withModelHookLogger[T](ctx, q.mgr)
 	return saveWithDriver(ctx, q.driver, model)
 }
 
@@ -1136,6 +1137,7 @@ func (q *Query[T]) CreateMany(ctx context.Context, records []T) error {
 	if err := q.bindTxFromContextValue(ctx); err != nil {
 		return err
 	}
+	ctx = withModelHookLogger[T](ctx, q.mgr)
 	for i := range records {
 		if err := saveWithDriver(ctx, q.driver, &records[i]); err != nil {
 			return err
@@ -1156,6 +1158,7 @@ func (q *Query[T]) FirstOrCreate(ctx context.Context, conditions map[string]any,
 	if err := q.bindTxFromContextValue(ctx); err != nil {
 		return nil, err
 	}
+	ctx = withModelHookLogger[T](ctx, q.mgr)
 	return firstOrCreateWithDriver[T](ctx, q.driver, conditions, values)
 }
 
@@ -1170,6 +1173,7 @@ func (q *Query[T]) UpdateOrCreate(ctx context.Context, conditions map[string]any
 	if err := q.bindTxFromContextValue(ctx); err != nil {
 		return nil, err
 	}
+	ctx = withModelHookLogger[T](ctx, q.mgr)
 	return updateOrCreateWithDriver[T](ctx, q.driver, conditions, values)
 }
 
@@ -1185,6 +1189,7 @@ func (q *Query[T]) Create(ctx context.Context, data any) (*T, error) {
 	if err := q.bindTxFromContextValue(ctx); err != nil {
 		return nil, err
 	}
+	ctx = withModelHookLogger[T](ctx, q.mgr)
 	switch v := data.(type) {
 	case map[string]any:
 		model := new(T)

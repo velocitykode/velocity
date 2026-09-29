@@ -1180,7 +1180,7 @@ func Save[T any](ctx context.Context, m *Manager, model *T) error {
 	// in an AfterCommit hook fired through the auto-commit branch would
 	// reach neither sink wired to the Manager.
 	ctx = withTxRecoverDispatcher(ctx, func(ev *TxRecover) { m.dispatchEvent(ctx, ev) })
-	ctx = withTxRecoverLogger(ctx, m.log())
+	ctx = withModelHookLogger[T](ctx, m)
 	return saveWithDriver(ctx, drv, model)
 }
 
