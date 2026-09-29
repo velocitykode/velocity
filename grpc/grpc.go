@@ -34,7 +34,12 @@ var (
 	ErrGatewayNotInitialized = errors.New("grpc gateway not initialized")
 	ErrInvalidPort           = errors.New("invalid port")
 	ErrServerAlreadyRunning  = errors.New("server already running")
-	ErrNoEndpoint            = errors.New("no grpc endpoint configured for gateway")
+	// ErrBuildInProgress is returned by a Build called while another Build
+	// of the same server is constructing it: concurrently, or from the
+	// application code that Build runs (a CallOption or a registration
+	// function). Build never waits on another Build.
+	ErrBuildInProgress = errors.New("server build in progress")
+	ErrNoEndpoint      = errors.New("no grpc endpoint configured for gateway")
 )
 
 // Service is an interface that all gRPC services should implement

@@ -52,7 +52,13 @@ type Server struct {
 	// It stays true across a stop so a second Stop cannot mistake a just-stopped
 	// server for a built-but-never-served one and race that read. Distinct from
 	// running, which toggles off on stop.
-	served        bool
+	served bool
+
+	// building is set while a Build constructs the server outside the
+	// lock, so a concurrent or re-entrant Build returns ErrBuildInProgress
+	// instead of constructing a second one. Guarded by mu.
+	building bool
+
 	serverOptions []grpc.ServerOption
 	logger        contract.Logger
 
@@ -387,20 +393,159 @@ func (s *Server) RegisterService(regFunc RegistrationFunc) *Server {
 // MarkAuthConfigured), Build emits a one-shot warning that all RPCs are served
 // unauthenticated. It does not force auth: the start is fail-open with
 // visibility so the operator can add an auth interceptor.
+//
+// Build runs application code (the CallOptions, the registration
+// functions and the logger) without holding the server's lock, so that
+// code may call the server's accessors. A Build called while another one
+// is constructing the server, concurrently or from that application code,
+// returns ErrBuildInProgress at once; a Build after a completed one
+// returns nil.
 func (s *Server) Build() error {
+	b, err := s.beginBuild()
+	if b == nil {
+		return err
+	}
+	published := false
+	defer func() {
+		if !published {
+			s.abortBuild(b)
+		}
+	}()
+
+	if b.warnTLS {
+		b.logger.Warn("gRPC server starting without TLS credentials. Configure WithCreds before deploying to production",
+			"port", b.port,
+		)
+	}
+
+	// Create the listener (or adopt a caller-supplied one). No fallible
+	// check follows this point: past here Build runs to completion, so the
+	// listener and grpcServer are published together or not at all.
+	lis, err := newListener(b.providedListener, b.bindNetwork, b.bindAddress, b.port)
+	if err != nil {
+		return err
+	}
+	b.listener = lis
+
+	// Build server options with interceptor chains. The call lifecycle interceptor
+	// (interceptors.CallLifecycle) runs at both ends by default. The first
+	// occurrence owns the call: it correlates it, and when the call ends,
+	// however it ends (a handler or interceptor panic included), it writes
+	// the request line (when enabled), dispatches the terminal events and
+	// makes the one error report, all under the call's one span and
+	// request id. The last occurrence contains a handler panic on the
+	// goroutine that runs the handler, which an interceptor may have
+	// started. grpc-go does not auto-recover interceptor panics.
+	opts := make([]grpc.ServerOption, 0, len(b.serverOptions)+2)
+	opts = append(opts, b.serverOptions...)
+
+	var unary []grpc.UnaryServerInterceptor
+	var stream []grpc.StreamServerInterceptor
+	if b.disableDefaultCallLifecycle {
+		unary = append(unary, b.unaryInterceptors...)
+		stream = append(stream, b.streamInterceptors...)
+	} else {
+		callOpts := append([]interceptors.CallOption{
+			interceptors.WithLogger(b.logger),
+			interceptors.WithEventDispatcher(s.eventDispatchFunc()),
+			interceptors.WithReporter(b.reporter),
+		}, b.callOptions...)
+		calls := interceptors.CallLifecycle(callOpts...)
+		unary = append(append(append(unary, calls.Unary), b.unaryInterceptors...), calls.Unary)
+		stream = append(append(append(stream, calls.Stream), b.streamInterceptors...), calls.Stream)
+	}
+
+	if len(unary) > 0 {
+		opts = append(opts, grpc.ChainUnaryInterceptor(unary...))
+	}
+	if len(stream) > 0 {
+		opts = append(opts, grpc.ChainStreamInterceptor(stream...))
+	}
+
+	srv := grpc.NewServer(opts...)
+	for _, regFunc := range b.registrations {
+		regFunc(srv)
+	}
+	if b.enableReflection {
+		reflection.Register(srv)
+	}
+
+	s.mu.Lock()
+	s.grpcServer = srv
+	s.listener = lis
+	s.building = false
+	s.mu.Unlock()
+	published = true
+
+	// Warn (fail-open with visibility) when a service surface is exposed with
+	// no authentication interceptor wired. gRPC auth is opt-in: a server that
+	// registers services without an auth interceptor serves every RPC
+	// unauthenticated, and nothing else surfaces that. We only warn when there
+	// is something to protect (at least one registered service) and no auth was
+	// detected via UseAll(interceptors.Auth(...)) or MarkAuthConfigured. The
+	// warning fires once per Build; Build is idempotent (early-returns when the
+	// server is already built) so it never repeats for a given server.
+	if len(b.registrations) > 0 && !b.authConfigured {
+		b.logger.Warn("gRPC server is serving all RPCs unauthenticated: no auth interceptor detected. Add one via UseAll(interceptors.Auth(...)), or call MarkAuthConfigured() if you wired auth by hand",
+			"services", len(b.registrations),
+			"port", b.port,
+		)
+	}
+
+	// The production hard-fail on reflection already ran in beginBuild, so
+	// here reflection is known to be non-production: just warn.
+	if b.enableReflection {
+		b.logger.Warn("gRPC reflection is enabled - disable in production (GRPC_REFLECTION=false)")
+	}
+
+	return nil
+}
+
+// buildPlan is the configuration one Build constructs the server from,
+// copied under the lock so the construction runs without it.
+type buildPlan struct {
+	logger                      contract.Logger
+	reporter                    contract.Reporter
+	port                        string
+	bindNetwork, bindAddress    string
+	providedListener            net.Listener
+	serverOptions               []grpc.ServerOption
+	unaryInterceptors           []grpc.UnaryServerInterceptor
+	streamInterceptors          []grpc.StreamServerInterceptor
+	callOptions                 []interceptors.CallOption
+	registrations               []RegistrationFunc
+	disableDefaultCallLifecycle bool
+	enableReflection            bool
+	authConfigured              bool
+	warnTLS                     bool
+
+	// listener is the listener this Build bound or adopted, once it has.
+	listener net.Listener
+}
+
+// beginBuild runs Build's checks under the lock and, when they pass,
+// marks a Build in progress and returns the plan to construct from. It
+// returns a nil plan with a nil error when the server is already built,
+// and with an error when a Build is in progress or a check fails. It
+// calls no application code.
+func (s *Server) beginBuild() (*buildPlan, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.grpcServer != nil {
-		return nil // Already built
+		return nil, nil // Already built
+	}
+	if s.building {
+		return nil, ErrBuildInProgress
 	}
 
 	if s.logger == nil {
-		return fmt.Errorf("velocity/grpc: logger is required. Build the server with NewServer, which defaults to the standalone fallback logger, or use WithLogger(...)")
+		return nil, fmt.Errorf("velocity/grpc: logger is required. Build the server with NewServer, which defaults to the standalone fallback logger, or use WithLogger(...)")
 	}
 
 	// Enforce the production TLS guard before we start binding sockets so the
 	// error is unambiguous when an operator forgets to wire credentials.
+	warnTLS := false
 	if !s.tlsOpted {
 		// final: do not rename. GRPC_INSECURE is the 1.0 surface name for
 		// the production TLS opt-out; downstream operators may already key
@@ -412,119 +557,64 @@ func (s *Server) Build() error {
 		insecureOptOut := os.Getenv("GRPC_INSECURE") == "true"
 		isProd := contract.IsProductionEnv(s.environment)
 		if isProd && !insecureOptOut {
-			return fmt.Errorf("velocity/grpc: TLS credentials are required in production. Use WithCreds, or call WithExplicitTLS if you supplied credentials via WithServerOption(grpc.Creds(...)). Set GRPC_INSECURE=true to opt out for a known-internal mTLS mesh")
+			return nil, fmt.Errorf("velocity/grpc: TLS credentials are required in production. Use WithCreds, or call WithExplicitTLS if you supplied credentials via WithServerOption(grpc.Creds(...)). Set GRPC_INSECURE=true to opt out for a known-internal mTLS mesh")
 		}
-		if !isProd {
-			s.logger.Warn("gRPC server starting without TLS credentials. Configure WithCreds before deploying to production",
-				"port", s.port,
-			)
-		}
+		warnTLS = !isProd
 	}
 
 	// Reflection-in-production is a hard failure. Validate it BEFORE binding the
-	// socket so every fallible check returns while s.listener and s.grpcServer are
-	// still nil. Otherwise a failure here would leave an opened (or caller-supplied)
-	// listener behind, and a retried Build early-returns nil (grpcServer set),
-	// leaking it. The actual reflection.Register happens after the server is built.
+	// socket so every fallible check returns before a listener is opened.
 	if s.enableReflection && contract.IsProductionEnv(s.environment) {
-		return fmt.Errorf("velocity/grpc: reflection must not be enabled in production (set GRPC_REFLECTION=false or build without WithReflection(true))")
+		return nil, fmt.Errorf("velocity/grpc: reflection must not be enabled in production (set GRPC_REFLECTION=false or build without WithReflection(true))")
 	}
 
-	// Create listener (or adopt a caller-supplied one). No fallible check may
-	// follow this point: past here Build must run to completion so the listener
-	// and grpcServer are never left set on an error return.
-	lis, err := s.newListener()
-	if err != nil {
-		return err
+	s.building = true
+	return &buildPlan{
+		logger:                      s.logger,
+		reporter:                    s.reporter,
+		port:                        s.port,
+		bindNetwork:                 s.bindNetwork,
+		bindAddress:                 s.bindAddress,
+		providedListener:            s.providedListener,
+		serverOptions:               append([]grpc.ServerOption(nil), s.serverOptions...),
+		unaryInterceptors:           append([]grpc.UnaryServerInterceptor(nil), s.unaryInterceptors...),
+		streamInterceptors:          append([]grpc.StreamServerInterceptor(nil), s.streamInterceptors...),
+		callOptions:                 append([]interceptors.CallOption(nil), s.callOptions...),
+		registrations:               append([]RegistrationFunc(nil), s.registrations...),
+		disableDefaultCallLifecycle: s.disableDefaultCallLifecycle,
+		enableReflection:            s.enableReflection,
+		authConfigured:              s.authConfigured,
+		warnTLS:                     warnTLS,
+	}, nil
+}
+
+// abortBuild ends the Build b without publishing a server (its listener
+// failed to bind, or its application code panicked): it releases a
+// listener b bound itself (a caller-supplied one stays the caller's, as
+// Stop would treat it on the next Build) and clears the Build in progress
+// so a later Build can run.
+func (s *Server) abortBuild(b *buildPlan) {
+	if b.listener != nil && b.listener != b.providedListener {
+		_ = b.listener.Close()
 	}
-	s.listener = lis
-
-	// Build server options with interceptor chains. The call lifecycle interceptor
-	// (interceptors.CallLifecycle) runs at both ends by default. The first
-	// occurrence owns the call: it correlates it, and when the call ends,
-	// however it ends (a handler or interceptor panic included), it writes
-	// the request line (when enabled), dispatches the terminal events and
-	// makes the one error report, all under the call's one span and
-	// request id. The last occurrence contains a handler panic on the
-	// goroutine that runs the handler, which an interceptor may have
-	// started. grpc-go does not auto-recover interceptor panics. Local
-	// slices keep s.* fields unmutated so a second Build (or inspection)
-	// sees the configured set.
-	opts := make([]grpc.ServerOption, 0, len(s.serverOptions)+2)
-	opts = append(opts, s.serverOptions...)
-
-	var unary []grpc.UnaryServerInterceptor
-	var stream []grpc.StreamServerInterceptor
-	if s.disableDefaultCallLifecycle {
-		unary = append(unary, s.unaryInterceptors...)
-		stream = append(stream, s.streamInterceptors...)
-	} else {
-		callOpts := append([]interceptors.CallOption{
-			interceptors.WithLogger(s.logger),
-			interceptors.WithEventDispatcher(s.eventDispatchFunc()),
-			interceptors.WithReporter(s.reporter),
-		}, s.callOptions...)
-		calls := interceptors.CallLifecycle(callOpts...)
-		unary = append(append(append(unary, calls.Unary), s.unaryInterceptors...), calls.Unary)
-		stream = append(append(append(stream, calls.Stream), s.streamInterceptors...), calls.Stream)
-	}
-
-	if len(unary) > 0 {
-		opts = append(opts, grpc.ChainUnaryInterceptor(unary...))
-	}
-	if len(stream) > 0 {
-		opts = append(opts, grpc.ChainStreamInterceptor(stream...))
-	}
-
-	// Create server
-	s.grpcServer = grpc.NewServer(opts...)
-
-	// Register all services
-	for _, regFunc := range s.registrations {
-		regFunc(s.grpcServer)
-	}
-
-	// Warn (fail-open with visibility) when a service surface is exposed with
-	// no authentication interceptor wired. gRPC auth is opt-in: a server that
-	// registers services without an auth interceptor serves every RPC
-	// unauthenticated, and nothing else surfaces that. We only warn when there
-	// is something to protect (at least one registered service) and no auth was
-	// detected via UseAll(interceptors.Auth(...)) or MarkAuthConfigured. The
-	// warning fires once per Build; Build is idempotent (early-returns when the
-	// server is already built) so it never repeats for a given server.
-	if len(s.registrations) > 0 && !s.authConfigured {
-		s.logger.Warn("gRPC server is serving all RPCs unauthenticated: no auth interceptor detected. Add one via UseAll(interceptors.Auth(...)), or call MarkAuthConfigured() if you wired auth by hand",
-			"services", len(s.registrations),
-			"port", s.port,
-		)
-	}
-
-	// Enable reflection if configured. The production hard-fail already ran
-	// before the listener was bound (see above), so here reflection is known to
-	// be non-production: just warn and register.
-	if s.enableReflection {
-		s.logger.Warn("gRPC reflection is enabled - disable in production (GRPC_REFLECTION=false)")
-		reflection.Register(s.grpcServer)
-	}
-
-	return nil
+	s.mu.Lock()
+	s.building = false
+	s.mu.Unlock()
 }
 
 // newListener resolves the bind target set by the options, in precedence order:
 // a caller-supplied listener (WithListener) wins; else an explicit
 // network+address (WithBindAddress); else the legacy default of "tcp" on
-// ":"+port (all interfaces). Called under s.mu from Build.
-func (s *Server) newListener() (net.Listener, error) {
-	if s.providedListener != nil {
-		return s.providedListener, nil
+// ":"+port (all interfaces).
+func newListener(provided net.Listener, network, address, port string) (net.Listener, error) {
+	if provided != nil {
+		return provided, nil
 	}
-	network := s.bindNetwork
-	address := s.bindAddress
 	if network == "" {
 		network = "tcp"
 	}
 	if address == "" {
-		address = ":" + s.port
+		address = ":" + port
 	}
 	lis, err := net.Listen(network, address)
 	if err != nil {
