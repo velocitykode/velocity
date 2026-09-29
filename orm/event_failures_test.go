@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/eventemit"
 )
 
@@ -197,5 +198,88 @@ func TestManagerEventFailures_ConcurrentSetAndShareWhileQuerying(t *testing.T) {
 	}
 	if failed.Load() == 0 {
 		t.Error("no statement event reached the dispatcher")
+	}
+}
+
+// countingLogger counts debug lines by message and warn lines by message.
+type countingLogger struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func (l *countingLogger) add(level, msg string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.counts == nil {
+		l.counts = map[string]int{}
+	}
+	l.counts[level+" "+msg]++
+}
+
+func (l *countingLogger) count(level, prefix string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for k, v := range l.counts {
+		if strings.HasPrefix(k, level+" "+prefix) {
+			n += v
+		}
+	}
+	return n
+}
+
+func (l *countingLogger) Debug(msg string, _ ...any)      { l.add("debug", msg) }
+func (l *countingLogger) Info(msg string, _ ...any)       { l.add("info", msg) }
+func (l *countingLogger) Warn(msg string, _ ...any)       { l.add("warn", msg) }
+func (l *countingLogger) Error(msg string, _ ...any)      { l.add("error", msg) }
+func (l *countingLogger) Fatal(msg string, _ ...any)      { l.add("fatal", msg) }
+func (l *countingLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
+// The statement log (written at the instrumented pool's single statement
+// exit) and the pump's drop recording compose: every statement writes its
+// one query line whether its event was delivered or dropped, and every
+// dropped event is recorded once, with one policy line for the event name.
+func TestQueryEventPump_DropsComposeWithTheStatementLog(t *testing.T) {
+	m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:", LogQueries: true})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer m.Shutdown(context.Background())
+	logger := &countingLogger{}
+	m.SetLogger(logger)
+	shared := &eventemit.Failures{}
+	m.ShareEventFailures(shared)
+
+	release := make(chan struct{})
+	var first sync.Once
+	entered := make(chan struct{})
+	m.SetEventDispatcher(func(context.Context, any) error {
+		first.Do(func() { close(entered) })
+		<-release
+		return nil
+	})
+	if _, err := m.Exec(context.Background(), "SELECT 1"); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	<-entered
+	const statements = queryEventQueueSize + 20
+	for i := 0; i < statements; i++ {
+		if _, err := m.Exec(context.Background(), "SELECT 1"); err != nil {
+			t.Fatalf("exec %d: %v", i, err)
+		}
+	}
+	close(release)
+	if err := m.FlushQueryEvents(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	if got := logger.count("debug", "velocity/orm: query executed"); got != statements+1 {
+		t.Errorf("query lines = %d, want %d (one per statement, dropped or not)", got, statements+1)
+	}
+	if shared.Count() < 20 {
+		t.Errorf("dropped events recorded = %d, want at least 20", shared.Count())
+	}
+	if got := logger.count("warn", eventemit.FailureMessage); got != 1 {
+		t.Errorf("policy warn lines = %d, want 1 (first drop of orm.query.completed)", got)
 	}
 }
