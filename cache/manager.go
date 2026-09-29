@@ -618,7 +618,7 @@ func (m *Manager) rememberWith(
 		// We are the populater. Run the callback, write the real value to
 		// the value key, then drop the lock. On callback error, drop the
 		// lock so the next caller can re-elect.
-		value, cbErr := callback()
+		value, cbErr := rememberCallback(callback, unlockFn)
 		if cbErr != nil {
 			_ = unlockFn()
 			return nil, cbErr
@@ -658,6 +658,22 @@ func (m *Manager) rememberWith(
 		return nil, cbErr
 	}
 	return value, nil
+}
+
+// rememberCallback runs the populater's callback, user code run while the
+// populate lock is held. When the callback panics it drops the lock before
+// the panic goes on to the caller, so the next caller re-elects at once
+// instead of waiting out the lock's TTL.
+func rememberCallback(callback func() (interface{}, error), unlockFn func() error) (interface{}, error) {
+	returned := false
+	defer func() {
+		if !returned {
+			_ = unlockFn()
+		}
+	}()
+	value, err := callback()
+	returned = true
+	return value, err
 }
 
 // RememberForever gets from default cache or computes and stores forever. See
