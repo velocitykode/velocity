@@ -536,8 +536,9 @@ func (d *DefaultDispatcher) deliverDetached(ctx context.Context, event interface
 const detachedPanicMessage = "velocity/events: failure reporting panicked on a detached delivery"
 
 // containDetached runs fn, a call into failure reporting (the recorder or
-// the failure-report bridge) during a detached delivery of event, on the goroutine delivering it: a timer, a
-// debounce or coalesce callback, or the no-queue DispatchAsync goroutine. No caller is left to receive a
+// the failure-report bridge) during a detached delivery of event, on the
+// goroutine delivering it: a timer, a debounce or coalesce callback, or
+// the no-queue DispatchAsync goroutine. No caller is left to receive a
 // panic there, so a panic in fn is contained and written through the
 // framework's fallback logger: it never ends the process, and never skips
 // the rest of the delivery (the other listeners, their AsyncFailed and the
@@ -575,10 +576,13 @@ func (d *DefaultDispatcher) reportDetached(ctx context.Context, event interface{
 // a delivery's result, so fn is called once per delivery a listener
 // failed on (however many did), with the listeners' failures joined, on
 // the goroutine that delivered it, after each failure was dispatched as
-// its AsyncFailed and reported. The framework installs the app's failure
-// policy here, which counts the delivery and hands it to the failure hook.
-// A panic in fn is contained and written through the framework's fallback
-// logger: no caller is left to receive it. nil removes it. Safe for concurrent use with dispatching.
+// its AsyncFailed and reported. The unit differs on purpose: each failed
+// listener is reported once (its AsyncFailed), and the delivery is recorded
+// once. The framework installs the app's failure policy here, which counts
+// the delivery once and hands it to the failure hook once. A panic in fn is
+// contained and written through the framework's fallback logger: no caller
+// is left to receive it. nil removes it. Safe for concurrent use with
+// dispatching.
 func (d *DefaultDispatcher) SetDetachedFailureRecorder(fn func(ctx context.Context, err error, event any)) {
 	if fn == nil {
 		d.detachedFailures.Store(nil)

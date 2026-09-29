@@ -98,7 +98,9 @@ type Failures struct {
 	hooking map[uint64]struct{}
 }
 
-// Record applies the policy to one failed dispatch of event: it counts it,
+// Record applies the policy to one failed delivery of event, however many
+// of its listeners failed (a caller records the delivery once, with the
+// listeners' failures joined): it counts it,
 // logs it at warn level through logger (the framework's standalone fallback
 // logger when logger is nil) when it is the first failure of the event's
 // name, and calls the hook. A panic in the hook is recovered and counted as
