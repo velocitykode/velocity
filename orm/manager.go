@@ -94,7 +94,12 @@ var _ Database = (*Manager)(nil)
 // Manager manages database connections. It is the instance-based alternative
 // to the package-level global functions.
 type Manager struct {
-	mu            sync.RWMutex
+	mu sync.RWMutex
+	// wiring serialises logger handoffs: SetLogger and AddConnection hold
+	// it from storing or reading the manager's logger until every driver
+	// has it, so the last handoff to finish is the one the manager and all
+	// its connections hold. Taken before mu, never while holding it.
+	wiring        sync.Mutex
 	defaultDriver drivers.Driver
 	connections   map[string]drivers.Driver
 	defaultName   string
@@ -246,9 +251,12 @@ func (m *Manager) Connection(name string) (drivers.Driver, error) {
 
 // AddConnection registers a named database connection. Statements executed
 // against it dispatch through this manager's event dispatcher, and the
-// manager's logger, once SetLogger installed one, becomes the driver's
-// query logger.
+// manager's logger, once it has one (ManagerConfig.Logger or SetLogger),
+// becomes the driver's query logger. Serialised with SetLogger, so a
+// connection added while the logger changes ends on the manager's logger.
 func (m *Manager) AddConnection(name string, driver drivers.Driver) {
+	m.wiring.Lock()
+	defer m.wiring.Unlock()
 	m.attachStatementObserver(driver)
 	m.mu.Lock()
 	m.connections[name] = driver
@@ -990,8 +998,12 @@ func flushBufferedEntry(ctx context.Context, entry events.BufferedEvent, bus eve
 // default, the framework's standalone fallback logger, for both (it drops
 // the query log's debug lines and writes slow query warnings to standard
 // error).
-// Safe to call concurrently, and while the connections run queries.
+// Safe to call concurrently, and while the connections run queries: calls
+// are serialised with each other and with AddConnection, so when they
+// overlap the manager and every connection end on the same logger.
 func (m *Manager) SetLogger(logger contract.Logger) {
+	m.wiring.Lock()
+	defer m.wiring.Unlock()
 	m.mu.Lock()
 	m.logger = logger
 	receivers := make([]contract.LoggerAware, 0, 1+len(m.connections))
