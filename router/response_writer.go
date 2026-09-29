@@ -16,20 +16,24 @@ type responseWriter struct {
 	bytesWritten int64
 	wroteHeader  bool
 
-	// beforeFirstWriteOnce gates beforeFirstWriteFn so it runs at most
+	// beforeFirstWriteFired gates beforeFirstWriteFn so it runs at most
 	// once across the lifetime of the request, regardless of how the
 	// handler commits headers (explicit WriteHeader, implicit-via-Write,
 	// Hijack, etc.). Used by the save-at-end session middleware to
 	// flush Set-Cookie BEFORE the response headers are committed, which
 	// is the moment after which any further Header().Set is silently
-	// dropped on a real net/http connection.
-	beforeFirstWriteOnce sync.Once
-	beforeFirstWriteFn   func()
+	// dropped on a real net/http connection. It is claimed before the
+	// hook runs, so a hook that writes through the wrapper finds it
+	// claimed and does not run again (a sync.Once would wait on itself).
+	// The wrapper is used from the request's goroutine only.
+	beforeFirstWriteFired bool
+	beforeFirstWriteFn    func()
 }
 
 // responseWriterPool recycles responseWriter wrappers across requests so
 // ServeHTTP does not heap-allocate one per request. Acquire resets every
-// field (including a fresh sync.Once) so no state leaks between requests.
+// field (the BeforeFirstWrite gate included) so no state leaks between
+// requests.
 var responseWriterPool = sync.Pool{
 	New: func() any { return &responseWriter{} },
 }
@@ -43,9 +47,7 @@ func acquireResponseWriter(w http.ResponseWriter) *responseWriter {
 	rw.status = http.StatusOK // Default status
 	rw.bytesWritten = 0
 	rw.wroteHeader = false
-	// A used sync.Once cannot be re-armed; assign a fresh one so the
-	// BeforeFirstWrite hook can fire again for this request.
-	rw.beforeFirstWriteOnce = sync.Once{}
+	rw.beforeFirstWriteFired = false
 	rw.beforeFirstWriteFn = nil
 	return rw
 }
@@ -75,12 +77,11 @@ func releaseResponseWriter(rw *responseWriter) {
 // either way the boundary answers a 500 and reports it. Wrap has no
 // boundary and lets the panic propagate.
 //
-// fn must NOT call methods on the wrapper that themselves trip
-// WriteHeader (the sync.Once gate makes that safe against re-entry but
-// any output produced inside fn races against the immediately-following
-// WriteHeader from the caller).
+// fn may write through the wrapper: the gate is claimed before fn runs,
+// so the write does not fire fn again, and the WriteHeader that fired fn
+// is dropped when fn already committed the headers.
 func (rw *responseWriter) BeforeFirstWrite(fn func()) {
-	if fn == nil {
+	if fn == nil || rw.beforeFirstWriteFired {
 		return
 	}
 	// We deliberately do not lock around the assignment: BeforeFirstWrite
@@ -96,13 +97,15 @@ func (rw *responseWriter) BeforeFirstWrite(fn func()) {
 // pre-commit hook fires before headers are flushed to the underlying
 // http.ResponseWriter.
 func (rw *responseWriter) fireBeforeFirstWrite() {
-	rw.beforeFirstWriteOnce.Do(func() {
-		fn := rw.beforeFirstWriteFn
-		rw.beforeFirstWriteFn = nil
-		if fn != nil {
-			fn()
-		}
-	})
+	if rw.beforeFirstWriteFired {
+		return
+	}
+	rw.beforeFirstWriteFired = true
+	fn := rw.beforeFirstWriteFn
+	rw.beforeFirstWriteFn = nil
+	if fn != nil {
+		fn()
+	}
 }
 
 // firePending fires the BeforeFirstWrite hook when nothing fired it. No-op
@@ -132,6 +135,10 @@ func (rw *responseWriter) WriteHeader(statusCode int) {
 		return
 	}
 	rw.fireBeforeFirstWrite()
+	if rw.wroteHeader {
+		// The hook committed the response itself.
+		return
+	}
 	rw.ResponseWriter.WriteHeader(statusCode)
 	rw.status = statusCode
 	rw.wroteHeader = true
@@ -211,7 +218,7 @@ func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // call"). The wrapper's status field stays at its default http.StatusOK
 // because that is what Go's inner flush emits implicitly.
 //
-// Idempotent via the sync.Once gate inside fireBeforeFirstWrite, so
+// Idempotent via the gate inside fireBeforeFirstWrite, so
 // repeated Flush calls during a long stream (SSE keepalive ticks) only
 // fire the hook on the first call.
 func (rw *responseWriter) Flush() {
