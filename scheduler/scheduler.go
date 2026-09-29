@@ -13,6 +13,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -81,6 +82,13 @@ type Scheduler struct {
 	// through the scheduler's logger.
 	events eventemit.Emitter
 	runWg  sync.WaitGroup // tracks in-flight job goroutines
+
+	// working holds the goroutines running the scheduler's work: a tick
+	// (runDueJobs), a task's run, a RunInBackground task's completion.
+	// Each enters before it runs any user code and leaves after the last
+	// (for a run, after its release), so Shutdown, which would wait on
+	// them, refuses a call from one of them (ErrShutdownFromTask).
+	working goroutine.Set
 
 	// locker acquires named distributed locks for WithoutOverlapping() and
 	// OnOneServer() jobs. Defaults to an InMemoryLocker (process-local) so
@@ -491,13 +499,22 @@ func (s *Scheduler) ValidateJobs() {
 // honoring the context deadline. Returns ctx.Err() if the context expires
 // before all jobs complete.
 //
-// Cancelling the scheduler's internal run-context is the first thing
-// Shutdown does. Any Locker.Acquire that is in-flight on a slow remote
-// backend, plus any RunInBackground waiter goroutine, observe the
-// cancellation and unwind promptly so runWg can drain. Without this,
+// Called from inside the scheduler's own work (a task's run, hooks,
+// listeners, logger or lock release, a RunInBackground task's completion,
+// or a tick's callbacks, Locker or lines), it returns ErrShutdownFromTask
+// and changes nothing: it would wait on its caller.
+//
+// Past that check, cancelling the scheduler's internal run-context is
+// the first thing Shutdown does. Any Locker.Acquire that is in-flight on
+// a slow remote backend, plus any RunInBackground waiter goroutine,
+// observe the cancellation and unwind promptly so runWg can drain. Without this,
 // a stuck Acquire could let a job start AFTER Shutdown's caller
 // believed shutdown completed.
 func (s *Scheduler) Shutdown(ctx context.Context) error {
+	if s.working.Contains(goroutine.ID()) {
+		return ErrShutdownFromTask
+	}
+
 	s.mu.Lock()
 	if !s.running {
 		// Shutdown before the scheduler ever ran: a Run that arrives
@@ -567,6 +584,12 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 // releases it via deferred panic-safe Unlock so a panicking hook cannot
 // leak the lock for its full TTL.
 func (s *Scheduler) runDueJobs() {
+	// The tick runs user code (the scheduler-level callbacks, the Locker,
+	// the lines it writes); see working.
+	gid := goroutine.ID()
+	s.working.Enter(gid)
+	defer s.working.Leave(gid)
+
 	s.mu.RLock()
 	maintenance := s.maintenanceMode
 	jobs := make([]*Job, len(s.jobs))
@@ -730,6 +753,12 @@ func (s *Scheduler) runDueJobs() {
 			// done, so Shutdown cannot return, and the app close the
 			// logger, under the line. Note: Job.runInternal's inner
 			// panics are already recovered by Job.Run itself.
+			//
+			// The goroutine is in working from before the first user code
+			// until after the release (deferred first, so it runs last).
+			gid := goroutine.ID()
+			s.working.Enter(gid)
+			defer s.working.Leave(gid)
 			var log contract.Logger
 			defer func() {
 				if r := recover(); r != nil {
@@ -748,7 +777,7 @@ func (s *Scheduler) runDueJobs() {
 			// transfers ownership to a waiter goroutine that calls
 			// release after cmd.Wait (or after the runCtx-driven
 			// SIGTERM+SIGKILL grace period).
-			j.runInternal(runCtx, tctx, shutdownGrace, release)
+			j.runInternal(runCtx, tctx, shutdownGrace, release, &s.working)
 			// oneServerLock retained until TTL expiry (see note above).
 			_ = oneServerLock
 		}(job, jobName, oneServerLock, release)

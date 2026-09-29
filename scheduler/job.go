@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -238,7 +239,7 @@ func (j *Job) ShouldRun() bool {
 // scheduler can drain locks and runWg accurately even when the job is a
 // RunInBackground command whose OS process outlives Job.Run.
 func (j *Job) Run() error {
-	return j.runInternal(context.Background(), trace.StartSpan(context.Background(), trace.Parent{}), 0, nil)
+	return j.runInternal(context.Background(), trace.StartSpan(context.Background(), trace.Parent{}), 0, nil, nil)
 }
 
 // runInternal is the scheduler-facing entry point.
@@ -262,13 +263,17 @@ func (j *Job) Run() error {
 //	                paths, OR by the RunInBackground waiter goroutine
 //	                after cmd.Wait returns. May be nil for direct (test)
 //	                callers that have no scheduler-side bookkeeping.
+//	working       - the scheduler's set of goroutines running its work
+//	                (Scheduler.working). A RunInBackground waiter enters
+//	                it, as the caller's goroutine did, so a Shutdown from
+//	                the waiter's hooks is refused. Nil with a nil release.
 //
 // Background ownership transfer: for a RunInBackground command that
 // successfully started, ownership of `release` moves into the waiter
 // goroutine. runInternal returns nil to the caller in that case so
 // the scheduler's dispatch goroutine exits promptly; the waiter holds
 // the WithoutOverlapping lock until the OS process exits.
-func (j *Job) runInternal(ctx, tctx context.Context, shutdownGrace time.Duration, release func()) error {
+func (j *Job) runInternal(ctx, tctx context.Context, shutdownGrace time.Duration, release func(), working *goroutine.Set) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -482,7 +487,7 @@ func (j *Job) runInternal(ctx, tctx context.Context, shutdownGrace time.Duration
 			// cleanup at the top of runInternal skips the
 			// clearRunningFlag + release calls (the waiter owns both).
 			released = true
-			j.spawnBackgroundWaiter(ctx, shutdownGrace, cmd, outFile, jobName, tctx, startTime, afterCallbacks, onSuccessCallbacks, onFailureCallbacks, clearRunningFlag, release)
+			j.spawnBackgroundWaiter(ctx, shutdownGrace, cmd, outFile, jobName, tctx, startTime, afterCallbacks, onSuccessCallbacks, onFailureCallbacks, clearRunningFlag, release, working)
 			// Release ownership transferred; return without invoking
 			// finishSync.
 			return nil
@@ -522,11 +527,19 @@ func (j *Job) spawnBackgroundWaiter(
 	onFailureCallbacks []func(error),
 	clearRunningFlag func(),
 	release func(),
+	working *goroutine.Set,
 ) {
 	// Not async.Go: the supervisor needs a job-scoped recover that
 	// dispatches ScheduledTaskFailed and runs the resource-release
 	// teardown (outFile.Close, clearRunningFlag, release) even on panic.
 	go func() { //safe-goroutine: job-scoped recovery + resource release, see comment above
+		// In working until after the release below (deferred first, so
+		// it runs last): see Scheduler.working.
+		if working != nil {
+			gid := goroutine.ID()
+			working.Enter(gid)
+			defer working.Leave(gid)
+		}
 		// Panic-safe: a misbehaving callback must not leak the lock.
 		defer func() {
 			if r := recover(); r != nil {

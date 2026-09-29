@@ -5,6 +5,16 @@ import "errors"
 var (
 	ErrJobRunning = errors.New("velocity/scheduler: job already running")
 
+	// ErrShutdownFromTask is returned by Scheduler.Shutdown called from
+	// inside work the shutdown would wait for: a task's run (its callback,
+	// its hooks, the listeners of its events, the logger writing its lines,
+	// the release of its lock), a RunInBackground task's completion, or a
+	// tick (the scheduler-level Before and After callbacks, the Locker, the
+	// lines it writes). Shutdown changes nothing then: waiting would wait
+	// on the caller itself. Stop the scheduler from outside its work, for
+	// example from a goroutine the task starts.
+	ErrShutdownFromTask = errors.New("velocity/scheduler: shutdown called from inside a task or tick it would wait for")
+
 	// ErrInvalidCronStep is returned by ParseExpression when a step
 	// pattern */n has n<=0. The pre-fix code path called
 	// makeRange(min,max,0) which divided by zero and panicked the
