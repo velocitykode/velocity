@@ -55,13 +55,6 @@ type Server struct {
 	// running, which toggles off on stop.
 	served bool
 
-	// drained is made by the stop that ends a running server, the one that
-	// owns its drain, and closed when grpc-go's stop for that server
-	// returns. A GracefulStop or Shutdown that overlaps waits on it, so it
-	// never reports success before the drain it overlaps has finished.
-	// Guarded by mu; nil until a stop ended a running server.
-	drained chan struct{}
-
 	// build is the Build constructing the server outside the lock, nil
 	// when none is. A concurrent or re-entrant Build returns
 	// ErrBuildInProgress instead of constructing a second one, and a stop
@@ -84,9 +77,12 @@ type Server struct {
 	// whether to refuse a cleartext production start.
 	tlsOpted bool
 
-	// stops records the goroutines running this server's stop and serve
-	// work, so a stop called back from there does not wait on it.
-	stops stopGuard
+	// stops coordinates the stops: the drain the stop that ends a running
+	// server owns, which a GracefulStop or Shutdown that overlaps waits on
+	// so it never reports success before that drain has finished, and the
+	// goroutines running stop and serve work, so a stop called back from
+	// there does not wait on it. Its drain is guarded by mu.
+	stops stopCoordinator
 
 	// Interceptors
 	unaryInterceptors  []grpc.UnaryServerInterceptor
@@ -709,7 +705,7 @@ func (s *Server) Start() error {
 		s.mu.Unlock()
 		return ErrServerAlreadyRunning
 	}
-	if s.drained != nil {
+	if s.stops.ended() != nil {
 		// A stop ended this server; grpc-go cannot serve it again.
 		s.mu.Unlock()
 		return grpc.ErrServerStopped
@@ -747,7 +743,7 @@ func (s *Server) StartAsync() error {
 		s.mu.Unlock()
 		return ErrServerAlreadyRunning
 	}
-	if s.drained != nil {
+	if s.stops.ended() != nil {
 		// A stop ended this server; grpc-go cannot serve it again.
 		s.mu.Unlock()
 		return grpc.ErrServerStopped
@@ -850,10 +846,8 @@ func (s *Server) GracefulStop() {
 // work, so a stop they call back into does not wait on them, then endStop
 // dispatches ServerStopped.
 func (s *Server) ownStop(st stopPlan, line string, stop func(*grpc.Server)) {
-	s.stops.run(func() {
-		s.logLine(func(l contract.Logger) { l.Info(line) })
-		s.stopTransport(st, stop)
-	})
+	s.stops.run(func() { s.logLine(func(l contract.Logger) { l.Info(line) }) })
+	s.stops.drain(st.drained, func() { stop(st.srv) })
 	s.endStop(st)
 }
 
@@ -914,12 +908,11 @@ func (s *Server) beginStop(force bool) stopPlan {
 		s.running = false
 		st.start = s.startTime
 		s.startTime = time.Time{}
-		s.drained = make(chan struct{})
-		st.drained = s.drained
+		st.drained = s.stops.begin()
 	case s.grpcServer != nil && s.served:
 		// A stop already ended this server: force reaches its drain, and a
 		// graceful stop waits on it.
-		st.srv, st.drained = s.grpcServer, s.drained
+		st.srv, st.drained = s.grpcServer, s.stops.ended()
 		if !force && st.drained == nil {
 			st.srv = nil
 		}
@@ -941,13 +934,6 @@ func (s *Server) beginStop(force bool) stopPlan {
 		s.build = st.release
 	}
 	return st
-}
-
-// stopTransport runs the owning stop's grpc-go stop and then marks the
-// drain finished for every stop that overlaps it.
-func (s *Server) stopTransport(st stopPlan, stop func(*grpc.Server)) {
-	defer close(st.drained)
-	stop(st.srv)
 }
 
 // endStop finishes the stop st after grpc-go stopped: it closes an unserved
@@ -1049,14 +1035,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			s.logLine(func(l contract.Logger) { l.Info("gRPC server gracefully stopping") })
 		})
 		async.Go(func() {
-			s.stops.run(func() { s.stopTransport(st, (*grpc.Server).GracefulStop) })
+			s.stops.drain(st.drained, st.srv.GracefulStop)
 		})
 	case nested && st.drained != nil && !closed(st.drained):
 		return errShutdownNested
 	}
 	var err error
 	if st.drained != nil {
-		err = awaitStop(ctx, st.drained, st.srv.Stop)
+		err = s.stops.await(ctx, st.drained, st.srv.Stop)
 	}
 	s.endStop(st)
 	return err

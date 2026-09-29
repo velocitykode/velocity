@@ -56,15 +56,12 @@ type Gateway struct {
 	// instead of constructing a second one. Guarded by mu.
 	building bool
 
-	// drained is made by the stop that ends a running gateway, the one that
-	// owns its drain, and closed when that stop's net/http Close or
-	// Shutdown returns. An overlapping Shutdown waits on it or its own ctx.
-	// Guarded by mu; nil until a stop ended a running gateway.
-	drained chan struct{}
-
-	// stops records the goroutines running the gateway's stop line, so a
-	// stop called back from there does not wait on it.
-	stops stopGuard
+	// stops coordinates the stops: the drain the stop that ends a running
+	// gateway owns, closed when its net/http Close or Shutdown returns,
+	// which an overlapping Shutdown waits on or its own ctx, and the
+	// goroutines running the stop line, so a stop called back from there
+	// does not wait on it. Its drain is guarded by mu.
+	stops stopCoordinator
 
 	// HTTP server timeout/header bounds applied to httpServer in Build().
 	// Defaulted in NewGateway() to the conservative package constants so a
@@ -667,7 +664,7 @@ func (g *Gateway) StartWithContext(ctx context.Context) error {
 		g.mu.Unlock()
 		return ErrServerAlreadyRunning
 	}
-	if g.drained != nil {
+	if g.stops.ended() != nil {
 		// A stop ended this gateway; net/http cannot serve it again.
 		g.mu.Unlock()
 		return http.ErrServerClosed
@@ -697,7 +694,7 @@ func (g *Gateway) StartAsyncWithContext(ctx context.Context) error {
 		g.mu.Unlock()
 		return ErrServerAlreadyRunning
 	}
-	if g.drained != nil {
+	if g.stops.ended() != nil {
 		// A stop ended this gateway; net/http cannot serve it again.
 		g.mu.Unlock()
 		return http.ErrServerClosed
@@ -732,11 +729,10 @@ func (g *Gateway) Stop() {
 	server, owner, drained := g.beginStop()
 	switch {
 	case owner:
-		defer close(drained)
 		g.stops.run(func() {
 			fallbacklog.Write(g.logger, func(l contract.Logger) { l.Info("HTTP gateway stopping") })
 		})
-		_ = server.Close()
+		g.stops.drain(drained, func() { _ = server.Close() })
 	case server != nil:
 		_ = server.Close()
 	}
@@ -767,13 +763,12 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 		// The drain outlives this caller's ctx, so an overlapping Shutdown
 		// with a later deadline still waits for it to end.
 		async.Go(func() {
-			defer close(drained)
-			drainErr = server.Shutdown(context.Background())
+			g.stops.drain(drained, func() { drainErr = server.Shutdown(context.Background()) })
 		})
 	} else if nested && !closed(drained) {
 		return errGatewayShutdownNested
 	}
-	if err := awaitStop(ctx, drained, func() { _ = server.Close() }); err != nil {
+	if err := g.stops.await(ctx, drained, func() { _ = server.Close() }); err != nil {
 		return err
 	}
 	return drainErr // read after drained closed, which its write precedes
@@ -794,10 +789,9 @@ func (g *Gateway) beginStop() (server *http.Server, owner bool, drained chan str
 	switch {
 	case g.httpServer != nil && g.running:
 		g.running = false
-		g.drained = make(chan struct{})
-		return g.httpServer, true, g.drained
-	case g.httpServer != nil && g.drained != nil:
-		return g.httpServer, false, g.drained
+		return g.httpServer, true, g.stops.begin()
+	case g.httpServer != nil && g.stops.ended() != nil:
+		return g.httpServer, false, g.stops.ended()
 	}
 	return nil, false, nil
 }
