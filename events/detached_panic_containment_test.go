@@ -3,19 +3,15 @@ package events
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
-
-// detachedChildEnv names the scenario a re-executed test binary runs.
-const detachedChildEnv = "VELOCITY_DETACHED_PANIC_CHILD"
 
 // debouncedFailure is a FailureEvent delivered later by a debouncing
 // dispatcher, so the failure-report bridge sees it on the timer goroutine.
@@ -28,20 +24,21 @@ func (debouncedFailure) FailureSource() contract.ErrorSource { return contract.E
 // detachedScenario delivers one failing event detached, the way its name
 // says, with a failure recorder and a failure reporter that panic as the
 // name says, and returns how many times the recorder ran.
-func detachedScenario(name string) (recorded int32) {
+func detachedScenario(t *testing.T, name string) (recorded int32) {
 	var calls atomic.Int32
+	panics := hostile.New(t, hostile.Panic, nil)
 	recorderPanics := strings.HasPrefix(name, "recorder/")
 	reporterPanics := strings.HasPrefix(name, "reporter/")
 	wire := func(d *DefaultDispatcher) {
 		d.SetDetachedFailureRecorder(func(context.Context, error, any) {
 			calls.Add(1)
 			if recorderPanics {
-				panic("recorder broke")
+				panics.Run()
 			}
 		})
 		d.SetFailureReporter(func(context.Context, any, error) {
 			if reporterPanics {
-				panic("reporter broke")
+				panics.Run()
 			}
 		})
 		d.Listen("evt", failingListener{})
@@ -88,29 +85,24 @@ func detachedScenario(name string) (recorded int32) {
 // or coalesced delivery) has no caller left to receive the panic: it is
 // contained on the goroutine delivering the event, written through the
 // fallback logger, and the delivery still reaches the recorder once. A
-// reporter's panic never kills the process or skips the accounting.
+// reporter's panic never kills the process or skips the accounting. Each
+// scenario runs in a child process, so a panic that escapes fails it
+// alone.
 func TestDetachedDelivery_PanickingRecorderOrReporterIsContained(t *testing.T) {
-	if name := os.Getenv(detachedChildEnv); name != "" {
-		fmt.Printf("recorded=%d\n", detachedScenario(name))
-		return
-	}
 	for _, name := range []string{
 		"recorder/after", "recorder/async", "recorder/debounce", "recorder/coalesce",
 		"reporter/after", "reporter/async", "reporter/debounce", "reporter/debounce-failure-event", "reporter/coalesce",
 	} {
 		t.Run(name, func(t *testing.T) {
-			cmd := exec.Command(os.Args[0], "-test.run", "^TestDetachedDelivery_PanickingRecorderOrReporterIsContained$", "-test.count=1")
-			cmd.Env = append(os.Environ(), detachedChildEnv+"="+name)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("the panic ended the process: %v\n%s", err, out)
-			}
-			if !strings.Contains(string(out), "recorded=1\n") {
-				t.Errorf("recorder runs: want recorded=1 in\n%s", out)
-			}
-			if !strings.Contains(string(out), detachedPanicMessage) {
-				t.Errorf("no fallback line %q for the contained panic in\n%s", detachedPanicMessage, out)
-			}
+			hostile.Isolated(t, func() {
+				out := fallbacklogtest.Capture(t)
+				if got := detachedScenario(t, name); got != 1 {
+					t.Errorf("recorder runs = %d, want 1", got)
+				}
+				if !strings.Contains(out.String(), detachedPanicMessage) {
+					t.Errorf("no fallback line %q for the contained panic in\n%s", detachedPanicMessage, out.String())
+				}
+			})
 		})
 	}
 }
