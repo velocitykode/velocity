@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
 // blockingLogger blocks every Error call until release is closed, after
@@ -30,9 +31,11 @@ func (l *blockingLogger) Error(string, ...any) {
 func (l *blockingLogger) Fatal(string, ...any)            {}
 func (l *blockingLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
-// SetLogger returns only after every line in flight through the logger it
-// replaces has been written, so the caller may close that logger.
-func TestSetLogger_WaitsForInFlightWrites(t *testing.T) {
+// SetLogger never waits on a line in flight through the logger it
+// replaces: a replacement from another goroutine, or from inside the
+// logger's own method, returns at once, and the next line goes to the new
+// logger.
+func TestSetLogger_DoesNotWaitForALineInFlight(t *testing.T) {
 	t.Cleanup(func() { SetLogger(nil) })
 	SetPanicHook(nil)
 	l := newBlockingLogger()
@@ -43,22 +46,56 @@ func TestSetLogger_WaitsForInFlightWrites(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("panic line never reached the logger")
 	}
+	defer close(l.release)
 
+	next := &captureLogger{}
 	done := make(chan struct{})
 	go func() {
-		SetLogger(nil)
+		SetLogger(next)
 		close(done)
 	}()
 	select {
 	case <-done:
-		t.Fatal("SetLogger returned while a line was still being written through the old logger")
-	case <-time.After(100 * time.Millisecond):
-	}
-	close(l.release)
-	select {
-	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("SetLogger did not return after the in-flight line finished")
+		t.Fatal("SetLogger waited on the line in flight through the old logger")
+	}
+	if got := GetLogger(); got != contract.Logger(next) {
+		t.Fatalf("GetLogger = %T, want the new logger", got)
+	}
+}
+
+// selfReplacingLogger installs its successor from inside its own Error.
+type selfReplacingLogger struct {
+	blockingLogger
+	next contract.Logger
+}
+
+func (l *selfReplacingLogger) Error(string, ...any) { SetLogger(l.next) }
+
+// A logger that replaces the package logger from inside its own method
+// does not deadlock.
+func TestSetLogger_FromInsideTheLogger(t *testing.T) {
+	t.Cleanup(func() { SetLogger(nil) })
+	SetPanicHook(nil)
+	next := &captureLogger{}
+	SetLogger(&selfReplacingLogger{next: next})
+	Go(func() { panic("replace me") })
+	deadline := time.Now().Add(2 * time.Second)
+	for GetLogger() != contract.Logger(next) {
+		if time.Now().After(deadline) {
+			t.Fatal("the logger's own SetLogger never took effect")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// Nil, and the zero state, install the standalone fallback logger.
+func TestSetLogger_NilIsTheFallback(t *testing.T) {
+	t.Cleanup(func() { SetLogger(nil) })
+	SetLogger(&captureLogger{})
+	SetLogger(nil)
+	if _, ok := GetLogger().(fallbacklog.Logger); !ok {
+		t.Fatalf("GetLogger after SetLogger(nil) = %T, want fallbacklog.Logger", GetLogger())
 	}
 }
 

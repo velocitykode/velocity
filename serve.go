@@ -311,8 +311,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// panic hook, whose reports end in the logger, and the async and trace
 	// package loggers): the previous live app's is installed again, or the
 	// packages' defaults, and another app's installation is left alone.
-	// The release returns once every package-logger line in flight has been
-	// written. Then close the logger last so all prior steps can still log.
+	// The release waits on nothing: a line or report already in flight may
+	// still reach the logger after it is closed (the built-in file logger
+	// sends a late warning or error to the standalone fallback logger).
+	// Then close the logger last so all prior steps can still log.
 	releasePackageState(a)
 	if a.Log != nil {
 		if sd, ok := a.Log.(contract.ShutdownAware); ok {

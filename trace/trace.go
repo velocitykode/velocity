@@ -170,16 +170,14 @@ func generateHexID(byteLength int) (string, error) {
 // would amplify the original failure, so the one-shot is intentional.
 func warnRandUnavailable() {
 	randFallbackWarnOnce.Do(func() {
-		logger.Use(func(l contract.Logger) {
-			l.Warn("velocity/trace: crypto/rand unavailable; emitting fallback trace markers. APM correlation is impossible until entropy is restored")
-		})
+		GetLogger().Warn("velocity/trace: crypto/rand unavailable; emitting fallback trace markers. APM correlation is impossible until entropy is restored")
 	})
 }
 
-// logger is the package logger: SetLogger may run on one goroutine while
-// a request goroutine writes the entropy warning through logger.Use, and
-// SetLogger returns only once that write has finished.
-var logger fallbacklog.Slot
+// logger is the package logger SetLogger installed; nil means the fallback
+// logger. SetLogger may run on one goroutine while a request goroutine
+// reads it for the entropy warning: it only swaps the pointer.
+var logger atomic.Pointer[contract.Logger]
 
 // SetLogger installs the logger the package writes its one warning to
 // (crypto/rand unavailable, fallback trace markers in use). Nil restores
@@ -188,19 +186,27 @@ var logger fallbacklog.Slot
 // built by velocity.New hands it the app logger, the newest live app's
 // logger is the installed one, and an app's Shutdown hands it back to the
 // previous live app's logger, or the fallback when none is left. Safe for
-// concurrent use. SetLogger returns only after the package's write in
-// flight through the logger it replaces, if any, has finished, so the
-// caller may close that logger once it returns. It must not be called from
-// inside the package logger's own methods.
+// concurrent use, including from inside the package logger's own methods.
+// A warning that starts after SetLogger returns goes to l; one already
+// being written may still reach the logger it replaces, even after that
+// logger is closed. The framework's built-in file logger sends such a late
+// warning to the standalone fallback logger; a custom logger's behaviour
+// after close is its own.
 func SetLogger(l contract.Logger) {
-	logger.Set(l)
+	if l == nil {
+		logger.Store(nil)
+		return
+	}
+	logger.Store(&l)
 }
 
 // GetLogger returns the package logger: the one SetLogger installed, or
-// the fallback logger. Safe for concurrent use. A caller's writes through
-// the returned logger are not waited for by SetLogger.
+// the fallback logger. Safe for concurrent use.
 func GetLogger() contract.Logger {
-	return logger.Get()
+	if p := logger.Load(); p != nil {
+		return *p
+	}
+	return fallbacklog.Logger{}
 }
 
 // WithTrace returns a new context with the given trace ID and span ID.

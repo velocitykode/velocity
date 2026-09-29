@@ -101,10 +101,8 @@ func installPanicHook(a *App, hook func(context.Context, any)) {
 // previous live app's values are installed, or the packages' defaults when
 // no app is left. When another app owns it, nothing installed changes.
 // App.Shutdown calls it before closing the logger, and the cleanup of a
-// failed New calls it; an app with no entry is a no-op. The async and
-// trace SetLogger calls it makes return once every line in flight through
-// the logger they replace has been written, so the caller may close that
-// logger afterwards.
+// failed New calls it; an app with no entry is a no-op. It waits on no
+// line in flight through the logger it replaces.
 func releasePackageState(a *App) {
 	if a == nil {
 		return

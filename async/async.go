@@ -23,10 +23,10 @@ type PanicError = panicerr.Error
 func FromRecovered(r any) error { return panicerr.FromRecovered(r) }
 
 var (
-	// logger is the package logger. The package writes through it with
-	// logger.Use, so a SetLogger replacing it returns only once those
-	// writes have finished.
-	logger fallbacklog.Slot
+	// logger is the package logger SetLogger installed; nil means the
+	// fallback logger. A write reads it once (GetLogger), and SetLogger only
+	// swaps the pointer.
+	logger atomic.Pointer[contract.Logger]
 
 	panicHook atomic.Pointer[func(context.Context, any) bool]
 )
@@ -37,23 +37,30 @@ var (
 // one, and an app's Shutdown hands it back to the previous live app's
 // logger, or the default when none is left. Nil restores the default, the
 // framework's standalone fallback logger, which writes warnings and errors
-// to standard error. Safe for concurrent use. SetLogger returns only after
-// every line the package was writing through the logger it replaces has
-// been written, so the caller may close that logger once it returns. It
-// must not be called from inside the package logger's own methods.
+// to standard error. Safe for concurrent use, including from inside the
+// package logger's own methods. A line that starts after SetLogger returns
+// goes to l; a line already being written may still reach the logger it
+// replaces, even after that logger is closed. The framework's built-in
+// file logger sends such a late warning or error to the standalone
+// fallback logger; a custom logger's behaviour after close is its own.
 func SetLogger(l contract.Logger) {
-	logger.Set(l)
+	if l == nil {
+		logger.Store(nil)
+		return
+	}
+	logger.Store(&l)
 }
 
 // GetLogger returns the current package-level logger. Safe for concurrent
 // reads.
 //
 // Callers can use the returned logger to emit messages tagged with the same
-// sink the async package uses for panic logs. Their writes are not waited
-// for by SetLogger: a logger closed after SetLogger replaced it may still
-// receive them.
+// sink the async package uses for panic logs.
 func GetLogger() contract.Logger {
-	return logger.Get()
+	if p := logger.Load(); p != nil {
+		return *p
+	}
+	return fallbacklog.Logger{}
 }
 
 // SetPanicHook installs an interceptor invoked for every panic recovered
@@ -120,7 +127,7 @@ func logRecoveredPanic(l contract.Logger, p any, kvs ...any) {
 		l.Error("async: panic recovered", attrs...)
 		return
 	}
-	logger.Use(func(pl contract.Logger) { pl.Error("async: panic recovered", attrs...) })
+	GetLogger().Error("async: panic recovered", attrs...)
 }
 
 // handlePanic handles panics in goroutines: the installed panic hook takes
@@ -288,7 +295,7 @@ func GoCtx(ctx context.Context, fn func(ctx context.Context)) {
 			// fn may still be running. We log and return; the responsibility
 			// for fn returning rests with fn (it should respect ctx).
 			if err := ctx.Err(); err != nil {
-				logger.Use(func(l contract.Logger) { l.Error("async: GoCtx context done", "error", err) })
+				GetLogger().Error("async: GoCtx context done", "error", err)
 			}
 		}
 	}()

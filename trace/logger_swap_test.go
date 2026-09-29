@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
 // blockingWarnLogger blocks every Warn call until release is closed,
@@ -26,9 +27,9 @@ func (l *blockingWarnLogger) Error(string, ...any)            {}
 func (l *blockingWarnLogger) Fatal(string, ...any)            {}
 func (l *blockingWarnLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
 
-// SetLogger returns only after the entropy warning in flight through the
-// logger it replaces has been written.
-func TestSetLogger_WaitsForTheInFlightWarning(t *testing.T) {
+// SetLogger never waits on the entropy warning in flight through the
+// logger it replaces.
+func TestSetLogger_DoesNotWaitForTheWarningInFlight(t *testing.T) {
 	withRandReader(t, failingReader{})
 	l := &blockingWarnLogger{entered: make(chan struct{}), release: make(chan struct{})}
 	SetLogger(l)
@@ -40,6 +41,7 @@ func TestSetLogger_WaitsForTheInFlightWarning(t *testing.T) {
 		warnRandUnavailable()
 	}()
 	t.Cleanup(func() { <-warned })
+	defer close(l.release)
 	select {
 	case <-l.entered:
 	case <-time.After(2 * time.Second):
@@ -52,13 +54,10 @@ func TestSetLogger_WaitsForTheInFlightWarning(t *testing.T) {
 	}()
 	select {
 	case <-done:
-		t.Fatal("SetLogger returned while the warning was still being written through the old logger")
-	case <-time.After(100 * time.Millisecond):
-	}
-	close(l.release)
-	select {
-	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("SetLogger did not return after the warning finished")
+		t.Fatal("SetLogger waited on the warning in flight through the old logger")
+	}
+	if _, ok := GetLogger().(fallbacklog.Logger); !ok {
+		t.Fatalf("GetLogger after SetLogger(nil) = %T, want fallbacklog.Logger", GetLogger())
 	}
 }
