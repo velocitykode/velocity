@@ -17,6 +17,7 @@ import (
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/grpc/interceptors"
 	"github.com/velocitykode/velocity/grpc/internal/callhook"
+	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -82,7 +83,7 @@ type Server struct {
 	// so it never reports success before that drain has finished, and the
 	// goroutines running stop and serve work, so a stop called back from
 	// there does not wait on it. Its drain is guarded by mu.
-	stops stopCoordinator
+	stops drain.Coordinator
 
 	// Interceptors
 	unaryInterceptors  []grpc.UnaryServerInterceptor
@@ -705,7 +706,7 @@ func (s *Server) Start() error {
 		s.mu.Unlock()
 		return ErrServerAlreadyRunning
 	}
-	if s.stops.ended() != nil {
+	if s.stops.Ended() != nil {
 		// A stop ended this server; grpc-go cannot serve it again.
 		s.mu.Unlock()
 		return grpc.ErrServerStopped
@@ -719,7 +720,7 @@ func (s *Server) Start() error {
 	// The serve loop calls a caller-supplied listener's Addr and Accept,
 	// so it runs as stop work: a stop from there must not wait on it.
 	var err error
-	s.stops.run(func() {
+	s.stops.Run(func() {
 		if started != nil {
 			s.dispatchEvent(context.Background(), started)
 		}
@@ -743,7 +744,7 @@ func (s *Server) StartAsync() error {
 		s.mu.Unlock()
 		return ErrServerAlreadyRunning
 	}
-	if s.stops.ended() != nil {
+	if s.stops.Ended() != nil {
 		// A stop ended this server; grpc-go cannot serve it again.
 		s.mu.Unlock()
 		return grpc.ErrServerStopped
@@ -759,7 +760,7 @@ func (s *Server) StartAsync() error {
 	// server can be restarted after a crash.
 	async.GoWithRecover(func() {
 		// As in Start, the serve loop runs as stop work.
-		s.stops.run(func() {
+		s.stops.Run(func() {
 			if started != nil {
 				s.dispatchEvent(context.Background(), started)
 			}
@@ -793,7 +794,7 @@ func (s *Server) StartAsync() error {
 // grpc-go calls while it stops or serves) runs the stop on its own
 // goroutine and returns before the transport has stopped.
 func (s *Server) Stop() {
-	nested := s.stops.nested()
+	nested := s.stops.Nested()
 	st := s.beginStop(true)
 	switch {
 	case st.owner && nested:
@@ -827,7 +828,7 @@ func (s *Server) Stop() {
 // that handler, as grpc-go's does, so it never returns: from a handler,
 // use Shutdown with a deadline, or Stop.
 func (s *Server) GracefulStop() {
-	nested := s.stops.nested()
+	nested := s.stops.Nested()
 	st := s.beginStop(false)
 	switch {
 	case st.owner && nested:
@@ -846,8 +847,8 @@ func (s *Server) GracefulStop() {
 // work, so a stop they call back into does not wait on them, then endStop
 // dispatches ServerStopped.
 func (s *Server) ownStop(st stopPlan, line string, stop func(*grpc.Server)) {
-	s.stops.run(func() { s.logLine(func(l contract.Logger) { l.Info(line) }) })
-	s.stops.drain(st.drained, func() { stop(st.srv) })
+	s.stops.Run(func() { s.logLine(func(l contract.Logger) { l.Info(line) }) })
+	s.stops.Drain(st.drained, func() { stop(st.srv) })
 	s.endStop(st)
 }
 
@@ -908,11 +909,11 @@ func (s *Server) beginStop(force bool) stopPlan {
 		s.running = false
 		st.start = s.startTime
 		s.startTime = time.Time{}
-		st.drained = s.stops.begin()
+		st.drained = s.stops.Begin()
 	case s.grpcServer != nil && s.served:
 		// A stop already ended this server: force reaches its drain, and a
 		// graceful stop waits on it.
-		st.srv, st.drained = s.grpcServer, s.stops.ended()
+		st.srv, st.drained = s.grpcServer, s.stops.Ended()
 		if !force && st.drained == nil {
 			st.srv = nil
 		}
@@ -1024,25 +1025,25 @@ func (s *Server) serverStartedLocked() *grpcevents.ServerStarted {
 // the grpc-go server, so nothing the caller tears down next is used after
 // Shutdown returns.
 func (s *Server) Shutdown(ctx context.Context) error {
-	nested := s.stops.nested()
+	nested := s.stops.Nested()
 	st := s.beginStop(false)
 	switch {
 	case st.owner && nested:
 		async.Go(func() { s.ownStop(st, "gRPC server gracefully stopping", (*grpc.Server).GracefulStop) })
 		return errShutdownNested
 	case st.owner:
-		s.stops.run(func() {
+		s.stops.Run(func() {
 			s.logLine(func(l contract.Logger) { l.Info("gRPC server gracefully stopping") })
 		})
 		async.Go(func() {
-			s.stops.drain(st.drained, st.srv.GracefulStop)
+			s.stops.Drain(st.drained, st.srv.GracefulStop)
 		})
-	case nested && st.drained != nil && !closed(st.drained):
+	case nested && st.drained != nil && !drain.Closed(st.drained):
 		return errShutdownNested
 	}
 	var err error
 	if st.drained != nil {
-		err = s.stops.await(ctx, st.drained, st.srv.Stop)
+		err = s.stops.Await(ctx, st.drained, st.srv.Stop)
 	}
 	s.endStop(st)
 	return err
