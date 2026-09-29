@@ -38,12 +38,6 @@ func SetSigningLogger(l contract.Logger) {
 	signingLogger = l
 }
 
-// signingLog returns the signing logger, or the fallback logger when none
-// is installed. The caller holds signingMu.
-func signingLog() contract.Logger {
-	return fallbacklog.Resolve(signingLogger)
-}
-
 // SigningOptions tunes how ConfigureSigningWith reacts when no signing
 // key is available. Callers that only need the default (refuse to boot
 // without a key outside dev/test) should use ConfigureSigning.
@@ -85,15 +79,29 @@ func ConfigureSigning(rawSigningKey, appKey string) error {
 //
 // Must be called from velocity.New() after config is loaded.
 func ConfigureSigningWith(rawSigningKey, appKey string, opts SigningOptions) error {
+	signingMu.Lock()
+	warning, err := configureSigningLocked(rawSigningKey, appKey, opts)
+	logger := signingLogger
+	signingMu.Unlock()
+
+	// The warning is written after the lock is released: the signing
+	// logger is user code, and one that reads IsSigningEnabled or
+	// configures signing itself must not wait on signingMu.
+	if warning != "" {
+		fallbacklog.Write(logger, func(l contract.Logger) { l.Warn(warning) })
+	}
+	return err
+}
+
+// configureSigningLocked applies ConfigureSigningWith under signingMu and
+// returns the warning to write once the lock is released, "" for none.
+func configureSigningLocked(rawSigningKey, appKey string, opts SigningOptions) (warning string, err error) {
 	key := rawSigningKey
 	useAppKey := false
 	if key == "" {
 		key = appKey
 		useAppKey = true
 	}
-
-	signingMu.Lock()
-	defer signingMu.Unlock()
 
 	if key == "" {
 		switch {
@@ -102,35 +110,33 @@ func ConfigureSigningWith(rawSigningKey, appKey string, opts SigningOptions) err
 			// without signing. The warning is the only signal that the
 			// fleet is running unsigned, so it stays even when a
 			// logger is wired.
-			signingLog().Warn("velocity/queue: QUEUE_ACCEPT_UNSIGNED=true; payload signing disabled. Set QUEUE_SIGNING_KEY or APP_KEY to enable HMAC verification.")
 			signingKey = nil
 			signingEnabled = false
-			return nil
+			return "velocity/queue: QUEUE_ACCEPT_UNSIGNED=true; payload signing disabled. Set QUEUE_SIGNING_KEY or APP_KEY to enable HMAC verification.", nil
 		case opts.AllowUnsignedInDev:
 			// Dev/test profile: unsigned payloads are tolerated so
 			// unit tests and local-dev runs do not require a key.
-			signingLog().Warn("velocity/queue: no signing key found (QUEUE_SIGNING_KEY or APP_KEY); payload signing disabled in dev/test environment")
 			signingKey = nil
 			signingEnabled = false
-			return nil
+			return "velocity/queue: no signing key found (QUEUE_SIGNING_KEY or APP_KEY); payload signing disabled in dev/test environment", nil
 		default:
 			// Fail-closed: refuse to boot. An empty signing key in
 			// production means any payload an attacker can place into
 			// the queue store will be executed by a worker.
 			signingKey = nil
 			signingEnabled = false
-			return ErrSigningKeyRequired
+			return "", ErrSigningKeyRequired
 		}
 	}
 
 	if useAppKey {
-		signingLog().Warn("velocity/queue: using APP_KEY for queue signing. Set a dedicated QUEUE_SIGNING_KEY for production environments")
+		warning = "velocity/queue: using APP_KEY for queue signing. Set a dedicated QUEUE_SIGNING_KEY for production environments"
 		// Derive a queue-specific key from APP_KEY using HKDF to avoid
 		// using the same key material for different purposes.
 		r := hkdf.New(sha256.New, []byte(key), nil, []byte("queue-signing"))
 		derived := make([]byte, 32)
 		if _, err := io.ReadFull(r, derived); err != nil {
-			return fmt.Errorf("velocity/queue: failed to derive signing key from app_key: %w", err)
+			return warning, fmt.Errorf("velocity/queue: failed to derive signing key from app_key: %w", err)
 		}
 		signingKey = derived
 	} else {
@@ -141,12 +147,12 @@ func ConfigureSigningWith(rawSigningKey, appKey string, opts SigningOptions) err
 		if len(key) < minSigningKeyBytes {
 			signingKey = nil
 			signingEnabled = false
-			return fmt.Errorf("%w (got %d)", ErrSigningKeyTooShort, len(key))
+			return "", fmt.Errorf("%w (got %d)", ErrSigningKeyTooShort, len(key))
 		}
 		signingKey = []byte(key)
 	}
 	signingEnabled = true
-	return nil
+	return warning, nil
 }
 
 // SetSigningKey configures the HMAC key for queue payload signing.
