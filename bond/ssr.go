@@ -10,9 +10,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/neturl"
 )
@@ -66,8 +66,10 @@ type HTTPGateway struct {
 	// host, but can be tightened via WithAllowPrivate(false).
 	allowPrivate bool
 
-	mu              sync.RWMutex
-	eventDispatcher func(ctx context.Context, event interface{}) error
+	// events holds the event dispatcher SSRRenderFailed goes to and
+	// applies the failure policy to a failed dispatch (see
+	// internal/eventemit).
+	events eventemit.Emitter
 }
 
 // GatewayOption configures an HTTPGateway at construction time.
@@ -189,9 +191,7 @@ func validateSSRTarget(target string) error {
 // SetEventDispatcher wires the framework event bus so dispatch failures
 // flow out as SSRRenderFailed events. Safe to call from any goroutine.
 func (g *HTTPGateway) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.eventDispatcher = fn
+	g.events.Set(fn)
 }
 
 // Dispatch POSTs the page JSON to the SSR server and returns the
@@ -365,15 +365,11 @@ func (g *HTTPGateway) handleFailure(ctx context.Context, page Page, payload ssrS
 // failure (the SSR server's own message) and ThrowOnError returns as err,
 // which wraps it.
 func (g *HTTPGateway) handleFailureWrapped(ctx context.Context, page Page, payload ssrServerError, failure, err error) (*SSRResponse, error) {
-	g.mu.RLock()
-	dispatch := g.eventDispatcher
-	g.mu.RUnlock()
-
-	if dispatch != nil {
+	if g.events.Installed() {
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		_ = dispatch(ctx, SSRRenderFailed{
+		g.events.Emit(ctx, SSRRenderFailed{
 			EventMeta:      eventmeta.Current(ctx),
 			Component:      page.Component,
 			URL:            page.URL,

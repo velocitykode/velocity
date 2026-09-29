@@ -16,6 +16,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/grpc/interceptors"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
@@ -95,11 +96,12 @@ type Server struct {
 	// Registration functions to call after server is built
 	registrations []RegistrationFunc
 
-	// eventDispatcher is optional; when set via SetEventDispatcher, the
-	// Server emits events to the framework dispatcher. Guarded by eventMu
-	// so framework wiring and event-firing hot paths never race.
-	eventMu         sync.RWMutex
-	eventDispatcher func(ctx context.Context, event any) error
+	// events holds the optional event dispatcher (SetEventDispatcher)
+	// the Server emits events to and applies the failure policy to a
+	// failed dispatch (see internal/eventemit). It stores and reads the
+	// dispatcher atomically, so framework wiring and event-firing hot
+	// paths never race.
+	events eventemit.Emitter
 }
 
 // ServerOption configures the Server
@@ -132,6 +134,7 @@ func NewServer(opts ...ServerOption) *Server {
 	// Without a logger (or with a nil one) the server writes through the
 	// framework's standalone fallback logger.
 	s.logger = fallbacklog.Resolve(s.logger)
+	s.events.UseLogger(func() contract.Logger { return s.logger })
 
 	// Surface any env-parsing diagnostics now that a logger exists, so a
 	// non-positive / unparseable / oversize GRPC_MAX_*_SIZE is never silently
@@ -633,7 +636,7 @@ func (s *Server) GracefulStop() {
 // recorded, or returns nil when no event dispatcher is installed. Caller
 // must hold s.mu.
 func (s *Server) serverStartedLocked() *grpcevents.ServerStarted {
-	if !s.hasEventDispatcher() {
+	if !s.events.Installed() {
 		return nil
 	}
 	return &grpcevents.ServerStarted{
@@ -655,7 +658,7 @@ func (s *Server) stoppedEventLocked() *grpcevents.ServerStopped {
 	}
 	start := s.startTime
 	s.startTime = time.Time{}
-	if !s.hasEventDispatcher() {
+	if !s.events.Installed() {
 		return nil
 	}
 	now := time.Now()
@@ -698,35 +701,25 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // Passing a nil fn clears the dispatcher and reverts the Server to a
 // no-op emission state.
 func (s *Server) SetEventDispatcher(fn func(ctx context.Context, event any) error) {
-	s.eventMu.Lock()
-	s.eventDispatcher = fn
-	s.eventMu.Unlock()
-}
-
-// hasEventDispatcher reports whether an event dispatcher is installed, so
-// an event is built only when one is.
-func (s *Server) hasEventDispatcher() bool {
-	s.eventMu.RLock()
-	defer s.eventMu.RUnlock()
-	return s.eventDispatcher != nil
+	s.events.Set(fn)
 }
 
 // dispatchEvent fires an event if a dispatcher is configured. The
 // caller-supplied ctx is propagated so listeners observe request-scoped
-// values. Failures from the dispatcher, errors and panics alike, are
-// swallowed: the gRPC request path must never fail because of an event sink.
+// values. A failed dispatch, an error or a panic, goes to the failure
+// policy (counted, its event's first failure logged through the Server's
+// logger) and never reaches the caller: the gRPC request path must never
+// fail because of an event sink.
 func (s *Server) dispatchEvent(ctx context.Context, evt any) {
-	s.eventMu.RLock()
-	fn := s.eventDispatcher
-	s.eventMu.RUnlock()
-	if fn == nil {
-		return
-	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	defer func() { _ = recover() }()
-	_ = fn(ctx, evt)
+	defer func() {
+		if p := recover(); p != nil {
+			s.events.Fail(ctx, panicerr.FromRecovered(p), evt)
+		}
+	}()
+	s.events.Emit(ctx, evt)
 }
 
 // eventDispatchFunc adapts the Server's dispatcher to the interceptors

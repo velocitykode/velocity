@@ -22,6 +22,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 )
@@ -601,12 +602,13 @@ type SessionScheme struct {
 	// rotation (tests, JWT-only configs).
 	csrfRotator contract.CSRFTokenRotator
 
-	// eventDispatcher is the framework event dispatcher installed by
-	// auth.Manager.SetEventDispatcher. Used to emit
+	// events holds the framework event dispatcher installed by
+	// auth.Manager.SetEventDispatcher and applies the failure policy to a
+	// failed dispatch (see internal/eventemit). Used to emit
 	// auth.PasswordNeedsRehashEvent after a successful Attempt against
 	// a stored hash that no longer matches the configured Hasher
-	// parameters (M-08). Nil disables event emission.
-	eventDispatcher func(ctx context.Context, event any) error
+	// parameters (M-08). No dispatcher disables event emission.
+	events eventemit.Emitter
 }
 
 // loadUserStore returns the active auth.UserStore via atomic load.
@@ -884,18 +886,18 @@ func (g *SessionScheme) SetCSRFTokenRotator(rotator contract.CSRFTokenRotator) {
 // the auth.EventDispatcherReceiver interface; consumers normally do not
 // need to call this directly.
 func (g *SessionScheme) SetEventDispatcher(fn func(ctx context.Context, event any) error) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.eventDispatcher = fn
+	// A failed dispatch is logged through the scheme's logger as it is at
+	// the time of the failure. Installed here, not in the constructor, so
+	// a scheme built as a literal gets it too.
+	g.events.UseLogger(g.currentLogger)
+	g.events.Set(fn)
 }
 
-// getEventDispatcher returns the installed dispatcher under a read lock
-// so concurrent Attempt() readers observe a consistent value across a
-// SetEventDispatcher swap.
-func (g *SessionScheme) getEventDispatcher() func(ctx context.Context, event any) error {
+// currentLogger returns the installed logger under a read lock, or nil.
+func (g *SessionScheme) currentLogger() contract.Logger {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	return g.eventDispatcher
+	return g.logger
 }
 
 // getCSRFTokenRotator returns the installed rotator under a read lock so
@@ -1604,7 +1606,7 @@ func (g *SessionScheme) Attempt(w http.ResponseWriter, r *http.Request, credenti
 	// listeners can re-hash on the next login. The event carries the
 	// user identifier only; the plaintext stays inside this stack
 	// frame and is not surfaced to subscribers.
-	maybeEmitRehashEvent(r.Context(), g.getEventDispatcher(), hasher, user, "session", g.logWarn)
+	maybeEmitRehashEvent(r.Context(), &g.events, hasher, user, "session")
 
 	recordAttemptSuccess(r, keys, throttler, &g.loginAdmitter)
 	return true, nil

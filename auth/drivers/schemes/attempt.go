@@ -9,6 +9,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
@@ -246,30 +247,27 @@ func recordAttemptSuccess(r *http.Request, keys []string, throttler contract.Log
 	}
 }
 
-// maybeEmitRehashEvent fires auth.PasswordNeedsRehashEvent through dispatch
+// maybeEmitRehashEvent fires auth.PasswordNeedsRehashEvent through events
 // when hasher.NeedsRehash reports the stored hash is out of date (M-08).
-// No-op when no dispatcher has been wired. A dispatcher error must not
-// block the already-successful login: it is reported through warn when one
-// is supplied and swallowed otherwise.
+// No-op when no dispatcher has been wired. A failed dispatch never blocks
+// the already-successful login: it goes to the failure policy (counted,
+// its event's first failure logged; see internal/eventemit).
 func maybeEmitRehashEvent(
 	ctx context.Context,
-	dispatch func(ctx context.Context, event any) error,
+	events *eventemit.Emitter,
 	hasher auth.Hasher,
 	user auth.Authenticatable,
 	schemeName string,
-	warn func(msg string, kvs ...any),
 ) {
-	if dispatch == nil || hasher == nil || user == nil {
+	if !events.Installed() || hasher == nil || user == nil {
 		return
 	}
 	if !hasher.NeedsRehash(user.GetAuthPassword()) {
 		return
 	}
-	if err := dispatch(ctx, auth.PasswordNeedsRehashEvent{
+	events.Emit(ctx, auth.PasswordNeedsRehashEvent{
 		EventMeta:  eventmeta.Current(ctx),
 		UserID:     user.GetAuthIdentifier(),
 		SchemeName: schemeName,
-	}); err != nil && warn != nil {
-		warn("velocity/auth: password needs-rehash event dispatch failed", "user_id", user.GetAuthIdentifier(), "error", err)
-	}
+	})
 }

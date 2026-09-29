@@ -8,6 +8,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	"github.com/velocitykode/velocity/grpc/grpcevents"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
@@ -47,7 +48,7 @@ func loggingStream(cfg *LoggingConfig) grpc.StreamServerInterceptor {
 		start := time.Now()
 
 		// Dispatch stream started event
-		dispatchStreamStarted(ctx, info.FullMethod, start, cfg.EventDispatcher)
+		dispatchStreamStarted(ctx, info.FullMethod, start, cfg.events)
 
 		// Call handler
 		err := handler(srv, wrapped)
@@ -56,14 +57,14 @@ func loggingStream(cfg *LoggingConfig) grpc.StreamServerInterceptor {
 		logRequest(ctx, info.FullMethod, start, err, cfg)
 
 		// Dispatch stream completion event
-		dispatchStreamCompleted(ctx, info.FullMethod, start, err, cfg.EventDispatcher)
+		dispatchStreamCompleted(ctx, info.FullMethod, start, err, cfg.events)
 
 		return err
 	}
 }
 
-func dispatchStreamStarted(ctx context.Context, method string, start time.Time, dispatcher grpcevents.EventDispatchFunc) {
-	if dispatcher == nil {
+func dispatchStreamStarted(ctx context.Context, method string, start time.Time, events *eventemit.Emitter) {
+	if !eventsInstalled(events) {
 		return
 	}
 
@@ -75,7 +76,7 @@ func dispatchStreamStarted(ctx context.Context, method string, start time.Time, 
 
 	meta := eventmeta.Current(ctx)
 	meta.At = start
-	dispatchEvent(ctx, dispatcher, &grpcevents.StreamStarted{
+	dispatchEvent(ctx, events, &grpcevents.StreamStarted{
 		EventMeta: meta,
 		Method:    method,
 		Protocol:  protocol,
@@ -86,8 +87,8 @@ func dispatchStreamStarted(ctx context.Context, method string, start time.Time, 
 // dispatchStreamCompleted dispatches the end of a stream: StreamFailed when
 // the handler returned an error, then StreamCompleted, the terminal event
 // of every stream.
-func dispatchStreamCompleted(ctx context.Context, method string, start time.Time, err error, dispatcher grpcevents.EventDispatchFunc) {
-	if dispatcher == nil {
+func dispatchStreamCompleted(ctx context.Context, method string, start time.Time, err error, events *eventemit.Emitter) {
+	if !eventsInstalled(events) {
 		return
 	}
 
@@ -103,7 +104,7 @@ func dispatchStreamCompleted(ctx context.Context, method string, start time.Time
 	}
 
 	if err != nil {
-		dispatchEvent(ctx, dispatcher, &grpcevents.StreamFailed{
+		dispatchEvent(ctx, events, &grpcevents.StreamFailed{
 			EventMeta:  meta,
 			Method:     method,
 			Protocol:   protocol,
@@ -114,7 +115,7 @@ func dispatchStreamCompleted(ctx context.Context, method string, start time.Time
 			TeamID:     teamID,
 		})
 	}
-	dispatchEvent(ctx, dispatcher, &grpcevents.StreamCompleted{
+	dispatchEvent(ctx, events, &grpcevents.StreamCompleted{
 		EventMeta:  meta,
 		Method:     method,
 		Protocol:   protocol,

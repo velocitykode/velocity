@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/velocitykode/velocity/grpc/grpcevents"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
@@ -84,6 +85,10 @@ type AuthConfig struct {
 	// EventDispatcher routes grpcevents.AuthFailed to a listener when
 	// token extraction or validation fails.
 	EventDispatcher grpcevents.EventDispatchFunc
+
+	// events holds EventDispatcher and applies the failure policy to a
+	// failed dispatch; Auth builds it once the options are applied.
+	events *eventemit.Emitter
 }
 
 // AuthOption configures auth behavior
@@ -133,6 +138,7 @@ func Auth(validator AuthValidator, opts ...AuthOption) InterceptorPair {
 	for _, opt := range opts {
 		opt(cfg)
 	}
+	cfg.events = newEventEmitter(cfg.EventDispatcher, nil)
 
 	return InterceptorPair{
 		Unary:  authUnary(cfg),
@@ -221,10 +227,10 @@ func authenticate(ctx context.Context, method string, cfg *AuthConfig) (context.
 // dispatchAuthFailed emits grpcevents.AuthFailed with masked token and trace
 // context. No-op when no dispatcher is configured.
 func dispatchAuthFailed(ctx context.Context, method, token string, err error, cfg *AuthConfig) {
-	if cfg.EventDispatcher == nil {
+	if !eventsInstalled(cfg.events) {
 		return
 	}
-	dispatchEvent(ctx, cfg.EventDispatcher, &grpcevents.AuthFailed{
+	dispatchEvent(ctx, cfg.events, &grpcevents.AuthFailed{
 		EventMeta: eventmeta.Current(ctx),
 		Method:    method,
 		Token:     maskToken(token),

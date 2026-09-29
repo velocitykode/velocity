@@ -18,6 +18,7 @@ import (
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/eventemit"
 )
 
 const (
@@ -65,10 +66,12 @@ type JWTScheme struct {
 	// matches the bcrypt-verify path; defaults to bcrypt cost 10.
 	hasher auth.Hasher
 
-	// eventDispatcher emits auth.PasswordNeedsRehashEvent after a
-	// successful Attempt against a stored hash that no longer matches
-	// the configured Hasher parameters (M-08). Nil disables emission.
-	eventDispatcher func(ctx context.Context, event any) error
+	// events holds the dispatcher that emits auth.PasswordNeedsRehashEvent
+	// after a successful Attempt against a stored hash that no longer
+	// matches the configured Hasher parameters (M-08), and applies the
+	// failure policy to a failed dispatch (see internal/eventemit). No
+	// dispatcher disables emission.
+	events eventemit.Emitter
 }
 
 var (
@@ -214,18 +217,7 @@ func (g *JWTScheme) getLoginChallenge() auth.LoginChallenge {
 // the auth.EventDispatcherReceiver interface; consumers normally do not
 // need to call this directly.
 func (g *JWTScheme) SetEventDispatcher(fn func(ctx context.Context, event any) error) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.eventDispatcher = fn
-}
-
-// getEventDispatcher returns the installed dispatcher under a read lock
-// so concurrent Attempt() readers observe a consistent value across a
-// SetEventDispatcher swap.
-func (g *JWTScheme) getEventDispatcher() func(ctx context.Context, event any) error {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.eventDispatcher
+	g.events.Set(fn)
 }
 
 // NewJWTScheme creates a new JWT scheme.
@@ -485,7 +477,7 @@ func (g *JWTScheme) Attempt(w http.ResponseWriter, r *http.Request, credentials 
 	// stored hash no longer matches the configured Hasher parameters. A
 	// dispatch error is swallowed (nil warn): a transient subscriber
 	// failure must not block the already-successful login.
-	maybeEmitRehashEvent(r.Context(), g.getEventDispatcher(), hasher, user, "jwt", nil)
+	maybeEmitRehashEvent(r.Context(), &g.events, hasher, user, "jwt")
 
 	recordAttemptSuccess(r, keys, throttler, &g.loginAdmitter)
 	return true, nil

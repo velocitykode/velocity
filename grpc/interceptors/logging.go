@@ -11,8 +11,10 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/latency"
+	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -41,6 +43,10 @@ type LoggingConfig struct {
 
 	// EventDispatcher dispatches gRPC events. If nil, no events are dispatched.
 	EventDispatcher grpcevents.EventDispatchFunc
+
+	// events holds EventDispatcher and applies the failure policy to a
+	// failed dispatch; Logging builds it once the options are applied.
+	events *eventemit.Emitter
 }
 
 // LoggingOption configures logging behavior
@@ -107,6 +113,7 @@ func Logging(opts ...LoggingOption) InterceptorPair {
 	for _, opt := range opts {
 		opt(cfg)
 	}
+	cfg.events = newEventEmitter(cfg.EventDispatcher, cfg.Logger)
 
 	return InterceptorPair{
 		Unary:  loggingUnary(cfg),
@@ -206,14 +213,38 @@ func redactMetadata(md map[string][]string) map[string][]string {
 	return redacted
 }
 
-// dispatchEvent swallows dispatcher errors and panics: an event sink must
-// never fail or panic a request.
-func dispatchEvent(ctx context.Context, dispatcher grpcevents.EventDispatchFunc, event interface{}) {
-	if dispatcher == nil {
+// newEventEmitter returns the emitter an interceptor dispatches its events
+// through: it holds dispatch (none when nil) and logs a failed dispatch
+// through logger (the framework's standalone fallback logger when nil).
+func newEventEmitter(dispatch grpcevents.EventDispatchFunc, logger contract.Logger) *eventemit.Emitter {
+	e := &eventemit.Emitter{}
+	if dispatch != nil {
+		e.Set(dispatch)
+	}
+	e.UseLogger(func() contract.Logger { return logger })
+	return e
+}
+
+// eventsInstalled reports whether events holds a dispatcher, so an
+// interceptor builds an event only when one would receive it.
+func eventsInstalled(events *eventemit.Emitter) bool {
+	return events != nil && events.Installed()
+}
+
+// dispatchEvent hands event to the dispatcher events holds. A failed
+// dispatch, an error or a panic, goes to the failure policy (counted, its
+// event's first failure logged) and never reaches the request: an event
+// sink must never fail or panic a request.
+func dispatchEvent(ctx context.Context, events *eventemit.Emitter, event interface{}) {
+	if !eventsInstalled(events) {
 		return
 	}
-	defer func() { _ = recover() }()
-	_ = dispatcher(ctx, event)
+	defer func() {
+		if p := recover(); p != nil {
+			events.Fail(ctx, panicerr.FromRecovered(p), event)
+		}
+	}()
+	events.Emit(ctx, event)
 }
 
 // detectProtocol determines if the request came via HTTP gateway or direct gRPC

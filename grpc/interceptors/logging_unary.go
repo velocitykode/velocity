@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/velocitykode/velocity/grpc/grpcevents"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
@@ -30,7 +31,7 @@ func loggingUnary(cfg *LoggingConfig) grpc.UnaryServerInterceptor {
 		start := time.Now()
 
 		// Dispatch request started event
-		dispatchRequestStarted(ctx, info.FullMethod, start, cfg.EventDispatcher)
+		dispatchRequestStarted(ctx, info.FullMethod, start, cfg.events)
 
 		// Call handler
 		resp, err := handler(ctx, req)
@@ -39,14 +40,14 @@ func loggingUnary(cfg *LoggingConfig) grpc.UnaryServerInterceptor {
 		logRequest(ctx, info.FullMethod, start, err, cfg)
 
 		// Dispatch completion event
-		dispatchRequestCompleted(ctx, info.FullMethod, start, err, cfg.EventDispatcher)
+		dispatchRequestCompleted(ctx, info.FullMethod, start, err, cfg.events)
 
 		return resp, err
 	}
 }
 
-func dispatchRequestStarted(ctx context.Context, method string, start time.Time, dispatcher grpcevents.EventDispatchFunc) {
-	if dispatcher == nil {
+func dispatchRequestStarted(ctx context.Context, method string, start time.Time, events *eventemit.Emitter) {
+	if !eventsInstalled(events) {
 		return
 	}
 
@@ -58,7 +59,7 @@ func dispatchRequestStarted(ctx context.Context, method string, start time.Time,
 
 	meta := eventmeta.Current(ctx)
 	meta.At = start
-	dispatchEvent(ctx, dispatcher, &grpcevents.RequestStarted{
+	dispatchEvent(ctx, events, &grpcevents.RequestStarted{
 		EventMeta: meta,
 		Method:    method,
 		Protocol:  protocol,
@@ -81,8 +82,8 @@ func statusCodeOf(err error) codes.Code {
 // dispatchRequestCompleted dispatches the end of a unary call: RequestFailed
 // when the handler returned an error, then RequestCompleted, the terminal
 // event of every call.
-func dispatchRequestCompleted(ctx context.Context, method string, start time.Time, err error, dispatcher grpcevents.EventDispatchFunc) {
-	if dispatcher == nil {
+func dispatchRequestCompleted(ctx context.Context, method string, start time.Time, err error, events *eventemit.Emitter) {
+	if !eventsInstalled(events) {
 		return
 	}
 
@@ -99,7 +100,7 @@ func dispatchRequestCompleted(ctx context.Context, method string, start time.Tim
 	}
 
 	if err != nil {
-		dispatchEvent(ctx, dispatcher, &grpcevents.RequestFailed{
+		dispatchEvent(ctx, events, &grpcevents.RequestFailed{
 			EventMeta:  meta,
 			Method:     method,
 			Protocol:   protocol,
@@ -110,7 +111,7 @@ func dispatchRequestCompleted(ctx context.Context, method string, start time.Tim
 			TeamID:     teamID,
 		})
 	}
-	dispatchEvent(ctx, dispatcher, &grpcevents.RequestCompleted{
+	dispatchEvent(ctx, events, &grpcevents.RequestCompleted{
 		EventMeta:  meta,
 		Method:     method,
 		Protocol:   protocol,

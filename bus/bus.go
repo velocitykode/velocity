@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/pipeline"
@@ -111,11 +112,13 @@ type Bus struct {
 	// every dispatch. It is built lazily on first Dispatch and invalidated
 	// (Store(nil)) under mu whenever Through appends middleware. A non-nil
 	// *compiledPipeline with empty stages means "built, no middleware".
-	composed      atomic.Pointer[compiledPipeline]
-	queue         QueuePusher
-	queueName     string
-	dispatchEvent func(ctx context.Context, event any) error
-	mu            sync.RWMutex
+	composed  atomic.Pointer[compiledPipeline]
+	queue     QueuePusher
+	queueName string
+	// events holds the event dispatcher and applies the failure policy to
+	// a failed dispatch (see internal/eventemit).
+	events eventemit.Emitter
+	mu     sync.RWMutex
 }
 
 // New creates a new Bus instance with a randomly generated id. The bus is
@@ -241,12 +244,11 @@ func (b *Bus) SetQueueName(name string) {
 	b.queueName = name
 }
 
-// SetEventDispatcher sets the event dispatcher function.
-// This follows the same instance-based event pattern as other velocity packages.
+// SetEventDispatcher sets the event dispatcher function; nil removes it.
+// This follows the same instance-based event pattern as other velocity
+// packages. Safe to call while commands are dispatched.
 func (b *Bus) SetEventDispatcher(fn func(ctx context.Context, event any) error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.dispatchEvent = fn
+	b.events.Set(fn)
 }
 
 // Dispatch dispatches a command synchronously through middleware to its handler.
@@ -255,8 +257,9 @@ func (b *Bus) Dispatch(cmd Command) error {
 	pipe := b.compiledPipeline()
 
 	b.mu.RLock()
-	handler, dispatchEvent := b.resolveHandler(cmd), b.dispatchEvent
+	handler := b.resolveHandler(cmd)
 	b.mu.RUnlock()
+	emit := b.events.Installed()
 
 	if handler == nil {
 		return fmt.Errorf("bus: no handler registered for %T", cmd)
@@ -265,7 +268,7 @@ func (b *Bus) Dispatch(cmd Command) error {
 	// The command type name is only needed to label the bus.command.* events, so
 	// only pay for the reflect+String allocation when a dispatcher is set.
 	var cmdType string
-	if dispatchEvent != nil {
+	if emit {
 		cmdType = reflect.TypeOf(cmd).String()
 	}
 
@@ -273,13 +276,13 @@ func (b *Bus) Dispatch(cmd Command) error {
 	// ctx-less), so Background is the most-relevant ctx in scope here.
 	ctx := context.Background()
 
-	// Event dispatch errors are intentionally ignored, events are best-effort
-	// and must not affect command execution flow.
+	// A failed event dispatch goes to the failure policy (counted, its
+	// event's first failure logged) and never affects command execution.
 	var start time.Time
-	if dispatchEvent != nil {
+	if emit {
 		meta := eventmeta.Current(ctx)
 		start = meta.At
-		_ = dispatchEvent(ctx, &CommandDispatching{EventMeta: meta, CommandType: cmdType})
+		b.events.Emit(ctx, &CommandDispatching{EventMeta: meta, CommandType: cmdType})
 	}
 
 	var err error
@@ -291,13 +294,13 @@ func (b *Bus) Dispatch(cmd Command) error {
 		err = b.safeExecuteCmd(handler, cmd)
 	}
 
-	if dispatchEvent != nil {
+	if emit {
 		meta := eventmeta.Current(ctx)
 		duration := meta.At.Sub(start)
 		if err != nil {
-			_ = dispatchEvent(ctx, &CommandFailed{EventMeta: meta, CommandType: cmdType, Err: err, Duration: duration})
+			b.events.Emit(ctx, &CommandFailed{EventMeta: meta, CommandType: cmdType, Err: err, Duration: duration})
 		} else {
-			_ = dispatchEvent(ctx, &CommandCompleted{EventMeta: meta, CommandType: cmdType, Duration: duration})
+			b.events.Emit(ctx, &CommandCompleted{EventMeta: meta, CommandType: cmdType, Duration: duration})
 		}
 	}
 
@@ -326,7 +329,7 @@ func (b *Bus) DispatchAsyncCtx(ctx context.Context, cmd Command) error {
 		ctx = context.Background()
 	}
 	b.mu.RLock()
-	q, queueName, dispatchEvent := b.queue, b.queueName, b.dispatchEvent
+	q, queueName := b.queue, b.queueName
 	hasFactory := false
 	cmdType := reflect.TypeOf(cmd)
 	if cmdType != nil {
@@ -374,8 +377,8 @@ func (b *Bus) DispatchAsyncCtx(ctx context.Context, cmd Command) error {
 		return fmt.Errorf("bus: failed to push command to queue: %w", err)
 	}
 
-	if dispatchEvent != nil {
-		_ = dispatchEvent(ctx, &CommandQueued{EventMeta: eventmeta.Current(ctx), CommandType: cmdType.String()})
+	if b.events.Installed() {
+		b.events.Emit(ctx, &CommandQueued{EventMeta: eventmeta.Current(ctx), CommandType: cmdType.String()})
 	}
 
 	return nil
@@ -614,18 +617,14 @@ func (j *commandJob) FailedCtx(ctx context.Context, err error) {
 		return
 	}
 
-	b.mu.RLock()
-	dispatchEvent := b.dispatchEvent
-	b.mu.RUnlock()
-
-	if dispatchEvent != nil {
+	if b.events.Installed() {
 		cmdType := j.Type
 		if cmdType == "" && j.cmd != nil {
 			cmdType = reflect.TypeOf(j.cmd).String()
 		}
-		// Event dispatch errors are intentionally ignored, event dispatch is
-		// best-effort and must not interfere with queue worker error handling.
-		_ = dispatchEvent(ctx, &CommandFailed{EventMeta: eventmeta.Current(ctx), CommandType: cmdType, Err: err})
+		// A failed event dispatch goes to the failure policy and never
+		// interferes with queue worker error handling.
+		b.events.Emit(ctx, &CommandFailed{EventMeta: eventmeta.Current(ctx), CommandType: cmdType, Err: err})
 	}
 }
 

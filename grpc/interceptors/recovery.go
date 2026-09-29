@@ -11,6 +11,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -42,6 +43,10 @@ type RecoveryConfig struct {
 	// handler (Services.Errors). Reporting never changes what the client
 	// gets.
 	Reporter contract.Reporter
+
+	// events holds EventDispatcher and applies the failure policy to a
+	// failed dispatch; Recovery builds it once the options are applied.
+	events *eventemit.Emitter
 }
 
 // RecoveryOption configures recovery behavior
@@ -96,6 +101,7 @@ func Recovery(opts ...RecoveryOption) InterceptorPair {
 	for _, opt := range opts {
 		opt(cfg)
 	}
+	cfg.events = newEventEmitter(cfg.EventDispatcher, cfg.Logger)
 
 	return InterceptorPair{
 		Unary:  recoveryUnary(cfg),
@@ -200,8 +206,8 @@ func handlePanic(ctx context.Context, p interface{}, method string, cfg *Recover
 		fallbacklog.Resolve(cfg.Logger).With(trace.LogFields(ctx)...).Error("gRPC panic recovered", fields...)
 	}
 
-	if cfg.EventDispatcher != nil {
-		dispatchEvent(ctx, cfg.EventDispatcher, &grpcevents.PanicRecovered{
+	if eventsInstalled(cfg.events) {
+		dispatchEvent(ctx, cfg.events, &grpcevents.PanicRecovered{
 			EventMeta:  eventmeta.Current(ctx),
 			Method:     method,
 			Panic:      p,
