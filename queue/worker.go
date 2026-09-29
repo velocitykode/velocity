@@ -198,7 +198,10 @@ func NewWorker(queue Driver, queueName string, handler func(Job) error, opts ...
 		w.backoff = ExponentialBackoff(time.Second, 5*time.Minute)
 	}
 
-	w.logger = fallbacklog.Resolve(w.logger)
+	// The logger is user code written to from the pumps: contain it, so a
+	// panicking logger never kills a pump or skips the cleanup after a
+	// failure, and its lines reach the fallback logger instead.
+	w.logger = fallbacklog.Contain(fallbacklog.Resolve(w.logger))
 	w.events.UseLogger(func() contract.Logger { return w.logger })
 
 	return w

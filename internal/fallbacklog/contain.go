@@ -13,35 +13,37 @@ import "github.com/velocitykode/velocity/contract"
 // so l's With is never called: every bound pair reaches l as the line's
 // first pairs, and reaches the fallback when l panics.
 func Contain(l contract.Logger) contract.Logger {
-	if c, ok := l.(contained); ok {
+	if c, ok := l.(*contained); ok {
 		return c
 	}
-	return contained{l: l}
+	return &contained{l: l}
 }
 
 type contained struct{ l contract.Logger }
 
-var _ contract.Logger = contained{}
+// A pointer, so binding pairs (With) does not copy the value into a new
+// interface on every call.
+var _ contract.Logger = (*contained)(nil)
 
-func (c contained) Debug(msg string, kvs ...any) {
+func (c *contained) Debug(msg string, kvs ...any) {
 	Write(c.l, func(l contract.Logger) { l.Debug(msg, kvs...) })
 }
 
-func (c contained) Info(msg string, kvs ...any) {
+func (c *contained) Info(msg string, kvs ...any) {
 	Write(c.l, func(l contract.Logger) { l.Info(msg, kvs...) })
 }
 
-func (c contained) Warn(msg string, kvs ...any) {
+func (c *contained) Warn(msg string, kvs ...any) {
 	Write(c.l, func(l contract.Logger) { l.Warn(msg, kvs...) })
 }
 
-func (c contained) Error(msg string, kvs ...any) {
+func (c *contained) Error(msg string, kvs ...any) {
 	Write(c.l, func(l contract.Logger) { l.Error(msg, kvs...) })
 }
 
-func (c contained) Fatal(msg string, kvs ...any) {
+func (c *contained) Fatal(msg string, kvs ...any) {
 	Write(c.l, func(l contract.Logger) { l.Fatal(msg, kvs...) })
 }
 
 // With binds kvs before each line's own pairs.
-func (c contained) With(kvs ...any) contract.Logger { return contract.BindFields(c, kvs...) }
+func (c *contained) With(kvs ...any) contract.Logger { return contract.BindFields(c, kvs...) }
