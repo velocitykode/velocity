@@ -45,6 +45,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -215,9 +216,11 @@ func (f *Failures) SetHook(h Hook) {
 // Recording returns a dispatch function that calls dispatch and records each
 // failure it returns in f, logging through logger, then returns the failure
 // marked as recorded (see Recorded), so an Emitter holding the returned
-// function does not record it again. The framework builds the dispatch
-// function it hands every component this way. It returns nil when dispatch
-// is nil.
+// function does not record it again. A panic in dispatch is recovered here
+// and is such a failure: recorded once, as the typed panic error
+// (panicerr.FromRecovered), and returned marked, so the component that
+// dispatched survives it. The framework builds the dispatch function it
+// hands every component this way. It returns nil when dispatch is nil.
 func (f *Failures) Recording(dispatch func(ctx context.Context, event any) error, logger contract.Logger) func(ctx context.Context, event any) error {
 	if dispatch == nil {
 		return nil
@@ -226,13 +229,24 @@ func (f *Failures) Recording(dispatch func(ctx context.Context, event any) error
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		err := dispatch(ctx, event)
+		err := dispatchRecovering(dispatch, ctx, event)
 		if err == nil {
 			return nil
 		}
 		f.Record(ctx, logger, err, event)
 		return &recordedError{err: err}
 	}
+}
+
+// dispatchRecovering calls dispatch, returning a panic in it as the typed
+// panic error.
+func dispatchRecovering(dispatch func(ctx context.Context, event any) error, ctx context.Context, event any) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = panicerr.FromRecovered(p)
+		}
+	}()
+	return dispatch(ctx, event)
 }
 
 // recordedError marks a dispatch failure a Failures already recorded.
@@ -298,8 +312,9 @@ func (e *Emitter) Installed() bool {
 // Emit hands event to the installed dispatcher under ctx (context.Background
 // when nil) and applies the failure policy to a failed dispatch (see Fail).
 // It reports whether a dispatcher was installed. A panic in the dispatcher
-// is not recovered here: a component whose caller must survive one recovers
-// it and hands it to Fail.
+// is not recovered here (in an app, the dispatch function Recording built
+// recovers and records it first): a component whose caller must survive one
+// from any other dispatcher recovers it and hands it to Fail.
 func (e *Emitter) Emit(ctx context.Context, event any) bool {
 	p := e.dispatch.Load()
 	if p == nil {
