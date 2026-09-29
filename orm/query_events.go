@@ -62,9 +62,13 @@ type pendingEvent struct {
 // after the callback has released its connection and whatever the
 // listener is doing.
 type eventPump struct {
-	ch        chan pendingEvent
-	reports   chan func()
-	quit      chan struct{}
+	ch      chan pendingEvent
+	reports chan func()
+	quit    chan struct{}
+	// delivered and reported are closed when the delivery and the reporter
+	// goroutine return, after draining what was queued before quit.
+	delivered chan struct{}
+	reported  chan struct{}
 	fail      func(ctx context.Context, err error, event any)
 	failLater func(ctx context.Context, err error, event any) func()
 
@@ -87,6 +91,8 @@ func newEventPump(fail func(ctx context.Context, err error, event any), failLate
 		ch:        make(chan pendingEvent, queryEventQueueSize),
 		reports:   make(chan func(), queryEventQueueSize),
 		quit:      make(chan struct{}),
+		delivered: make(chan struct{}),
+		reported:  make(chan struct{}),
 		fail:      fail,
 		failLater: failLater,
 	}
@@ -96,10 +102,12 @@ func newEventPump(fail func(ctx context.Context, err error, event any), failLate
 // dispatch is called once per event on the delivery goroutine.
 func (p *eventPump) start(dispatch func(context.Context, contract.Event)) {
 	async.Go(func() {
+		defer close(p.delivered)
 		p.deliverer.Store(eventemit.GoroutineID())
 		p.run(dispatch)
 	})
 	async.Go(func() {
+		defer close(p.reported)
 		p.reporter.Store(eventemit.GoroutineID())
 		p.runReports()
 	})
@@ -212,7 +220,7 @@ func (p *eventPump) flush(ctx context.Context) error {
 		return ErrQueryEventsFlushFromPump
 	}
 	if p.stopped.Load() {
-		return nil
+		return p.awaitExit(ctx)
 	}
 	done := make(chan struct{})
 	if err := await(p, ctx, p.ch, pendingEvent{flush: done}, done); err != nil {
@@ -222,13 +230,16 @@ func (p *eventPump) flush(ctx context.Context) error {
 	return await(p, ctx, p.reports, func() { close(reported) }, reported)
 }
 
-// await sends barrier on ch, then waits for done, returning early (nil) when
-// the pump stops or with ctx's error when ctx ends first.
+// await sends barrier on ch, then waits for done, or with ctx's error when
+// ctx ends first. When the pump stops meanwhile, the barrier may never be
+// reached, so it waits for the pump's goroutines to finish draining instead
+// (awaitExit): a nil return always means everything admitted before the
+// call has been handled.
 func await[T any](p *eventPump, ctx context.Context, ch chan T, barrier T, done chan struct{}) error {
 	select {
 	case ch <- barrier:
 	case <-p.quit:
-		return nil
+		return p.awaitExit(ctx)
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -236,15 +247,29 @@ func await[T any](p *eventPump, ctx context.Context, ch chan T, barrier T, done 
 	case <-done:
 		return nil
 	case <-p.quit:
-		return nil
+		return p.awaitExit(ctx)
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
+// awaitExit waits for a stopped pump's delivery and reporter goroutines to
+// return, which they do once they have drained everything queued before
+// the stop, or returns ctx's error when ctx ends first.
+func (p *eventPump) awaitExit(ctx context.Context) error {
+	for _, exited := range []chan struct{}{p.delivered, p.reported} {
+		select {
+		case <-exited:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
 // stop drains and shuts the pump down, returning the drain's error when
 // ctx ended before it finished (the pump stops all the same, delivering
-// what is queued on its own goroutines). The channel is never closed, so
+// what is queued on its own goroutines; a later flush waits for that). The channel is never closed, so
 // an enqueue racing with stop is discarded rather than panicking. Only the
 // first call drains and reports; later calls return nil, so an unfinished
 // drain is reported once.
