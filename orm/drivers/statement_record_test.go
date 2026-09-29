@@ -174,6 +174,90 @@ func assertOneFailure(t *testing.T, rec *statementRecorder, log *queryLog, query
 	}
 }
 
+// A connection that declines direct execution (driver.ErrSkip) sends
+// database/sql down the prepared path; a prepare that then fails is the
+// statement's failure and is recorded once, through the one statement
+// exit, with the argument count the caller bound.
+func TestPrepareFailureAfterSkip_IsRecordedOnce(t *testing.T) {
+	prepErr := errors.New("Error 1146 (42S02): Table 'app.missing' doesn't exist")
+	const query = "SELECT n FROM missing WHERE a = ? AND b = ?"
+	for _, legacy := range []bool{false, true} {
+		for _, route := range []string{"exec", "query"} {
+			t.Run(fmt.Sprintf("%s/legacy prepare %t", route, legacy), func(t *testing.T) {
+				db, _, rec, log := openScripted(t, &script{skipDirect: true, legacyPrepare: legacy, prepareErr: prepErr})
+				var err error
+				if route == "exec" {
+					_, err = db.ExecContext(context.Background(), query, "hunter2", 7)
+				} else {
+					var rows *sql.Rows
+					rows, err = db.QueryContext(context.Background(), query, "hunter2", 7)
+					if rows != nil {
+						_ = rows.Close()
+					}
+				}
+				if !errors.Is(err, prepErr) {
+					t.Fatalf("%s error = %v, want the prepare failure", route, err)
+				}
+				assertOneFailure(t, rec, log, query, prepErr, 2)
+			})
+		}
+	}
+}
+
+// An explicit prepare that fails is recorded once too, with no bound
+// arguments; a prepare that succeeds is silent until the statement runs.
+func TestExplicitPrepare_FailureRecordedSuccessSilent(t *testing.T) {
+	prepErr := errors.New("syntax error at or near \"SELEC\"")
+	t.Run("failure", func(t *testing.T) {
+		db, _, rec, log := openScripted(t, &script{prepareErr: prepErr})
+		if _, err := db.PrepareContext(context.Background(), "SELEC 1"); !errors.Is(err, prepErr) {
+			t.Fatalf("prepare error = %v, want the prepare failure", err)
+		}
+		assertOneFailure(t, rec, log, "SELEC 1", prepErr, 0)
+	})
+	t.Run("success", func(t *testing.T) {
+		db, _, rec, log := openScripted(t, &script{})
+		stmt, err := db.PrepareContext(context.Background(), "SELECT 1")
+		if err != nil {
+			t.Fatalf("prepare: %v", err)
+		}
+		defer stmt.Close()
+		if evs, lines := rec.all(), log.all(); len(evs) != 0 || len(lines) != 0 {
+			t.Errorf("after a successful prepare: events %+v, lines %+v, want none", evs, lines)
+		}
+	})
+}
+
+// The non-context Prepare on the wrapped connection records its failure
+// the same way.
+func TestInstrumentedConnPrepare_FailureRecordedOnce(t *testing.T) {
+	prepErr := errors.New("prepare refused")
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy prepare %t", legacy), func(t *testing.T) {
+			_, binding, rec, log := openScripted(t, &script{legacyPrepare: legacy, prepareErr: prepErr})
+			inner, err := scriptDriver{}.Open(t.Name())
+			if err != nil {
+				t.Fatalf("open: %v", err)
+			}
+			c := &instrumentedConn{inner: inner, binding: binding}
+			if _, err := c.Prepare("SELECT 1"); !errors.Is(err, prepErr) {
+				t.Fatalf("Prepare error = %v, want the prepare failure", err)
+			}
+			assertOneFailure(t, rec, log, "SELECT 1", prepErr, 0)
+		})
+	}
+}
+
+// Control-flow sentinels from a prepare are not failures: database/sql
+// retries driver.ErrBadConn on a fresh connection, so no record is made.
+func TestPrepareBadConn_IsNotRecorded(t *testing.T) {
+	db, _, rec, log := openScripted(t, &script{skipDirect: true, prepareErr: driver.ErrBadConn})
+	_, _ = db.ExecContext(context.Background(), "SELECT 1")
+	if evs, lines := rec.all(), log.all(); len(evs) != 0 || len(lines) != 0 {
+		t.Errorf("events %+v, lines %+v, want none", evs, lines)
+	}
+}
+
 // A result set whose move to its next set fails is a failed statement,
 // even when closing it then succeeds.
 func TestNextResultSetFailure_IsRecordedAsAFailure(t *testing.T) {
@@ -210,5 +294,31 @@ func TestNextResultSetEOF_IsASuccess(t *testing.T) {
 	evs := rec.all()
 	if len(evs) != 1 || evs[0].Err != nil || evs[0].RowsAffected != 1 {
 		t.Errorf("events = %+v, want one completed statement with 1 row", evs)
+	}
+}
+
+// A declined statement lends its argument count only to the prepare of the
+// same query that follows it, and only once.
+func TestInstrumentedConnSkipped_MatchesOnlyTheNextPrepareOfItsQuery(t *testing.T) {
+	c := &instrumentedConn{}
+	c.noteSkip("SELECT ?", 1, driver.ErrSkip)
+	if got := c.takeSkipped("SELECT 2"); got != 0 {
+		t.Errorf("other query: arg count = %d, want 0", got)
+	}
+	if got := c.takeSkipped("SELECT ?"); got != 0 {
+		t.Errorf("after a take: arg count = %d, want 0 (forgotten)", got)
+	}
+	c.noteSkip("SELECT ?", 1, driver.ErrSkip)
+	c.noteSkip("SELECT ?", 1, nil)
+	if got := c.takeSkipped("SELECT ?"); got != 0 {
+		t.Errorf("after a statement that ran: arg count = %d, want 0", got)
+	}
+	c.noteSkip("SELECT ?, ?", 2, driver.ErrSkip)
+	if got := c.takeSkipped("SELECT ?, ?"); got != 2 {
+		t.Errorf("declined then prepared: arg count = %d, want 2", got)
+	}
+	var zero instrumentedConn
+	if got := zero.takeSkipped(""); got != 0 {
+		t.Errorf("zero conn: arg count = %d, want 0", got)
 	}
 }

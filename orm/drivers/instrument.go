@@ -24,7 +24,9 @@ import (
 // subsystem (the auth user store), a *sql.Tx, or a prepared *sql.Stmt.
 //
 // Err distinguishes the two outcomes: nil for a completed statement, non-nil
-// for a failure. Control-flow sentinels the sql package uses internally
+// for a failure. A statement whose prepare fails is a failure too, whether
+// the caller prepared it or database/sql did after the driver declined to run
+// it directly. Control-flow sentinels the sql package uses internally
 // (driver.ErrSkip, driver.ErrBadConn) never surface as events.
 type StatementEvent struct {
 	// Context is the context the statement executed under, carrying trace
@@ -307,6 +309,42 @@ func (c *instrumentedConnector) Close() error {
 type instrumentedConn struct {
 	inner   driver.Conn
 	binding *observerBinding
+	// skipped is the statement ExecContext or QueryContext last declined
+	// with driver.ErrSkip. database/sql answers a decline by preparing the
+	// same query on the same connection, so the prepare that follows takes
+	// the argument count from here: a failing prepare is that statement's
+	// failure. database/sql uses a connection from one goroutine at a time,
+	// so the field needs no lock.
+	skipped skippedStatement
+}
+
+// skippedStatement is a statement the connection declined to run directly.
+type skippedStatement struct {
+	query    string
+	argCount int
+	set      bool
+}
+
+// noteSkip remembers a statement the connection declined with
+// driver.ErrSkip, which database/sql compares by identity before it falls
+// back to preparing, and forgets any earlier one otherwise.
+func (c *instrumentedConn) noteSkip(query string, argCount int, err error) {
+	if err == driver.ErrSkip { // database/sql tests ErrSkip by identity, not errors.Is
+		c.skipped = skippedStatement{query: query, argCount: argCount, set: true}
+		return
+	}
+	c.skipped = skippedStatement{}
+}
+
+// takeSkipped returns the argument count of the declined statement a
+// prepare of query follows, zero for any other prepare, and forgets it.
+func (c *instrumentedConn) takeSkipped(query string) int {
+	s := c.skipped
+	c.skipped = skippedStatement{}
+	if s.set && s.query == query {
+		return s.argCount
+	}
+	return 0
 }
 
 var (
@@ -322,22 +360,17 @@ var (
 )
 
 func (c *instrumentedConn) Prepare(query string) (driver.Stmt, error) {
-	inner, err := c.inner.Prepare(query)
-	if err != nil {
-		return nil, err
-	}
-	return newInstrumentedStmt(inner, c, query), nil
+	return c.prepare(context.Background(), query, func() (driver.Stmt, error) {
+		return c.inner.Prepare(query)
+	})
 }
 
 func (c *instrumentedConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
-	var (
-		inner driver.Stmt
-		err   error
-	)
-	if pc, ok := c.inner.(driver.ConnPrepareContext); ok {
-		inner, err = pc.PrepareContext(ctx, query)
-	} else {
-		inner, err = c.inner.Prepare(query)
+	return c.prepare(ctx, query, func() (driver.Stmt, error) {
+		if pc, ok := c.inner.(driver.ConnPrepareContext); ok {
+			return pc.PrepareContext(ctx, query)
+		}
+		inner, err := c.inner.Prepare(query)
 		if err == nil {
 			select {
 			default:
@@ -346,8 +379,31 @@ func (c *instrumentedConn) PrepareContext(ctx context.Context, query string) (dr
 				return nil, ctx.Err()
 			}
 		}
+		return inner, err
+	})
+}
+
+// prepare runs prepareInner and wraps the statement it returns. A prepare
+// that fails is recorded as a failed statement through the one statement
+// exit (control-flow sentinels excepted, see record): the statement never
+// runs, so nothing else would report it, whether the caller prepared it or
+// database/sql prepared it after the connection declined to run it
+// directly. A prepare that succeeds records nothing; the statement's
+// execution does.
+func (c *instrumentedConn) prepare(ctx context.Context, query string, prepareInner func() (driver.Stmt, error)) (driver.Stmt, error) {
+	argCount := c.takeSkipped(query)
+	obs := c.binding.active()
+	if obs == nil && !c.binding.logging() {
+		inner, err := prepareInner()
+		if err != nil {
+			return nil, err
+		}
+		return newInstrumentedStmt(inner, c, query), nil
 	}
+	start := time.Now()
+	inner, err := prepareInner()
 	if err != nil {
+		reportFailure(c.binding, obs, ctx, query, argCount, start, err)
 		return nil, err
 	}
 	return newInstrumentedStmt(inner, c, query), nil
@@ -425,10 +481,13 @@ func (c *instrumentedConn) Ping(ctx context.Context) error {
 func (c *instrumentedConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	obs := c.binding.active()
 	if obs == nil && !c.binding.logging() {
-		return c.queryInner(ctx, query, args)
+		rows, err := c.queryInner(ctx, query, args)
+		c.noteSkip(query, len(args), err)
+		return rows, err
 	}
 	start := time.Now()
 	rows, err := c.queryInner(ctx, query, args)
+	c.noteSkip(query, len(args), err)
 	if err != nil {
 		reportFailure(c.binding, obs, ctx, query, len(args), start, err)
 		return nil, err
@@ -463,10 +522,13 @@ func (c *instrumentedConn) queryInner(ctx context.Context, query string, args []
 func (c *instrumentedConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	obs := c.binding.active()
 	if obs == nil && !c.binding.logging() {
-		return c.execInner(ctx, query, args)
+		res, err := c.execInner(ctx, query, args)
+		c.noteSkip(query, len(args), err)
+		return res, err
 	}
 	start := time.Now()
 	res, err := c.execInner(ctx, query, args)
+	c.noteSkip(query, len(args), err)
 	if err != nil {
 		reportFailure(c.binding, obs, ctx, query, len(args), start, err)
 		return nil, err
