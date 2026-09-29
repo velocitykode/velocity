@@ -162,7 +162,7 @@ func NewServer(opts ...ServerOption) *Server {
 	// non-positive / unparseable / oversize GRPC_MAX_*_SIZE is never silently
 	// clamped without the operator knowing.
 	for _, w := range cfg.Warnings {
-		s.logger.Warn(w)
+		s.logLine(func(l contract.Logger) { l.Warn(w) })
 	}
 
 	return s
