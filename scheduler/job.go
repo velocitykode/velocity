@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
@@ -161,7 +163,6 @@ func (j *Job) markFired(t time.Time) {
 	j.lastFiredWallMinute = wallMinuteKey(t)
 }
 
-// ShouldRun checks if the job should run based on constraints
 // withinDailyRange reports whether the "HH:MM" time now falls inside the daily
 // window [start, end]. When start <= end it is a same-day window; when start >
 // end the window wraps past midnight (e.g. "23:00".."01:00"), so a time is in
@@ -175,51 +176,66 @@ func withinDailyRange(now, start, end string) bool {
 	return now >= start || now <= end
 }
 
+// ShouldRun checks if the job should run based on constraints. The When
+// and Skip callbacks are user code: they run after the job's lock is
+// released, so they may call the job's own methods, and a panic in one is
+// contained (see callCondition).
 func (j *Job) ShouldRun() bool {
 	j.mu.RLock()
-	defer j.mu.RUnlock()
+	overlapping := j.withoutOverlapping && j.running
+	when, skip := j.when, j.skip
+	tz := j.timezone
+	between, unlessBetween := j.between, j.unlessBetween
+	environments := j.environments
+	s := j.scheduler
+	jobName := j.name
+	j.mu.RUnlock()
 
 	// Check if job is already running and withoutOverlapping is set
-	if j.withoutOverlapping && j.running {
+	if overlapping {
 		return false
 	}
 
 	// Check when condition
-	if j.when != nil && !j.when() {
-		return false
+	if when != nil {
+		if due, ok := callCondition(s, jobName, "When", when); !ok || !due {
+			return false
+		}
 	}
 
 	// Check skip condition
-	if j.skip != nil && j.skip() {
-		return false
+	if skip != nil {
+		if skipped, ok := callCondition(s, jobName, "Skip", skip); !ok || skipped {
+			return false
+		}
 	}
 
 	// Check time constraints
-	now := time.Now().In(j.timezone)
+	now := time.Now().In(tz)
 	nowStr := now.Format("15:04")
 
 	// Check between constraint
-	if j.between[0] != "" && j.between[1] != "" {
-		if !withinDailyRange(nowStr, j.between[0], j.between[1]) {
+	if between[0] != "" && between[1] != "" {
+		if !withinDailyRange(nowStr, between[0], between[1]) {
 			return false
 		}
 	}
 
 	// Check unlessBetween constraint
-	if j.unlessBetween[0] != "" && j.unlessBetween[1] != "" {
-		if withinDailyRange(nowStr, j.unlessBetween[0], j.unlessBetween[1]) {
+	if unlessBetween[0] != "" && unlessBetween[1] != "" {
+		if withinDailyRange(nowStr, unlessBetween[0], unlessBetween[1]) {
 			return false
 		}
 	}
 
 	// Check environment constraints
-	if len(j.environments) > 0 {
+	if len(environments) > 0 {
 		currentEnv := ""
-		if j.scheduler != nil {
-			currentEnv = j.scheduler.env()
+		if s != nil {
+			currentEnv = s.env()
 		}
 		found := false
-		for _, env := range j.environments {
+		for _, env := range environments {
 			if env == currentEnv {
 				found = true
 				break
@@ -231,6 +247,28 @@ func (j *Job) ShouldRun() bool {
 	}
 
 	return true
+}
+
+// callCondition calls a When or Skip callback (kind names which) and
+// returns its result, with ok false when it panicked. The task does not
+// run then: the panic is logged through the scheduler's logger (the
+// fallback without one), the line itself contained like every scheduler
+// diagnostic, so a panicking condition never kills the ticker goroutine.
+func callCondition(s *Scheduler, jobName, kind string, cond func() bool) (result, ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			result, ok = false, false
+			err := panicerr.FromRecovered(r)
+			var l contract.Logger
+			if s != nil {
+				l = s.log()
+			}
+			fallbacklog.Write(l, func(w contract.Logger) {
+				w.Error("velocity/scheduler: task condition panicked; the task does not run", "task_name", jobName, "condition", kind, "error", err)
+			})
+		}
+	}()
+	return cond(), true
 }
 
 // Run executes the job. This is the legacy entry point preserved for
@@ -881,7 +919,8 @@ func (j *Job) RunInBackground() *Job {
 	return j
 }
 
-// When adds a condition for job execution
+// When adds a condition for job execution. It runs without the job's lock
+// held, so it may call the job's methods; a panic in it skips the run.
 func (j *Job) When(callback func() bool) *Job {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -889,7 +928,8 @@ func (j *Job) When(callback func() bool) *Job {
 	return j
 }
 
-// Skip adds a skip condition
+// Skip adds a skip condition. It runs without the job's lock held, so it
+// may call the job's methods; a panic in it skips the run.
 func (j *Job) Skip(callback func() bool) *Job {
 	j.mu.Lock()
 	defer j.mu.Unlock()
