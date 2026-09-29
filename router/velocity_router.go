@@ -921,7 +921,8 @@ func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request,
 		ctx.reset()
 		r.ctxPool.Put(ctx)
 		if abort != nil {
-			// http.ErrAbortHandler: net/http aborts the connection.
+			// http.ErrAbortHandler, or a panic the boundary raised
+			// while answering one: net/http aborts the connection.
 			panic(abort)
 		}
 	}()
@@ -1016,7 +1017,8 @@ func (r *VelocityRouterV2) handleUnmatched(rw *responseWriter, req *http.Request
 		ctx.reset()
 		r.ctxPool.Put(ctx)
 		if abort != nil {
-			// http.ErrAbortHandler: net/http aborts the connection.
+			// http.ErrAbortHandler, or a panic the boundary raised
+			// while answering one: net/http aborts the connection.
 			panic(abort)
 		}
 	}()
@@ -1163,7 +1165,8 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 		ctx.reset()
 		r.ctxPool.Put(ctx)
 		if abort != nil {
-			// http.ErrAbortHandler: net/http aborts the connection.
+			// http.ErrAbortHandler, or a panic the boundary raised
+			// while answering one: net/http aborts the connection.
 			panic(abort)
 		}
 	}()
@@ -1228,24 +1231,24 @@ func (r *VelocityRouterV2) finalizeGuarded(ctx *Context, rw *responseWriter, req
 // dispatches RequestHandled and returns the Context to the pool, then
 // re-panics it so net/http aborts the connection.
 //
-// The boundary's own response can raise that abort too (a pre-commit hook
-// the 500 fires panics with http.ErrAbortHandler). onPanic runs inside the
-// caller's deferred function, where a panic would skip the rest of the
-// request's bookkeeping, so it recovers such an abort and returns it for
-// the caller to re-panic last; any other panic there goes on unchanged.
+// The boundary's own response can panic too: a pre-commit hook the 500
+// fires panics with http.ErrAbortHandler, or the error handler, a logger
+// or an event listener panics while it answers this panic. onPanic runs
+// inside the caller's deferred function, where a panic would skip the
+// rest of the request's bookkeeping (RequestHandled, the Context's return
+// to the pool), so it recovers any such panic and returns it for the
+// caller to re-panic last, once that bookkeeping is done: net/http then
+// aborts the connection as it would have.
 func (r *VelocityRouterV2) onPanic(ctx *Context, rw *responseWriter, req *http.Request, meta requestMeta, recovered interface{}) (abort any) {
 	// Skip onPanic and the deferred function so the trace starts at the
 	// panic site.
 	pe := newPanicError(panicerr.FromRecovered(recovered), 2)
-	r.dispatchRequestFailed(req, meta, requestFailure{err: pe, stack: pe.Stack, recovered: true, fire: true})
 	defer func() {
 		if p := recover(); p != nil {
-			if !isAbortPanic(p) {
-				panic(p)
-			}
 			abort = p
 		}
 	}()
+	r.dispatchRequestFailed(req, meta, requestFailure{err: pe, stack: pe.Stack, recovered: true, fire: true})
 	r.handleError(ctx, rw, pe, ErrorInfo{Recovered: true, Stack: pe.Stack, StackTrace: pe.Trace})
 	return nil
 }
@@ -1446,15 +1449,18 @@ func (r *VelocityRouterV2) logDefault(ctx *Context, err error, f *errorFacts, in
 	if level != logError && level != logWarn {
 		return
 	}
-	l := fallbacklog.Resolve(r.eventLogger())
 	if f.markedWritten(err, info.Recovered) {
 		if cause := contract.HandledCause(err); cause != nil {
 			err = cause
 		}
 	}
-	kvs := []any{"error", err.Error()}
+	// fmt contains a panicking Error method; the logger, in With or in
+	// the line, is contained by fallbacklog.Write. Either way the caller
+	// goes on to answer the request and dispatch its terminal event.
+	kvs := []any{"error", fmt.Sprint(err)}
+	var fields []any
 	if ctx != nil && ctx.Request != nil {
-		l = l.With(ctx.LogFields()...)
+		fields = ctx.LogFields()
 		if ctx.Request.URL != nil {
 			kvs = append(kvs, "url", ctx.Request.URL.Path)
 		}
@@ -1462,11 +1468,16 @@ func (r *VelocityRouterV2) logDefault(ctx *Context, err error, f *errorFacts, in
 	if info.Stack != "" {
 		kvs = append(kvs, "stack", info.Stack)
 	}
-	if level == logWarn {
-		l.Warn(UnhandledErrorMessage, kvs...)
-		return
-	}
-	l.Error(UnhandledErrorMessage, kvs...)
+	fallbacklog.Write(r.eventLogger(), func(l contract.Logger) {
+		if len(fields) > 0 {
+			l = l.With(fields...)
+		}
+		if level == logWarn {
+			l.Warn(UnhandledErrorMessage, kvs...)
+			return
+		}
+		l.Error(UnhandledErrorMessage, kvs...)
+	})
 }
 
 // Handle returns the underlying http.Handler

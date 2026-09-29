@@ -24,17 +24,44 @@ func (r *VelocityRouterV2) log() contract.Logger {
 // its lines are once-per-middleware warnings and late-panic reports, and a
 // Timeout goroutine calls it on its own Context.
 func requestLogger(c *Context) contract.Logger {
+	l := requestBaseLogger(c)
 	if c == nil {
-		return fallbacklog.Logger{}
-	}
-	var l contract.Logger = fallbacklog.Logger{}
-	if r := servingRouter(c.Request); r != nil && r.logger != nil {
-		l = r.logger
-	} else if c.services != nil && c.services.Log != nil {
-		l = c.services.Log
+		return l
 	}
 	if fields := c.LogFields(); len(fields) > 0 {
 		return l.With(fields...)
 	}
 	return l
+}
+
+// requestBaseLogger is requestLogger before the binding to c.LogFields.
+func requestBaseLogger(c *Context) contract.Logger {
+	if c == nil {
+		return fallbacklog.Logger{}
+	}
+	if r := servingRouter(c.Request); r != nil && r.logger != nil {
+		return r.logger
+	}
+	if c.services != nil && c.services.Log != nil {
+		return c.services.Log
+	}
+	return fallbacklog.Logger{}
+}
+
+// writeRequestLine writes one line with write through requestLogger(c),
+// containing a logger that panics, in With or in the write: the line then
+// goes to the framework's standalone fallback logger, bound the same way.
+// It is for lines written where a panic must not escape (inside a
+// deferred recover, on a goroutine nothing recovers).
+func writeRequestLine(c *Context, write func(contract.Logger)) {
+	var fields []any
+	if c != nil {
+		fields = c.LogFields()
+	}
+	fallbacklog.Write(requestBaseLogger(c), func(l contract.Logger) {
+		if len(fields) > 0 {
+			l = l.With(fields...)
+		}
+		write(l)
+	})
 }

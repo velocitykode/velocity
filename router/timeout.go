@@ -387,7 +387,10 @@ func reportLatePanic(c *Context, err error) {
 	}
 	defer func() {
 		if p := recover(); p != nil {
-			requestLogger(c).Error("velocity/router: reporting a timeout handler panic after the timeout failed", "panic", fmt.Sprint(p), "error", err)
+			panicText := fmt.Sprint(p)
+			writeRequestLine(c, func(l contract.Logger) {
+				l.Error("velocity/router: reporting a timeout handler panic after the timeout failed", "panic", panicText, "error", err)
+			})
 		}
 	}()
 	if c.Request != nil {
@@ -408,7 +411,9 @@ func reportLatePanic(c *Context, err error) {
 		c.services.Errors.Report(err, ec)
 		return
 	}
-	requestLogger(c).Error("velocity/router: timeout handler panicked after the timeout answered", "error", err, "stack", stack)
+	writeRequestLine(c, func(l contract.Logger) {
+		l.Error("velocity/router: timeout handler panicked after the timeout answered", "error", err, "stack", stack)
+	})
 }
 
 // handlerAbort carries a Timeout handler goroutine's http.ErrAbortHandler
