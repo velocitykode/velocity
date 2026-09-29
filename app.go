@@ -82,6 +82,8 @@ type App struct {
 	// cutting off the requests that outlived it.
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelCauseFunc
+	// teardown is Shutdown's one run of the teardown sequence.
+	teardown appTeardown
 
 	// Declarative bootstrap chain
 	modulesFn    func(*chain.ModuleRegistry)

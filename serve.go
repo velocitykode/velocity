@@ -9,12 +9,14 @@ import (
 	"os"
 	"os/signal"
 	"reflect"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/internal/eventqueue"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -171,7 +173,54 @@ func (a *App) serveHTTP() error {
 // are aggregated via errors.Join. Each step runs contained: a step that
 // panics (a module's Shutdown, a service's, the logger's) contributes the
 // panic as its error, and the steps after it still run.
+//
+// ctx is the caller's bound. The teardown runs once, in the order above,
+// on a goroutine of its own, with ctx handed to every step; Shutdown waits
+// for it or for ctx. At ctx it returns ctx.Err() and the teardown goes on
+// in the background, still in order, so no service closes beneath a step
+// that is still running. A step that never returns leaves every step after
+// it unrun. A Shutdown that overlaps or follows the first waits for that
+// same teardown, or for its own ctx, and returns its result; none starts a
+// second teardown. A Shutdown called from inside the teardown (a module's
+// Shutdown, say) would wait on itself, and returns an error at once.
 func (a *App) Shutdown(ctx context.Context) error {
+	t := &a.teardown
+	if t.stops.Nested() {
+		return errShutdownFromTeardown
+	}
+	t.mu.Lock()
+	done := t.stops.Ended()
+	owner := done == nil
+	if owner {
+		done = t.stops.Begin()
+	}
+	t.mu.Unlock()
+	if owner {
+		async.Go(func() {
+			t.stops.Drain(done, func() { t.err = a.teardownSteps(ctx) })
+		})
+	}
+	if err := t.stops.Await(ctx, done, nil); err != nil {
+		return err
+	}
+	return t.err
+}
+
+// errShutdownFromTeardown is what App.Shutdown returns when called from
+// the teardown it would wait on.
+var errShutdownFromTeardown = errors.New("velocity: Shutdown called from the app's own teardown")
+
+// appTeardown is the one run of App.Shutdown's teardown: the coordinator
+// marks the goroutine running it, and err is its result, written before
+// the drain closes.
+type appTeardown struct {
+	mu    sync.Mutex
+	stops drain.Coordinator
+	err   error
+}
+
+// teardownSteps runs every teardown step in order; see Shutdown.
+func (a *App) teardownSteps(ctx context.Context) error {
 	var errs []error
 	collect := func(err error) {
 		if err != nil {

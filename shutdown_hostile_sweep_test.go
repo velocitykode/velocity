@@ -2,6 +2,7 @@ package velocity
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -39,11 +40,12 @@ func (v hostileView) Shutdown(context.Context) error {
 }
 
 // App.Shutdown survives a module, registry component or view engine whose
-// Shutdown panics or calls App.Shutdown again: no panic escapes, a panic
-// becomes the step's error, and the steps around it still run.
+// Shutdown panics, blocks or calls App.Shutdown again: no panic escapes, a
+// panic becomes the step's error, a blocked step does not hold a bounded
+// App.Shutdown past its deadline, and the steps around it still run.
 func TestAppShutdown_HostileUserCodeSweep(t *testing.T) {
 	for _, site := range []string{"module", "component", "view"} {
-		for _, mode := range []hostile.Mode{hostile.Panic, hostile.Reenter} {
+		for _, mode := range hostile.Modes() {
 			t.Run(site+"/"+mode.String(), func(t *testing.T) {
 				rec := &shutdownRecorder{}
 				var a *App
@@ -72,6 +74,18 @@ func TestAppShutdown_HostileUserCodeSweep(t *testing.T) {
 					a.Services.View = hostileView{code: code}
 				}
 
+				if mode == hostile.Block {
+					bounded, cancelBounded := context.WithTimeout(context.Background(), 100*time.Millisecond)
+					defer cancelBounded()
+					var err error
+					if p := hostile.Within(t, 2*time.Second, func() { err = a.Shutdown(bounded) }); p != nil {
+						t.Fatalf("App.Shutdown panicked: %v", p)
+					}
+					if !errors.Is(err, context.DeadlineExceeded) {
+						t.Errorf("App.Shutdown with a blocked step = %v, want its deadline", err)
+					}
+					code.Release()
+				}
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()
 				var shutdownErr error
@@ -83,6 +97,12 @@ func TestAppShutdown_HostileUserCodeSweep(t *testing.T) {
 				}
 				if mode == hostile.Panic && (shutdownErr == nil || !strings.Contains(shutdownErr.Error(), hostile.PanicValue)) {
 					t.Errorf("App.Shutdown = %v, want the panic as an error", shutdownErr)
+				}
+				if mode == hostile.Block {
+					// The later Shutdown waited for the released teardown.
+					if shutdownErr == context.DeadlineExceeded {
+						t.Errorf("the Shutdown after the release = %v", shutdownErr)
+					}
 				}
 				if rec.shutdowns.Load() == 0 {
 					t.Error("the module registered first was not shut down")

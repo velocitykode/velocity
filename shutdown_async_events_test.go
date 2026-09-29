@@ -134,6 +134,18 @@ func TestShutdown_AsyncEventsStragglerPastDeadline(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("App.Shutdown never returned")
 	}
+	// Shutdown returned at its deadline while the teardown went on; a
+	// second Shutdown waits for that same teardown to end.
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		_ = a.Shutdown(context.Background())
+	}()
+	select {
+	case <-finished:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the teardown never ended")
+	}
 
 	if p := escaped.Load(); p != nil {
 		t.Fatalf("straggler request panicked after the event pool stopped: %v", p)
