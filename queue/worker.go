@@ -262,9 +262,13 @@ func (w *Worker) work(id int) {
 			if err := w.processJob(); err != nil {
 				// A failed job was already retried, or failed for good and
 				// reported or logged once (see failJob); only a worker
-				// error of its own is logged here.
+				// error of its own is logged here. A pop that ended because
+				// Stop cancelled the worker's context is not an error: Stop
+				// can land between the Done check above and the driver's
+				// own context check.
 				var failed *jobFailedError
-				if !errors.Is(err, ErrNoJobAvailable) && !errors.As(err, &failed) {
+				stopped := w.ctx.Err() != nil && errors.Is(err, w.ctx.Err())
+				if !errors.Is(err, ErrNoJobAvailable) && !errors.As(err, &failed) && !stopped {
 					w.logger.Error("Worker error", "id", id, "error", err)
 				}
 				// Back off on errors
