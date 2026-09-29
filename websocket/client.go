@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"fmt"
 	"sync/atomic"
 	"time"
 
@@ -225,14 +226,17 @@ func (c *Client) closeSend() {
 	close(c.Send)
 }
 
-// SendMessage sends a message to the client
+// SendMessage sends a message to the client. A client that has
+// disconnected (its send channel closed) reports ErrClientNotFound.
 func (c *Client) SendMessage(msg Message) error {
-	select {
-	case c.Send <- msg:
-		return nil
-	default:
+	queued, closed := c.trySend(msg)
+	switch {
+	case closed:
+		return fmt.Errorf("client %s disconnected: %w", sanitizeForLog(c.ID), ErrClientNotFound)
+	case !queued:
 		return ErrSendChannelFull
 	}
+	return nil
 }
 
 // SendJSON sends a JSON message to the client

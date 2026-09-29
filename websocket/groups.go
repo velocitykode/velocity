@@ -160,9 +160,8 @@ func (s *Server) BroadcastToGroup(groupName string, message Message) error {
 	// Send to all clients in group. MessagesSent is counted once at the wire
 	// write in writePump, not here at enqueue.
 	for _, client := range clients {
-		select {
-		case client.Send <- message:
-		default:
+		// A client that disconnected since the copy is skipped.
+		if queued, closed := client.trySend(message); !queued && !closed {
 			s.logWarn("Client send channel full, skipping message", "client_id", client.ID)
 		}
 	}
@@ -196,9 +195,8 @@ func (s *Server) SendToOthersInGroup(groupName, senderID string, message Message
 	// Send to all clients except sender. MessagesSent is counted once at the
 	// wire write in writePump, not here at enqueue.
 	for _, client := range clients {
-		select {
-		case client.Send <- message:
-		default:
+		// A client that disconnected since the copy is skipped.
+		if queued, closed := client.trySend(message); !queued && !closed {
 			s.logWarn("Client send channel full, skipping message", "client_id", client.ID)
 		}
 	}

@@ -519,15 +519,14 @@ func (s *Server) handleRegister(client *Client) {
 	// goroutine, so a blocking send into a full channel would stall the entire
 	// server (no register/unregister/broadcast would drain). Mirror the
 	// select/default used in handleBroadcast.
-	select {
-	case client.Send <- Message{
+	welcome := Message{
 		Type: "welcome",
 		Data: map[string]interface{}{
 			"id":      client.ID,
 			"version": "1.0.0",
 		},
-	}:
-	default:
+	}
+	if queued, closed := client.trySend(welcome); !queued && !closed {
 		s.logWarn("Client send channel full, dropping welcome message", "client_id", client.ID)
 	}
 
@@ -935,13 +934,14 @@ func (s *Server) SendToClient(clientID string, message Message) error {
 		return fmt.Errorf("client %s not found: %w", sanitizeForLog(clientID), ErrClientNotFound)
 	}
 
-	select {
-	case client.Send <- message:
-		// Counted once at the wire write in writePump, not here at enqueue.
-	default:
+	// Counted once at the wire write in writePump, not here at enqueue.
+	queued, closed := client.trySend(message)
+	switch {
+	case closed:
+		return fmt.Errorf("client %s disconnected: %w", sanitizeForLog(clientID), ErrClientNotFound)
+	case !queued:
 		return fmt.Errorf("client %s send channel full: %w", sanitizeForLog(clientID), ErrSendChannelFull)
 	}
-
 	return nil
 }
 
