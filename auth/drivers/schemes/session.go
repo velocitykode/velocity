@@ -910,12 +910,20 @@ func (g *SessionScheme) getCSRFTokenRotator() contract.CSRFTokenRotator {
 }
 
 // logWarn emits a warn event through the installed logger, or the
-// framework's standalone fallback logger when none has been installed.
+// framework's standalone fallback logger when none has been installed. A
+// logger that panics is contained (the line goes to the fallback logger):
+// most of these lines are written in the middle of a transition or its
+// teardown (a Logout's revocations, a commit's cleanup), which must run
+// whatever the logger does.
+//
+// Many callers hold the request holder's lifecycle lock. That lock is per
+// request, and a logger is handed no request, so it cannot reach the
+// lock; a blocking logger stalls only the request that logs.
 func (g *SessionScheme) logWarn(msg string, kvs ...any) {
 	g.mu.RLock()
 	l := g.logger
 	g.mu.RUnlock()
-	fallbacklog.Resolve(l).Warn(msg, kvs...)
+	fallbacklog.Write(l, func(l contract.Logger) { l.Warn(msg, kvs...) })
 }
 
 // Check reports whether the request is authenticated. When a server-side
@@ -1547,11 +1555,11 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 	// session in that record (session.ServerStore) saves into it and never
 	// creates a signed-in record itself. When the save then fails, the
 	// record names an id no client received and ends with its TTL.
-	g.recordServerSession(r, session, user)
+	g.recordServerSession(r, session, user) //lock-held-ok: per-request lifecycle lock; fmt contains a panicking identifier, and the stores may not call the scheme for this request
 
 	if standalone {
 		holder.setSession(session)
-		return commitStandalone(g, r, w, holder)
+		return commitStandalone(g, r, w, holder) //lock-held-ok: per-request lifecycle lock; a session store must not call the scheme for the request it serves (auth.SessionStore)
 	}
 	return nil
 }
@@ -1648,7 +1656,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 		// the save calling Logout): the server-side teardown below still
 		// ends the session and the remember credential, but no save
 		// follows to delete the session cookie on this response.
-		g.logWarn("velocity/auth: logout after the session was saved: the session is ended server-side, its cookie is not deleted by this response", "session_id", sessionID)
+		g.logWarn("velocity/auth: logout after the session was saved: the session is ended server-side, its cookie is not deleted by this response", "session_id", sessionID) //lock-held-ok: per-request lifecycle lock; the logger gets no handle on the request and logWarn contains a panic
 		if committed := holder.committed(); committed != "" && committed != sessionID {
 			retired = append(retired, committed)
 		}
@@ -1664,7 +1672,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	if rotator := g.getCSRFTokenRotator(); rotator != nil {
 		if sessionID != "" {
 			if err := rotator.RevokeToken(sessionContext(r, session), sessionID); err != nil {
-				g.logWarn("velocity/auth: csrf token revoke (logout) failed", "session_id", sessionID, "error", err)
+				g.logWarn("velocity/auth: csrf token revoke (logout) failed", "session_id", sessionID, "error", err) //lock-held-ok: per-request lifecycle lock; the logger gets no handle on the request and logWarn contains a panic
 			}
 		}
 		// Clear the client-side XSRF-TOKEN cookie too. Without this the
@@ -1695,10 +1703,10 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 		switch {
 		case err == nil && user != nil:
 			if err := userStore.UpdateRememberTokenCtx(r.Context(), user, ""); err != nil {
-				g.logWarn("velocity/auth: clear remember token (logout) failed", "user_id", userID, "error", err)
+				g.logWarn("velocity/auth: clear remember token (logout) failed", "user_id", userID, "error", err) //lock-held-ok: per-request lifecycle lock; the logger gets no handle on the request and logWarn contains a panic
 			}
 		case err != nil && !errors.Is(err, auth.ErrUserNotFound):
-			g.logWarn("velocity/auth: clear remember token (logout) failed: user lookup failed", "user_id", userID, "error", err)
+			g.logWarn("velocity/auth: clear remember token (logout) failed: user lookup failed", "user_id", userID, "error", err) //lock-held-ok: per-request lifecycle lock; the logger gets no handle on the request and logWarn contains a panic
 		}
 	}
 
@@ -1729,7 +1737,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	var saveErr error
 	if standalone {
 		holder.setSession(session)
-		saveErr = commitStandalone(g, r, w, holder)
+		saveErr = commitStandalone(g, r, w, holder) //lock-held-ok: per-request lifecycle lock; a session store must not call the scheme for the request it serves (auth.SessionStore)
 	}
 
 	// Revoke in the underlying SessionStore when it supports the
@@ -1747,7 +1755,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 		}
 		if store := g.getServerStore(); store != nil {
 			if err := store.Delete(r.Context(), id); err != nil {
-				g.logWarn("velocity/auth: server session store delete (logout) failed", "session_id", id, "error", err)
+				g.logWarn("velocity/auth: server session store delete (logout) failed", "session_id", id, "error", err) //lock-held-ok: per-request lifecycle lock; the logger gets no handle on the request and logWarn contains a panic
 			}
 		}
 	}
@@ -1756,7 +1764,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	// upstream entropy failure callers most care about), then save.
 	// Server-side teardown above is best-effort with its own logging.
 	if invalidateErr != nil {
-		g.logWarn("velocity/auth: session invalidate (logout) failed; teardown completed best-effort", "session_id", sessionID, "error", invalidateErr)
+		g.logWarn("velocity/auth: session invalidate (logout) failed; teardown completed best-effort", "session_id", sessionID, "error", invalidateErr) //lock-held-ok: per-request lifecycle lock; the logger gets no handle on the request and logWarn contains a panic
 		return invalidateErr
 	}
 	return saveErr

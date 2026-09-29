@@ -154,7 +154,7 @@ func (g *SessionScheme) serveWithSession(c *router.Context, next router.HandlerF
 	// fires it.
 	doSave := func() {
 		holder.commitOnce.Do(func() {
-			_ = commitSession(g, c.Request, w, holder)
+			_ = commitSession(g, c.Request, w, holder) //lock-held-ok: the request's one commit; the save and its logger get no writer that fires the commit again
 		})
 	}
 
@@ -293,7 +293,7 @@ func commitSession(g *SessionScheme, r *http.Request, w http.ResponseWriter, hol
 	if s, ok := holder.getSession().(sealableSession); ok {
 		s.Seal()
 	}
-	writes, err := commitSessionHeld(g, r, w, holder, &saved)
+	writes, err := commitSessionHeld(g, r, w, holder, &saved) //lock-held-ok: per-request lifecycle lock; a session store must not call the scheme for the request it serves (auth.SessionStore)
 	if err != nil {
 		return err
 	}

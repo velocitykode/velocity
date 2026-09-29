@@ -95,6 +95,11 @@ type SessionMeta struct {
 // session's data in the same record, so the cookie carries only the id.
 // Implementations must be safe for concurrent use.
 //
+// The session scheme calls the store while it holds the request's
+// authentication lock (see UserStore): a store must not ask the scheme
+// about the request it is serving. UpdateData runs its update callback
+// under the store's own lock, so the callback must not call the store.
+//
 // Implementations must pass authtest.RunServerSessionStoreContractTests.
 // See authtest for the executable specification.
 type ServerSessionStore interface {

@@ -129,12 +129,12 @@ func (a *LocalLoginAdmitter) Admit(_ *http.Request, key string, hold time.Durati
 	if a == nil || hold <= 0 {
 		return true
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	now := time.Now()
 	if a.now != nil {
 		now = a.now()
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.slots == nil {
 		a.slots = make(map[string]time.Time)
 	}

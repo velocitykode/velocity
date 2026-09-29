@@ -302,18 +302,19 @@ func (s *MemoryStore) slide(ctx context.Context, id string, lastSeen, expiresAt 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	now := s.clock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess, ok := s.byID[id]
 	if !ok {
 		return auth.ErrSessionNotFound
 	}
-	if !sess.ExpiresAt.IsZero() && s.clock().After(sess.ExpiresAt) {
+	if !sess.ExpiresAt.IsZero() && now.After(sess.ExpiresAt) {
 		s.removeLocked(id)
 		return auth.ErrSessionExpired
 	}
 	if update != nil {
-		data, err := update(cloneData(sess.Data))
+		data, err := update(cloneData(sess.Data)) //lock-held-ok: read-modify-write callback, atomic by contract; it must not call the store (auth.ServerSessionStore.UpdateData)
 		if err != nil {
 			return err
 		}

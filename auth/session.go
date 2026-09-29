@@ -85,7 +85,9 @@ type Session interface {
 // session.CookieStore keeps the session in an encrypted cookie (at most 4096
 // bytes on the wire), and session.ServerStore keeps it in the session's
 // server record and sends only the id. Pass one to the scheme with
-// schemes.WithSessionStore.
+// schemes.WithSessionStore. The scheme calls the store, and the sessions
+// it returns, while it holds the request's authentication lock (see
+// UserStore): neither may ask the scheme about the request it is serving.
 type SessionStore interface {
 	// Create a new session
 	Create(id string) (Session, error)
