@@ -63,23 +63,32 @@ func (m *Manager) Configure(config Config) error {
 
 // ConfigureWithContext is the context-aware variant of Configure. The context
 // is used when bootstrapping context-aware drivers (e.g. s3).
+//
+// The disks' drivers are built with no lock held: a registered driver
+// factory is user code, and one that looks up a disk on this manager must
+// not wait on it. The configuration and the drivers built are then
+// published under one lock. When a factory fails, the drivers built before
+// it are still published and the error is returned, as before.
 func (m *Manager) ConfigureWithContext(ctx context.Context, config Config) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.config = config
-	m.defaultDisk = config.Default
-
-	// Initialize all configured disks
+	built := make(map[string]Driver, len(config.Disks))
+	var err error
 	for name, diskConfig := range config.Disks {
-		driver, err := createDriverWithContext(ctx, diskConfig)
-		if err != nil {
-			return fmt.Errorf("velocity/storage: failed to create driver for disk %s: %w", name, err)
+		driver, derr := createDriverWithContext(ctx, diskConfig)
+		if derr != nil {
+			err = fmt.Errorf("velocity/storage: failed to create driver for disk %s: %w", name, derr)
+			break
 		}
-		m.disks[name] = driver
+		built[name] = driver
 	}
 
-	return nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.config = config
+	m.defaultDisk = config.Default
+	for name, driver := range built {
+		m.disks[name] = driver
+	}
+	return err
 }
 
 // Disk returns a specific disk driver.
