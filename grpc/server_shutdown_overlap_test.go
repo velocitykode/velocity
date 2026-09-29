@@ -36,9 +36,10 @@ func TestServerShutdown_OverlappingShutdownWaitsForTheDrain(t *testing.T) {
 	defer cancel()
 	first := make(chan error, 1)
 	go func() { first <- s.Shutdown(ctx) }()
-	for s.IsRunning() {
-		time.Sleep(time.Millisecond)
-	}
+	// Either Shutdown may own the drain; the other overlaps it. A pause,
+	// not an IsRunning poll, so the test also runs where a stop held the
+	// server's lock across the drain.
+	time.Sleep(50 * time.Millisecond)
 
 	second := make(chan error, 1)
 	go func() { second <- s.Shutdown(ctx) }()
