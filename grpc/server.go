@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -736,6 +737,7 @@ func (s *Server) Start() error {
 		}
 		s.logStarting(lis)
 		err = srv.Serve(lis)
+		s.stopAfterServeFailed(err)
 	})
 	return err
 }
@@ -786,6 +788,7 @@ func (s *Server) StartAsync() error {
 			s.logStarting(lis)
 			if err := srv.Serve(lis); err != nil {
 				s.logLine(func(l contract.Logger) { l.Error("gRPC server error", "error", err) })
+				s.stopAfterServeFailed(err)
 			}
 		})
 	}, func(r any) {
@@ -796,6 +799,18 @@ func (s *Server) StartAsync() error {
 	})
 
 	return nil
+}
+
+// stopAfterServeFailed stops a server whose serve loop failed (its
+// listener's Accept did): grpc-go returns from Serve but keeps the
+// connections it already accepted, so the server is stopped like any
+// other, which closes them, reports it no longer running and dispatches
+// ServerStopped. A Serve that a stop ended returns nil or
+// grpc.ErrServerStopped and needs nothing.
+func (s *Server) stopAfterServeFailed(err error) {
+	if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+		s.Stop()
+	}
 }
 
 // Stop stops the gRPC server immediately. It also releases a listener that was
