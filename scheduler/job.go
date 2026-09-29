@@ -302,7 +302,7 @@ func (j *Job) Run() error {
 //	                after cmd.Wait returns. May be nil for direct (test)
 //	                callers that have no scheduler-side bookkeeping.
 //	working       - the scheduler's set of goroutines running its work
-//	                (Scheduler.working). A RunInBackground waiter enters
+//	                (Scheduler.stops). A RunInBackground waiter enters
 //	                it, as the caller's goroutine did, so a Shutdown from
 //	                the waiter's hooks is refused. Nil with a nil release.
 //
@@ -572,7 +572,7 @@ func (j *Job) spawnBackgroundWaiter(
 	// teardown (outFile.Close, clearRunningFlag, release) even on panic.
 	go func() { //safe-goroutine: job-scoped recovery + resource release, see comment above
 		// In working until after the release below (deferred first, so
-		// it runs last): see Scheduler.working.
+		// it runs last): see Scheduler.stops.
 		if working != nil {
 			gid := goroutine.ID()
 			working.Enter(gid)

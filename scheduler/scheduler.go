@@ -10,7 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/goroutine"
@@ -83,12 +85,17 @@ type Scheduler struct {
 	events eventemit.Emitter
 	runWg  sync.WaitGroup // tracks in-flight job goroutines
 
-	// working holds the goroutines running the scheduler's work: a tick
-	// (runDueJobs), a task's run, a RunInBackground task's completion.
+	// stops coordinates the scheduler's stops. Its work set holds the
+	// goroutines running the scheduler's work: a tick (runDueJobs), a
+	// task's run, a RunInBackground task's completion, a Shutdown's lines.
 	// Each enters before it runs any user code and leaves after the last
 	// (for a run, after its release), so Shutdown, which would wait on
-	// them, refuses a call from one of them (ErrShutdownFromTask).
-	working goroutine.Set
+	// them, refuses a call from one of them (ErrShutdownFromTask). Its
+	// drain is the one the Shutdown that stopped the scheduler owns,
+	// closed when every run it admitted has finished; a later Shutdown
+	// waits on it, and a Run does not start before it closes. The drain
+	// is guarded by mu.
+	stops drain.Coordinator
 
 	// locker acquires named distributed locks for WithoutOverlapping() and
 	// OnOneServer() jobs. Defaults to an InMemoryLocker (process-local) so
@@ -403,12 +410,34 @@ func (s *Scheduler) Command(command string, args ...string) *Job {
 // in-process scheduler goroutine spawned by Serve, with Serve failing
 // fast and tearing down, must not start ticking against already-closed
 // services). A scheduler that has run before can Run again after
-// Shutdown: each Run builds fresh per-run state below.
+// Shutdown: each Run builds fresh per-run state below. While the runs a
+// Shutdown admitted are still draining (it timed out), Run waits for
+// them before it starts, or returns ctx's error; called from one of
+// those runs it would wait on itself, and returns ErrShutdownFromTask.
 func (s *Scheduler) Run(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	s.mu.Lock()
-	if s.running || s.terminated {
+	for {
+		if s.running || s.terminated {
+			s.mu.Unlock()
+			return nil
+		}
+		pending := s.stops.Ended()
+		if pending == nil || drain.Closed(pending) {
+			break
+		}
 		s.mu.Unlock()
-		return nil
+		if s.stops.Nested() {
+			return ErrShutdownFromTask
+		}
+		select {
+		case <-pending:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		s.mu.Lock()
 	}
 	s.running = true
 	s.started = true
@@ -418,13 +447,13 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	s.stop = make(chan struct{})
 	stop := s.stop
 	s.ticker = time.NewTicker(1 * time.Minute) // Check every minute
+	// The loop reads its own ticker: a Run after this one's Shutdown
+	// replaces the field while this loop may still be in its select.
+	ticker := s.ticker
 	// Derive a cancellable run-context from the caller's ctx. Shutdown
 	// cancels this so any in-progress Locker.Acquire on a slow remote
 	// backend returns ctx.Err() promptly instead of dispatching a job
 	// AFTER the scheduler has signaled "no more dispatch".
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	s.runCtx, s.runCancel = context.WithCancel(ctx)
 	s.mu.Unlock()
 
@@ -442,7 +471,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-stop:
 			return nil
-		case <-s.ticker.C:
+		case <-ticker.C:
 			s.runDueJobs()
 		}
 	}
@@ -501,7 +530,12 @@ func (s *Scheduler) ValidateJobs() {
 
 // Shutdown stops the scheduler and waits for in-flight jobs to finish,
 // honoring the context deadline. Returns ctx.Err() if the context expires
-// before all jobs complete.
+// before all jobs complete. A Shutdown after one that timed out waits the
+// same way for the jobs that one admitted, so nil always means they have
+// finished. The shutting-down and stopped lines are written on the
+// goroutine that waits for the jobs, so a logger that blocks cannot hold
+// Shutdown past ctx; at the deadline the stopped line comes when the jobs
+// really end, which can be after Shutdown returned.
 //
 // Called from inside the scheduler's own work (a task's run, hooks,
 // listeners, logger or lock release, a RunInBackground task's completion,
@@ -515,7 +549,7 @@ func (s *Scheduler) ValidateJobs() {
 // a stuck Acquire could let a job start AFTER Shutdown's caller
 // believed shutdown completed.
 func (s *Scheduler) Shutdown(ctx context.Context) error {
-	if s.working.Contains(goroutine.ID()) {
+	if s.stops.Nested() {
 		return ErrShutdownFromTask
 	}
 
@@ -529,8 +563,14 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 		if !s.started {
 			s.terminated = true
 		}
+		// A Shutdown that stopped the scheduler earlier may still be
+		// draining the runs it admitted: wait for them, or ctx.
+		pending := s.stops.Ended()
 		s.mu.Unlock()
-		return nil
+		if pending == nil {
+			return nil
+		}
+		return s.stops.Await(ctx, pending, nil)
 	}
 
 	s.running = false
@@ -541,35 +581,26 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 		s.runCancel()
 	}
 	close(s.stop)
+	pending := s.stops.Begin()
 	s.mu.Unlock()
 
-	fallbacklog.Write(s.log(), func(w contract.Logger) { w.Info("Scheduler shutting down") })
-
-	// Wait for in-flight jobs with ctx deadline. Recover from panics so
-	// Shutdown always signals completion via done.
-	// Not async.Go: must close(done) on panic so the outer select
-	// never blocks shutdown waiting on a goroutine that already died.
-	done := make(chan struct{})
-	go func() { //safe-goroutine: close(done) on panic for shutdown, see comment above
-		defer func() {
-			if r := recover(); r != nil {
-				err := panicerr.FromRecovered(r)
-				fallbacklog.Write(s.log(), func(w contract.Logger) {
-					w.Error("velocity/scheduler: shutdown wait panic recovered", "error", err)
-				})
-			}
-			close(done)
-		}()
-		s.runWg.Wait()
-	}()
-
-	select {
-	case <-done:
-		fallbacklog.Write(s.log(), func(w contract.Logger) { w.Info("Scheduler stopped") })
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	// This Shutdown owns the drain: its lines and the wait for the
+	// admitted runs happen on a goroutine of its own, as the scheduler's
+	// work, and it waits for them or ctx. The drain closes (whatever the
+	// wait does) only once runWg.Wait returned, so a Run waiting on it
+	// never reuses runWg while that Wait is pending.
+	finished := make(chan struct{})
+	async.Go(func() {
+		defer close(finished)
+		s.stops.Run(func() {
+			fallbacklog.Write(s.log(), func(w contract.Logger) { w.Info("Scheduler shutting down") })
+		})
+		s.stops.Drain(pending, s.runWg.Wait)
+		s.stops.Run(func() {
+			fallbacklog.Write(s.log(), func(w contract.Logger) { w.Info("Scheduler stopped") })
+		})
+	})
+	return s.stops.Await(ctx, finished, nil)
 }
 
 // runDueJobs executes all jobs that are due. The timezone is snapshotted
@@ -592,10 +623,10 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 // leak the lock for its full TTL.
 func (s *Scheduler) runDueJobs() {
 	// The tick runs user code (the scheduler-level callbacks, the Locker,
-	// the lines it writes); see working.
+	// the lines it writes); see stops.
 	gid := goroutine.ID()
-	s.working.Enter(gid)
-	defer s.working.Leave(gid)
+	s.stops.Work().Enter(gid)
+	defer s.stops.Work().Leave(gid)
 
 	s.mu.RLock()
 	if s.started && !s.running {
@@ -778,11 +809,12 @@ func (s *Scheduler) runDueJobs() {
 			// logger, under the line. Note: Job.runInternal's inner
 			// panics are already recovered by Job.Run itself.
 			//
-			// The goroutine is in working from before the first user code
-			// until after the release (deferred first, so it runs last).
+			// The goroutine is in the work set from before the first user
+			// code until after the release (deferred first, so it runs
+			// last).
 			gid := goroutine.ID()
-			s.working.Enter(gid)
-			defer s.working.Leave(gid)
+			s.stops.Work().Enter(gid)
+			defer s.stops.Work().Leave(gid)
 			var log contract.Logger
 			defer func() {
 				if r := recover(); r != nil {
@@ -801,7 +833,7 @@ func (s *Scheduler) runDueJobs() {
 			// transfers ownership to a waiter goroutine that calls
 			// release after cmd.Wait (or after the runCtx-driven
 			// SIGTERM+SIGKILL grace period).
-			j.runInternal(runCtx, tctx, shutdownGrace, release, &s.working)
+			j.runInternal(runCtx, tctx, shutdownGrace, release, s.stops.Work())
 			// oneServerLock retained until TTL expiry (see note above).
 			_ = oneServerLock
 		}(job, jobName, oneServerLock, release)
