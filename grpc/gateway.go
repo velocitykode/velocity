@@ -388,9 +388,11 @@ func (g *Gateway) Build(ctx context.Context) error {
 	}()
 
 	if b.warnInsecure {
-		b.logger.Warn("gRPC gateway dialling upstream with insecure credentials. Configure TLS via GatewayWithTLS or GatewayWithTransportConfig before deploying to production",
-			"grpc_endpoint", b.grpcEndpoint,
-		)
+		fallbacklog.Write(b.logger, func(l contract.Logger) {
+			l.Warn("gRPC gateway dialling upstream with insecure credentials. Configure TLS via GatewayWithTLS or GatewayWithTransportConfig before deploying to production",
+				"grpc_endpoint", b.grpcEndpoint,
+			)
+		})
 	}
 
 	// Create mux with options
@@ -656,10 +658,7 @@ func (g *Gateway) StartWithContext(ctx context.Context) error {
 	g.running = true
 	g.mu.Unlock()
 
-	g.logger.Info("HTTP gateway starting",
-		"address", g.httpServer.Addr,
-		"grpc_endpoint", g.grpcEndpoint,
-	)
+	g.logStarting()
 	return g.httpServer.ListenAndServe()
 }
 
@@ -689,15 +688,12 @@ func (g *Gateway) StartAsyncWithContext(ctx context.Context) error {
 	// someone regresses to `go func`). The custom recovery handler resets
 	// the running flag so the gateway can be restarted after a crash.
 	async.GoWithRecover(func() {
-		g.logger.Info("HTTP gateway starting",
-			"address", g.httpServer.Addr,
-			"grpc_endpoint", g.grpcEndpoint,
-		)
+		g.logStarting()
 		if err := g.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			g.logger.Error("HTTP gateway error", "error", err)
+			fallbacklog.Write(g.logger, func(l contract.Logger) { l.Error("HTTP gateway error", "error", err) })
 		}
 	}, func(r any) {
-		g.logger.Error("HTTP gateway panic recovered", "error", panicerr.FromRecovered(r))
+		fallbacklog.Write(g.logger, func(l contract.Logger) { l.Error("HTTP gateway panic recovered", "error", panicerr.FromRecovered(r)) })
 		g.mu.Lock()
 		g.running = false
 		g.mu.Unlock()
@@ -719,7 +715,7 @@ func (g *Gateway) Stop() {
 	g.running = false
 	g.mu.Unlock()
 
-	g.logger.Info("HTTP gateway stopping")
+	fallbacklog.Write(g.logger, func(l contract.Logger) { l.Info("HTTP gateway stopping") })
 	_ = server.Close()
 }
 
@@ -734,8 +730,19 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	g.running = false
 	g.mu.Unlock()
 
-	g.logger.Info("HTTP gateway gracefully shutting down")
+	fallbacklog.Write(g.logger, func(l contract.Logger) { l.Info("HTTP gateway gracefully shutting down") })
 	return server.Shutdown(ctx)
+}
+
+// logStarting writes the starting line through fallbacklog.Write, so a
+// panicking logger never skips the serve that follows it.
+func (g *Gateway) logStarting() {
+	fallbacklog.Write(g.logger, func(l contract.Logger) {
+		l.Info("HTTP gateway starting",
+			"address", g.httpServer.Addr,
+			"grpc_endpoint", g.grpcEndpoint,
+		)
+	})
 }
 
 // Address returns the address the gateway is listening on

@@ -417,9 +417,11 @@ func (s *Server) Build() error {
 	}()
 
 	if b.warnTLS {
-		b.logger.Warn("gRPC server starting without TLS credentials. Configure WithCreds before deploying to production",
-			"port", b.port,
-		)
+		fallbacklog.Write(b.logger, func(l contract.Logger) {
+			l.Warn("gRPC server starting without TLS credentials. Configure WithCreds before deploying to production",
+				"port", b.port,
+			)
+		})
 	}
 
 	// Create the listener (or adopt a caller-supplied one). No fallible
@@ -495,16 +497,20 @@ func (s *Server) Build() error {
 	// warning fires once per Build; Build is idempotent (early-returns when the
 	// server is already built) so it never repeats for a given server.
 	if len(b.registrations) > 0 && !b.authConfigured {
-		b.logger.Warn("gRPC server is serving all RPCs unauthenticated: no auth interceptor detected. Add one via UseAll(interceptors.Auth(...)), or call MarkAuthConfigured() if you wired auth by hand",
-			"services", len(b.registrations),
-			"port", b.port,
-		)
+		fallbacklog.Write(b.logger, func(l contract.Logger) {
+			l.Warn("gRPC server is serving all RPCs unauthenticated: no auth interceptor detected. Add one via UseAll(interceptors.Auth(...)), or call MarkAuthConfigured() if you wired auth by hand",
+				"services", len(b.registrations),
+				"port", b.port,
+			)
+		})
 	}
 
 	// The production hard-fail on reflection already ran in beginBuild, so
 	// here reflection is known to be non-production: just warn.
 	if b.enableReflection {
-		b.logger.Warn("gRPC reflection is enabled - disable in production (GRPC_REFLECTION=false)")
+		fallbacklog.Write(b.logger, func(l contract.Logger) {
+			l.Warn("gRPC reflection is enabled - disable in production (GRPC_REFLECTION=false)")
+		})
 	}
 
 	return nil
@@ -603,7 +609,7 @@ func (s *Server) beginBuild() (*buildPlan, error) {
 // and clears the Build in progress so a later Build can run.
 func (s *Server) abortBuild(b *buildPlan) {
 	if b.listener != nil && b.listener != b.providedListener {
-		_ = b.listener.Close()
+		s.closeListener(b.listener)
 	}
 	s.mu.Lock()
 	s.building = false
@@ -652,7 +658,7 @@ func (s *Server) Start() error {
 	if started != nil {
 		s.dispatchEvent(context.Background(), started)
 	}
-	s.logger.Info("gRPC server starting", "address", s.listener.Addr().String())
+	s.logStarting()
 	return s.grpcServer.Serve(s.listener)
 }
 
@@ -681,12 +687,12 @@ func (s *Server) StartAsync() error {
 		if started != nil {
 			s.dispatchEvent(context.Background(), started)
 		}
-		s.logger.Info("gRPC server starting", "address", s.listener.Addr().String())
+		s.logStarting()
 		if err := s.grpcServer.Serve(s.listener); err != nil {
-			s.logger.Error("gRPC server error", "error", err)
+			s.logLine(func(l contract.Logger) { l.Error("gRPC server error", "error", err) })
 		}
 	}, func(r any) {
-		s.logger.Error("gRPC server panic recovered", "error", panicerr.FromRecovered(r))
+		s.logLine(func(l contract.Logger) { l.Error("gRPC server panic recovered", "error", panicerr.FromRecovered(r)) })
 		s.mu.Lock()
 		s.running = false
 		s.mu.Unlock()
@@ -708,7 +714,7 @@ func (s *Server) StartAsync() error {
 func (s *Server) Stop() {
 	st := s.beginStop(true)
 	if st.log {
-		s.logger.Info("gRPC server stopping")
+		s.logLine(func(l contract.Logger) { l.Info("gRPC server stopping") })
 	}
 	if st.srv != nil {
 		st.srv.Stop()
@@ -724,7 +730,7 @@ func (s *Server) Stop() {
 func (s *Server) GracefulStop() {
 	st := s.beginStop(false)
 	if st.log {
-		s.logger.Info("gRPC server gracefully stopping")
+		s.logLine(func(l contract.Logger) { l.Info("gRPC server gracefully stopping") })
 	}
 	if st.srv != nil {
 		st.srv.GracefulStop()
@@ -792,7 +798,7 @@ func (s *Server) beginStop(force bool) stopPlan {
 // Stop, emits no second event).
 func (s *Server) endStop(st stopPlan) {
 	if st.unserved != nil {
-		_ = st.unserved.Close()
+		s.closeListener(st.unserved)
 	}
 	if st.start.IsZero() || !s.events.Installed() {
 		return
@@ -803,6 +809,32 @@ func (s *Server) endStop(st stopPlan) {
 		Port:      st.port,
 		Duration:  now.Sub(st.start),
 	})
+}
+
+// logLine writes one Start, Build or stop diagnostic through the
+// server's logger with fallbacklog.Write: a logger that panics falls back
+// and never skips the state change, teardown or event the line precedes.
+func (s *Server) logLine(write func(contract.Logger)) {
+	fallbacklog.Write(s.logger, write)
+}
+
+// logStarting writes the starting line with the address being served.
+// The address comes from the listener, which may be the caller's, so it
+// is read inside the contained write.
+func (s *Server) logStarting() {
+	s.logLine(func(l contract.Logger) { l.Info("gRPC server starting", "address", s.listener.Addr().String()) })
+}
+
+// closeListener closes lis, which may be the caller's listener: a panic in
+// its Close is contained and logged, so the stop or aborted Build that
+// closes it still finishes.
+func (s *Server) closeListener(lis net.Listener) {
+	defer func() {
+		if p := recover(); p != nil {
+			s.logLine(func(l contract.Logger) { l.Error("gRPC listener close panicked", "error", panicerr.FromRecovered(p)) })
+		}
+	}()
+	_ = lis.Close()
 }
 
 // serverStartedLocked builds the ServerStarted event for the start just
@@ -832,7 +864,7 @@ func (s *Server) serverStartedLocked() *grpcevents.ServerStarted {
 func (s *Server) Shutdown(ctx context.Context) error {
 	st := s.beginStop(false)
 	if st.log {
-		s.logger.Info("gRPC server gracefully stopping")
+		s.logLine(func(l contract.Logger) { l.Info("gRPC server gracefully stopping") })
 	}
 	var err error
 	if srv := st.srv; srv != nil {
