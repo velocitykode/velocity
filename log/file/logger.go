@@ -303,7 +303,7 @@ func (f *FileLogger) writeLine(body string) (written bool, openErr error) {
 	if f.useFileLock && f.file != nil {
 		release, lockErr := lockFile(f.file)
 		if lockErr == nil {
-			defer release()
+			defer release() //lock-held-ok: release is the file lock's own unlock (flock), framework code that must run under the sink lock
 		}
 		// On flock error we still proceed with the write rather than
 		// drop the line; the worst case (mixed bytes) beats silent

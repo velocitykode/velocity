@@ -755,13 +755,11 @@ func (r *Relay) Stop(ctx context.Context) error {
 	graceTimer := time.NewTimer(grace)
 	defer graceTimer.Stop()
 	graceC := graceTimer.C
-	cancelOnce := sync.Once{}
+	// A context.CancelFunc may be called any number of times.
 	cancelShutdown := func() {
-		cancelOnce.Do(func() {
-			if shutdownCancel != nil {
-				shutdownCancel()
-			}
-		})
+		if shutdownCancel != nil {
+			shutdownCancel()
+		}
 	}
 	defer cancelShutdown()
 
