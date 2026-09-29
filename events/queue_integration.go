@@ -914,6 +914,7 @@ func (d *StoppablePropagationDispatcher) Dispatch(ctx context.Context, event int
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = d.reportFailure(ctx, event)
 	listeners := d.getListenersForEvent(event)
 
 	// Each listener's whole delivery (the propagation check, its

@@ -2,8 +2,11 @@ package events
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // selfDispatchingNameEvent is an event whose Name dispatches through the
@@ -78,4 +81,25 @@ func TestFakeDispatcher_AssertionsMayDispatch(t *testing.T) {
 	})
 	within(t, "AssertDispatchedTimes", func() { _ = f.AssertDispatchedTimes("outer", 1) })
 	within(t, "AssertNotDispatched", func() { _ = f.AssertNotDispatched("never") })
+}
+
+// stoppableFailure is a stoppable failure event.
+type stoppableFailure struct{ BaseStoppableEvent }
+
+func (*stoppableFailure) FailureError() error                 { return errListenerBroke }
+func (*stoppableFailure) FailureSource() contract.ErrorSource { return contract.ErrorSourceJob }
+
+// The stop-propagation dispatcher reports a failure event through the
+// failure-report bridge at the point of dispatch, once, like every other
+// dispatch path.
+func TestStoppableDispatch_ReportsAFailureEvent(t *testing.T) {
+	d := NewStoppablePropagationDispatcher()
+	var reported atomic.Int32
+	d.SetFailureReporter(func(context.Context, any, error) { reported.Add(1) })
+	if err := d.Dispatch(context.Background(), &stoppableFailure{}); err != nil {
+		t.Fatalf("Dispatch = %v", err)
+	}
+	if got := reported.Load(); got != 1 {
+		t.Errorf("reports = %d, want 1", got)
+	}
 }
