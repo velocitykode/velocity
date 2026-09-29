@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -181,7 +181,7 @@ func (d *DefaultDispatcher) reportFailure(ctx context.Context, event interface{}
 		return ctx
 	}
 
-	gid := goroutineID()
+	gid := eventemit.GoroutineID()
 	d.reportingMu.Lock()
 	_, inReporter := d.reporting[gid]
 	d.reportingMu.Unlock()
@@ -236,48 +236,6 @@ func sameFailureEvent(marker, event interface{}) bool {
 		return false
 	}
 	return marker == event
-}
-
-// gidParseFallback feeds goroutineID's failure path with unique sentinels.
-// Sentinels live above 1<<63 so they can never collide with a real goroutine
-// ID within the lifetime of a process.
-var gidParseFallback atomic.Uint64
-
-// goroutineID returns the running goroutine's ID by parsing the first line
-// of runtime.Stack ("goroutine N [...]"). Used only on the failure-report
-// path, which is rare by construction; the cost is acceptable there and the
-// per-goroutine guard it enables cannot be built from context alone.
-//
-// The header format is not a formally stable runtime API (though it has been
-// stable in practice for many releases and is relied on by widely used
-// libraries), so the failure mode is chosen deliberately: if parsing ever
-// fails, the function returns a process-unique sentinel instead of a shared
-// zero value. A shared zero would make every unparsed goroutine look like
-// the same goroutine and falsely suppress unrelated reports whenever any
-// reporter is active; a unique sentinel merely degrades the recursion guard
-// to a no-op for that one call (the ctx-marker guard still applies), which
-// errs on the side of reporting rather than suppressing.
-func goroutineID() uint64 {
-	var buf [64]byte
-	n := runtime.Stack(buf[:], false)
-	const prefix = "goroutine "
-	s := buf[:n]
-	if len(s) <= len(prefix) {
-		return 1<<63 | gidParseFallback.Add(1)
-	}
-	var id uint64
-	digits := 0
-	for _, c := range s[len(prefix):] {
-		if c < '0' || c > '9' {
-			break
-		}
-		id = id*10 + uint64(c-'0')
-		digits++
-	}
-	if digits == 0 {
-		return 1<<63 | gidParseFallback.Add(1)
-	}
-	return id
 }
 
 // Listen adds a listener for the events key selects: an EventType from

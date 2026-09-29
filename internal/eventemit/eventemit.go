@@ -30,15 +30,16 @@
 // (queue drivers dispatch while holding their own mutex). A dispatch reads
 // the dispatcher once, so it completes against the dispatcher it read even
 // when Set replaces it meanwhile. Failures keeps its count and hook in
-// atomics and its set of already-logged event names under a mutex that is
-// held only to test and insert a name, never while logging or calling the
-// hook.
+// atomics, and its set of already-logged event names and its set of
+// goroutines running the hook under a mutex that is held only to test,
+// insert or remove an entry, never while logging or calling the hook.
 package eventemit
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 
@@ -73,7 +74,10 @@ const HookPanicMessage = "event failure hook panicked; the panic is counted as a
 // Hook is called with every failure a Failures records: the error and the
 // event as it was dispatched, whatever its type. It runs on the goroutine
 // that saw the failure (a request, a job, a background pump), so it must be
-// quick. A panic in it is recovered and counted (see Failures.Record).
+// quick. A panic in it is recovered and counted (see Failures.Record). A
+// failure the hook causes on its own goroutine while it runs (it reads a
+// cache whose listener fails, say) is counted and logged but not handed to
+// the hook again, so a hook cannot recurse through the failures it causes.
 type Hook func(err error, event any)
 
 // Failures is the failure policy's state: the count of failed dispatches,
@@ -86,6 +90,8 @@ type Failures struct {
 
 	mu     sync.Mutex
 	logged map[string]struct{}
+	// hooking holds the goroutines running the hook now (GoroutineID).
+	hooking map[uint64]struct{}
 }
 
 // Record applies the policy to one failed dispatch of event: it counts it,
@@ -96,13 +102,26 @@ type Failures struct {
 // never re-enters the policy, so the hook is not called for it. ctx is the
 // dispatch's context: both lines are bound to the request, trace and span
 // ids it carries, read only when a line is written.
+//
+// A failure recorded on a goroutine that is running the hook, one the hook
+// caused, is counted and logged but not handed to the hook: the hook is
+// never re-entered on its own goroutine. Failures on other goroutines are
+// handed to it as usual, even while it runs.
 func (f *Failures) Record(ctx context.Context, logger contract.Logger, err error, event any) {
 	f.count.Add(1)
+	f.report(ctx, logger, err, event, false)
+}
+
+// report applies the policy's line and hook to a failure already counted:
+// the first-failure line, then the hook unless skipHook.
+func (f *Failures) report(ctx context.Context, logger contract.Logger, err error, event any, skipHook bool) {
 	name := EventName(event)
 	if f.firstOf(name) {
 		boundTo(ctx, logger).Warn(FailureMessage, "event", name, "error", err)
 	}
-	f.callHook(ctx, logger, err, event, name)
+	if !skipHook {
+		f.callHook(ctx, logger, err, event, name)
+	}
 }
 
 // boundTo returns logger (the fallback when nil) bound to the ids ctx
@@ -116,12 +135,18 @@ func boundTo(ctx context.Context, logger contract.Logger) contract.Logger {
 }
 
 // callHook calls the hook, when one is set, with err and event, recovering
-// and counting a panic in it.
+// and counting a panic in it. It does not call the hook on a goroutine that
+// is running it already (see Record).
 func (f *Failures) callHook(ctx context.Context, logger contract.Logger, err error, event any, name string) {
 	h := f.hook.Load()
 	if h == nil {
 		return
 	}
+	gid := GoroutineID()
+	if !f.enterHook(gid) {
+		return
+	}
+	defer f.leaveHook(gid)
 	defer func() {
 		if p := recover(); p != nil {
 			f.count.Add(1)
@@ -131,6 +156,28 @@ func (f *Failures) callHook(ctx context.Context, logger contract.Logger, err err
 		}
 	}()
 	(*h)(err, event)
+}
+
+// enterHook marks goroutine gid as running the hook. It reports false,
+// marking nothing, when gid is running it already.
+func (f *Failures) enterHook(gid uint64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, running := f.hooking[gid]; running {
+		return false
+	}
+	if f.hooking == nil {
+		f.hooking = make(map[uint64]struct{})
+	}
+	f.hooking[gid] = struct{}{}
+	return true
+}
+
+// leaveHook unmarks goroutine gid.
+func (f *Failures) leaveHook(gid uint64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.hooking, gid)
 }
 
 // firstOf reports whether name has not been logged before, and remembers it.
@@ -318,4 +365,47 @@ func (e *Emitter) log() contract.Logger {
 		return (*p)()
 	}
 	return nil
+}
+
+// gidParseFallback feeds GoroutineID's failure path with unique sentinels.
+// Sentinels live above 1<<63 so they can never collide with a real goroutine
+// ID within the lifetime of a process.
+var gidParseFallback atomic.Uint64
+
+// GoroutineID returns the running goroutine's ID by parsing the first line
+// of runtime.Stack ("goroutine N [...]"). Used only on failure paths, which
+// are rare by construction; the cost is acceptable there and the
+// per-goroutine re-entry guards it enables (the failure hook's, the event
+// dispatcher's failure-report bridge's) cannot be built from a context,
+// which a re-entrant call need not carry.
+//
+// The header format is not a formally stable runtime API (though it has been
+// stable in practice for many releases and is relied on by widely used
+// libraries), so the failure mode is chosen deliberately: if parsing ever
+// fails, the function returns a process-unique sentinel instead of a shared
+// zero value. A shared zero would make every unparsed goroutine look like
+// the same goroutine and falsely suppress unrelated work whenever a guard is
+// held; a unique sentinel merely degrades the guard to a no-op for that one
+// call, which errs on the side of reporting rather than suppressing.
+func GoroutineID() uint64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	const prefix = "goroutine "
+	s := buf[:n]
+	if len(s) <= len(prefix) {
+		return 1<<63 | gidParseFallback.Add(1)
+	}
+	var id uint64
+	digits := 0
+	for _, c := range s[len(prefix):] {
+		if c < '0' || c > '9' {
+			break
+		}
+		id = id*10 + uint64(c-'0')
+		digits++
+	}
+	if digits == 0 {
+		return 1<<63 | gidParseFallback.Add(1)
+	}
+	return id
 }
