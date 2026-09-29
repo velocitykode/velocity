@@ -671,7 +671,9 @@ func (m *MemoryDriver) GetFailed(queueName string) ([]*failedJob, error) {
 // Shutdown gracefully shuts down the driver, waiting for the background
 // goroutine to finish. Honors the context deadline: if ctx expires before
 // the goroutine exits, ctx.Err() is returned. Idempotent, safe to call
-// multiple times.
+// multiple times. Shutdown never waits on the installed logger: a line
+// reporting a panic in the wait is written after Shutdown is signalled, so
+// it may arrive after Shutdown returns.
 func (m *MemoryDriver) Shutdown(ctx context.Context) error {
 	// The batch repository is process-wide (see queue/batch_repository.go)
 	// and outlives a single driver, so we no longer close it here.
@@ -685,15 +687,7 @@ func (m *MemoryDriver) Shutdown(ctx context.Context) error {
 	// even if wg.Wait panics (e.g. negative wait-group counter).
 	// Not async.Go: must close(done) on panic so the outer select never
 	// blocks shutdown waiting on a goroutine that already died.
-	go func() { //safe-goroutine: close(done) on panic for shutdown, see comment above
-		defer func() {
-			if r := recover(); r != nil {
-				m.log().Error("velocity/queue: memory driver shutdown panic recovered", "error", panicerr.FromRecovered(r))
-			}
-			close(done)
-		}()
-		m.wg.Wait()
-	}()
+	go m.awaitBackground(m.wg.Wait, done) //safe-goroutine: close(done) on panic for shutdown, see comment above
 
 	select {
 	case <-done:
@@ -701,6 +695,24 @@ func (m *MemoryDriver) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// awaitBackground runs wait (the background goroutines' WaitGroup) and
+// closes done when it returns or panics. done closes before the panic is
+// logged, and the line goes through fallbacklog.Write, so a logger that
+// panics or blocks never holds Shutdown.
+func (m *MemoryDriver) awaitBackground(wait func(), done chan<- struct{}) {
+	defer func() {
+		r := recover()
+		close(done)
+		if r != nil {
+			err := panicerr.FromRecovered(r)
+			fallbacklog.Write(m.log(), func(l contract.Logger) {
+				l.Error("velocity/queue: memory driver shutdown panic recovered", "error", err)
+			})
+		}
+	}()
+	wait()
 }
 
 // processDelayedJobs moves delayed jobs to main queue when ready.
