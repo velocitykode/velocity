@@ -263,7 +263,7 @@ func runStockWorker(t *testing.T, q queue.Driver, opts console.QueueWorkOptions,
 	}
 	w := console.NewQueueWorker(q, opts)
 	w.Start(context.Background())
-	defer w.Stop()
+	defer w.Stop(context.Background())
 	testsync.Eventually(t, done, 5*time.Second, "job failure handled")
 }
 
@@ -547,7 +547,7 @@ func TestWireFailureReporters_HandlerSwapWhileWorkerFails(t *testing.T) {
 	stopped := false
 	defer func() {
 		if !stopped {
-			w.Stop()
+			w.Stop(context.Background())
 		}
 	}()
 
@@ -561,7 +561,7 @@ func TestWireFailureReporters_HandlerSwapWhileWorkerFails(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	testsync.Eventually(t, func() bool { return failedJobs() == jobs }, 10*time.Second, "every listener job failed")
-	w.Stop()
+	w.Stop(context.Background())
 	stopped = true
 
 	total, reporting := 0, 0

@@ -111,7 +111,7 @@ func TestReaper_RetriesAfterEnqueueFailure(t *testing.T) {
 	callbackWorker := NewWorker(flaky, "default", func(j Job) error { return j.Handle() },
 		WithInterval(5*time.Millisecond), WithMaxRetries(0))
 	callbackWorker.Start(context.Background())
-	t.Cleanup(func() { _ = callbackWorker.Stop() })
+	t.Cleanup(func() { _ = callbackWorker.Stop(context.Background()) })
 
 	jobsDriver := newMemoryDriver()
 	batch, err := NewBatch(&testBatchJob{}).
@@ -197,7 +197,7 @@ func TestReaper_RecoversCallbackAfterDispatcherCrash(t *testing.T) {
 	worker := NewWorker(driver, "default", func(j Job) error { return j.Handle() },
 		WithInterval(5*time.Millisecond), WithMaxRetries(0))
 	worker.Start(context.Background())
-	t.Cleanup(func() { _ = worker.Stop() })
+	t.Cleanup(func() { _ = worker.Stop(context.Background()) })
 
 	testsync.Eventually(t, func() bool { return recovered.Load() == 1 }, 2*time.Second,
 		"reaper enqueues callback for orphaned completed-but-undispatched row")

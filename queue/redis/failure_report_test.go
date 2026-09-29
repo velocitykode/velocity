@@ -88,13 +88,13 @@ func TestRedisDriver_JobFailedMarkedWhenHookReported(t *testing.T) {
 		return nil
 	})
 	w.Start(context.Background())
-	defer w.Stop()
+	defer w.Stop(context.Background())
 	testsync.Eventually(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(failed) > 0
 	}, 5*time.Second, "worker dispatches queue.job.failed")
-	w.Stop()
+	w.Stop(context.Background())
 
 	mu.Lock()
 	defer mu.Unlock()

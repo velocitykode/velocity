@@ -85,7 +85,7 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 		}
 		worker := NewWorker(driver, "process-queue", handler, WithMaxRetries(1))
 		go worker.Start(context.Background())
-		defer worker.Stop()
+		defer worker.Stop(context.Background())
 
 		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&processed) }, int32(1), 3*time.Second, "success job processed")
 		testsync.EventuallyEqual(t, func() int32 { return atomic.LoadInt32(&failedCount) }, int32(1), 3*time.Second, "fail job processed")
@@ -120,7 +120,7 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 		}
 		worker := NewWorker(driver, "delayed-queue", handler)
 		go worker.Start(context.Background())
-		defer worker.Stop()
+		defer worker.Stop(context.Background())
 
 		// Stability window — if the delay weren't honored, count would go to 1
 		// well before the 1s delay elapses. 500ms is intentionally less than the
@@ -186,7 +186,7 @@ func TestIntegrationMemoryDriver(t *testing.T) {
 	done:
 		// Stop all workers
 		for _, w := range workers {
-			w.Stop()
+			w.Stop(context.Background())
 		}
 
 		// Verify all jobs were processed

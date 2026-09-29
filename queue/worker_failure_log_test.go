@@ -95,12 +95,12 @@ func runWorkerUntilFailed(t *testing.T, job Job, maxRetries int, logger *levelLo
 		w.SetEventDispatcher(dispatch)
 	}
 	w.Start(context.Background())
-	defer w.Stop()
+	defer w.Stop(context.Background())
 	testsync.Eventually(t, func() bool {
 		failed, err := d.GetFailed(queueName)
 		return err == nil && len(failed) > 0
 	}, 5*time.Second, "job failed for good")
-	w.Stop()
+	w.Stop(context.Background())
 }
 
 // TestWorker_PermanentFailureLoggedOnceWithoutDispatcher asserts a worker

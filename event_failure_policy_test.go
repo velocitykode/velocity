@@ -125,7 +125,7 @@ func TestEventListenerFailures_OneWarnPerEventName(t *testing.T) {
 			w := console.NewQueueWorker(a.Queue, queueWorkOptions(a, console.QueueWorkOptions{}))
 			w.Start(context.Background())
 			testsync.Eventually(t, func() bool { return processedJobRuns.Load() > before }, 5*time.Second, "job processed")
-			w.Stop()
+			w.Stop(context.Background())
 		}},
 		{"router.request.completed", func(t *testing.T) {
 			rec := httptest.NewRecorder()

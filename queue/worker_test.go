@@ -55,7 +55,7 @@ func TestWorker(t *testing.T) {
 		waitFor(t, 5*time.Second, func() bool {
 			return atomic.LoadInt32(&processed) == 5
 		})
-		worker.Stop()
+		worker.Stop(context.Background())
 
 		if atomic.LoadInt32(&processed) != 5 {
 			t.Errorf("Expected 5 jobs processed, got %d", processed)
@@ -86,7 +86,7 @@ func TestWorker(t *testing.T) {
 		waitFor(t, 5*time.Second, func() bool {
 			return atomic.LoadInt32(&processed) == 10
 		})
-		worker.Stop()
+		worker.Stop(context.Background())
 
 		if atomic.LoadInt32(&processed) != 10 {
 			t.Errorf("Expected 10 jobs processed, got %d", processed)
@@ -123,7 +123,7 @@ func TestWorker(t *testing.T) {
 		waitFor(t, 5*time.Second, func() bool {
 			return atomic.LoadInt32(&processed) >= 6
 		})
-		worker.Stop()
+		worker.Stop(context.Background())
 
 		if atomic.LoadInt32(&processed) != 6 {
 			t.Errorf("Expected 6 jobs attempted, got %d", processed)
@@ -164,7 +164,7 @@ func TestWorker(t *testing.T) {
 		waitFor(t, 10*time.Second, func() bool {
 			return atomic.LoadInt32(&timedOut) == 1
 		})
-		worker.Stop()
+		worker.Stop(context.Background())
 
 		if atomic.LoadInt32(&timedOut) != 1 {
 			t.Errorf("Expected job to timeout, but it didn't")
@@ -198,7 +198,7 @@ func TestGlobalWorker(t *testing.T) {
 	waitFor(t, 5*time.Second, func() bool {
 		return atomic.LoadInt32(&processed) == 3
 	})
-	worker.Stop()
+	worker.Stop(context.Background())
 
 	if atomic.LoadInt32(&processed) != 3 {
 		t.Errorf("Expected 3 jobs processed, got %d", processed)
@@ -241,7 +241,7 @@ func TestWorker_RetryOnFailure(t *testing.T) {
 	waitFor(t, 10*time.Second, func() bool {
 		return atomic.LoadInt32(&attempts) >= 3
 	})
-	worker.Stop()
+	worker.Stop(context.Background())
 
 	got := atomic.LoadInt32(&attempts)
 	if got != 3 {
@@ -286,7 +286,7 @@ func TestWorker_ExhaustsRetries(t *testing.T) {
 	waitFor(t, 10*time.Second, func() bool {
 		return atomic.LoadInt32(&failed) >= 1
 	})
-	worker.Stop()
+	worker.Stop(context.Background())
 
 	gotAttempts := atomic.LoadInt32(&attempts)
 	if gotAttempts != 3 {
@@ -335,7 +335,7 @@ func TestWorker_NoRetryWhenMaxRetriesIsOne(t *testing.T) {
 	waitFor(t, 5*time.Second, func() bool {
 		return atomic.LoadInt32(&failed) >= 1
 	})
-	worker.Stop()
+	worker.Stop(context.Background())
 
 	gotAttempts := atomic.LoadInt32(&attempts)
 	if gotAttempts != 1 {
@@ -398,7 +398,7 @@ func TestWorker_RetryDeciderStopsRetry(t *testing.T) {
 	waitFor(t, 5*time.Second, func() bool {
 		return atomic.LoadInt32(&failed) >= 1
 	})
-	worker.Stop()
+	worker.Stop(context.Background())
 
 	gotAttempts := atomic.LoadInt32(&attempts)
 	if gotAttempts != 1 {
@@ -461,7 +461,7 @@ func TestWorker_MaxAttempterInterface(t *testing.T) {
 	waitFor(t, 10*time.Second, func() bool {
 		return atomic.LoadInt32(&failed) >= 1
 	})
-	worker.Stop()
+	worker.Stop(context.Background())
 
 	gotAttempts := atomic.LoadInt32(&attempts)
 	if gotAttempts != 2 {
@@ -551,7 +551,7 @@ func TestWorker_BackofferInterface(t *testing.T) {
 	waitFor(t, 10*time.Second, func() bool {
 		return atomic.LoadInt32(&attempts) >= 3
 	})
-	worker.Stop()
+	worker.Stop(context.Background())
 
 	gotAttempts := atomic.LoadInt32(&attempts)
 	if gotAttempts != 3 {
@@ -617,7 +617,7 @@ func TestWorker_CtxCancelPropagatesToJobExecution(t *testing.T) {
 	select {
 	case <-handlerStarted:
 	case <-time.After(2 * time.Second):
-		worker.Stop()
+		worker.Stop(context.Background())
 		t.Fatal("handler never started; worker did not pick up job")
 	}
 
@@ -646,7 +646,7 @@ func TestWorker_CtxCancelPropagatesToJobExecution(t *testing.T) {
 	case <-done:
 	case <-time.After(maxWait):
 		// Last-ditch cleanup to avoid leaked goroutines confusing later tests.
-		worker.Stop()
+		worker.Stop(context.Background())
 		t.Fatalf("worker pumps did not exit after parent ctx cancel within %v "+
 			"(ctx propagation bug: worker ctx is not derived from parent)", maxWait)
 	}
@@ -750,7 +750,7 @@ func TestWorker_RetryPushBoundedDuringShutdown(t *testing.T) {
 	select {
 	case <-driver.pushEntered:
 	case <-time.After(5 * time.Second):
-		worker.Stop()
+		worker.Stop(context.Background())
 		t.Fatal("PushDelayedCtx never entered; worker did not reach retry path")
 	}
 
@@ -758,7 +758,7 @@ func TestWorker_RetryPushBoundedDuringShutdown(t *testing.T) {
 	done := make(chan struct{})
 	start := time.Now()
 	go func() {
-		worker.Stop()
+		worker.Stop(context.Background())
 		close(done)
 	}()
 
@@ -842,13 +842,13 @@ func TestWorker_HandleCtxerReceivesCancellation(t *testing.T) {
 	select {
 	case <-job.started:
 	case <-time.After(5 * time.Second):
-		worker.Stop()
+		worker.Stop(context.Background())
 		t.Fatalf("HandleCtx never started")
 	}
 
 	// Cancel the worker's lifecycle ctx; the per-job ctx is derived from it
 	// and must observe cancellation.
-	worker.Stop()
+	worker.Stop(context.Background())
 
 	// Stop() only waits for the worker's pump goroutines; the handler
 	// goroutine running HandleCtx is detached and may not have written
@@ -896,7 +896,7 @@ func TestWorker_HandleOnlyJobStillRuns(t *testing.T) {
 	waitFor(t, 5*time.Second, func() bool {
 		return atomic.LoadInt32(&processed) == 1
 	})
-	worker.Stop()
+	worker.Stop(context.Background())
 
 	if got := atomic.LoadInt32(&processed); got != 1 {
 		t.Errorf("expected legacy job to run once, got %d", got)
@@ -955,11 +955,11 @@ func TestWorker_ShutdownCancelledJobNotRetriedOrFailed(t *testing.T) {
 	select {
 	case <-job.started:
 	case <-time.After(5 * time.Second):
-		worker.Stop()
+		worker.Stop(context.Background())
 		t.Fatalf("HandleCtx never started")
 	}
 
-	worker.Stop()
+	worker.Stop(context.Background())
 
 	// Confirm cancellation actually reached the handler (sanity: otherwise
 	// the rest of the assertions are meaningless). The handler goroutine
@@ -1125,7 +1125,7 @@ func TestWorker_HandlerKillCeilingPreventsHang(t *testing.T) {
 	select {
 	case <-job.started:
 	case <-time.After(5 * time.Second):
-		worker.Stop()
+		worker.Stop(context.Background())
 		t.Fatalf("HandleCtx never started")
 	}
 
@@ -1135,7 +1135,7 @@ func TestWorker_HandlerKillCeilingPreventsHang(t *testing.T) {
 	stopDone := make(chan struct{})
 	stopStart := time.Now()
 	go func() {
-		worker.Stop()
+		worker.Stop(context.Background())
 		close(stopDone)
 	}()
 
@@ -1154,7 +1154,7 @@ func TestWorker_HandlerKillCeilingPreventsHang(t *testing.T) {
 	}
 
 	// The kill-ceiling WARN must have fired at least once for this job.
-	if n := rec.warnCount("Handler goroutine did not return"); n < 1 {
+	if n := rec.warnCount("Handler still running after the drain grace expired"); n < 1 {
 		t.Errorf("expected at least one kill-ceiling WARN, got %d (warns=%v)", n, rec.warns)
 	}
 }

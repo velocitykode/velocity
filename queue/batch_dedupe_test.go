@@ -426,7 +426,7 @@ func TestReaper_ProcessCrashAfterPush_DedupeOnRecover(t *testing.T) {
 	worker := NewWorker(dbDriver, "default", func(j Job) error { return j.Handle() },
 		WithInterval(10*time.Millisecond), WithMaxRetries(0))
 	worker.Start(context.Background())
-	t.Cleanup(func() { _ = worker.Stop() })
+	t.Cleanup(func() { _ = worker.Stop(context.Background()) })
 
 	// The reaper sees then_dispatched=false, calls PushIfNotExistsCtx
 	// which no-ops (dedupe row already exists), then MarkCallback

@@ -89,7 +89,7 @@ func TestHydrate_FactoryReturningNoJobIsAnError(t *testing.T) {
 			}, WithInterval(5*time.Millisecond), WithWorkerLogger(logger))
 			pushRebuiltOnly(t, d, q, c.job)
 			w.Start(context.Background())
-			t.Cleanup(func() { _ = w.Stop() })
+			t.Cleanup(func() { _ = w.Stop(context.Background()) })
 
 			hostile.Eventually(t, hostile.Deadline, "the worker reporting the job it could not rebuild", func() bool {
 				for _, line := range logger.errorLines() {
@@ -99,7 +99,7 @@ func TestHydrate_FactoryReturningNoJobIsAnError(t *testing.T) {
 				}
 				return false
 			})
-			_ = w.Stop()
+			_ = w.Stop(context.Background())
 			ran.Range(func(k, _ any) bool {
 				t.Errorf("the handler ran a job from a factory that returned none: %#v", k)
 				return true

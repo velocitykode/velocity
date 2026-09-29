@@ -99,12 +99,12 @@ func TestWorker_JobLinesCarryTheJobAndItsTrace(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			w.Stop()
+			w.Stop(context.Background())
 			t.Fatalf("job never failed permanently: %+v", logger.snapshot())
 		}
 		time.Sleep(time.Millisecond)
 	}
-	w.Stop()
+	w.Stop(context.Background())
 
 	var jobLines []fieldLine
 	for _, l := range logger.snapshot() {

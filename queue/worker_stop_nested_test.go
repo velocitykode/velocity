@@ -26,7 +26,7 @@ func TestWorker_StopFromItsOwnPumpDoesNotWait(t *testing.T) {
 	var once atomic.Bool
 	w.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 		if _, ok := event.(*JobProcessed); ok && once.CompareAndSwap(false, true) {
-			err := w.Stop()
+			err := w.Stop(context.Background())
 			stopErr.Store(&err)
 			close(returned)
 		}
@@ -42,7 +42,7 @@ func TestWorker_StopFromItsOwnPumpDoesNotWait(t *testing.T) {
 		t.Fatalf("Stop from the pump = %v, want an error wrapping contract.ErrStopFromOwnWork", p)
 	}
 	hostile.Within(t, hostile.Deadline, func() {
-		if err := w.Stop(); err != nil {
+		if err := w.Stop(context.Background()); err != nil {
 			t.Errorf("Stop from outside = %v, want nil once drained", err)
 		}
 	})

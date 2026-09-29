@@ -140,8 +140,8 @@ func TestMemoryDriver_AttemptsPersistAcrossPopsTripsMaxAttempts(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	workerA.Stop()
-	workerB.Stop()
+	workerA.Stop(context.Background())
+	workerB.Stop(context.Background())
 	wg.Wait()
 
 	failed, _ := driver.GetFailed("attempts-queue")

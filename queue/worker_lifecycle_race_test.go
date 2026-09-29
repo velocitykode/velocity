@@ -18,8 +18,8 @@ func TestWorker_StartAndStopRace(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() { defer wg.Done(); w.Start(context.Background()) }()
-		go func() { defer wg.Done(); _ = w.Stop() }()
+		go func() { defer wg.Done(); _ = w.Stop(context.Background()) }()
 		wg.Wait()
-		_ = w.Stop()
+		_ = w.Stop(context.Background())
 	}
 }

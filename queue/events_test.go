@@ -459,7 +459,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 		worker.SetEventDispatcher(dispatcher)
 
 		worker.Start(context.Background())
-		defer worker.Stop()
+		defer worker.Stop(context.Background())
 
 		testsync.Eventually(t, func() bool {
 			mu.Lock()
@@ -517,7 +517,7 @@ func TestWorkerEventDispatching(t *testing.T) {
 		worker.SetEventDispatcher(dispatcher)
 
 		worker.Start(context.Background())
-		defer worker.Stop()
+		defer worker.Stop(context.Background())
 
 		testsync.Eventually(t, func() bool {
 			mu.Lock()

@@ -108,7 +108,7 @@ func runQueuedListenerTries(t *testing.T, tries, workerDefault int) (calls int, 
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	worker.Stop()
+	worker.Stop(context.Background())
 	wg.Wait()
 
 	failed, _ := driver.GetFailed("default")

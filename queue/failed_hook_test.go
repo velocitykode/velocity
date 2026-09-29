@@ -189,12 +189,12 @@ func TestWorker_FailedHookPanicKeepsWorkerRunning(t *testing.T) {
 				return nil
 			})
 			w.Start(context.Background())
-			defer w.Stop()
+			defer w.Stop(context.Background())
 			testsync.Eventually(t, func() bool {
 				_, ok := panickingHookHandled.Load(second)
 				return ok
 			}, 5*time.Second, "the job after the panicking hook runs")
-			w.Stop()
+			w.Stop(context.Background())
 
 			mu.Lock()
 			defer mu.Unlock()

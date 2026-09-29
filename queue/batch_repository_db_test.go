@@ -479,8 +479,8 @@ func TestDatabaseBatchRepository_TwoProcessWorkers_ThenFires(t *testing.T) {
 	dispatcherWorker.Start(context.Background())
 	remoteWorker.Start(context.Background())
 	t.Cleanup(func() {
-		dispatcherWorker.Stop()
-		remoteWorker.Stop()
+		dispatcherWorker.Stop(context.Background())
+		remoteWorker.Stop(context.Background())
 	})
 
 	// Drive the dispatcher process by polling: its batch will reach

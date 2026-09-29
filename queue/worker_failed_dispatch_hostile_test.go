@@ -49,7 +49,7 @@ func TestWorker_PanickingFailedDispatchIsContained(t *testing.T) {
 		t.Fatalf("push: %v", err)
 	}
 	w.Start(context.Background())
-	t.Cleanup(func() { _ = w.Stop() })
+	t.Cleanup(func() { _ = w.Stop(context.Background()) })
 
 	hostile.Eventually(t, hostile.Deadline, "the failed dispatch's panic recorded", func() bool {
 		return recorded.Load() >= 1
@@ -66,7 +66,7 @@ func TestWorker_PanickingFailedDispatchIsContained(t *testing.T) {
 	hostile.Eventually(t, hostile.Deadline, "the worker running the next job", func() bool {
 		return ran.Load() > before && recorded.Load() >= 2
 	})
-	w.Stop()
+	w.Stop(context.Background())
 	if n := recorded.Load(); n != 2 {
 		t.Errorf("recorded failures = %d, want one per failed job", n)
 	}

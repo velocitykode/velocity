@@ -53,7 +53,7 @@ func QueueWork(driver queue.Driver, opts QueueWorkOptions) error {
 
 	prism.Info("Shutting down worker...")
 	cancel()
-	if err := w.Stop(); err != nil {
+	if err := w.Stop(context.Background()); err != nil {
 		return err
 	}
 	prism.Success("Done")

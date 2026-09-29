@@ -33,7 +33,7 @@ func TestWorker_StopDuringPopLogsNoError(t *testing.T) {
 		WithInterval(time.Millisecond), WithWorkerLogger(logger))
 	w.Start(context.Background())
 	<-d.popping
-	w.Stop()
+	w.Stop(context.Background())
 
 	if lines := logger.errorLines(); len(lines) != 0 {
 		t.Fatalf("error lines = %d, want 0: %+v", len(lines), lines)

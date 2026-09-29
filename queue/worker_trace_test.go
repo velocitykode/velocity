@@ -82,7 +82,7 @@ func TestWorker_RunsJobAsChildOfProducerSpan(t *testing.T) {
 
 	worker := NewWorker(q, "trace-queue", func(j Job) error { return nil })
 	worker.Start(context.Background())
-	defer worker.Stop()
+	defer worker.Stop(context.Background())
 
 	got := waitForTrace(t, job.captured, 5*time.Second)
 	if got.traceID != producerTrace {
@@ -120,7 +120,7 @@ func TestWorker_PayloadWithoutTraceStartsRootSpan(t *testing.T) {
 
 	worker := NewWorker(q, "legacy-queue", func(j Job) error { return nil })
 	worker.Start(context.Background())
-	defer worker.Stop()
+	defer worker.Stop(context.Background())
 
 	got := waitForTrace(t, job.captured, 5*time.Second)
 	if got.traceID == "" || got.spanID == "" || got.parentID != "" {
@@ -160,7 +160,7 @@ func TestWorker_DriverWithoutTraceSupportStartsRootSpan(t *testing.T) {
 	workerCtx := trace.WithTrace(context.Background(), "0af7651916cd43dd8448eb211c80319c", "b7ad6b7169203331")
 	worker := NewWorker(q, "plain-queue", func(j Job) error { return nil })
 	worker.Start(workerCtx)
-	defer worker.Stop()
+	defer worker.Stop(context.Background())
 
 	got := waitForTrace(t, job.captured, 5*time.Second)
 	if got.traceID == "" || got.spanID == "" || got.parentID != "" {
@@ -242,7 +242,7 @@ func TestWorker_RetryPushKeepsProducerSpanAsParent(t *testing.T) {
 
 	worker := NewWorker(q, "flaky-queue", func(j Job) error { return nil })
 	worker.Start(context.Background())
-	defer worker.Stop()
+	defer worker.Stop(context.Background())
 
 	first := waitForTrace(t, job.captured, 5*time.Second)
 	second := waitForTrace(t, job.captured, 5*time.Second)
@@ -302,7 +302,7 @@ func TestWorker_JobProcessingIsChildOfProducerSpan(t *testing.T) {
 	worker := NewWorker(q, "processing-queue", func(j Job) error { return nil })
 	worker.SetEventDispatcher(dispatcher)
 	worker.Start(context.Background())
-	defer worker.Stop()
+	defer worker.Stop(context.Background())
 
 	got := waitForTrace(t, job.captured, 5*time.Second)
 
@@ -365,7 +365,7 @@ func TestWorker_JobProcessedEventsCarryProducerTrace(t *testing.T) {
 	for time.Now().Before(deadline) && atomic.LoadInt32(&processed) == 0 {
 		time.Sleep(10 * time.Millisecond)
 	}
-	worker.Stop()
+	worker.Stop(context.Background())
 
 	if atomic.LoadInt32(&processed) == 0 {
 		t.Fatal("job not processed")

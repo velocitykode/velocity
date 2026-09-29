@@ -101,13 +101,13 @@ func TestNewQueueWorker_WiresDispatcher(t *testing.T) {
 		},
 	})
 	w.Start(context.Background())
-	defer w.Stop()
+	defer w.Stop(context.Background())
 	testsync.Eventually(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return failed != nil
 	}, 5*time.Second, "worker dispatches queue.job.failed")
-	w.Stop()
+	w.Stop(context.Background())
 
 	mu.Lock()
 	defer mu.Unlock()

@@ -15,6 +15,7 @@ import (
 	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -56,11 +57,11 @@ const terminalCleanupTimeout = 5 * time.Second
 // defaultHandlerKillCeiling bounds how long processJob will wait, after
 // the per-job ctx fires, for the detached handler goroutine to return
 // cooperatively. Once jobCtx.Done() fires, the goroutine is no longer
-// tracked by w.wg, so without this drain Stop() returns before timed-out
+// tracked by w.wg, so without this drain Stop returns before timed-out
 // handlers complete and the goroutines accumulate unbounded.
 //
 // 5s mirrors retryPushTimeout: long enough for a well-behaved handler to
-// observe ctx.Done() and unwind, short enough that Stop() does not hang
+// observe ctx.Done() and unwind, short enough that Stop does not hang
 // on a misbehaving handler. If the ceiling is exceeded, we log a WARN
 // and accept the leak; a job that ignores ctx is a bug in the handler.
 //
@@ -89,9 +90,11 @@ type Worker struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
-	// stops records the pump goroutines as the worker's own work, so a
-	// Stop called from one of them (a listener, logger or hook the pump
-	// runs) returns instead of waiting on itself.
+	// stops records the pump and handler goroutines as the worker's own
+	// work, so a Stop called from one of them (a handler, or a listener,
+	// logger or hook the pump runs) returns instead of waiting on itself,
+	// and holds the drain that every Stop from outside waits for. Its
+	// drain is guarded by life.
 	stops  drain.Coordinator
 	logger contract.Logger
 
@@ -255,32 +258,49 @@ func (w *Worker) Start(ctx context.Context) {
 	}
 }
 
-// Stop gracefully stops the worker and waits for its pumps to finish the
-// jobs in flight, returning nil. Safe to call before Start (no-op) or
-// multiple times.
+// Stop stops the worker and waits, bounded by ctx, for its pumps to finish
+// the jobs in flight. It returns nil once they have, or ctx's error when
+// ctx ends first; the drain goes on, and a later Stop waits for the same
+// drain. Stops that overlap share one drain. A nil ctx waits without a
+// bound. Safe to call before Start (a no-op) or multiple times; a stopped
+// worker does not start again.
 //
-// Called from one of the worker's pumps (a job event listener, the
-// worker's logger, a batch callback or a Failed hook, which the pump runs),
-// Stop cannot wait for the pump it runs on: it signals the stop and returns
-// an error wrapping contract.ErrStopFromOwnWork at once; a Stop from
-// outside then waits for the drain. A goroutine the job starts on its own
-// is not recognised as the worker's work.
-func (w *Worker) Stop() error {
-	w.life.Lock()
-	cancel := w.cancel
-	w.life.Unlock()
+// Called from the worker's own work (a job's handler, plain or ctx-aware,
+// or a job event listener, the worker's logger, a batch callback or a
+// Failed hook, which a pump runs), Stop cannot wait for the goroutine it
+// runs on: it signals the stop and returns an error wrapping
+// contract.ErrStopFromOwnWork at once; a Stop from outside then waits for
+// the drain. A goroutine the job starts on its own is not recognised as
+// the worker's work.
+func (w *Worker) Stop(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if w.stops.Nested() {
+		w.life.Lock()
+		cancel := w.cancel
+		w.life.Unlock()
 		if cancel != nil {
 			cancel()
 		}
-		return fmt.Errorf("velocity/queue: Stop called from a pump of this worker; the worker stops without this call waiting for it: %w", contract.ErrStopFromOwnWork)
+		return fmt.Errorf("velocity/queue: Stop called from a handler or pump of this worker; the worker stops without this call waiting for it: %w", contract.ErrStopFromOwnWork)
 	}
-	if cancel == nil {
+	w.life.Lock()
+	if w.cancel == nil {
+		w.life.Unlock()
 		return nil
 	}
-	cancel()
-	w.wg.Wait()
-	return nil
+	drained := w.stops.Ended()
+	if drained == nil {
+		drained = w.stops.Begin()
+		w.cancel()
+		async.Go(func() {
+			w.wg.Wait()
+			close(drained)
+		})
+	}
+	w.life.Unlock()
+	return w.stops.Await(ctx, drained, nil)
 }
 
 // work is the main worker loop. Caller is responsible for wg bookkeeping
@@ -431,6 +451,12 @@ func (w *Worker) processJob() error {
 	// so the outer select reports it as the job error (and counts toward
 	// retries) instead of swallowing it into the package logger only.
 	go func() { //safe-goroutine: forwards panic via done for retry accounting, see comment above
+		// The handler is the worker's own work from its first statement
+		// on, so a Stop it calls returns instead of waiting on it.
+		id := goroutine.ID()
+		own := w.stops.Work()
+		own.Enter(id)
+		defer own.Leave(id)
 		defer func() {
 			if r := recover(); r != nil {
 				done <- panicerr.FromRecovered(r)
@@ -511,12 +537,12 @@ func (w *Worker) processJob() error {
 		// which propagates to jobCtx) or the per-job timeout expired. In
 		// both cases the handler goroutine is still running and is NOT
 		// tracked by w.wg, so without an explicit drain it leaks past
-		// Stop() and accumulates unbounded over time.
+		// Stop and accumulates unbounded over time.
 		//
 		// Wait up to defaultHandlerKillCeiling for the handler to observe
 		// ctx.Done() and return cooperatively. If it does not, we log a
 		// WARN and accept the leak: a handler that ignores ctx is a bug,
-		// and blocking Stop() forever is worse for ops than leaking one
+		// and blocking Stop forever is worse for ops than leaking one
 		// goroutine.
 		w.drainHandler(log, done)
 
@@ -600,14 +626,14 @@ func (w *Worker) ackReservation(log contract.Logger, token ReservationToken) boo
 
 // drainHandler waits for the detached handler goroutine to write to done
 // after jobCtx fired. Bounded by defaultHandlerKillCeiling so a misbehaving
-// handler that ignores ctx cannot hang Stop() forever; in that case we log
+// handler that ignores ctx cannot hang Stop forever; in that case we log
 // a warning and let the goroutine leak.
 func (w *Worker) drainHandler(log contract.Logger, done <-chan error) {
 	select {
 	case <-done:
 		// handler returned cooperatively
 	case <-time.After(defaultHandlerKillCeiling):
-		log.Warn("Handler goroutine did not return after ctx cancellation; leaking",
+		log.Warn("Handler still running after the drain grace expired",
 			"kill_ceiling_ms", defaultHandlerKillCeiling.Milliseconds(),
 		)
 	}
