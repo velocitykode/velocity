@@ -51,6 +51,11 @@ type Gateway struct {
 	running      bool
 	logger       contract.Logger
 
+	// building is set while a Build constructs the gateway outside the
+	// lock, so a concurrent or re-entrant Build returns ErrBuildInProgress
+	// instead of constructing a second one. Guarded by mu.
+	building bool
+
 	// HTTP server timeout/header bounds applied to httpServer in Build().
 	// Defaulted in NewGateway() to the conservative package constants so a
 	// zero-option Gateway is secure by default; overridable via GatewayWith*.
@@ -360,84 +365,156 @@ func (g *Gateway) RegisterHandler(handler GatewayRegistrationFunc) *Gateway {
 // been configured. Outside production, an unconfigured gateway defaults to
 // insecure credentials and emits a one-shot warning. Operators that
 // deliberately run a cleartext mesh must opt in via GatewayWithInsecure().
+//
+// Build runs application code (the registration handlers, the middleware
+// and the logger) without holding the gateway's lock, so that code may
+// call the gateway's accessors. A Build called while another one is
+// constructing the gateway, concurrently or from that application code,
+// returns ErrBuildInProgress at once; a Build after a completed one
+// returns nil. A Build that fails publishes nothing, so a later Build
+// runs again.
 func (g *Gateway) Build(ctx context.Context) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	if g.mux != nil {
-		return nil // Already built
+	b, err := g.beginBuild()
+	if b == nil {
+		return err
 	}
-
-	if g.configErr != nil {
-		return g.configErr
-	}
-
-	// Enforce the production TLS guard before any other validation so the
-	// error is unambiguous when an operator forgets to wire credentials.
-	if !g.credsOpted {
-		// Routed through contract.IsProductionEnv so "prod" and "staging"
-		// are refused alongside "production". A typo'd APP_ENV cannot
-		// silently downgrade the gateway to insecure dial credentials.
-		if contract.IsProductionEnv(g.environment) {
-			return fmt.Errorf("velocity/grpc: gateway TLS credentials are required in production. Use GatewayWithTLS, GatewayWithTransportConfig, or GatewayWithInsecure to opt out for a known-internal mesh")
+	published := false
+	defer func() {
+		if !published {
+			g.mu.Lock()
+			g.building = false
+			g.mu.Unlock()
 		}
-		g.logger.Warn("gRPC gateway dialling upstream with insecure credentials. Configure TLS via GatewayWithTLS or GatewayWithTransportConfig before deploying to production",
-			"grpc_endpoint", g.grpcEndpoint,
+	}()
+
+	if b.warnInsecure {
+		b.logger.Warn("gRPC gateway dialling upstream with insecure credentials. Configure TLS via GatewayWithTLS or GatewayWithTransportConfig before deploying to production",
+			"grpc_endpoint", b.grpcEndpoint,
 		)
-		g.dialOptions = []grpc.DialOption{
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-		}
-	}
-
-	if g.grpcEndpoint == "" {
-		return ErrNoEndpoint
-	}
-
-	// Validate endpoint format (must be host:port)
-	if _, _, err := net.SplitHostPort(g.grpcEndpoint); err != nil {
-		return fmt.Errorf("velocity/grpc: invalid grpc endpoint %q: expected host:port format: %w", g.grpcEndpoint, err)
 	}
 
 	// Create mux with options
-	g.mux = runtime.NewServeMux(g.muxOptions...)
+	mux := runtime.NewServeMux(b.muxOptions...)
 
 	// Register all handlers. Every registration dials through the
 	// gatewayPropagation client interceptors, so the gRPC half of a gateway
 	// call carries the trace and request id correlateGatewayRequest selected
 	// for the HTTP half.
 	propagation := gatewayPropagation()
-	dialOptions := append(slices.Clip(g.dialOptions),
+	dialOptions := append(slices.Clip(b.dialOptions),
 		grpc.WithChainUnaryInterceptor(propagation.Unary),
 		grpc.WithChainStreamInterceptor(propagation.Stream),
 	)
-	for _, regFunc := range g.registrations {
-		if err := regFunc(ctx, g.mux, g.grpcEndpoint, dialOptions); err != nil {
+	for _, regFunc := range b.registrations {
+		if err := regFunc(ctx, mux, b.grpcEndpoint, dialOptions); err != nil {
 			return fmt.Errorf("velocity/grpc: failed to register gateway handler: %w", err)
 		}
 	}
 
 	// Build handler with middleware
-	var handler http.Handler = g.mux
+	var handler http.Handler = mux
 	// Apply middleware in reverse order so first added is outermost
-	for i := len(g.middleware) - 1; i >= 0; i-- {
-		handler = g.middleware[i](handler)
+	for i := len(b.middleware) - 1; i >= 0; i-- {
+		handler = b.middleware[i](handler)
 	}
 	// Correlation wraps everything, so application middleware already sees
 	// the request id and trace.
 	handler = correlateGatewayRequest(handler)
 
 	// Create HTTP server
-	g.httpServer = &http.Server{
-		Addr:              ":" + g.port,
+	server := &http.Server{
+		Addr:              ":" + b.port,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       g.readTimeout,
-		WriteTimeout:      g.writeTimeout,
-		IdleTimeout:       g.idleTimeout,
-		MaxHeaderBytes:    g.maxHeaderBytes,
+		ReadTimeout:       b.readTimeout,
+		WriteTimeout:      b.writeTimeout,
+		IdleTimeout:       b.idleTimeout,
+		MaxHeaderBytes:    b.maxHeaderBytes,
 	}
 
+	g.mu.Lock()
+	g.mux = mux
+	g.httpServer = server
+	g.building = false
+	g.mu.Unlock()
+	published = true
 	return nil
+}
+
+// gatewayBuildPlan is the configuration one Build constructs the gateway
+// from, copied under the lock so the construction runs without it.
+type gatewayBuildPlan struct {
+	logger                                 contract.Logger
+	port, grpcEndpoint                     string
+	dialOptions                            []grpc.DialOption
+	muxOptions                             []runtime.ServeMuxOption
+	registrations                          []GatewayRegistrationFunc
+	middleware                             []func(http.Handler) http.Handler
+	readTimeout, writeTimeout, idleTimeout time.Duration
+	maxHeaderBytes                         int
+	warnInsecure                           bool
+}
+
+// beginBuild runs Build's checks under the lock and, when they pass,
+// marks a Build in progress and returns the plan to construct from. It
+// returns a nil plan with a nil error when the gateway is already built,
+// and with an error when a Build is in progress or a check fails. It
+// calls no application code.
+func (g *Gateway) beginBuild() (*gatewayBuildPlan, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.mux != nil {
+		return nil, nil // Already built
+	}
+	if g.building {
+		return nil, ErrBuildInProgress
+	}
+
+	if g.configErr != nil {
+		return nil, g.configErr
+	}
+
+	// Enforce the production TLS guard before any other validation so the
+	// error is unambiguous when an operator forgets to wire credentials.
+	warnInsecure := false
+	if !g.credsOpted {
+		// Routed through contract.IsProductionEnv so "prod" and "staging"
+		// are refused alongside "production". A typo'd APP_ENV cannot
+		// silently downgrade the gateway to insecure dial credentials.
+		if contract.IsProductionEnv(g.environment) {
+			return nil, fmt.Errorf("velocity/grpc: gateway TLS credentials are required in production. Use GatewayWithTLS, GatewayWithTransportConfig, or GatewayWithInsecure to opt out for a known-internal mesh")
+		}
+		warnInsecure = true
+		g.dialOptions = []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		}
+	}
+
+	if g.grpcEndpoint == "" {
+		return nil, ErrNoEndpoint
+	}
+
+	// Validate endpoint format (must be host:port)
+	if _, _, err := net.SplitHostPort(g.grpcEndpoint); err != nil {
+		return nil, fmt.Errorf("velocity/grpc: invalid grpc endpoint %q: expected host:port format: %w", g.grpcEndpoint, err)
+	}
+
+	g.building = true
+	return &gatewayBuildPlan{
+		logger:         g.logger,
+		port:           g.port,
+		grpcEndpoint:   g.grpcEndpoint,
+		dialOptions:    slices.Clone(g.dialOptions),
+		muxOptions:     slices.Clone(g.muxOptions),
+		registrations:  slices.Clone(g.registrations),
+		middleware:     slices.Clone(g.middleware),
+		readTimeout:    g.readTimeout,
+		writeTimeout:   g.writeTimeout,
+		idleTimeout:    g.idleTimeout,
+		maxHeaderBytes: g.maxHeaderBytes,
+		warnInsecure:   warnInsecure,
+	}, nil
 }
 
 // correlateGatewayRequest gives a gateway request the request id and trace
@@ -629,16 +706,21 @@ func (g *Gateway) StartAsyncWithContext(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the HTTP gateway immediately
+// Stop stops the HTTP gateway immediately. It changes the gateway's state
+// under its lock, then logs and closes the server without it, so the
+// logger may call the gateway's accessors.
 func (g *Gateway) Stop() {
 	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	if g.httpServer != nil && g.running {
-		g.logger.Info("HTTP gateway stopping")
-		g.httpServer.Close()
-		g.running = false
+	server := g.httpServer
+	if server == nil || !g.running {
+		g.mu.Unlock()
+		return
 	}
+	g.running = false
+	g.mu.Unlock()
+
+	g.logger.Info("HTTP gateway stopping")
+	_ = server.Close()
 }
 
 // Shutdown gracefully shuts down the HTTP gateway
