@@ -855,7 +855,7 @@ func (r *Relay) tick(ctx context.Context, sem chan struct{}) {
 			defer r.own.Leave(id)
 			// The partition is released in a defer of its own, so it is
 			// released whatever the failure recording below does.
-			defer r.releasePartitions([]outboxRow{row})
+			defer r.releasePartition(row)
 			defer func() {
 				if rec := recover(); rec != nil {
 					r.failPanicked(row, rec)
@@ -895,9 +895,14 @@ func (r *Relay) failPanicked(row outboxRow, rec any) {
 // is GC'd, blocking subsequent ticks from claiming the same partition.
 func (r *Relay) releasePartitions(rows []outboxRow) {
 	for _, row := range rows {
-		if row.PartitionKey != "" {
-			r.activePart.Delete(row.PartitionKey)
-		}
+		r.releasePartition(row)
+	}
+}
+
+// releasePartition clears row's activePart reservation, if it has one.
+func (r *Relay) releasePartition(row outboxRow) {
+	if row.PartitionKey != "" {
+		r.activePart.Delete(row.PartitionKey)
 	}
 }
 

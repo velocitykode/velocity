@@ -412,6 +412,9 @@ func (c *TxCallbacks) runCommitFailure(ctx context.Context, logger contract.Logg
 // elsewhere in the framework.
 func runCallbackSafe(ctx context.Context, fn TxCallback, phase string, logger contract.Logger, dispatcher func(*TxRecover)) {
 	cause, p, err := callCallback(ctx, fn)
+	if cause == nil && err == nil {
+		return
+	}
 	fields := trace.LogFields(ctx)
 	switch {
 	case cause != nil:
