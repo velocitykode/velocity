@@ -695,7 +695,9 @@ func newListener(provided net.Listener, network, address, port string) (net.List
 // Start builds (if not already built) and starts the gRPC server.
 // This method blocks until the server is stopped. A server a stop has
 // ended does not start again: Start returns grpc.ErrServerStopped
-// (google.golang.org/grpc).
+// (google.golang.org/grpc), as it does when a stop took the built server
+// between Build and serving (from a warning Build writes, say), and
+// ErrBuildInProgress while a rebuild runs.
 func (s *Server) Start() error {
 	if err := s.Build(); err != nil {
 		return err
@@ -711,6 +713,15 @@ func (s *Server) Start() error {
 		s.mu.Unlock()
 		return grpc.ErrServerStopped
 	}
+	// Validate what Build published and reserve it in the same critical
+	// section that marks the server running: application code Build ran
+	// after publishing (its warnings) may have stopped the unserved server
+	// or started rebuilding it. Serve then uses these, never the fields.
+	srv, lis, err := s.servableLocked()
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	s.running = true
 	s.served = true
 	s.startTime = time.Now()
@@ -719,13 +730,12 @@ func (s *Server) Start() error {
 
 	// The serve loop calls a caller-supplied listener's Addr and Accept,
 	// so it runs as stop work: a stop from there must not wait on it.
-	var err error
 	s.stops.Run(func() {
 		if started != nil {
 			s.dispatchEvent(context.Background(), started)
 		}
-		s.logStarting()
-		err = s.grpcServer.Serve(s.listener)
+		s.logStarting(lis)
+		err = srv.Serve(lis)
 	})
 	return err
 }
@@ -749,6 +759,15 @@ func (s *Server) StartAsync() error {
 		s.mu.Unlock()
 		return grpc.ErrServerStopped
 	}
+	// Validate what Build published and reserve it in the same critical
+	// section that marks the server running: application code Build ran
+	// after publishing (its warnings) may have stopped the unserved server
+	// or started rebuilding it. Serve then uses these, never the fields.
+	srv, lis, err := s.servableLocked()
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	s.running = true
 	s.served = true
 	s.startTime = time.Now()
@@ -764,8 +783,8 @@ func (s *Server) StartAsync() error {
 			if started != nil {
 				s.dispatchEvent(context.Background(), started)
 			}
-			s.logStarting()
-			if err := s.grpcServer.Serve(s.listener); err != nil {
+			s.logStarting(lis)
+			if err := srv.Serve(lis); err != nil {
 				s.logLine(func(l contract.Logger) { l.Error("gRPC server error", "error", err) })
 			}
 		})
@@ -981,11 +1000,25 @@ func (s *Server) logLine(write func(contract.Logger)) {
 	fallbacklog.Write(s.logger, write)
 }
 
-// logStarting writes the starting line with the address being served.
-// The address comes from the listener, which may be the caller's, so it
-// is read inside the contained write.
-func (s *Server) logStarting() {
-	s.logLine(func(l contract.Logger) { l.Info("gRPC server starting", "address", s.listener.Addr().String()) })
+// logStarting writes the starting line with the address lis serves. The
+// address comes from the listener, which may be the caller's, so it is
+// read inside the contained write.
+func (s *Server) logStarting(lis net.Listener) {
+	s.logLine(func(l contract.Logger) { l.Info("gRPC server starting", "address", lis.Addr().String()) })
+}
+
+// servableLocked returns the built server and listener a Start serves:
+// ErrBuildInProgress while a Build (or the release of an unserved
+// listener) is in progress, and grpc.ErrServerStopped when a stop took
+// them after Build returned. Caller holds s.mu.
+func (s *Server) servableLocked() (*grpc.Server, net.Listener, error) {
+	if s.build != nil {
+		return nil, nil, ErrBuildInProgress
+	}
+	if s.grpcServer == nil || s.listener == nil {
+		return nil, nil, grpc.ErrServerStopped
+	}
+	return s.grpcServer, s.listener, nil
 }
 
 // closeListener closes lis, which may be the caller's listener: a panic in
