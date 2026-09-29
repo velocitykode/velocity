@@ -309,7 +309,7 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	// 4. Initialize database connection
-	dbManager, err := initDB(a.config.DB)
+	dbManager, err := initDB(a.config.DB, a.Log)
 	if err != nil {
 		return nil, fmt.Errorf("velocity: failed to initialize database: %w", err)
 	}

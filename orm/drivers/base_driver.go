@@ -161,11 +161,15 @@ func (b *BaseDriver) OpenAndPing(driverName, dsn string) error {
 // sql.Open directly stays invisible to APM and logs no statements.
 //
 // The pool's statement log reads b.Config.LogQueries and
-// b.Config.SlowThreshold here, once: set b.Config before calling.
+// b.Config.SlowThreshold here, once, and installs b.Config.Logger, when set,
+// as the query logger: set b.Config before calling.
 func (b *BaseDriver) OpenInstrumented(sqlDriverName, connectionName, dsn string) (*sql.DB, error) {
 	db, binding, err := openInstrumented(sqlDriverName, connectionName, dsn)
 	if err != nil {
 		return nil, err
+	}
+	if b.Config.Logger != nil {
+		b.SetLogger(b.Config.Logger)
 	}
 	binding.logQueries = b.Config.LogQueries
 	binding.slowThreshold = b.Config.SlowThreshold

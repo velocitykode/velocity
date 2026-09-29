@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // Driver defines the interface for all database drivers
@@ -73,6 +75,11 @@ type ConnectionConfig struct {
 	// write one warn line through the query logger and mark its event
 	// slow (StatementEvent.Slow). Zero disables the rule.
 	SlowThreshold time.Duration
+	// Logger is the query logger (see BaseDriver.SetLogger) installed when
+	// the pool opens, before the driver runs its first statement, so the
+	// statements a driver runs while it connects (SQLite's PRAGMAs) log
+	// where the rest do. Nil leaves the driver's query logger as it is.
+	Logger contract.Logger
 }
 
 // QueryGrammar defines SQL dialect-specific query building

@@ -210,8 +210,10 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger contract.L
 	return manager
 }
 
-// initDB creates the ORM manager from config. Returns nil if no connection is configured.
-func initDB(config DBConfig) (*orm.Manager, error) {
+// initDB creates the ORM manager from config, writing through logger from
+// the first statement its driver runs. Returns nil if no connection is
+// configured.
+func initDB(config DBConfig, logger contract.Logger) (*orm.Manager, error) {
 	if config.Connection == "" {
 		return nil, nil
 	}
@@ -231,6 +233,7 @@ func initDB(config DBConfig) (*orm.Manager, error) {
 		ConnMaxLifetime: config.ConnMaxLifetime,
 		LogQueries:      config.LogQueries,
 		SlowThreshold:   config.SlowThreshold,
+		Logger:          logger,
 	})
 }
 

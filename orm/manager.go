@@ -48,6 +48,12 @@ type ManagerConfig struct {
 	// write one warn line through the manager's logger and marks its
 	// QueryExecuted Slow. Zero disables the rule.
 	SlowThreshold time.Duration
+	// Logger is the manager's logger from construction on, as if SetLogger
+	// had installed it before the driver connected: the statements the
+	// driver runs while it connects write their query log lines to it.
+	// Nil means the framework's standalone fallback logger until SetLogger
+	// installs one.
+	Logger contract.Logger
 }
 
 // Database is the interface satisfied by *Manager. It covers the methods used
@@ -176,6 +182,7 @@ func NewManagerWithContext(ctx context.Context, config ManagerConfig) (*Manager,
 
 	connConfig.LogQueries = config.LogQueries
 	connConfig.SlowThreshold = config.SlowThreshold
+	connConfig.Logger = config.Logger
 
 	driver, err := driverRegistry.Resolve(ctx, config.Driver, connConfig)
 	if err != nil {
@@ -187,6 +194,7 @@ func NewManagerWithContext(ctx context.Context, config ManagerConfig) (*Manager,
 		connections:   make(map[string]drivers.Driver),
 		defaultName:   config.Driver,
 		databaseName:  config.Database,
+		logger:        config.Logger,
 	}
 	m.attachStatementObserver(driver)
 

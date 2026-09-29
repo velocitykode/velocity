@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
 // kvEntry is one recorded log call.
@@ -191,5 +192,32 @@ func TestRelay_ClaimFailureLogsErrorKindOnly(t *testing.T) {
 	}
 	if k, _ := e.value("error_kind").(string); k == "" {
 		t.Errorf("line %s has no error_kind", e)
+	}
+}
+
+// ManagerConfig.Logger is the manager's logger from construction on: the
+// statements its driver runs while it connects write to it, and so do the
+// manager's own lines. Nil leaves the fallback in place.
+func TestNewManager_ConfigLoggerTakesTheConnectStatements(t *testing.T) {
+	logs := &kvRecorder{}
+	m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:", LogQueries: true, Logger: logs})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Shutdown(context.Background()) })
+	if n := len(logs.find("velocity/orm: query executed")); n != 2 {
+		t.Errorf("connect statement lines = %d, want 2 (the PRAGMAs): %+v", n, logs.entries)
+	}
+	if m.Logger() != contract.Logger(logs) {
+		t.Errorf("Logger() = %T, want the config logger", m.Logger())
+	}
+
+	bare, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:"})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	t.Cleanup(func() { _ = bare.Shutdown(context.Background()) })
+	if _, ok := bare.Logger().(fallbacklog.Logger); !ok {
+		t.Errorf("nil config logger: Logger() = %T, want the fallback", bare.Logger())
 	}
 }

@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // A scripted database/sql driver whose behaviour each DSN selects, for the
@@ -321,4 +324,38 @@ func TestInstrumentedConnSkipped_MatchesOnlyTheNextPrepareOfItsQuery(t *testing.
 	if got := zero.takeSkipped(""); got != 0 {
 		t.Errorf("zero conn: arg count = %d, want 0", got)
 	}
+}
+
+// ConnectionConfig.Logger is the query logger from the first statement the
+// driver runs while it connects; nil keeps a logger installed earlier.
+func TestConnectionConfigLogger_TakesTheConnectStatements(t *testing.T) {
+	t.Run("set", func(t *testing.T) {
+		log := &queryLog{}
+		d := NewSQLiteDriver()
+		if err := d.Connect(ConnectionConfig{Database: ":memory:", LogQueries: true, Logger: log}); err != nil {
+			t.Fatalf("Connect: %v", err)
+		}
+		t.Cleanup(func() { _ = d.Close() })
+		var pragmas int
+		for _, e := range log.all() {
+			if q, _ := kv(e.kvs, "query").(string); strings.HasPrefix(q, "PRAGMA") {
+				pragmas++
+			}
+		}
+		if pragmas != 2 {
+			t.Errorf("PRAGMA lines = %d, want 2: %+v", pragmas, log.all())
+		}
+	})
+	t.Run("nil keeps an earlier logger", func(t *testing.T) {
+		log := &queryLog{}
+		d := NewSQLiteDriver()
+		d.(contract.LoggerAware).SetLogger(log)
+		if err := d.Connect(ConnectionConfig{Database: ":memory:", LogQueries: true}); err != nil {
+			t.Fatalf("Connect: %v", err)
+		}
+		t.Cleanup(func() { _ = d.Close() })
+		if len(log.all()) != 2 {
+			t.Errorf("lines = %+v, want the two PRAGMA lines", log.all())
+		}
+	})
 }
