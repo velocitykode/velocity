@@ -8,6 +8,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // pausingLogger blocks on the first line containing match until release
@@ -72,8 +73,12 @@ func TestServerStop_IndependentForceRunsAsStopWork(t *testing.T) {
 		t.Fatal("Shutdown from the listener's Close waited on the drain held up by grpc-go's lock")
 	}
 	close(logger.release)
-	within(t, 3*time.Second, "Stop", func() { <-stopped })
-	within(t, 3*time.Second, "the owning GracefulStop", func() { <-owner })
+	if p := hostile.Within(t, 3*time.Second, func() { <-stopped }); p != nil {
+		t.Fatalf("%s panicked: %v", "Stop", p)
+	}
+	if p := hostile.Within(t, 3*time.Second, func() { <-owner }); p != nil {
+		t.Fatalf("%s panicked: %v", "the owning GracefulStop", p)
+	}
 	if nested.err == nil {
 		t.Error("Shutdown from inside the stop = nil, want the nested-stop error")
 	}

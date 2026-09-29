@@ -15,6 +15,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // slowGateway is a started gateway whose every request blocks until
@@ -121,7 +122,9 @@ func TestGatewayShutdown_OverlappingShutdownReturnsItsDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	var err error
-	within(t, 2*time.Second, "second Shutdown", func() { err = sg.g.Shutdown(ctx) })
+	if p := hostile.Within(t, 2*time.Second, func() { err = sg.g.Shutdown(ctx) }); p != nil {
+		t.Fatalf("%s panicked: %v", "second Shutdown", p)
+	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("second Shutdown = %v, want its deadline", err)
 	}
@@ -141,7 +144,9 @@ func TestGatewayStop_DuringShutdownCloses(t *testing.T) {
 	shut := make(chan error, 1)
 	go func() { shut <- sg.g.Shutdown(context.Background()) }()
 	time.Sleep(50 * time.Millisecond)
-	within(t, 2*time.Second, "Stop", sg.g.Stop)
+	if p := hostile.Within(t, 2*time.Second, sg.g.Stop); p != nil {
+		t.Fatalf("%s panicked: %v", "Stop", p)
+	}
 	select {
 	case <-shut:
 	case <-time.After(3 * time.Second):
@@ -196,7 +201,9 @@ func TestGatewayStop_NestedStopFromTheStopLineDoesNotWaitOnItself(t *testing.T) 
 						time.AfterFunc(100*time.Millisecond, func() { close(sg.release) })
 					}
 					var outerErr error
-					within(t, 3*time.Second, "the outer stop", func() { outerErr = outer(sg.g) })
+					if p := hostile.Within(t, 3*time.Second, func() { outerErr = outer(sg.g) }); p != nil {
+						t.Fatalf("%s panicked: %v", "the outer stop", p)
+					}
 					select {
 					case <-logger.done:
 					case <-time.After(3 * time.Second):

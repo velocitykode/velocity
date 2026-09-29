@@ -11,6 +11,7 @@ import (
 
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // A server a stop ended does not start again: Start and StartAsync return
@@ -34,7 +35,9 @@ func TestServerStart_AfterAStopReturnsErrServerStopped(t *testing.T) {
 			s.Stop()
 
 			var err error
-			within(t, 2*time.Second, name, func() { err = start(s) })
+			if p := hostile.Within(t, 2*time.Second, func() { err = start(s) }); p != nil {
+				t.Fatalf("%s panicked: %v", name, p)
+			}
 			if !errors.Is(err, grpcgo.ErrServerStopped) {
 				t.Errorf("%s after Stop = %v, want ErrServerStopped", name, err)
 			}

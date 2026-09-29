@@ -14,6 +14,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // gatewayLogger calls back into the gateway from every line it writes.
@@ -65,7 +66,9 @@ func TestGatewayBuild_UserCodeMayCallTheGateway(t *testing.T) {
 		return next
 	})
 	var err error
-	within(t, 2*time.Second, "Gateway.Build", func() { err = g.Build(context.Background()) })
+	if p := hostile.Within(t, 2*time.Second, func() { err = g.Build(context.Background()) }); p != nil {
+		t.Fatalf("%s panicked: %v", "Gateway.Build", p)
+	}
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -90,7 +93,9 @@ func TestGatewayBuild_ReentrantBuildReturnsAnError(t *testing.T) {
 		return nil
 	})
 	var err error
-	within(t, 2*time.Second, "Gateway.Build", func() { err = g.Build(context.Background()) })
+	if p := hostile.Within(t, 2*time.Second, func() { err = g.Build(context.Background()) }); p != nil {
+		t.Fatalf("%s panicked: %v", "Gateway.Build", p)
+	}
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -169,7 +174,9 @@ func TestGatewayStop_LoggerMayCallTheGateway(t *testing.T) {
 	if err := g.StartAsync(); err != nil {
 		t.Fatalf("StartAsync: %v", err)
 	}
-	within(t, 2*time.Second, "Gateway.Stop", g.Stop)
+	if p := hostile.Within(t, 2*time.Second, g.Stop); p != nil {
+		t.Fatalf("%s panicked: %v", "Gateway.Stop", p)
+	}
 	if g.IsRunning() {
 		t.Error("gateway still running after Stop")
 	}

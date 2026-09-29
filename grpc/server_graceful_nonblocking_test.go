@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/velocitykode/velocity/grpc"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // A handler that calls GracefulStop gets it back at once: GracefulStop
@@ -64,7 +65,9 @@ func TestServerGracefulStop_ReturnsAtOnceAndShutdownWaits(t *testing.T) {
 	}()
 	<-entered
 
-	within(t, time.Second, "GracefulStop", s.GracefulStop)
+	if p := hostile.Within(t, time.Second, s.GracefulStop); p != nil {
+		t.Fatalf("%s panicked: %v", "GracefulStop", p)
+	}
 	if handlerDone.Load() {
 		t.Fatal("the handler finished before the test released it")
 	}

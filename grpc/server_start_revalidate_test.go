@@ -12,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // warningStopLogger stops its server from the unauthenticated-surface
@@ -44,14 +45,16 @@ func TestServerStart_StoppedAfterBuildReturnsErrServerStopped(t *testing.T) {
 			s.RegisterService(regNoopExternal)
 			stopOnCleanup(t, s)
 			var err error
-			within(t, 2*time.Second, name, func() {
+			if p := hostile.Within(t, 2*time.Second, func() {
 				defer func() {
 					if p := recover(); p != nil {
 						t.Errorf("%s panicked: %v", name, p)
 					}
 				}()
 				err = start(s)
-			})
+			}); p != nil {
+				t.Fatalf("%s panicked: %v", name, p)
+			}
 			if !errors.Is(err, grpcgo.ErrServerStopped) {
 				t.Errorf("%s = %v, want ErrServerStopped", name, err)
 			}

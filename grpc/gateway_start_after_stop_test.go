@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/grpc"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // A gateway a stop ended does not start again: Start and StartAsync
@@ -21,7 +22,9 @@ func TestGatewayStart_AfterAStopReturnsErrServerClosed(t *testing.T) {
 			sg := startSlowGateway(t, &gatewayLogger{gateway: &atomic.Pointer[grpc.Gateway]{}})
 			sg.g.Stop()
 			var err error
-			within(t, 2*time.Second, name, func() { err = start(sg.g) })
+			if p := hostile.Within(t, 2*time.Second, func() { err = start(sg.g) }); p != nil {
+				t.Fatalf("%s panicked: %v", name, p)
+			}
 			if !errors.Is(err, http.ErrServerClosed) {
 				t.Errorf("%s after Stop = %v, want http.ErrServerClosed", name, err)
 			}

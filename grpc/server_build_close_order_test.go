@@ -10,6 +10,7 @@ import (
 	grpcgo "google.golang.org/grpc"
 
 	"github.com/velocitykode/velocity/grpc"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // buildingListener runs onClose, once armed, from its Close before it
@@ -56,7 +57,9 @@ func TestServerBuild_StoppedAbortHoldsTheBuildUntilItsCloseEnds(t *testing.T) {
 	})
 
 	var err error
-	within(t, 2*time.Second, "Build", func() { err = s.Build() })
+	if p := hostile.Within(t, 2*time.Second, func() { err = s.Build() }); p != nil {
+		t.Fatalf("%s panicked: %v", "Build", p)
+	}
 	if !errors.Is(err, grpcgo.ErrServerStopped) {
 		t.Fatalf("Build = %v, want ErrServerStopped", err)
 	}
@@ -80,7 +83,9 @@ func TestServerStop_UnservedCloseHoldsOffABuild(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	nested := closeRebuild(lis, &ref)
-	within(t, 2*time.Second, "Stop", s.Stop)
+	if p := hostile.Within(t, 2*time.Second, s.Stop); p != nil {
+		t.Fatalf("%s panicked: %v", "Stop", p)
+	}
 	if !errors.Is(*nested, grpc.ErrBuildInProgress) {
 		t.Errorf("Build from the listener's Close = %v, want ErrBuildInProgress", *nested)
 	}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // stopCalls are the three ways to stop a server, each returning Shutdown's
@@ -81,7 +82,9 @@ func (l *nestedListener) Close() error {
 // the nested call's result: a nested Shutdown reports it could not wait.
 func checkNested(t *testing.T, s *grpc.Server, outer func(*grpc.Server) error, nested *nestedStop, nestedName string) {
 	t.Helper()
-	within(t, 3*time.Second, "the outer stop", func() { _ = outer(s) })
+	if p := hostile.Within(t, 3*time.Second, func() { _ = outer(s) }); p != nil {
+		t.Fatalf("%s panicked: %v", "the outer stop", p)
+	}
 	select {
 	case <-nested.done:
 	case <-time.After(3 * time.Second):

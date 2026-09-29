@@ -18,23 +18,8 @@ import (
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/grpc/interceptors"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
-
-// within fails the test when fn does not return within d: a deadlock
-// surfaces as a failure, not a hung suite.
-func within(t *testing.T, d time.Duration, what string, fn func()) {
-	t.Helper()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		fn()
-	}()
-	select {
-	case <-done:
-	case <-time.After(d):
-		t.Fatalf("%s did not return within %v: user code ran under the server's lock", what, d)
-	}
-}
 
 // stopOnCleanup stops s when the test ends, without hanging the suite
 // when a deadlocked server cannot stop.
@@ -108,7 +93,9 @@ func TestServerBuild_UserCodeMayCallTheServer(t *testing.T) {
 	stopOnCleanup(t, s)
 
 	var err error
-	within(t, 2*time.Second, "Build", func() { err = s.Build() })
+	if p := hostile.Within(t, 2*time.Second, func() { err = s.Build() }); p != nil {
+		t.Fatalf("%s panicked: %v", "Build", p)
+	}
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -141,7 +128,9 @@ func TestServerBuild_ReentrantBuildReturnsAnError(t *testing.T) {
 	stopOnCleanup(t, s)
 
 	var err error
-	within(t, 2*time.Second, "Build", func() { err = s.Build() })
+	if p := hostile.Within(t, 2*time.Second, func() { err = s.Build() }); p != nil {
+		t.Fatalf("%s panicked: %v", "Build", p)
+	}
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -263,12 +252,16 @@ func TestServerGracefulStop_InFlightCallMayCallTheServer(t *testing.T) {
 	}()
 	<-entered
 	close(stopping)
-	within(t, 3*time.Second, "GracefulStop", s.GracefulStop)
-	within(t, 3*time.Second, "Shutdown", func() {
+	if p := hostile.Within(t, 3*time.Second, s.GracefulStop); p != nil {
+		t.Fatalf("%s panicked: %v", "GracefulStop", p)
+	}
+	if p := hostile.Within(t, 3*time.Second, func() {
 		if err := s.Shutdown(context.Background()); err != nil {
 			t.Errorf("Shutdown = %v", err)
 		}
-	})
+	}); p != nil {
+		t.Fatalf("%s panicked: %v", "Shutdown", p)
+	}
 	if err := <-callDone; err != nil {
 		t.Errorf("in-flight call = %v, want it to complete", err)
 	}
@@ -302,7 +295,9 @@ func TestServerShutdown_ReturnsAtItsDeadlineWithAHangingCall(t *testing.T) {
 	defer cancel()
 	began := time.Now()
 	var err error
-	within(t, 2*time.Second, "Shutdown", func() { err = s.Shutdown(ctx) })
+	if p := hostile.Within(t, 2*time.Second, func() { err = s.Shutdown(ctx) }); p != nil {
+		t.Fatalf("%s panicked: %v", "Shutdown", p)
+	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("Shutdown = %v, want the deadline", err)
 	}
@@ -337,7 +332,9 @@ func TestServerShutdown_DeadlineCancelsAHandlerThatHonoursItsContext(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	var err error
-	within(t, 2*time.Second, "Shutdown", func() { err = s.Shutdown(ctx) })
+	if p := hostile.Within(t, 2*time.Second, func() { err = s.Shutdown(ctx) }); p != nil {
+		t.Fatalf("%s panicked: %v", "Shutdown", p)
+	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("Shutdown = %v, want the deadline", err)
 	}
@@ -397,7 +394,9 @@ func TestServerStop_RacingStopsDispatchServerStoppedOnce(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 		close(release)
-		within(t, 3*time.Second, "the racing stops", wg.Wait)
+		if p := hostile.Within(t, 3*time.Second, wg.Wait); p != nil {
+			t.Fatalf("%s panicked: %v", "the racing stops", p)
+		}
 		cancel()
 		if got := counter.n.Load(); got != 1 {
 			t.Fatalf("ServerStopped dispatched %d times, want 1", got)
@@ -434,7 +433,9 @@ func TestServerStop_ListenerCloseMayCallTheServer(t *testing.T) {
 			if err := s.Build(); err != nil {
 				t.Fatalf("Build: %v", err)
 			}
-			within(t, 2*time.Second, name, func() { stop(s) })
+			if p := hostile.Within(t, 2*time.Second, func() { stop(s) }); p != nil {
+				t.Fatalf("%s panicked: %v", name, p)
+			}
 			if !lis.closed.Load() {
 				t.Error("listener not closed")
 			}

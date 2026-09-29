@@ -107,10 +107,11 @@ func (w *sweepScheduler) start() <-chan error {
 	return done
 }
 
-// ranOnce fails the test unless the task has run within two seconds.
+// ranOnce fails the test unless the task has run within the harness
+// deadline.
 func (w *sweepScheduler) ranOnce(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(hostile.Deadline)
 	for w.runs.Load() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the task did not run")
@@ -220,7 +221,7 @@ func schedulerSweepCase(t *testing.T, entry string, mode hostile.Mode, site stri
 	var reran atomic.Int32
 	w.s.Named("sweep.rerun", func() { reran.Add(1) }).Cron("* * * * *")
 	done = w.start()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(hostile.Deadline)
 	for reran.Load() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the scheduler did not run a job after it was shut down")

@@ -13,6 +13,7 @@ import (
 
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // hangingCall starts a call whose handler ignores its context until
@@ -42,7 +43,9 @@ func shutdownOnTime(t *testing.T, shutdown func(context.Context) error) {
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
 	var err error
-	within(t, 2*time.Second, "Shutdown", func() { err = shutdown(ctx) })
+	if p := hostile.Within(t, 2*time.Second, func() { err = shutdown(ctx) }); p != nil {
+		t.Fatalf("%s panicked: %v", "Shutdown", p)
+	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("Shutdown = %v, want its deadline", err)
 	}

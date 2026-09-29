@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/velocitykode/velocity/grpc"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // A Shutdown that overlaps one already draining does not report success
@@ -89,7 +90,9 @@ func TestServerShutdown_OverlappingShutdownReturnsItsDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	var err error
-	within(t, 2*time.Second, "second Shutdown", func() { err = s.Shutdown(ctx) })
+	if p := hostile.Within(t, 2*time.Second, func() { err = s.Shutdown(ctx) }); p != nil {
+		t.Fatalf("%s panicked: %v", "second Shutdown", p)
+	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("second Shutdown = %v, want its deadline", err)
 	}
