@@ -2,6 +2,7 @@ package async
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -99,31 +100,49 @@ func TestSetLogger_NilIsTheFallback(t *testing.T) {
 	}
 }
 
+// tallyLogger counts the error lines written through it into a counter
+// shared by every tallyLogger of a test.
+type tallyLogger struct{ n *atomic.Int32 }
+
+func (tallyLogger) Debug(string, ...any)          {}
+func (tallyLogger) Info(string, ...any)           {}
+func (tallyLogger) Warn(string, ...any)           {}
+func (l tallyLogger) Error(string, ...any)        { l.n.Add(1) }
+func (tallyLogger) Fatal(string, ...any)          {}
+func (l tallyLogger) With(...any) contract.Logger { return l }
+
 // Replacements racing package-logger writes from many goroutines are safe.
+// The test returns only once every recovered panic has been logged: a
+// recovery still running afterwards would write through the logger or
+// hook the next test installs.
 func TestSetLogger_ConcurrentWithWrites(t *testing.T) {
 	t.Cleanup(func() { SetLogger(nil) })
 	SetPanicHook(nil)
+	const writers, panics = 8, 50
+	var logged atomic.Int32
+	SetLogger(tallyLogger{n: &logged})
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
+	for i := 0; i < writers; i++ {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < 50; j++ {
-				SetLogger(&captureLogger{})
+			for j := 0; j < panics; j++ {
+				SetLogger(tallyLogger{n: &logged})
 			}
 		}()
 		go func() {
 			defer wg.Done()
-			var inner sync.WaitGroup
-			for j := 0; j < 50; j++ {
-				inner.Add(1)
-				Go(func() {
-					defer inner.Done()
-					panic("stress")
-				})
+			for j := 0; j < panics; j++ {
+				Go(func() { panic("stress") })
 			}
-			inner.Wait()
 		}()
 	}
 	wg.Wait()
+	deadline := time.Now().Add(5 * time.Second)
+	for logged.Load() < writers*panics {
+		if time.Now().After(deadline) {
+			t.Fatalf("logged %d recovered panics, want %d", logged.Load(), writers*panics)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
