@@ -687,7 +687,9 @@ func newListener(provided net.Listener, network, address, port string) (net.List
 }
 
 // Start builds (if not already built) and starts the gRPC server.
-// This method blocks until the server is stopped.
+// This method blocks until the server is stopped. A server a stop has
+// ended does not start again: Start returns grpc.ErrServerStopped
+// (google.golang.org/grpc).
 func (s *Server) Start() error {
 	if err := s.Build(); err != nil {
 		return err
@@ -697,6 +699,11 @@ func (s *Server) Start() error {
 	if s.running {
 		s.mu.Unlock()
 		return ErrServerAlreadyRunning
+	}
+	if s.drained != nil {
+		// A stop ended this server; grpc-go cannot serve it again.
+		s.mu.Unlock()
+		return grpc.ErrServerStopped
 	}
 	s.running = true
 	s.served = true
@@ -719,6 +726,8 @@ func (s *Server) Start() error {
 
 // StartAsync builds and starts the gRPC server in a goroutine.
 // Returns immediately. Use Stop() or GracefulStop() to stop the server.
+// Like Start, it returns grpc.ErrServerStopped for a server a stop has
+// ended.
 func (s *Server) StartAsync() error {
 	if err := s.Build(); err != nil {
 		return err
@@ -728,6 +737,11 @@ func (s *Server) StartAsync() error {
 	if s.running {
 		s.mu.Unlock()
 		return ErrServerAlreadyRunning
+	}
+	if s.drained != nil {
+		// A stop ended this server; grpc-go cannot serve it again.
+		s.mu.Unlock()
+		return grpc.ErrServerStopped
 	}
 	s.running = true
 	s.served = true
