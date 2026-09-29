@@ -543,6 +543,11 @@ type buildPlan struct {
 
 	// listener is the listener this Build bound or adopted, once it has.
 	listener net.Listener
+	// ownsListener is set when Build binds the listener itself rather
+	// than adopting a caller-supplied one. It is a flag, not a comparison
+	// of the two listeners, because comparing interfaces panics for a
+	// listener whose dynamic value is not comparable.
+	ownsListener bool
 }
 
 // beginBuild runs Build's checks under the lock and, when they pass,
@@ -598,6 +603,7 @@ func (s *Server) beginBuild() (*buildPlan, error) {
 		bindNetwork:                 s.bindNetwork,
 		bindAddress:                 s.bindAddress,
 		providedListener:            s.providedListener,
+		ownsListener:                s.providedListener == nil,
 		serverOptions:               append([]grpc.ServerOption(nil), s.serverOptions...),
 		unaryInterceptors:           append([]grpc.UnaryServerInterceptor(nil), s.unaryInterceptors...),
 		streamInterceptors:          append([]grpc.StreamServerInterceptor(nil), s.streamInterceptors...),
@@ -613,14 +619,18 @@ func (s *Server) beginBuild() (*buildPlan, error) {
 // abortBuild ends the Build b without publishing a server (its listener
 // failed to bind, or its application code panicked): it closes a listener
 // b bound itself, leaves a caller-supplied one open for the next Build,
-// and clears the Build in progress so a later Build can run.
+// and clears the Build in progress so a later Build can run. The clear is
+// deferred so it runs whatever the close does, after the close, so a
+// retried Build never finds the port still bound.
 func (s *Server) abortBuild(b *buildPlan) {
-	if b.listener != nil && b.listener != b.providedListener {
+	defer func() {
+		s.mu.Lock()
+		s.building = false
+		s.mu.Unlock()
+	}()
+	if b.listener != nil && b.ownsListener {
 		s.closeListener(b.listener)
 	}
-	s.mu.Lock()
-	s.building = false
-	s.mu.Unlock()
 }
 
 // newListener resolves the bind target set by the options, in precedence order:
