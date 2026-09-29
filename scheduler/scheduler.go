@@ -591,6 +591,20 @@ func (s *Scheduler) runDueJobs() {
 	defer s.working.Leave(gid)
 
 	s.mu.RLock()
+	if s.started && !s.running {
+		// Shut down: Shutdown may be waiting on runWg already, and a count
+		// taken now would race its Wait (and dispatch past the drain).
+		s.mu.RUnlock()
+		return
+	}
+	// The tick holds a count of its own until it has dispatched every run
+	// (the Locker, the callbacks and the lines it writes included), so a
+	// Shutdown that starts meanwhile waits for it and the runs it starts,
+	// and every per-task Add below happens while the count is not zero.
+	// It is taken under mu: a Shutdown that flips running afterwards waits
+	// for it; one that flipped it before is seen above.
+	s.runWg.Add(1)
+	defer s.runWg.Done()
 	maintenance := s.maintenanceMode
 	jobs := make([]*Job, len(s.jobs))
 	copy(jobs, s.jobs)
