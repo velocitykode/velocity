@@ -8,6 +8,7 @@ import (
 
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/scheduler"
 )
 
@@ -202,6 +203,12 @@ func installSchedulerLocker(sched *scheduler.Scheduler, cm cache.CacheManager, d
 	}
 	if driver == "" || driver == "memory" {
 		return
+	}
+	// The warnings below go through the app's logger: contain it so one
+	// that panics writes to the fallback logger instead of escaping into
+	// bootstrap and leaving the fallback Locker uninstalled.
+	if log != nil {
+		log = fallbacklog.Contain(log)
 	}
 
 	// Probe the default store for Lock capability. If the cache has
