@@ -9,6 +9,11 @@ import (
 	"reflect"
 	"sync/atomic"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/latency"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // StatementEvent describes one SQL statement executed through an instrumented
@@ -46,6 +51,10 @@ type StatementEvent struct {
 	RowsAffected int64
 	// Err is nil when the statement completed, otherwise the failure.
 	Err error
+	// Slow reports that the statement completed and ran longer than its
+	// connection's ConnectionConfig.SlowThreshold. Always false for a
+	// failed statement and when the threshold is zero.
+	Slow bool
 }
 
 // StatementObserver receives one callback per statement executed through an
@@ -91,9 +100,23 @@ type StatementObservable interface {
 // The pool is created while the driver connects, which happens before the
 // owning manager exists, so the binding starts empty and is filled in once the
 // manager attaches itself.
+//
+// It is also the pool's statement log: BaseDriver.OpenInstrumented copies the
+// connection's LogQueries and SlowThreshold onto it and points it at the
+// driver's query logger, before the pool runs its first statement. Those three
+// fields are written once, then only read.
 type observerBinding struct {
 	name string
 	obs  atomic.Pointer[StatementObserver]
+
+	// logQueries writes one debug line per statement.
+	logQueries bool
+	// slowThreshold makes a completed statement slower than it one warn
+	// line and marks its event Slow (latency.Slow); zero disables.
+	slowThreshold time.Duration
+	// logger is the owning driver's query logger (BaseDriver.logger); nil
+	// for a pool opened without an owner, which logs through the fallback.
+	logger *atomic.Value
 }
 
 func (b *observerBinding) set(o StatementObserver) {
@@ -117,6 +140,76 @@ func (b *observerBinding) active() StatementObserver {
 		return nil
 	}
 	return o
+}
+
+// logging reports whether the pool's statement log wants statements timed:
+// query logging is on or a slow threshold is set.
+func (b *observerBinding) logging() bool {
+	return b.logQueries || b.slowThreshold > 0
+}
+
+// record is the one exit for an executed statement: it applies the slow
+// rule, hands the event to obs (nil when no observer wanted it when the
+// statement started) and writes the statement's log line. Control-flow
+// sentinels (see isControlErr) produce neither.
+func (b *observerBinding) record(obs StatementObserver, ev StatementEvent, argCount int) {
+	if ev.Err != nil && isControlErr(ev.Err) {
+		return
+	}
+	if ev.Err == nil {
+		ev.Slow = latency.Slow(ev.Duration, b.slowThreshold)
+	}
+	if obs != nil {
+		obs.ObserveStatement(ev)
+	}
+	b.log(ev, argCount)
+}
+
+// log writes at most one line for a statement: a warn line when it is slow,
+// otherwise a debug line when query logging is on. The line carries the
+// connection, the statement text, the argument count, the duration and the
+// request, trace and span ids of the statement's context. It never carries
+// an argument value, nor a failure's error text, which drivers fill with
+// the offending value (a duplicate key, a rejected input).
+func (b *observerBinding) log(ev StatementEvent, argCount int) {
+	var level func(string, ...any)
+	var msg string
+	switch {
+	case ev.Slow:
+		msg = "velocity/orm: slow query"
+	case !b.logQueries:
+		return
+	case ev.Err != nil:
+		msg = "velocity/orm: query failed"
+	default:
+		msg = "velocity/orm: query executed"
+	}
+	l := b.queryLogger()
+	if ev.Slow {
+		level = l.Warn
+	} else {
+		level = l.Debug
+	}
+	kvs := append(trace.LogFields(ev.Context),
+		"connection", ev.Connection,
+		"query", ev.SQL,
+		"arg_count", argCount,
+		latency.Key, latency.Millis(ev.Duration),
+	)
+	if ev.Err == nil {
+		kvs = append(kvs, "rows", ev.RowsAffected)
+	}
+	level(msg, kvs...)
+}
+
+// queryLogger returns the owning driver's query logger, or the framework's
+// standalone fallback logger when it has none.
+func (b *observerBinding) queryLogger() contract.Logger {
+	if b.logger == nil {
+		return fallbacklog.Resolve(nil)
+	}
+	h, _ := b.logger.Load().(queryLoggerHolder)
+	return fallbacklog.Resolve(h.Logger)
 }
 
 // isControlErr reports whether err is one of the sql package's internal
@@ -331,16 +424,16 @@ func (c *instrumentedConn) Ping(ctx context.Context) error {
 // caller actually consumed.
 func (c *instrumentedConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	obs := c.binding.active()
-	if obs == nil {
+	if obs == nil && !c.binding.logging() {
 		return c.queryInner(ctx, query, args)
 	}
 	start := time.Now()
 	rows, err := c.queryInner(ctx, query, args)
 	if err != nil {
-		reportFailure(obs, ctx, c.binding.name, query, start, err)
+		reportFailure(c.binding, obs, ctx, query, len(args), start, err)
 		return nil, err
 	}
-	return newInstrumentedRows(rows, obs, ctx, c.binding.name, query, args, start), nil
+	return newInstrumentedRows(rows, c.binding, obs, ctx, query, args, start), nil
 }
 
 func (c *instrumentedConn) queryInner(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
@@ -369,16 +462,16 @@ func (c *instrumentedConn) queryInner(ctx context.Context, query string, args []
 // affected-row count comes straight from the driver result.
 func (c *instrumentedConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	obs := c.binding.active()
-	if obs == nil {
+	if obs == nil && !c.binding.logging() {
 		return c.execInner(ctx, query, args)
 	}
 	start := time.Now()
 	res, err := c.execInner(ctx, query, args)
 	if err != nil {
-		reportFailure(obs, ctx, c.binding.name, query, start, err)
+		reportFailure(c.binding, obs, ctx, query, len(args), start, err)
 		return nil, err
 	}
-	reportSuccess(obs, ctx, c.binding.name, query, args, start, resultRows(res))
+	reportSuccess(c.binding, obs, ctx, query, args, start, resultRows(res))
 	return res, nil
 }
 
@@ -467,17 +560,18 @@ func (s *instrumentedStmt) Query(args []driver.Value) (driver.Rows, error) { //n
 }
 
 func (s *instrumentedStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
-	obs := s.conn.binding.active()
-	if obs == nil {
+	b := s.conn.binding
+	obs := b.active()
+	if obs == nil && !b.logging() {
 		return s.execInner(ctx, args)
 	}
 	start := time.Now()
 	res, err := s.execInner(ctx, args)
 	if err != nil {
-		reportFailure(obs, ctx, s.conn.binding.name, s.query, start, err)
+		reportFailure(b, obs, ctx, s.query, len(args), start, err)
 		return nil, err
 	}
-	reportSuccess(obs, ctx, s.conn.binding.name, s.query, args, start, resultRows(res))
+	reportSuccess(b, obs, ctx, s.query, args, start, resultRows(res))
 	return res, nil
 }
 
@@ -498,17 +592,18 @@ func (s *instrumentedStmt) execInner(ctx context.Context, args []driver.NamedVal
 }
 
 func (s *instrumentedStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
-	obs := s.conn.binding.active()
-	if obs == nil {
+	b := s.conn.binding
+	obs := b.active()
+	if obs == nil && !b.logging() {
 		return s.queryInner(ctx, args)
 	}
 	start := time.Now()
 	rows, err := s.queryInner(ctx, args)
 	if err != nil {
-		reportFailure(obs, ctx, s.conn.binding.name, s.query, start, err)
+		reportFailure(b, obs, ctx, s.query, len(args), start, err)
 		return nil, err
 	}
-	return newInstrumentedRows(rows, obs, ctx, s.conn.binding.name, s.query, args, start), nil
+	return newInstrumentedRows(rows, b, obs, ctx, s.query, args, start), nil
 }
 
 func (s *instrumentedStmt) queryInner(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
@@ -552,10 +647,14 @@ func (s *instrumentedStmt) CheckNamedValue(nv *driver.NamedValue) error {
 // closed, which database/sql guarantees: it closes rows on exhaustion, on
 // Row.Scan, and on context cancellation.
 type instrumentedRows struct {
-	inner driver.Rows
-	obs   StatementObserver
-	ev    StatementEvent
-	start time.Time
+	inner   driver.Rows
+	binding *observerBinding
+	// obs is the observer that wanted the statement when it started; nil
+	// when only the pool's statement log did.
+	obs      StatementObserver
+	ev       StatementEvent
+	argCount int
+	start    time.Time
 
 	// count is written by Next and read by finish, which database/sql may
 	// call from its context-cancellation goroutine. The sql package
@@ -584,17 +683,24 @@ var (
 	_ driver.RowsColumnTypePrecisionScale   = (*instrumentedRows)(nil)
 )
 
-func newInstrumentedRows(inner driver.Rows, obs StatementObserver, ctx context.Context, conn, query string, args []driver.NamedValue, start time.Time) *instrumentedRows {
+func newInstrumentedRows(inner driver.Rows, b *observerBinding, obs StatementObserver, ctx context.Context, query string, args []driver.NamedValue, start time.Time) *instrumentedRows {
+	ev := StatementEvent{
+		Context:    ctx,
+		Connection: b.name,
+		SQL:        query,
+	}
+	// Bound values are copied only for an observer; the statement log
+	// never reads them.
+	if obs != nil {
+		ev.Args = namedValuesToAny(args)
+	}
 	return &instrumentedRows{
-		inner: inner,
-		obs:   obs,
-		ev: StatementEvent{
-			Context:    ctx,
-			Connection: conn,
-			SQL:        query,
-			Args:       namedValuesToAny(args),
-		},
-		start: start,
+		inner:    inner,
+		binding:  b,
+		obs:      obs,
+		ev:       ev,
+		argCount: len(args),
+		start:    start,
 	}
 }
 
@@ -636,15 +742,12 @@ func (r *instrumentedRows) finish(closeErr error) {
 		ev.Err = closeErr
 	}
 	if ev.Err != nil {
-		if isControlErr(ev.Err) {
-			return
-		}
 		// A failed read must not carry bound values.
 		ev.Args = nil
 	} else {
 		ev.RowsAffected = r.count.Load()
 	}
-	r.obs.ObserveStatement(ev)
+	r.binding.record(r.obs, ev, r.argCount)
 }
 
 func (r *instrumentedRows) HasNextResultSet() bool {
@@ -698,31 +801,32 @@ func (r *instrumentedRows) ColumnTypePrecisionScale(index int) (precision, scale
 	return 0, 0, false
 }
 
-// reportSuccess emits a completed-statement event.
-func reportSuccess(obs StatementObserver, ctx context.Context, conn, query string, args []driver.NamedValue, start time.Time, rows int64) {
-	obs.ObserveStatement(StatementEvent{
+// reportSuccess records a completed statement. obs is nil when only the
+// pool's statement log wanted it; bound values are then not copied.
+func reportSuccess(b *observerBinding, obs StatementObserver, ctx context.Context, query string, args []driver.NamedValue, start time.Time, rows int64) {
+	ev := StatementEvent{
 		Context:      ctx,
-		Connection:   conn,
+		Connection:   b.name,
 		SQL:          query,
-		Args:         namedValuesToAny(args),
 		Duration:     time.Since(start),
 		RowsAffected: rows,
-	})
+	}
+	if obs != nil {
+		ev.Args = namedValuesToAny(args)
+	}
+	b.record(obs, ev, len(args))
 }
 
-// reportFailure emits a failed-statement event, dropping control-flow
-// sentinels and never recording bound values.
-func reportFailure(obs StatementObserver, ctx context.Context, conn, query string, start time.Time, err error) {
-	if isControlErr(err) {
-		return
-	}
-	obs.ObserveStatement(StatementEvent{
+// reportFailure records a failed statement, dropping control-flow sentinels
+// and never recording bound values.
+func reportFailure(b *observerBinding, obs StatementObserver, ctx context.Context, query string, argCount int, start time.Time, err error) {
+	b.record(obs, StatementEvent{
 		Context:    ctx,
-		Connection: conn,
+		Connection: b.name,
 		SQL:        query,
 		Duration:   time.Since(start),
 		Err:        err,
-	})
+	}, argCount)
 }
 
 // resultRows reads the affected-row count from a driver result, reporting zero

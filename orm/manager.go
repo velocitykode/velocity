@@ -38,8 +38,14 @@ type ManagerConfig struct {
 	MaxIdleConns    int
 	MaxOpenConns    int
 	ConnMaxLifetime time.Duration
-	LogQueries      bool
-	SlowThreshold   time.Duration
+	// LogQueries writes one debug line per executed statement through the
+	// manager's logger: the statement and its argument count, never the
+	// argument values (see drivers.BaseDriver.SetLogger).
+	LogQueries bool
+	// SlowThreshold makes a completed statement that ran longer than it
+	// write one warn line through the manager's logger and marks its
+	// QueryExecuted Slow. Zero disables the rule.
+	SlowThreshold time.Duration
 }
 
 // Database is the interface satisfied by *Manager. It covers the methods used
@@ -165,7 +171,7 @@ func NewManagerWithContext(ctx context.Context, config ManagerConfig) (*Manager,
 	}
 
 	connConfig.LogQueries = config.LogQueries
-	connConfig.SlowQueryThreshold = config.SlowThreshold
+	connConfig.SlowThreshold = config.SlowThreshold
 
 	driver, err := driverRegistry.Resolve(ctx, config.Driver, connConfig)
 	if err != nil {
@@ -971,10 +977,11 @@ func flushBufferedEntry(ctx context.Context, entry events.BufferedEvent, bus eve
 // SetLogger installs a logger that receives warnings about recovered
 // transaction panics and failed rollbacks, and hands it to every
 // connection's driver that takes one (contract.LoggerAware) as the query
-// logger ManagerConfig.LogQueries writes to; AddConnection hands it to a
-// connection added later. Nil restores the default, the framework's
-// standalone fallback logger, for both (it drops the query log's debug
-// lines).
+// logger ManagerConfig.LogQueries and ManagerConfig.SlowThreshold write to;
+// AddConnection hands it to a connection added later. Nil restores the
+// default, the framework's standalone fallback logger, for both (it drops
+// the query log's debug lines and writes slow query warnings to standard
+// error).
 // Safe to call concurrently, and while the connections run queries.
 func (m *Manager) SetLogger(logger contract.Logger) {
 	m.mu.Lock()

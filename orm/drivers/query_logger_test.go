@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/contract"
-	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 )
 
 type queryLogEntry struct {
@@ -101,63 +100,21 @@ func TestSQLiteDriverSetLogger_WritesStatementsAtDebug(t *testing.T) {
 		t.Errorf("stdout = %q, want nothing once a logger is set", out)
 	}
 	want := []queryLogEntry{
-		{level: "debug", msg: "velocity/orm: query executed", kvs: []any{"query", "CREATE TABLE logged (id INTEGER)", "arg_count", 0}},
-		{level: "debug", msg: "velocity/orm: query executed", kvs: []any{"query", "SELECT id FROM logged WHERE id = ?", "arg_count", 1}},
+		{level: "debug", msg: "velocity/orm: query executed", kvs: []any{"connection", "sqlite", "query", "CREATE TABLE logged (id INTEGER)", "arg_count", 0}},
+		{level: "debug", msg: "velocity/orm: query executed", kvs: []any{"connection", "sqlite", "query", "SELECT id FROM logged WHERE id = ?", "arg_count", 1}},
 	}
 	got := log.all()
 	if len(got) != len(want) {
 		t.Fatalf("entries = %+v, want %+v", got, want)
 	}
 	for i := range want {
-		if got[i].level != want[i].level || got[i].msg != want[i].msg || !sameKVs(got[i].kvs, want[i].kvs) {
-			t.Errorf("entry %d = %+v, want %+v", i, got[i], want[i])
+		if got[i].level != want[i].level || got[i].msg != want[i].msg {
+			t.Errorf("entry %d = %s %q, want %s %q", i, got[i].level, got[i].msg, want[i].level, want[i].msg)
+		}
+		for j := 0; j < len(want[i].kvs); j += 2 {
+			if v := kv(got[i].kvs, want[i].kvs[j].(string)); v != want[i].kvs[j+1] {
+				t.Errorf("entry %d %v = %#v, want %#v", i, want[i].kvs[j], v, want[i].kvs[j+1])
+			}
 		}
 	}
-}
-
-// Without a logger (never set, or reset with nil) a statement goes to the
-// framework's standalone fallback logger, which drops debug lines: nothing
-// reaches stdout or standard error, whether LogQueries is on or off.
-func TestBaseDriverLogQuery_WithoutLogger(t *testing.T) {
-	tests := []struct {
-		name       string
-		logQueries bool
-		reset      bool
-	}{
-		{name: "never set", logQueries: true},
-		{name: "reset to nil", logQueries: true, reset: true},
-		{name: "query logging off", logQueries: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			fallback := fallbacklogtest.Capture(t)
-			b := &BaseDriver{Config: ConnectionConfig{LogQueries: tt.logQueries}}
-			log := &queryLog{}
-			if tt.reset {
-				b.SetLogger(log)
-				b.SetLogger(nil)
-			}
-			if got := captureStdout(t, func() { b.logQuery("SELECT 1", 2) }); got != "" {
-				t.Errorf("stdout = %q, want nothing", got)
-			}
-			if got := fallback.String(); got != "" {
-				t.Errorf("fallback = %q, want nothing", got)
-			}
-			if n := len(log.all()); n != 0 {
-				t.Errorf("logger got %d entries after reset, want 0", n)
-			}
-		})
-	}
-}
-
-func sameKVs(a, b []any) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

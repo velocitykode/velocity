@@ -60,13 +60,19 @@ type ConnectionConfig struct {
 	// timestamptz/TIMESTAMP rendering only. It never affects how bound
 	// time.Time values are encoded: storage is unconditionally UTC (see
 	// NormalizeTimeArgs). SQLite has no session timezone; unused there.
-	TimeZone           string
-	MaxIdleConns       int
-	MaxOpenConns       int
-	ConnMaxLifetime    time.Duration
-	ConnMaxIdleTime    time.Duration
-	LogQueries         bool
-	SlowQueryThreshold time.Duration
+	TimeZone        string
+	MaxIdleConns    int
+	MaxOpenConns    int
+	ConnMaxLifetime time.Duration
+	ConnMaxIdleTime time.Duration
+	// LogQueries writes one debug line per executed statement through the
+	// driver's query logger (see BaseDriver.SetLogger): the statement and
+	// its argument count, never the argument values.
+	LogQueries bool
+	// SlowThreshold makes a completed statement that ran longer than it
+	// write one warn line through the query logger and mark its event
+	// slow (StatementEvent.Slow). Zero disables the rule.
+	SlowThreshold time.Duration
 }
 
 // QueryGrammar defines SQL dialect-specific query building

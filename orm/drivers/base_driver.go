@@ -7,7 +7,6 @@ import (
 	"sync/atomic"
 
 	"github.com/velocitykode/velocity/contract"
-	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
 // BaseDriver provides shared implementations for common driver operations.
@@ -21,10 +20,10 @@ type BaseDriver struct {
 	// opened, and is filled with an observer when the owning manager
 	// attaches itself via SetStatementObserver.
 	binding *observerBinding
-	// logger receives every executed statement when Config.LogQueries is
-	// set. Unset or nil (the default) writes it through the framework's
-	// standalone fallback logger, which drops debug lines. Held atomically
-	// so SetLogger can run while the driver executes statements.
+	// logger is the query logger the pool's statement log writes to (see
+	// SetLogger). Unset or nil (the default) writes through the
+	// framework's standalone fallback logger. Held atomically so SetLogger
+	// can run while the driver executes statements.
 	logger atomic.Value // holds queryLoggerHolder
 }
 
@@ -32,27 +31,33 @@ type BaseDriver struct {
 // one concrete type, nil logger included.
 type queryLoggerHolder struct{ contract.Logger }
 
-// SetLogger installs the logger executed statements are written to when
-// Config.LogQueries is true: one debug line per statement with the
-// statement and its argument count, never the argument values. Nil restores
-// the default, the framework's standalone fallback logger, which drops
-// debug lines: a driver without a logger logs no statements. Safe to call
-// while the driver runs queries.
+// SetLogger installs the query logger: the logger the statement log of the
+// pool this driver opened (OpenInstrumented, OpenAndPing) writes to. Every
+// statement that reaches the database through that pool, whatever the
+// route (the driver's own methods, a transaction, a prepared statement, the
+// raw *sql.DB), writes at most one line, and never an argument value:
+//
+//   - a completed statement slower than Config.SlowThreshold: one warn
+//     line, "velocity/orm: slow query";
+//   - otherwise, when Config.LogQueries is true: one debug line,
+//     "velocity/orm: query executed" or "velocity/orm: query failed".
+//
+// Each line carries the connection, the statement text, its argument count
+// (arg_count), its duration (duration_ms), the rows it affected or read
+// (completed statements only) and the request, trace and span ids of its
+// context. A failure's error text is left out, because drivers echo the
+// offending value in it. Nil restores the default, the framework's
+// standalone fallback logger, which drops debug lines and writes the slow
+// warn line to standard error. Safe to call while the driver runs queries.
+//
+// The line is written on the goroutine that ran the statement, before its
+// connection returns to the pool (for a read, when its rows close), so a
+// query logger must not itself query the same database.
 func (b *BaseDriver) SetLogger(l contract.Logger) {
 	b.logger.Store(queryLoggerHolder{Logger: l})
 }
 
 var _ contract.LoggerAware = (*BaseDriver)(nil)
-
-// logQuery emits one executed statement through the configured logger when
-// query logging is enabled.
-func (b *BaseDriver) logQuery(query string, argCount int) {
-	if !b.Config.LogQueries {
-		return
-	}
-	h, _ := b.logger.Load().(queryLoggerHolder)
-	fallbacklog.Resolve(h.Logger).Debug("velocity/orm: query executed", "query", query, "arg_count", argCount)
-}
 
 // Close closes the database connection.
 func (b *BaseDriver) Close() error {
@@ -78,21 +83,18 @@ func (b *BaseDriver) DB() *sql.DB {
 // QueryContext executes a query that returns rows, honoring the context
 // for cancellation and deadlines.
 func (b *BaseDriver) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	b.logQuery(query, len(args))
 	return b.db.QueryContext(ctx, query, NormalizeTimeArgs(args)...)
 }
 
 // QueryRowContext executes a query that returns at most one row, honoring
 // the context for cancellation and deadlines.
 func (b *BaseDriver) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
-	b.logQuery(query, len(args))
 	return b.db.QueryRowContext(ctx, query, NormalizeTimeArgs(args)...)
 }
 
 // ExecContext executes a query that doesn't return rows, honoring the
 // context for cancellation and deadlines.
 func (b *BaseDriver) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	b.logQuery(query, len(args))
 	return b.db.ExecContext(ctx, query, NormalizeTimeArgs(args)...)
 }
 
@@ -155,12 +157,19 @@ func (b *BaseDriver) OpenAndPing(driverName, dsn string) error {
 // logical name that appears on emitted events (usually Driver.DriverName()),
 // and dsn is the data source name. Drivers that embed BaseDriver but do their
 // own dialing must route it through here (or OpenAndPing) to inherit query
-// telemetry; a driver that calls sql.Open directly stays invisible to APM.
+// telemetry and the statement log (see SetLogger); a driver that calls
+// sql.Open directly stays invisible to APM and logs no statements.
+//
+// The pool's statement log reads b.Config.LogQueries and
+// b.Config.SlowThreshold here, once: set b.Config before calling.
 func (b *BaseDriver) OpenInstrumented(sqlDriverName, connectionName, dsn string) (*sql.DB, error) {
 	db, binding, err := openInstrumented(sqlDriverName, connectionName, dsn)
 	if err != nil {
 		return nil, err
 	}
+	binding.logQueries = b.Config.LogQueries
+	binding.slowThreshold = b.Config.SlowThreshold
+	binding.logger = &b.logger
 	b.binding = binding
 	return db, nil
 }

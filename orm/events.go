@@ -44,9 +44,14 @@ type QueryExecuted struct {
 	// RowsAffected is the driver-reported affected-row count for a write,
 	// or the number of rows the caller consumed from a read.
 	RowsAffected int64
-	Connection   string // Database connection/driver name
-	File         string // Caller file
-	Line         int    // Caller line
+	// Slow reports that Duration exceeded the connection's slow threshold
+	// (ManagerConfig.SlowThreshold, DB_SLOW_QUERY_THRESHOLD in an app).
+	// The same statement wrote the "velocity/orm: slow query" warn line.
+	// Always false when the threshold is zero.
+	Slow       bool
+	Connection string // Database connection/driver name
+	File       string // Caller file
+	Line       int    // Caller line
 }
 
 // Name returns the canonical event name.
@@ -377,6 +382,7 @@ func (o managerObserver) ObserveStatement(ev drivers.StatementEvent) {
 		Bindings:     ev.Args,
 		Duration:     ev.Duration,
 		RowsAffected: ev.RowsAffected,
+		Slow:         ev.Slow,
 		Connection:   ev.Connection,
 		File:         file,
 		Line:         line,
