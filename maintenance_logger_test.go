@@ -2,6 +2,7 @@ package velocity
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -73,4 +74,24 @@ func entriesWith(l *levelLogger, level, msg string) int {
 		}
 	}
 	return n
+}
+
+// Inside an app, the middleware without WithMaintenanceLogger writes the
+// marker-path warning through the request's app logger, not the fallback.
+func TestPreventRequestsDuringMaintenance_InAppWarnsThroughTheAppLogger(t *testing.T) {
+	useTempMaintRoot(t)
+	fallback := fallbacklogtest.Capture(t)
+	a, capture := newLoggerWiringApp(t, nil)
+	a.Router.Use(PreventRequestsDuringMaintenance())
+	a.Router.Get("/", func(c *router.Context) error { return c.String(http.StatusOK, "ok") })
+
+	rec := httptest.NewRecorder()
+	a.Router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if got := entriesWith(capture, "warn", "maintenance marker path resolved"); got != 1 {
+		t.Errorf("app logger warn entries = %d, want 1", got)
+	}
+	if got := fallback.Count("WARN", "maintenance marker path resolved"); got != 0 {
+		t.Errorf("fallback lines = %d, want 0: %q", got, fallback.String())
+	}
 }

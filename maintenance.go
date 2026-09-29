@@ -166,8 +166,10 @@ func WithMaintenanceExcludePaths(paths ...string) MaintenanceOption {
 
 // WithMaintenanceLogger sets the logger used for the one-time marker-path
 // resolution warning, written at warn level. Without it, or with nil, the
-// warning goes through the framework's standalone fallback logger, which
-// writes it to standard error. Because that warning fires at most once per
+// warning goes through the app logger of the request that resolves the
+// path (Services.Log), and through the framework's standalone fallback
+// logger, which writes it to standard error, only when the request
+// carries no app logger either. Because that warning fires at most once per
 // process (see maintenancePathLogOnce), the logger supplied to the FIRST
 // middleware instance that resolves the path wins; loggers on any later
 // instance are not consulted for that line.
@@ -248,7 +250,13 @@ func PreventRequestsDuringMaintenance(opts ...MaintenanceOption) router.Middlewa
 	cfg := resolveMaintenanceConfig(opts...)
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
-			path, err := maintenanceMarkerPath(cfg.logger)
+			logger := cfg.logger
+			if logger == nil {
+				if svc := c.ServicesIfSet(); svc != nil {
+					logger = svc.Log
+				}
+			}
+			path, err := maintenanceMarkerPath(logger)
 			if err != nil {
 				// Misconfigured root: treat as "not in maintenance" so a
 				// bad env var cannot lock everyone out. The error is
