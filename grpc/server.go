@@ -642,23 +642,32 @@ func (s *Server) beginBuild() (*buildPlan, error) {
 // it): it closes a listener b bound itself, and clears the Build in
 // progress so a later Build can run. A caller-supplied listener stays
 // open for the next Build, unless a stop ran during b, which closes it as
-// a stop closes the listener of a built server. The clear is deferred so
-// it runs whatever the close does, after the close, so a retried Build
-// never finds the port still bound.
+// a stop closes the listener of a built server.
+//
+// b stays the Build in progress until every close it owes has ended, so
+// a Build started from a listener's Close, or racing it, returns
+// ErrBuildInProgress instead of adopting a listener about to be closed.
+// Whether a stop ran is read under the lock at the clear, so a stop that
+// marks b after the owned close is still honoured. The closes run
+// without the lock and are contained, and the clear is deferred, so it
+// runs whatever they do.
 func (s *Server) abortBuild(b *buildPlan) {
-	stopped := false
+	suppliedClosed := false
 	defer func() {
-		if stopped && b.listener != nil && !b.ownsListener {
-			s.closeListener(b.listener)
+		for {
+			s.mu.Lock()
+			if b.stopped && b.listener != nil && !b.ownsListener && !suppliedClosed {
+				s.mu.Unlock()
+				suppliedClosed = true
+				s.closeListener(b.listener)
+				continue
+			}
+			if s.build == b {
+				s.build = nil
+			}
+			s.mu.Unlock()
+			return
 		}
-	}()
-	defer func() {
-		s.mu.Lock()
-		if s.build == b {
-			s.build = nil
-		}
-		stopped = b.stopped
-		s.mu.Unlock()
 	}()
 	if b.listener != nil && b.ownsListener {
 		s.closeListener(b.listener)
@@ -872,6 +881,9 @@ type stopPlan struct {
 	unserved net.Listener
 	// port labels the ServerStopped event.
 	port string
+	// release is the placeholder Build that holds the server while the
+	// unserved listener closes; endStop clears it.
+	release *buildPlan
 }
 
 // beginStop records a stop under the lock and returns what to do after
@@ -917,9 +929,16 @@ func (s *Server) beginStop(force bool) stopPlan {
 		// closed here. Gated on !served, not merely !running, so a second Stop
 		// after a running server stopped does NOT enter here and race the serve
 		// goroutine's unlocked read of s.listener.
+		//
+		// Until endStop has closed it, a placeholder Build that is already
+		// stopped holds the server, so a Build from that listener's Close,
+		// or racing it, returns ErrBuildInProgress instead of adopting the
+		// listener being closed.
 		st.unserved = s.listener
 		s.listener = nil
 		s.grpcServer = nil
+		st.release = &buildPlan{stopped: true}
+		s.build = st.release
 	}
 	return st
 }
@@ -938,7 +957,16 @@ func (s *Server) stopTransport(st stopPlan, stop func(*grpc.Server)) {
 // Stop, emits no second event).
 func (s *Server) endStop(st stopPlan) {
 	if st.unserved != nil {
-		s.closeListener(st.unserved)
+		func() {
+			defer func() {
+				s.mu.Lock()
+				if s.build == st.release {
+					s.build = nil
+				}
+				s.mu.Unlock()
+			}()
+			s.closeListener(st.unserved)
+		}()
 	}
 	if st.start.IsZero() || !s.events.Installed() {
 		return

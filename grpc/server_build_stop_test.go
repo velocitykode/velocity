@@ -18,9 +18,13 @@ import (
 func buildBlockedStop(t *testing.T, s *grpc.Server) error {
 	t.Helper()
 	entered, release := make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	first.Store(true)
 	s.RegisterService(func(any) {
-		close(entered)
-		<-release
+		if first.CompareAndSwap(true, false) { // only the first Build blocks
+			close(entered)
+			<-release
+		}
 	})
 	built := make(chan error, 1)
 	go func() { built <- s.Build() }()
@@ -78,17 +82,15 @@ func TestServerStop_DuringBuildClosesASuppliedListener(t *testing.T) {
 }
 
 // The Build a Stop interrupted returns grpc-go's ErrServerStopped, and a
-// later Build constructs the server afresh.
+// later Build on the same server constructs it afresh.
 func TestServerBuild_StoppedBuildReturnsErrServerStopped(t *testing.T) {
 	s := grpc.NewServer(grpc.WithBindAddress("tcp", "127.0.0.1:0"), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	stopOnCleanup(t, s)
 	if err := buildBlockedStop(t, s); !errors.Is(err, grpcgo.ErrServerStopped) {
 		t.Fatalf("Build = %v, want ErrServerStopped", err)
 	}
-	s2 := grpc.NewServer(grpc.WithBindAddress("tcp", "127.0.0.1:0"), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
-	stopOnCleanup(t, s2)
-	if err := s2.Build(); err != nil || s2.GRPCServer() == nil {
-		t.Fatalf("Build = %v, server %v: want a built server", err, s2.GRPCServer())
+	if err := s.Build(); err != nil || s.GRPCServer() == nil || s.Address() == "" {
+		t.Fatalf("Build = %v, server %v at %q: want the same server built again", err, s.GRPCServer(), s.Address())
 	}
 }
 
