@@ -282,6 +282,10 @@ func wireInstanceEvents(a *App) {
 	// the matching dispatcher method instead of collapsing onto Dispatch.
 	if mgr, ok := a.DB.(*orm.Manager); ok {
 		mgr.SetTxEventBus(a.Services.Events)
+		// Statement events the manager drops (a full delivery queue)
+		// count as failed events beside the failures the dispatch
+		// closure records.
+		mgr.ShareEventFailures(&a.eventFailures)
 	}
 
 	wireComponentEvents(a, dispatch)
@@ -479,6 +483,14 @@ func eventWiringCandidates(a *App) []any {
 // once, or nil when there is none (WithoutEvents) so callers can skip
 // wiring entirely.
 //
+// The closure carries the app's failure policy: each failure the
+// dispatcher returns (a listener's error or panic) is counted in
+// a.eventFailures, its event's first failure is logged at warn level
+// through the logger a.Services.Log holds now, and the hook
+// WithFailedEventHook installed is called; the failure then goes back to
+// the component marked as recorded, so the component's own emitter does
+// not record it a second time (see internal/eventemit).
+//
 // The closure never reads a.Services.Events when it dispatches: services
 // dispatch from goroutines a module Start may have launched (a queue push
 // firing queue.job.queued, a scheduler tick, an ORM event), and a later module
@@ -492,12 +504,9 @@ func buildEventDispatch(a *App) func(ctx context.Context, event any) error {
 	if d == nil {
 		return nil
 	}
-	return func(ctx context.Context, event any) error {
-		if ctx == nil {
-			ctx = context.Background()
-		}
+	return a.eventFailures.Recording(func(ctx context.Context, event any) error {
 		return d.Dispatch(ctx, event)
-	}
+	}, a.Services.Log)
 }
 
 // wireComponentEvents wires the event dispatcher into every registry entry

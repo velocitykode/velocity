@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/router"
@@ -77,9 +76,6 @@ func TestShutdown_AsyncEventsStragglerPastDeadline(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	failures := &eventemit.Failures{}
-	a.Router.ShareEventFailures(failures)
-
 	var (
 		evMu      sync.Mutex
 		delivered int
@@ -145,7 +141,7 @@ func TestShutdown_AsyncEventsStragglerPastDeadline(t *testing.T) {
 	if !mod.waited.Load() {
 		t.Error("straggler request did not finish while App.Shutdown was running")
 	}
-	if got := failures.Count(); got != 1 {
+	if got := a.FailedEventCount(); got != 1 {
 		t.Errorf("failed event count = %d, want 1 (the straggler's late RequestHandled)", got)
 	}
 	for i := 0; i < 2; i++ {

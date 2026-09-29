@@ -23,6 +23,7 @@ import (
 	"github.com/velocitykode/velocity/csrf/stores"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventqueue"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
@@ -102,6 +103,13 @@ type App struct {
 	// events disabled from the start (WithoutEvents) is never touched.
 	// Only the lifecycle goroutine (New, bootstrap) touches it.
 	eventsWired bool
+	// eventFailures is the app's one failure policy for framework event
+	// dispatches: the dispatch function every component is handed records
+	// each failure it returns here (see buildEventDispatch), and the router
+	// and the ORM manager record the events they drop themselves here too
+	// (ShareEventFailures). FailedEventCount reads its count and
+	// WithFailedEventHook installs its hook. Safe for concurrent use.
+	eventFailures eventemit.Failures
 	// bootstrapErr is the sticky result of the first bootstrap() run.
 	// A failed bootstrap must NOT be re-run (modules, middleware and
 	// routes registered before the failure would double-register), so
@@ -659,6 +667,10 @@ func New(opts ...Option) (*App, error) {
 	// reason as RedirectAllowlist above.
 	a.Services.CookiePolicy = a.config.Session.CookiePolicy()
 	a.Router.SetServices(a.Services)
+	// Events the router drops itself (a full async buffer, a stopped
+	// pool) count as failed events beside the failures the app's dispatch
+	// function records.
+	a.Router.ShareEventFailures(&a.eventFailures)
 	// Wire the app logger into the router's default error path (one
 	// error-level entry per 500-class failure, a warn entry per request
 	// deadline or shutdown cut-off). Logging ownership is documented on
@@ -953,6 +965,19 @@ func (a *App) checkSessionCookieSecurity() error {
 // Version returns the framework version.
 func (a *App) Version() string {
 	return a.version
+}
+
+// FailedEventCount returns how many framework event dispatches have failed
+// since New: each dispatch a listener failed on (an error or a panic;
+// one dispatch counts once however many of its listeners failed), each
+// event the router or the ORM dropped before any listener saw it (a full
+// buffer or queue, a stopped pool), and each panic of the hook
+// WithFailedEventHook installed. A listener failure of a detached delivery
+// (DispatchAsync, DispatchAfter), which the dispatcher reports as its own
+// failure event, is not counted here. Expose it as a metric in production.
+// Safe for concurrent use.
+func (a *App) FailedEventCount() uint64 {
+	return a.eventFailures.Count()
 }
 
 // Run dispatches CLI commands or starts the HTTP server.

@@ -223,6 +223,24 @@ func WithoutEvents() Option {
 	}
 }
 
+// WithFailedEventHook installs fn as the hook every failed framework event
+// dispatch is handed to: a listener that returned an error or panicked, or
+// an event the router or the ORM dropped before any listener saw it. fn
+// receives the failure and the event as it was dispatched, whatever its
+// type (app-defined events included). Each failure is also counted
+// (App.FailedEventCount) and the first failure of each event name is logged
+// at warn level through the app logger, with or without a hook.
+//
+// fn runs on the goroutine that saw the failure (a request, a job, a
+// background pump), so it must be quick and safe for concurrent use. A
+// panic in fn is recovered and counted as one more failure; fn is not
+// called for it. A nil fn installs no hook.
+func WithFailedEventHook(fn func(err error, event any)) Option {
+	return func(a *App) {
+		a.eventFailures.SetHook(fn)
+	}
+}
+
 // WithFakeEvents replaces the event dispatcher with a fake that records
 // dispatched events without executing listeners. Assert through eventstest,
 // which fails the test directly:

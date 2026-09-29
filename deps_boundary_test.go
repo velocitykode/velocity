@@ -86,3 +86,28 @@ func TestEventEnvelopeHelperOutsideRouterGraph(t *testing.T) {
 		}
 	}
 }
+
+// TestEventEmitterImportsOnlyItsLeaves pins that internal/eventemit, which
+// the router and every event-dispatching package link, imports only the
+// standard library, contract and internal/fallbacklog, so it adds exactly
+// one package to the router's dependency graph and nothing heavy.
+func TestEventEmitterImportsOnlyItsLeaves(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go tool not on PATH")
+	}
+	const module = "github.com/velocitykode/velocity"
+	out, err := exec.Command("go", "list", "-deps", "-f", "{{if not .Standard}}{{.ImportPath}}{{end}}", "./internal/eventemit").Output()
+	if err != nil {
+		t.Fatalf("go list -deps ./internal/eventemit: %v", err)
+	}
+	allowed := map[string]bool{
+		module + "/internal/eventemit":   true,
+		module + "/contract":             true,
+		module + "/internal/fallbacklog": true,
+	}
+	for _, dep := range strings.Fields(string(out)) {
+		if !allowed[dep] {
+			t.Errorf("internal/eventemit links %s; it may import only the standard library, contract and internal/fallbacklog", dep)
+		}
+	}
+}
