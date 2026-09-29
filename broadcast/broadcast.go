@@ -249,17 +249,22 @@ func (cb *ChannelBuilder) EmitCtx(ctx context.Context, event string, data interf
 // re-verifies the HMAC via VerifyAuthToken (see audit H-25). Without the
 // token, a stolen authorizer verdict alone is not sufficient to bind a
 // WebSocket connection to a restricted channel.
+//
+// The authorizer and the presence-data func are user code: Auth reads them
+// (and the secret) under the read lock, then calls them with no lock held,
+// so one that reconfigures the manager cannot deadlock it.
 func (b *BroadcastManager) Auth(channel string, socketID string, user interface{}) (interface{}, error) {
 	b.mu.RLock()
-	defer b.mu.RUnlock()
+	authorizer, presence, secret := b.authorizer, b.presence, b.authSecret
+	b.mu.RUnlock()
 
 	isRestricted := isPrivateChannel(channel) || isPresenceChannel(channel)
 
 	if isRestricted {
-		if b.authorizer == nil {
+		if authorizer == nil {
 			return nil, ErrUnauthorized
 		}
-		if !b.authorizer(channel, user) {
+		if !authorizer(channel, user) {
 			return nil, ErrUnauthorized
 		}
 	}
@@ -268,14 +273,14 @@ func (b *BroadcastManager) Auth(channel string, socketID string, user interface{
 	// signature binds (socketID, channel) so a leaked authorizer verdict
 	// cannot be replayed against a different connection.
 	var sig string
-	if isRestricted && len(b.authSecret) > 0 {
-		sig = computeAuthSignature(b.authSecret, socketID, channel)
+	if isRestricted && len(secret) > 0 {
+		sig = computeAuthSignature(secret, socketID, channel)
 	}
 
 	// For presence channels with a presence-data func, return the user data
 	// alongside the auth token so the client can forward both.
-	if isPresenceChannel(channel) && b.presence != nil {
-		data := b.presence(channel, user)
+	if isPresenceChannel(channel) && presence != nil {
+		data := presence(channel, user)
 		if sig == "" {
 			return data, nil
 		}
