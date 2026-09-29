@@ -770,16 +770,11 @@ func (s *Scheduler) runDueJobs() {
 func logRunPanic(s *Scheduler, log contract.Logger, jobName string, r any) {
 	const msg = "velocity/scheduler: run due jobs panic recovered"
 	err := panicerr.FromRecovered(r)
-	defer func() {
-		if recover() != nil {
-			fallbacklog.Logger{}.Error(msg, "task_name", jobName, "error", err)
-		}
-	}()
 	if log == nil {
-		s.log().Error(msg, "task_name", jobName, "error", err)
+		fallbacklog.Write(s.log(), func(w contract.Logger) { w.Error(msg, "task_name", jobName, "error", err) })
 		return
 	}
-	log.Error(msg, "error", err)
+	fallbacklog.Write(log, func(w contract.Logger) { w.Error(msg, "error", err) }, "task_name", jobName)
 }
 
 // skipAfterAcquireFailure writes the line for a due task skipped because
@@ -791,12 +786,7 @@ func logRunPanic(s *Scheduler, log contract.Logger, jobName string, r any) {
 // framework's standalone fallback logger, and the count is still released.
 func (s *Scheduler) skipAfterAcquireFailure(guard, jobName, key string, err error) {
 	defer s.runWg.Done()
-	defer func() {
-		if recover() != nil {
-			logAcquireFailure(fallbacklog.Logger{}, guard, jobName, key, err)
-		}
-	}()
-	logAcquireFailure(s.log(), guard, jobName, key, err)
+	fallbacklog.Write(s.log(), func(w contract.Logger) { logAcquireFailure(w, guard, jobName, key, err) })
 }
 
 // releaseLockSafely releases a scheduler Lock and contains any panic

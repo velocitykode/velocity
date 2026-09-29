@@ -136,12 +136,7 @@ func logError(l contract.Logger, msg string, kvs ...any) {
 	if l == nil {
 		l = GetLogger()
 	}
-	defer func() {
-		if recover() != nil {
-			fallbacklog.Logger{}.Error(msg, kvs...)
-		}
-	}()
-	l.Error(msg, kvs...)
+	fallbacklog.Write(l, func(w contract.Logger) { w.Error(msg, kvs...) })
 }
 
 // handlePanic handles panics in goroutines: the installed panic hook takes
