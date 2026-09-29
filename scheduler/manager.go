@@ -16,6 +16,13 @@ type Manager struct {
 	schedulers map[string]*Scheduler
 	default_   string
 
+	// wiring serialises every logger handoff to the schedulers (SetLogger,
+	// Add, and Default creating the default scheduler) from reading or
+	// storing the logger until every scheduler has it, so a handoff that
+	// read an older logger cannot land after a newer one. Lock order:
+	// wiring, then mu; a scheduler's SetLogger never calls back.
+	wiring sync.Mutex
+
 	// logger is stored atomically so recover() paths in RunAll can read
 	// it without acquiring m.mu (some callers may already hold it).
 	logger atomic.Value // holds mgrLoggerHolder{contract.Logger}
@@ -40,6 +47,8 @@ func NewManager() *Manager {
 // framework's standalone fallback logger, on the Manager and its
 // schedulers.
 func (m *Manager) SetLogger(l contract.Logger) {
+	m.wiring.Lock()
+	defer m.wiring.Unlock()
 	m.logger.Store(mgrLoggerHolder{Logger: l})
 
 	m.mu.RLock()
@@ -73,6 +82,8 @@ func (m *Manager) logError(msg string, kvs ...any) {
 
 // Add adds a scheduler to the manager
 func (m *Manager) Add(name string, scheduler *Scheduler) *Manager {
+	m.wiring.Lock()
+	defer m.wiring.Unlock()
 	m.mu.Lock()
 	m.schedulers[name] = scheduler
 	m.mu.Unlock()
@@ -100,6 +111,8 @@ func (m *Manager) Default() *Scheduler {
 	}
 	// Create default scheduler if it doesn't exist
 	m.mu.RUnlock()
+	m.wiring.Lock()
+	defer m.wiring.Unlock()
 	m.mu.Lock()
 	if s, ok := m.schedulers[m.default_]; ok {
 		m.mu.Unlock()
