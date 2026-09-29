@@ -624,8 +624,16 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 	// When a richer events.Dispatcher is wired (the production path) we
 	// dispatch through it; otherwise we fall back to the untyped legacy
 	// sink, which collapses every kind onto Dispatch.
+	//
+	// A failed flush dispatch goes to the manager's failure policy (shared
+	// with the app's), so it is counted, logged and handed to the hook like
+	// any failed event; Fail skips an error the dispatch function already
+	// recorded, so nothing is counted twice. The error still reaches the
+	// transaction's caller.
 	buffer, releaseBuffer := events.InstallBuffer(ctx, func(entry events.BufferedEvent) error {
-		return flushBufferedEntry(ctx, entry, bus, rawDispatcher)
+		err := flushBufferedEntry(ctx, entry, bus, rawDispatcher)
+		m.events.Fail(ctx, err, entry.Event())
+		return err
 	})
 	defer releaseBuffer()
 
