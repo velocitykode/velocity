@@ -244,6 +244,15 @@ func (d *DefaultDispatcher) Listen(key interface{}, listener Listener) int {
 	if k, ok := key.(EventType); ok && k.matches == nil {
 		panic(contract.NewRegistrationError("events", "zero EventType key; build one with OfType"))
 	}
+	// An event value's name is user code (its Name method): resolve it
+	// before taking the lock, so a Name that dispatches cannot deadlock.
+	var valueName string
+	switch key.(type) {
+	case EventType, string, []string:
+	default:
+		valueName = d.getEventName(key)
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -266,9 +275,8 @@ func (d *DefaultDispatcher) Listen(key interface{}, listener Listener) int {
 			d.addListener(event, listener, id)
 		}
 	default:
-		// Try to get event name from type
-		eventName := d.getEventName(e)
-		d.addListener(eventName, listener, id)
+		// An event value: listen under its name.
+		d.addListener(valueName, listener, id)
 	}
 
 	return id
@@ -897,7 +905,7 @@ func (d *DefaultDispatcher) getListenersForEvent(event interface{}) []Listener {
 		}
 	}
 	for _, entry := range d.typed {
-		if entry.key.matches(event) {
+		if entry.key.matches(event) { //lock-held-ok: OfType's type assertion, no user code
 			capacity++
 		}
 	}
@@ -922,7 +930,7 @@ func (d *DefaultDispatcher) getListenersForEvent(event interface{}) []Listener {
 
 	// Get EventType listeners
 	for _, entry := range d.typed {
-		if entry.key.matches(event) {
+		if entry.key.matches(event) { //lock-held-ok: OfType's type assertion, no user code
 			result = append(result, entry.listener)
 		}
 	}

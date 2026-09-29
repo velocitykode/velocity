@@ -194,17 +194,19 @@ func Register[T any](b *Bus, handler Handler[T]) {
 		panic(contract.NewRegistrationError("bus", fmt.Sprintf("command type %s is not json-serializable: %v", reflect.TypeFor[T]().String(), err)))
 	}
 
+	cmdType := reflect.TypeFor[T]()
+	typeName := cmdType.String()
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	cmdType := reflect.TypeFor[T]()
 	if _, exists := b.handlers[cmdType]; exists {
-		panic(contract.NewRegistrationError("bus", fmt.Sprintf("handler for command type %s already registered", cmdType.String())))
+		panic(contract.NewRegistrationError("bus", fmt.Sprintf("handler for command type %s already registered", typeName)))
 	}
 	b.handlers[cmdType] = func(cmd Command) error {
 		typed, ok := cmd.(T)
 		if !ok {
-			return fmt.Errorf("velocity/bus: command type mismatch: got %T, want %s", cmd, cmdType.String())
+			return fmt.Errorf("velocity/bus: command type mismatch: got %T, want %s", cmd, typeName)
 		}
 		return handler(typed)
 	}
@@ -212,7 +214,7 @@ func Register[T any](b *Bus, handler Handler[T]) {
 	// Install the factory in this bus's own registry. The key is the same
 	// string reflect.TypeOf(cmd) produces on the producer side, so producer
 	// and consumer sides agree by construction.
-	b.factories[cmdType.String()] = func() Command {
+	b.factories[typeName] = func() Command {
 		var v T
 		return v
 	}

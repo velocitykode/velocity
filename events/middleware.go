@@ -121,8 +121,8 @@ func NewLoggingMiddleware() *LoggingMiddleware {
 
 // Handle logs the event
 func (m *LoggingMiddleware) Handle(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error {
-	m.mu.Lock()
 	eventName := getEventNameFromEvent(event)
+	m.mu.Lock()
 	timestamp := time.Now().Format("15:04:05.000")
 	m.log = append(m.log, fmt.Sprintf("[%s] Event dispatched: %s", timestamp, eventName))
 	m.mu.Unlock()

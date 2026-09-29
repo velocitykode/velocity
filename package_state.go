@@ -76,7 +76,7 @@ func installPackageState(a *App) {
 	}
 	e.hook, e.logger = hook, l
 	if packageStack[len(packageStack)-1] == e {
-		applyPackageState(e)
+		applyPackageState(e) //lock-held-ok: stores the hook and loggers, calls neither
 	}
 }
 
@@ -122,7 +122,7 @@ func releasePackageState(a *App) {
 	if last > 0 {
 		next = packageStack[last-1]
 	}
-	applyPackageState(next)
+	applyPackageState(next) //lock-held-ok: stores the hook and loggers, calls neither
 }
 
 // applyPackageState hands e's hook and logger to the async and trace

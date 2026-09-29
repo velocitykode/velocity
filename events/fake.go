@@ -150,11 +150,12 @@ func recordedMatcher(key interface{}) (string, func(event interface{}) bool) {
 }
 
 // countMatchingEvents returns how key is named and the number of recorded
-// events it selects. Caller must hold at least an RLock on f.mu.
+// events it selects. The matcher resolves event names (user code), so it
+// runs on a snapshot, without f.mu.
 func (f *FakeDispatcher) countMatchingEvents(key interface{}) (string, int) {
 	name, matches := recordedMatcher(key)
 	count := 0
-	for _, event := range f.events {
+	for _, event := range f.GetDispatchedEvents() {
 		if matches(event) {
 			count++
 		}
@@ -166,13 +167,11 @@ func (f *FakeDispatcher) countMatchingEvents(key interface{}) (string, int) {
 // callback is non-nil, that callback accepts one of them. A string key
 // (name or pattern) or an EventType key from OfType selects events as a
 // listener registered under it would; any other value selects events of
-// its Go type.
+// its Go type. The matcher and callback run without the fake's lock, so
+// either may dispatch on the fake.
 func (f *FakeDispatcher) AssertDispatched(key interface{}, callback func(interface{}) bool) error {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-
 	name, matches := recordedMatcher(key)
-	for _, event := range f.events {
+	for _, event := range f.GetDispatchedEvents() {
 		if matches(event) {
 			if callback == nil || callback(event) {
 				return nil
@@ -186,9 +185,6 @@ func (f *FakeDispatcher) AssertDispatched(key interface{}, callback func(interfa
 // AssertDispatchedTimes asserts that events key selects were dispatched
 // exactly times times. Keys select as in AssertDispatched.
 func (f *FakeDispatcher) AssertDispatchedTimes(key interface{}, times int) error {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-
 	name, count := f.countMatchingEvents(key)
 	if count != times {
 		return fmt.Errorf("event %s was dispatched %d times, expected %d", name, count, times)
@@ -199,9 +195,6 @@ func (f *FakeDispatcher) AssertDispatchedTimes(key interface{}, times int) error
 // AssertNotDispatched asserts that no event key selects was dispatched.
 // Keys select as in AssertDispatched.
 func (f *FakeDispatcher) AssertNotDispatched(key interface{}) error {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-
 	name, count := f.countMatchingEvents(key)
 	if count > 0 {
 		return fmt.Errorf("event %s was dispatched but should not have been", name)
