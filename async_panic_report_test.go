@@ -10,6 +10,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 	testsync "github.com/velocitykode/velocity/testing"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // TestAsyncPanic_ReachesReporterNotStdlibLog asserts a panic recovered in
@@ -74,5 +75,47 @@ func TestAsyncPanic_ReachesReporterNotStdlibLog(t *testing.T) {
 	}
 	if n := reports.count(); n != 1 {
 		t.Errorf("panic after Shutdown reported: %d reports, want 1", n)
+	}
+}
+
+// A panic recovered by a context-aware helper is reported with the
+// request, trace and span ids of the context the helper was given;
+// a contextless helper reports with none.
+func TestAsyncPanic_ContextHelpersReportTheirContext(t *testing.T) {
+	app, err := NewTestApp()
+	if err != nil {
+		t.Fatalf("NewTestApp: %v", err)
+	}
+	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
+	reports := &failureReports{}
+	reports.add(app)
+
+	ctx := trace.WithRequestID(trace.WithTrace(context.Background(), "4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7"), "req-panic-1")
+	check := func(name string, want int, run func()) {
+		t.Helper()
+		run()
+		testsync.Eventually(t, func() bool { return reports.count() >= want }, 2*time.Second, name+": panic reported")
+		reports.mu.Lock()
+		ec := reports.ctxs[want-1]
+		reports.mu.Unlock()
+		if ec.RequestID != "req-panic-1" || ec.TraceID != "4bf92f3577b34da6a3ce929d0e0e4736" || ec.SpanID != "00f067aa0ba902b7" {
+			t.Errorf("%s: report ids = request %q trace %q span %q, want the helper's context", name, ec.RequestID, ec.TraceID, ec.SpanID)
+		}
+		if ec.Source != contract.ErrorSourceGoroutine || !ec.Recovered {
+			t.Errorf("%s: report = source %v recovered %v, want a recovered goroutine panic", name, ec.Source, ec.Recovered)
+		}
+	}
+	check("GoCtx", 1, func() { async.GoCtx(ctx, func(context.Context) { panic("goctx exploded") }) })
+	check("RunWithContext", 2, func() {
+		_, _ = async.RunWithContext(ctx, func() int { panic("run exploded") }).Get()
+	})
+
+	async.Go(func() { panic("contextless") })
+	testsync.Eventually(t, func() bool { return reports.count() >= 3 }, 2*time.Second, "Go: panic reported")
+	reports.mu.Lock()
+	ec := reports.ctxs[2]
+	reports.mu.Unlock()
+	if ec.RequestID != "" || ec.TraceID != "" {
+		t.Errorf("Go: report ids = request %q trace %q, want none", ec.RequestID, ec.TraceID)
 	}
 }

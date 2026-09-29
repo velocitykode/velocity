@@ -86,7 +86,7 @@ func AllN[T any](concurrency int, fns ...func() T) ([]T, error) {
 			// zero value, matching Run's "no value delivered" semantics.
 			defer func() {
 				if p := recover(); p != nil {
-					handlePanic(p)
+					handlePanic(context.Background(), p)
 					errs[i] = panicerr.FromRecovered(p)
 				}
 				<-semaphore
@@ -240,7 +240,7 @@ func Race[T any](fns ...func() T) *Result[T] {
 					// Route the panic through the package handler for
 					// logging + SetPanicHook parity, and record it so the
 					// supervisor can surface it if every fn panics.
-					handlePanic(p)
+					handlePanic(context.Background(), p)
 					panicMu.Lock()
 					if panicErr == nil {
 						panicErr = panicerr.FromRecovered(p)
@@ -349,7 +349,7 @@ func ForEach[T any](items []T, concurrency int, fn func(T)) {
 		go func() {
 			defer func() {
 				if p := recover(); p != nil {
-					handlePanic(p)
+					handlePanic(context.Background(), p)
 				}
 				<-semaphore // Release
 				wg.Done()
@@ -381,7 +381,7 @@ func GoForEach[T any](items []T, concurrency int, fn func(T)) {
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
-				handlePanic(p)
+				handlePanic(context.Background(), p)
 			}
 		}()
 		var wg sync.WaitGroup
@@ -393,7 +393,7 @@ func GoForEach[T any](items []T, concurrency int, fn func(T)) {
 			go func() {
 				defer func() {
 					if p := recover(); p != nil {
-						handlePanic(p)
+						handlePanic(context.Background(), p)
 					}
 					<-semaphore
 					wg.Done()
@@ -429,7 +429,7 @@ func TryForEach[T any](items []T, concurrency int, fn func(T) error) []error {
 		go func() {
 			defer func() {
 				if p := recover(); p != nil {
-					handlePanic(p)
+					handlePanic(context.Background(), p)
 					errs[i] = panicerr.FromRecovered(p)
 				}
 				<-semaphore
@@ -490,7 +490,7 @@ func MapN[T, R any](concurrency int, items []T, fn func(T) R) ([]R, error) {
 			// zero value, matching Run's "no value delivered" semantics.
 			defer func() {
 				if p := recover(); p != nil {
-					handlePanic(p)
+					handlePanic(context.Background(), p)
 					errs[i] = panicerr.FromRecovered(p)
 				}
 				<-semaphore

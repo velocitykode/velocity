@@ -214,7 +214,7 @@ func TestPackageState_ConcurrentInstallAndRelease(t *testing.T) {
 			a := &App{}
 			for j := 0; j < 50; j++ {
 				l := &levelLogger{}
-				installPanicHook(a, func(any) {})
+				installPanicHook(a, func(context.Context, any) {})
 				installPackageLoggers(a, l)
 				if j%3 == 0 {
 					async.Go(func() { panic("stress") })

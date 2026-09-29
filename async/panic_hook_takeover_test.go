@@ -1,6 +1,7 @@
 package async
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func TestSetPanicHook_TakesOverThePanic(t *testing.T) {
 	t.Cleanup(func() { SetPanicHook(nil) })
 
 	var hooked atomic.Int32
-	SetPanicHook(func(any) { hooked.Add(1) })
+	SetPanicHook(func(context.Context, any) { hooked.Add(1) })
 	done := make(chan struct{})
 	Go(func() { defer close(done); panic("taken over") })
 	<-done
@@ -42,7 +43,7 @@ func TestSetPanicHook_TakesOverThePanic(t *testing.T) {
 		t.Errorf("panic the hook took over was logged %d times, want 0", n)
 	}
 
-	SetPanicHook(func(any) { panic("hook itself panics") })
+	SetPanicHook(func(context.Context, any) { panic("hook itself panics") })
 	done = make(chan struct{})
 	Go(func() { defer close(done); panic("hook failed") })
 	<-done

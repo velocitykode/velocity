@@ -762,7 +762,7 @@ func TestSetPanicHook_FiresOnEveryHelperPanic(t *testing.T) {
 	withLogger(t) // silence the std logger
 
 	var calls atomic.Int32
-	SetPanicHook(func(any) { calls.Add(1) })
+	SetPanicHook(func(context.Context, any) { calls.Add(1) })
 	t.Cleanup(func() { SetPanicHook(nil) })
 
 	// Each helper panics in turn; we tally 1 call per helper.
@@ -821,7 +821,7 @@ func TestSetPanicHook_ClearedByNil(t *testing.T) {
 	withLogger(t)
 
 	var calls atomic.Int32
-	SetPanicHook(func(any) { calls.Add(1) })
+	SetPanicHook(func(context.Context, any) { calls.Add(1) })
 	SetPanicHook(nil) // clear
 
 	done := make(chan struct{})
@@ -836,7 +836,7 @@ func TestSetPanicHook_ClearedByNil(t *testing.T) {
 func TestSetPanicHook_PanicInsideHookSwallowed(t *testing.T) {
 	withLogger(t)
 
-	SetPanicHook(func(any) { panic("hook itself panics") })
+	SetPanicHook(func(context.Context, any) { panic("hook itself panics") })
 	t.Cleanup(func() { SetPanicHook(nil) })
 
 	done := make(chan struct{})
@@ -860,7 +860,7 @@ func TestSetPanicHook_ConcurrentSetAndFire(t *testing.T) {
 	for i := 0; i < N; i++ {
 		go func() {
 			defer wg.Done()
-			SetPanicHook(func(any) { fires.Add(1) })
+			SetPanicHook(func(context.Context, any) { fires.Add(1) })
 		}()
 		go func() {
 			defer wg.Done()

@@ -1,6 +1,7 @@
 package velocity
 
 import (
+	"context"
 	"sync"
 	"weak"
 
@@ -45,7 +46,7 @@ var (
 type packageInstall struct {
 	app    weak.Pointer[App]
 	logger contract.Logger
-	hook   func(any)
+	hook   func(context.Context, any)
 }
 
 // packageEntry returns a's entry, pushing a new one (a becomes the newest
@@ -86,7 +87,7 @@ func installPackageLoggers(a *App, l contract.Logger) {
 
 // installPanicHook records hook as a's async panic hook (nil means no
 // hook) and installs it when a owns the state.
-func installPanicHook(a *App, hook func(any)) {
+func installPanicHook(a *App, hook func(context.Context, any)) {
 	packageStateMu.Lock()
 	defer packageStateMu.Unlock()
 	e := packageEntry(a)
@@ -129,7 +130,7 @@ func releasePackageState(a *App) {
 	next := packageOwner()
 	var (
 		l    contract.Logger
-		hook func(any)
+		hook func(context.Context, any)
 	)
 	if next != nil {
 		l, hook = next.logger, next.hook

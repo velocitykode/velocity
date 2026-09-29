@@ -28,7 +28,7 @@ var (
 	// writes have finished.
 	logger fallbacklog.Slot
 
-	panicHook atomic.Pointer[func(any) bool]
+	panicHook atomic.Pointer[func(context.Context, any) bool]
 )
 
 // SetLogger sets the package-level logger recovered panics and GoCtx
@@ -71,28 +71,33 @@ func GetLogger() contract.Logger {
 // as it does with no hook. GoWithLogger logs to the logger it was given,
 // and a GoWithRecover or GoWithRecoverE recover function runs, with a hook
 // or without.
-func SetPanicHook(hook func(any)) {
+//
+// The hook receives the context of the work that panicked: the ctx given to
+// GoCtx or RunWithContext, and context.Background for the helpers that
+// take none, so a report can carry the request, trace and span ids.
+func SetPanicHook(hook func(ctx context.Context, p any)) {
 	if hook == nil {
 		panicHook.Store(nil)
 		return
 	}
-	safe := func(p any) (took bool) {
+	safe := func(ctx context.Context, p any) (took bool) {
 		defer func() {
 			if recover() != nil {
 				took = false
 			}
 		}()
-		hook(p)
+		hook(ctx, p)
 		return true
 	}
 	panicHook.Store(&safe)
 }
 
-// runPanicHook runs the installed panic hook, if any, and reports whether
-// it took the panic over: it ran and returned normally.
-func runPanicHook(p any) bool {
+// runPanicHook runs the installed panic hook, if any, with ctx, the
+// context of the work that panicked, and reports whether it took the panic
+// over: it ran and returned normally.
+func runPanicHook(ctx context.Context, p any) bool {
 	if h := panicHook.Load(); h != nil && *h != nil {
-		return (*h)(p)
+		return (*h)(ctx, p)
 	}
 	return false
 }
@@ -118,9 +123,10 @@ func logRecoveredPanic(l contract.Logger, p any, kvs ...any) {
 }
 
 // handlePanic handles panics in goroutines: the installed panic hook takes
-// the panic over, or the package logs it.
-func handlePanic(p any) {
-	if runPanicHook(p) {
+// the panic over, given ctx, the context of the work that panicked, or the
+// package logs it.
+func handlePanic(ctx context.Context, p any) {
+	if runPanicHook(ctx, p) {
 		return
 	}
 	logRecoveredPanic(nil, p)
@@ -133,7 +139,7 @@ func Run[T any](fn func() T) *Result[T] {
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
-				handlePanic(p)
+				handlePanic(context.Background(), p)
 				r.fail(panicerr.FromRecovered(p))
 			}
 		}()
@@ -152,7 +158,7 @@ func RunWithTimeout[T any](timeout time.Duration, fn func() T) *Result[T] {
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
-				handlePanic(p)
+				handlePanic(context.Background(), p)
 				r.fail(panicerr.FromRecovered(p))
 			}
 		}()
@@ -165,7 +171,7 @@ func RunWithTimeout[T any](timeout time.Duration, fn func() T) *Result[T] {
 		go func() {
 			defer func() {
 				if p := recover(); p != nil {
-					handlePanic(p)
+					handlePanic(context.Background(), p)
 					panicCh <- panicerr.FromRecovered(p)
 				}
 			}()
@@ -202,7 +208,7 @@ func RunWithContext[T any](ctx context.Context, fn func() T) *Result[T] {
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
-				handlePanic(p)
+				handlePanic(ctx, p)
 				r.fail(panicerr.FromRecovered(p))
 			}
 		}()
@@ -214,7 +220,7 @@ func RunWithContext[T any](ctx context.Context, fn func() T) *Result[T] {
 		go func() {
 			defer func() {
 				if p := recover(); p != nil {
-					handlePanic(p)
+					handlePanic(ctx, p)
 					panicCh <- panicerr.FromRecovered(p)
 				}
 			}()
@@ -239,7 +245,7 @@ func Go(fn func()) {
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
-				handlePanic(p)
+				handlePanic(context.Background(), p)
 			}
 		}()
 		fn()
@@ -261,14 +267,14 @@ func GoCtx(ctx context.Context, fn func(ctx context.Context)) {
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
-				handlePanic(p)
+				handlePanic(ctx, p)
 			}
 		}()
 		done := make(chan struct{})
 		go func() {
 			defer func() {
 				if p := recover(); p != nil {
-					handlePanic(p)
+					handlePanic(ctx, p)
 				}
 				close(done)
 			}()
@@ -303,14 +309,14 @@ func GoWithRecover(fn func(), recoverFn func(any)) {
 					func() {
 						defer func() {
 							if p2 := recover(); p2 != nil {
-								handlePanic(p2)
+								handlePanic(context.Background(), p2)
 							}
 						}()
 						recoverFn(p)
 					}()
-					runPanicHook(p)
+					runPanicHook(context.Background(), p)
 				} else {
-					handlePanic(p)
+					handlePanic(context.Background(), p)
 				}
 			}
 		}()
@@ -329,14 +335,14 @@ func GoWithRecoverE(fn func(), recoverFn func(*PanicError)) {
 					func() {
 						defer func() {
 							if p2 := recover(); p2 != nil {
-								handlePanic(p2)
+								handlePanic(context.Background(), p2)
 							}
 						}()
 						recoverFn(panicerr.New(p))
 					}()
-					runPanicHook(p)
+					runPanicHook(context.Background(), p)
 				} else {
-					handlePanic(p)
+					handlePanic(context.Background(), p)
 				}
 			}
 		}()
@@ -353,7 +359,7 @@ func GoWithLogger(l contract.Logger, name string, fn func()) {
 		defer func() {
 			if p := recover(); p != nil {
 				logRecoveredPanic(l, p, "name", name)
-				runPanicHook(p)
+				runPanicHook(context.Background(), p)
 			}
 		}()
 		fn()

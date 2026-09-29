@@ -401,15 +401,17 @@ func wirePanicHook(a *App, h contract.ErrorHandler) {
 // buildPanicHook returns the async panic hook for h: it reports a panic
 // recovered in a background goroutine to h.Report as a recovered panic
 // (the error carries the contract.RecoveredPanic facet) with the stack of
-// the goroutine that panicked, under contract.ErrorSourceGoroutine. The
+// the goroutine that panicked, under contract.ErrorSourceGoroutine, with
+// the request, trace and span ids of ctx, the context the helper ran the
+// work under (context.Background for the helpers that take none). The
 // hook runs inside the recovering goroutine's deferred recover, so the
 // stack is the panic site's. It returns nil when h is nil.
-func buildPanicHook(h contract.ErrorHandler) func(any) {
+func buildPanicHook(h contract.ErrorHandler) func(context.Context, any) {
 	if h == nil {
 		return nil
 	}
-	return func(p any) {
-		exCtx := backgroundErrorContext(context.Background(), contract.ErrorSourceGoroutine)
+	return func(ctx context.Context, p any) {
+		exCtx := backgroundErrorContext(ctx, contract.ErrorSourceGoroutine)
 		exCtx.Recovered = true
 		exCtx.PanicStack = string(debug.Stack())
 		h.Report(async.FromRecovered(p), exCtx)
