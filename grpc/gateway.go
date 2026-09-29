@@ -654,7 +654,9 @@ func (g *Gateway) Start() error {
 	return g.StartWithContext(ctx)
 }
 
-// StartWithContext builds and starts the HTTP gateway with a context.
+// StartWithContext builds and starts the HTTP gateway with a context. A
+// gateway a stop has ended does not start again: it returns
+// http.ErrServerClosed, as does StartAsyncWithContext.
 func (g *Gateway) StartWithContext(ctx context.Context) error {
 	if err := g.Build(ctx); err != nil {
 		return err
@@ -664,6 +666,11 @@ func (g *Gateway) StartWithContext(ctx context.Context) error {
 	if g.running {
 		g.mu.Unlock()
 		return ErrServerAlreadyRunning
+	}
+	if g.drained != nil {
+		// A stop ended this gateway; net/http cannot serve it again.
+		g.mu.Unlock()
+		return http.ErrServerClosed
 	}
 	g.running = true
 	g.mu.Unlock()
@@ -689,6 +696,11 @@ func (g *Gateway) StartAsyncWithContext(ctx context.Context) error {
 	if g.running {
 		g.mu.Unlock()
 		return ErrServerAlreadyRunning
+	}
+	if g.drained != nil {
+		// A stop ended this gateway; net/http cannot serve it again.
+		g.mu.Unlock()
+		return http.ErrServerClosed
 	}
 	g.running = true
 	g.mu.Unlock()
