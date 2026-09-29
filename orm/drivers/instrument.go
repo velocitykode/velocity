@@ -167,10 +167,15 @@ func (b *observerBinding) record(obs StatementObserver, ev StatementEvent, argCo
 	b.log(ev, argCount)
 }
 
+// unknownArgCount is the argument count of a statement whose count cannot
+// be attributed to it (a failed prepare): its line leaves arg_count out.
+const unknownArgCount = -1
+
 // log writes at most one line for a statement: a warn line when it is slow,
 // otherwise a debug line when query logging is on. The line carries the
-// connection, the statement text, the argument count, the duration and the
-// request, trace and span ids of the statement's context. It never carries
+// connection, the statement text, the argument count (left out for a
+// failed prepare, see unknownArgCount), the duration and the request,
+// trace and span ids of the statement's context. It never carries
 // an argument value, nor a failure's error text, which drivers fill with
 // the offending value (a duplicate key, a rejected input).
 func (b *observerBinding) log(ev StatementEvent, argCount int) {
@@ -192,12 +197,21 @@ func (b *observerBinding) log(ev StatementEvent, argCount int) {
 	} else {
 		level = l.Debug
 	}
-	kvs := append(trace.LogFields(ev.Context),
-		"connection", ev.Connection,
-		"query", ev.SQL,
-		"arg_count", argCount,
-		latency.Key, latency.Millis(ev.Duration),
-	)
+	var kvs []any
+	if argCount == unknownArgCount {
+		kvs = append(trace.LogFields(ev.Context),
+			"connection", ev.Connection,
+			"query", ev.SQL,
+			latency.Key, latency.Millis(ev.Duration),
+		)
+	} else {
+		kvs = append(trace.LogFields(ev.Context),
+			"connection", ev.Connection,
+			"query", ev.SQL,
+			"arg_count", argCount,
+			latency.Key, latency.Millis(ev.Duration),
+		)
+	}
 	if ev.Err == nil {
 		kvs = append(kvs, "rows", ev.RowsAffected)
 	}
@@ -309,42 +323,6 @@ func (c *instrumentedConnector) Close() error {
 type instrumentedConn struct {
 	inner   driver.Conn
 	binding *observerBinding
-	// skipped is the statement ExecContext or QueryContext last declined
-	// with driver.ErrSkip. database/sql answers a decline by preparing the
-	// same query on the same connection, so the prepare that follows takes
-	// the argument count from here: a failing prepare is that statement's
-	// failure. database/sql uses a connection from one goroutine at a time,
-	// so the field needs no lock.
-	skipped skippedStatement
-}
-
-// skippedStatement is a statement the connection declined to run directly.
-type skippedStatement struct {
-	query    string
-	argCount int
-	set      bool
-}
-
-// noteSkip remembers a statement the connection declined with
-// driver.ErrSkip, which database/sql compares by identity before it falls
-// back to preparing, and forgets any earlier one otherwise.
-func (c *instrumentedConn) noteSkip(query string, argCount int, err error) {
-	if err == driver.ErrSkip { // database/sql tests ErrSkip by identity, not errors.Is
-		c.skipped = skippedStatement{query: query, argCount: argCount, set: true}
-		return
-	}
-	c.skipped = skippedStatement{}
-}
-
-// takeSkipped returns the argument count of the declined statement a
-// prepare of query follows, zero for any other prepare, and forgets it.
-func (c *instrumentedConn) takeSkipped(query string) int {
-	s := c.skipped
-	c.skipped = skippedStatement{}
-	if s.set && s.query == query {
-		return s.argCount
-	}
-	return 0
 }
 
 var (
@@ -390,8 +368,12 @@ func (c *instrumentedConn) PrepareContext(ctx context.Context, query string) (dr
 // database/sql prepared it after the connection declined to run it
 // directly. A prepare that succeeds records nothing; the statement's
 // execution does.
+//
+// Its line leaves arg_count out (unknownArgCount): a prepare carries no
+// arguments, and the operation it serves cannot be told from here, since
+// database/sql releases the connection between a declined execution and
+// its fallback prepare, so another operation's prepare can run in between.
 func (c *instrumentedConn) prepare(ctx context.Context, query string, prepareInner func() (driver.Stmt, error)) (driver.Stmt, error) {
-	argCount := c.takeSkipped(query)
 	obs := c.binding.active()
 	if obs == nil && !c.binding.logging() {
 		inner, err := prepareInner()
@@ -403,7 +385,7 @@ func (c *instrumentedConn) prepare(ctx context.Context, query string, prepareInn
 	start := time.Now()
 	inner, err := prepareInner()
 	if err != nil {
-		reportFailure(c.binding, obs, ctx, query, argCount, start, err)
+		reportFailure(c.binding, obs, ctx, query, unknownArgCount, start, err)
 		return nil, err
 	}
 	return newInstrumentedStmt(inner, c, query), nil
@@ -481,13 +463,10 @@ func (c *instrumentedConn) Ping(ctx context.Context) error {
 func (c *instrumentedConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	obs := c.binding.active()
 	if obs == nil && !c.binding.logging() {
-		rows, err := c.queryInner(ctx, query, args)
-		c.noteSkip(query, len(args), err)
-		return rows, err
+		return c.queryInner(ctx, query, args)
 	}
 	start := time.Now()
 	rows, err := c.queryInner(ctx, query, args)
-	c.noteSkip(query, len(args), err)
 	if err != nil {
 		reportFailure(c.binding, obs, ctx, query, len(args), start, err)
 		return nil, err
@@ -522,13 +501,10 @@ func (c *instrumentedConn) queryInner(ctx context.Context, query string, args []
 func (c *instrumentedConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	obs := c.binding.active()
 	if obs == nil && !c.binding.logging() {
-		res, err := c.execInner(ctx, query, args)
-		c.noteSkip(query, len(args), err)
-		return res, err
+		return c.execInner(ctx, query, args)
 	}
 	start := time.Now()
 	res, err := c.execInner(ctx, query, args)
-	c.noteSkip(query, len(args), err)
 	if err != nil {
 		reportFailure(c.binding, obs, ctx, query, len(args), start, err)
 		return nil, err

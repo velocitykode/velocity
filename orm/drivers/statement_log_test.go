@@ -61,12 +61,18 @@ func connectStatementSQLite(t *testing.T, logQueries bool, slow time.Duration) (
 
 // kv returns the value logged under key, or nil.
 func kv(kvs []any, key string) any {
+	v, _ := kvOK(kvs, key)
+	return v
+}
+
+// kvOK returns key's value and whether the pairs carry key at all.
+func kvOK(kvs []any, key string) (any, bool) {
 	for i := 0; i+1 < len(kvs); i += 2 {
 		if kvs[i] == key {
-			return kvs[i+1]
+			return kvs[i+1], true
 		}
 	}
-	return nil
+	return nil, false
 }
 
 // assertNoValues fails when any entry's message or key-value carries one

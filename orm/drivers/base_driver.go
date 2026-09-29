@@ -43,7 +43,8 @@ type queryLoggerHolder struct{ contract.Logger }
 //     "velocity/orm: query executed" or "velocity/orm: query failed".
 //
 // Each line carries the connection, the statement text, its argument count
-// (arg_count), its duration (duration_ms), the rows it affected or read
+// (arg_count; left out for a failed prepare, whose operation cannot be
+// told), its duration (duration_ms), the rows it affected or read
 // (completed statements only) and the request, trace and span ids of its
 // context. A failure's error text is left out, because drivers echo the
 // offending value in it. Nil restores the default, the framework's

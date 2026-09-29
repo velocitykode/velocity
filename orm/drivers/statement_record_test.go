@@ -155,7 +155,7 @@ func openScripted(t *testing.T, s *script) (*sql.DB, *observerBinding, *statemen
 
 // assertOneFailure fails unless exactly one failed statement was recorded
 // for query, with want as its error, and one "query failed" line carrying
-// argCount.
+// argCount, or no arg_count at all when argCount is -1.
 func assertOneFailure(t *testing.T, rec *statementRecorder, log *queryLog, query string, want error, argCount int) {
 	t.Helper()
 	evs := rec.all()
@@ -169,7 +169,9 @@ func assertOneFailure(t *testing.T, rec *statementRecorder, log *queryLog, query
 	if len(lines) != 1 || lines[0].msg != "velocity/orm: query failed" {
 		t.Fatalf("lines = %+v, want one %q line", lines, "velocity/orm: query failed")
 	}
-	if got := kv(lines[0].kvs, "arg_count"); got != argCount {
+	if got, ok := kvOK(lines[0].kvs, "arg_count"); argCount < 0 && ok {
+		t.Errorf("arg_count = %v, want none: the prepare's operation is unknown", got)
+	} else if argCount >= 0 && got != argCount {
 		t.Errorf("arg_count = %v, want %d", got, argCount)
 	}
 	if got := kv(lines[0].kvs, "query"); got != query {
@@ -180,7 +182,8 @@ func assertOneFailure(t *testing.T, rec *statementRecorder, log *queryLog, query
 // A connection that declines direct execution (driver.ErrSkip) sends
 // database/sql down the prepared path; a prepare that then fails is the
 // statement's failure and is recorded once, through the one statement
-// exit, with the argument count the caller bound.
+// exit. Its line leaves arg_count out: the prepare cannot be tied to the
+// operation it serves (see TestPrepareFailure_TakesNoArgCountFromAnotherOperation).
 func TestPrepareFailureAfterSkip_IsRecordedOnce(t *testing.T) {
 	prepErr := errors.New("Error 1146 (42S02): Table 'app.missing' doesn't exist")
 	const query = "SELECT n FROM missing WHERE a = ? AND b = ?"
@@ -201,14 +204,13 @@ func TestPrepareFailureAfterSkip_IsRecordedOnce(t *testing.T) {
 				if !errors.Is(err, prepErr) {
 					t.Fatalf("%s error = %v, want the prepare failure", route, err)
 				}
-				assertOneFailure(t, rec, log, query, prepErr, 2)
+				assertOneFailure(t, rec, log, query, prepErr, -1)
 			})
 		}
 	}
 }
 
-// An explicit prepare that fails is recorded once too, with no bound
-// arguments; a prepare that succeeds is silent until the statement runs.
+// An explicit prepare that fails is recorded once too, with no arg_count; a prepare that succeeds is silent until the statement runs.
 func TestExplicitPrepare_FailureRecordedSuccessSilent(t *testing.T) {
 	prepErr := errors.New("syntax error at or near \"SELEC\"")
 	t.Run("failure", func(t *testing.T) {
@@ -216,7 +218,7 @@ func TestExplicitPrepare_FailureRecordedSuccessSilent(t *testing.T) {
 		if _, err := db.PrepareContext(context.Background(), "SELEC 1"); !errors.Is(err, prepErr) {
 			t.Fatalf("prepare error = %v, want the prepare failure", err)
 		}
-		assertOneFailure(t, rec, log, "SELEC 1", prepErr, 0)
+		assertOneFailure(t, rec, log, "SELEC 1", prepErr, -1)
 	})
 	t.Run("success", func(t *testing.T) {
 		db, _, rec, log := openScripted(t, &script{})
@@ -246,7 +248,7 @@ func TestInstrumentedConnPrepare_FailureRecordedOnce(t *testing.T) {
 			if _, err := c.Prepare("SELECT 1"); !errors.Is(err, prepErr) {
 				t.Fatalf("Prepare error = %v, want the prepare failure", err)
 			}
-			assertOneFailure(t, rec, log, "SELECT 1", prepErr, 0)
+			assertOneFailure(t, rec, log, "SELECT 1", prepErr, -1)
 		})
 	}
 }
@@ -300,32 +302,6 @@ func TestNextResultSetEOF_IsASuccess(t *testing.T) {
 	}
 }
 
-// A declined statement lends its argument count only to the prepare of the
-// same query that follows it, and only once.
-func TestInstrumentedConnSkipped_MatchesOnlyTheNextPrepareOfItsQuery(t *testing.T) {
-	c := &instrumentedConn{}
-	c.noteSkip("SELECT ?", 1, driver.ErrSkip)
-	if got := c.takeSkipped("SELECT 2"); got != 0 {
-		t.Errorf("other query: arg count = %d, want 0", got)
-	}
-	if got := c.takeSkipped("SELECT ?"); got != 0 {
-		t.Errorf("after a take: arg count = %d, want 0 (forgotten)", got)
-	}
-	c.noteSkip("SELECT ?", 1, driver.ErrSkip)
-	c.noteSkip("SELECT ?", 1, nil)
-	if got := c.takeSkipped("SELECT ?"); got != 0 {
-		t.Errorf("after a statement that ran: arg count = %d, want 0", got)
-	}
-	c.noteSkip("SELECT ?, ?", 2, driver.ErrSkip)
-	if got := c.takeSkipped("SELECT ?, ?"); got != 2 {
-		t.Errorf("declined then prepared: arg count = %d, want 2", got)
-	}
-	var zero instrumentedConn
-	if got := zero.takeSkipped(""); got != 0 {
-		t.Errorf("zero conn: arg count = %d, want 0", got)
-	}
-}
-
 // ConnectionConfig.Logger is the query logger from the first statement the
 // driver runs while it connects; nil keeps a logger installed earlier.
 func TestConnectionConfigLogger_TakesTheConnectStatements(t *testing.T) {
@@ -358,4 +334,32 @@ func TestConnectionConfigLogger_TakesTheConnectStatements(t *testing.T) {
 			t.Errorf("lines = %+v, want the two PRAGMA lines", log.all())
 		}
 	})
+}
+
+// A prepare cannot be tied to the operation it serves: database/sql runs a
+// declined statement's fallback prepare under a second hold of the
+// connection, and another operation on the same *sql.Conn can run its own
+// prepare of the same query in between (sql.go execDC, then
+// ctxDriverPrepare). So a failed prepare's line leaves arg_count out rather
+// than borrow the count of whichever statement the connection last
+// declined.
+func TestPrepareFailure_TakesNoArgCountFromAnotherOperation(t *testing.T) {
+	prepErr := errors.New("prepare refused")
+	const query = "SELECT n FROM t WHERE a = ? AND b = ?"
+	_, binding, rec, log := openScripted(t, &script{skipDirect: true, prepareErr: prepErr})
+	inner, err := scriptDriver{}.Open(t.Name())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	c := &instrumentedConn{inner: inner, binding: binding}
+	args := []driver.NamedValue{{Ordinal: 1, Value: "hunter2"}, {Ordinal: 2, Value: int64(7)}}
+	// Operation A: declined with two arguments; its prepare has not run.
+	if _, err := c.ExecContext(context.Background(), query, args); err != driver.ErrSkip {
+		t.Fatalf("A exec error = %v, want driver.ErrSkip", err)
+	}
+	// Operation B: an explicit prepare of the same query, which fails.
+	if _, err := c.PrepareContext(context.Background(), query); !errors.Is(err, prepErr) {
+		t.Fatalf("B prepare error = %v, want the prepare failure", err)
+	}
+	assertOneFailure(t, rec, log, query, prepErr, -1)
 }
