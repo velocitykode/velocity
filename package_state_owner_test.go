@@ -12,6 +12,7 @@ import (
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 	"github.com/velocitykode/velocity/log"
@@ -289,4 +290,54 @@ func TestShutdown_LateWriteThroughTheOldPackageLoggerDoesNotReopenTheLogFile(t *
 		entries, _ := os.ReadDir(dir)
 		t.Fatalf("log dir after a write past Shutdown: %v entries (err %v), want none: the file was reopened", len(entries), err)
 	}
+}
+
+// The detached-failure recorder is per app (installed on each app's own
+// dispatcher), so shutting one app down, older or newer, leaves the other
+// app counting and hooking its own detached listener failures.
+func TestDetachedFailureRecorder_SurvivesTheOtherAppsShutdown(t *testing.T) {
+	type recApp struct {
+		app  *App
+		hook *hookRecorder
+	}
+	newApp := func() recApp {
+		rec := &hookRecorder{}
+		a, _ := newLoggerWiringApp(t, nil, WithFailedEventHook(rec.hook))
+		a.Services.Events.Listen(events.OfType[*widgetSynced](), listenerFunc(func(context.Context, any) error {
+			return errors.New("detached listener failed")
+		}))
+		return recApp{app: a, hook: rec}
+	}
+	fire := func(t *testing.T, live, gone recApp) {
+		t.Helper()
+		count, calls, goneCalls := live.app.FailedEventCount(), live.hook.calls(), gone.hook.calls()
+		if err := live.app.Services.Events.DispatchAsync(context.Background(), &widgetSynced{ID: 1}); err != nil {
+			t.Fatalf("DispatchAsync: %v", err)
+		}
+		testsync.Eventually(t, func() bool { return live.hook.calls() > calls }, 2*time.Second, "live app hooked its detached failure")
+		time.Sleep(20 * time.Millisecond)
+		if got := live.app.FailedEventCount() - count; got != 1 {
+			t.Errorf("live app FailedEventCount grew by %d, want 1", got)
+		}
+		if got := live.hook.calls() - calls; got != 1 {
+			t.Errorf("live app hook calls grew by %d, want 1", got)
+		}
+		if got := gone.hook.calls() - goneCalls; got != 0 {
+			t.Errorf("shut-down app hook calls grew by %d, want 0", got)
+		}
+	}
+	t.Run("older app shut down", func(t *testing.T) {
+		a, b := newApp(), newApp()
+		if err := a.app.Shutdown(context.Background()); err != nil {
+			t.Fatalf("Shutdown A: %v", err)
+		}
+		fire(t, b, a)
+	})
+	t.Run("newer app shut down", func(t *testing.T) {
+		a, b := newApp(), newApp()
+		if err := b.app.Shutdown(context.Background()); err != nil {
+			t.Fatalf("Shutdown B: %v", err)
+		}
+		fire(t, a, b)
+	})
 }
