@@ -15,6 +15,8 @@ import (
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/internal/eventqueue"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/scheduler"
@@ -27,7 +29,11 @@ import (
 // result is sticky: after a successful run subsequent calls return nil, and
 // after a failed run they return the same error (a partially-completed
 // bootstrap is never re-run, because modules, middleware and routes
-// registered before the failure would be registered twice).
+// registered before the failure would be registered twice). A callback
+// that panics (a module, or a Middleware, Routes, Events, Schedule,
+// Commands, Seeders or Errors callback) still panics out of the call that
+// ran it, and the recovered panic is the sticky result: later calls, and
+// Serve, return it instead of reporting a bootstrap that never finished.
 func (a *App) Bootstrap() error {
 	return a.bootstrap()
 }
@@ -37,6 +43,12 @@ func (a *App) bootstrap() error {
 		return a.bootstrapErr
 	}
 	a.bootstrapped = true
+	defer func() {
+		if p := recover(); p != nil {
+			a.bootstrapErr = fmt.Errorf("velocity: bootstrap panicked: %w", panicerr.FromRecovered(p))
+			panic(p)
+		}
+	}()
 	a.bootstrapErr = a.runBootstrap()
 	return a.bootstrapErr
 }
@@ -137,7 +149,9 @@ func (a *App) runBootstrap() error {
 			}
 		}
 		if a.eventsFn != nil || hasModuleEvents {
-			a.Log.Warn("events are disabled via WithoutEvents; skipping event listener registration callbacks")
+			fallbacklog.Write(a.Log, func(l contract.Logger) {
+				l.Warn("events are disabled via WithoutEvents; skipping event listener registration callbacks")
+			})
 		}
 	}
 	// Lifecycle boundary: the Middleware, Routes and Events callbacks may
