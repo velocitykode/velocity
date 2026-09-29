@@ -73,29 +73,32 @@ func (SoftDeleteUUIDModel[T]) UpdateOrCreate(ctx context.Context, conditions map
 
 // --- internal helpers ---
 
-// firstOrCreate is the static-helper entry. It resolves the driver
-// from the package default Manager and delegates to the driver-bound
+// firstOrCreate is the static-helper entry. It resolves the package
+// default Manager once, takes both the driver and the hook logger from
+// it, and delegates to the driver-bound
 // implementation so Query[T].FirstOrCreate (tx-aware) shares the same
 // logic. ctx threads through so a tx slot in ctx enrolls the entire
 // round trip in the caller's transaction.
 func firstOrCreate[T any](ctx context.Context, conditions map[string]any, values map[string]any) (*T, error) {
-	drv, err := defaultDriverOrErr("firstOrCreate")
+	m, drv, err := defaultManagerDriver("firstOrCreate")
 	if err != nil {
 		return nil, err
 	}
 	if tx, ok := TxFromContext(ctx); ok {
 		drv = &txDriver{Driver: drv, tx: tx}
 	}
-	ctx = withModelHookLogger[T](ctx, Default())
-	return firstOrCreateWithDriver[T](ctx, drv, conditions, values)
+	ctx = withModelHookLogger[T](ctx, m)
+	return firstOrCreateWithDriver[T](ctx, m, drv, conditions, values)
 }
 
 // firstOrCreateWithDriver finds a row matching conditions and returns
 // it; on no-row, it merges conditions+values, persists a new row, and
-// returns that. drv is used for both the lookup query and the Save so
+// returns that. m is the manager drv belongs to (nil for a detached
+// builder); the lookup query carries it rather than re-reading the
+// package default. drv is used for both the lookup query and the Save so
 // callers (notably the tx-aware Query[T].FirstOrCreate) keep the
 // entire round trip on a single connection.
-func firstOrCreateWithDriver[T any](ctx context.Context, drv drivers.Driver, conditions map[string]any, values map[string]any) (*T, error) {
+func firstOrCreateWithDriver[T any](ctx context.Context, m *Manager, drv drivers.Driver, conditions map[string]any, values map[string]any) (*T, error) {
 	for key := range conditions {
 		if err := validateIdentifier(key); err != nil {
 			return nil, fmt.Errorf("velocity/orm: firstOrCreate: %w", err)
@@ -111,7 +114,7 @@ func firstOrCreateWithDriver[T any](ctx context.Context, drv drivers.Driver, con
 	}
 
 	q := newQuery[T]()
-	q.driver = drv
+	q.driver, q.mgr = drv, m
 	for field, value := range conditions {
 		q = q.Where(field+" = ?", value)
 	}
@@ -138,21 +141,21 @@ func firstOrCreateWithDriver[T any](ctx context.Context, drv drivers.Driver, con
 
 // updateOrCreate is the static-helper entry. See firstOrCreate.
 func updateOrCreate[T any](ctx context.Context, conditions map[string]any, values map[string]any) (*T, error) {
-	drv, err := defaultDriverOrErr("updateOrCreate")
+	m, drv, err := defaultManagerDriver("updateOrCreate")
 	if err != nil {
 		return nil, err
 	}
 	if tx, ok := TxFromContext(ctx); ok {
 		drv = &txDriver{Driver: drv, tx: tx}
 	}
-	ctx = withModelHookLogger[T](ctx, Default())
-	return updateOrCreateWithDriver[T](ctx, drv, conditions, values)
+	ctx = withModelHookLogger[T](ctx, m)
+	return updateOrCreateWithDriver[T](ctx, m, drv, conditions, values)
 }
 
 // updateOrCreateWithDriver runs the lookup, update-on-hit / insert-on-miss
 // flow against drv. ctx threads through so a tx slot in ctx enrolls the
 // entire round trip in the caller's transaction.
-func updateOrCreateWithDriver[T any](ctx context.Context, drv drivers.Driver, conditions map[string]any, values map[string]any) (*T, error) {
+func updateOrCreateWithDriver[T any](ctx context.Context, m *Manager, drv drivers.Driver, conditions map[string]any, values map[string]any) (*T, error) {
 	for key := range conditions {
 		if err := validateIdentifier(key); err != nil {
 			return nil, fmt.Errorf("velocity/orm: updateOrCreate: %w", err)
@@ -168,7 +171,7 @@ func updateOrCreateWithDriver[T any](ctx context.Context, drv drivers.Driver, co
 	}
 
 	q := newQuery[T]()
-	q.driver = drv
+	q.driver, q.mgr = drv, m
 	for field, value := range conditions {
 		q = q.Where(field+" = ?", value)
 	}
@@ -203,19 +206,21 @@ func updateOrCreateWithDriver[T any](ctx context.Context, drv drivers.Driver, co
 	return model, nil
 }
 
-// defaultDriverOrErr resolves the package default Manager's driver,
-// returning a uniform error for the static-helper call sites so the
-// caller-facing message identifies which helper failed.
-func defaultDriverOrErr(op string) (drivers.Driver, error) {
+// defaultManagerDriver resolves the package default Manager once and
+// returns it with its driver, so a static helper writes through and logs
+// to the same manager even when the default changes while it runs. The
+// error is uniform for the static-helper call sites so the caller-facing
+// message identifies which helper failed.
+func defaultManagerDriver(op string) (*Manager, drivers.Driver, error) {
 	m := Default()
 	if m == nil {
-		return nil, fmt.Errorf("velocity/orm: %s: no default manager set", op)
+		return nil, nil, fmt.Errorf("velocity/orm: %s: no default manager set", op)
 	}
 	drv, err := m.liveDriver()
 	if err != nil {
-		return nil, fmt.Errorf("velocity/orm: %s: %w", op, err)
+		return nil, nil, fmt.Errorf("velocity/orm: %s: %w", op, err)
 	}
-	return drv, nil
+	return m, drv, nil
 }
 
 // markExisting sets the IsExisting flag for model via the side-channel

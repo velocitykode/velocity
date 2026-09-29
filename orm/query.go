@@ -1159,7 +1159,7 @@ func (q *Query[T]) FirstOrCreate(ctx context.Context, conditions map[string]any,
 		return nil, err
 	}
 	ctx = withModelHookLogger[T](ctx, q.mgr)
-	return firstOrCreateWithDriver[T](ctx, q.driver, conditions, values)
+	return firstOrCreateWithDriver[T](ctx, q.mgr, q.driver, conditions, values)
 }
 
 // UpdateOrCreate runs the idempotency-then-write pattern through the
@@ -1174,7 +1174,7 @@ func (q *Query[T]) UpdateOrCreate(ctx context.Context, conditions map[string]any
 		return nil, err
 	}
 	ctx = withModelHookLogger[T](ctx, q.mgr)
-	return updateOrCreateWithDriver[T](ctx, q.driver, conditions, values)
+	return updateOrCreateWithDriver[T](ctx, q.mgr, q.driver, conditions, values)
 }
 
 // Create inserts a new record through the query's bound driver. Takes
@@ -1272,8 +1272,14 @@ func (q *Query[T]) bindTxFromContextValue(ctx context.Context) error {
 		base = outer.Driver
 	}
 	if base == nil {
-		if m := Default(); m != nil {
-			base = m.DefaultDriver()
+		// A builder made before any default manager existed: adopt the
+		// current default once, for both the driver and the manager, so
+		// the statement and the manager's logger and liveness agree.
+		if q.mgr == nil {
+			q.mgr = Default()
+		}
+		if q.mgr != nil {
+			base = q.mgr.DefaultDriver()
 		}
 	}
 	if base != nil {
@@ -2394,8 +2400,14 @@ func (r *RawQuery[T]) bindTxFromContextValue(ctx context.Context) error {
 		base = outer.Driver
 	}
 	if base == nil {
-		if m := Default(); m != nil {
-			base = m.DefaultDriver()
+		// A builder made before any default manager existed: adopt the
+		// current default once, for both the driver and the manager, so
+		// the statement and the manager's logger and liveness agree.
+		if r.mgr == nil {
+			r.mgr = Default()
+		}
+		if r.mgr != nil {
+			base = r.mgr.DefaultDriver()
 		}
 	}
 	if base != nil {
