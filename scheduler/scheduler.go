@@ -723,19 +723,24 @@ func (s *Scheduler) runDueJobs() {
 		// overlap-lock and runWg counter are freed even if the framing
 		// panics outside Job.runInternal's own recovery.
 		go func(j *Job, jobName string, oneServerLock Lock, release func()) { //safe-goroutine: release() on panic frees overlap-lock + runWg, see comment above
+			// Recover any panic from the framing (starting the span,
+			// binding the logger, which runs redactors, logger.Debug) so
+			// the release path always runs. It is installed first, and
+			// releases before it logs, so a logger that panics while
+			// binding or writing cannot skip the release. Note:
+			// Job.runInternal's inner panics are already recovered by
+			// Job.Run itself.
+			var log contract.Logger
+			defer func() {
+				if r := recover(); r != nil {
+					release()
+					logRunPanic(s, log, jobName, r)
+				}
+			}()
 			// The run is a root span, started here so the run's lines
 			// and its events carry the same trace (see runInternal).
 			tctx := trace.StartSpan(context.Background(), trace.Parent{})
-			log := s.log().With(append([]any{"task_name", jobName}, trace.LogFields(tctx)...)...)
-			// Recover any panic from logger.Debug or other framing so
-			// the release path always runs. Note: Job.runInternal's
-			// inner panics are already recovered by Job.Run itself.
-			defer func() {
-				if r := recover(); r != nil {
-					log.Error("velocity/scheduler: run due jobs panic recovered", "error", panicerr.FromRecovered(r))
-					release()
-				}
-			}()
+			log = s.log().With(append([]any{"task_name", jobName}, trace.LogFields(tctx)...)...)
 			log.Debug("Running job")
 			// runInternal owns the release callback. For synchronous
 			// jobs it invokes release before returning. For
@@ -755,6 +760,26 @@ func (s *Scheduler) runDueJobs() {
 	for _, callback := range afterCallbacks {
 		runHookIsolated(onCallbackPanic, callback)
 	}
+}
+
+// logRunPanic writes the line for a panic recovered in a due task's run
+// framing: through log, the run's bound logger, or through the scheduler's
+// logger with the task name when binding it is what panicked. A logger
+// that panics while writing it is contained and the line goes to the
+// framework's standalone fallback logger instead.
+func logRunPanic(s *Scheduler, log contract.Logger, jobName string, r any) {
+	const msg = "velocity/scheduler: run due jobs panic recovered"
+	err := panicerr.FromRecovered(r)
+	defer func() {
+		if recover() != nil {
+			fallbacklog.Logger{}.Error(msg, "task_name", jobName, "error", err)
+		}
+	}()
+	if log == nil {
+		s.log().Error(msg, "task_name", jobName, "error", err)
+		return
+	}
+	log.Error(msg, "error", err)
 }
 
 // releaseLockSafely releases a scheduler Lock and contains any panic
