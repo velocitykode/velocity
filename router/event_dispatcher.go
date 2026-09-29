@@ -10,8 +10,8 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/internal/drain"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/goroutine"
-	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // ErrEventBufferFull is returned by an async dispatcher when the worker
@@ -137,10 +137,11 @@ func (r *VelocityRouterV2) stopPriorAsyncDispatcher() {
 func (r *VelocityRouterV2) startEventWorkers(stop *asyncEventStop, pool *asyncEventPool, workers int) {
 	for i := 0; i < workers; i++ {
 		stop.workers.Add(1)
-		// Not async.Go: each invocation is wrapped by safeInvokeListener,
-		// which already recovers per listener and hands failures to the
-		// router's failure policy (r.events.Fail). async.Go would log
-		// panics in addition but bypass the failure count.
+		// Not async.Go: each delivery goes through
+		// eventemit.DispatchContained, which recovers a panicking target,
+		// and its failure to the router's failure policy (r.events.Fail).
+		// async.Go would log panics in addition but bypass the failure
+		// count.
 		go func() {
 			defer stop.workers.Done()
 			id := goroutine.ID()
@@ -159,7 +160,7 @@ func (r *VelocityRouterV2) runEventWorker(ch <-chan asyncDispatchItem, pool *asy
 		if t == nil {
 			continue
 		}
-		safeInvokeListener(*t, item.ctx, item.event, r.events.Fail)
+		r.events.Fail(item.ctx, eventemit.DispatchContained(item.ctx, *t, item.event), item.event)
 	}
 }
 
@@ -282,23 +283,4 @@ func (r *VelocityRouterV2) ShutdownEventDispatcher(ctx context.Context) error {
 		return nil
 	}
 	return r.asyncStop.stop(ctx, true)
-}
-
-// safeInvokeListener executes a listener, recovering from panics. Listener
-// errors and panic-converted errors are reported via onErr if set.
-func safeInvokeListener(fn func(ctx context.Context, event interface{}) error, ctx context.Context, ev interface{}, onErr func(context.Context, error, interface{})) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	var err error
-	defer func() {
-		if p := recover(); p != nil {
-			// Listener panics must not kill the worker pool.
-			err = panicerr.FromRecovered(p)
-		}
-		if err != nil && onErr != nil {
-			onErr(ctx, err, ev)
-		}
-	}()
-	err = fn(ctx, ev)
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/hostile"
 )
@@ -23,7 +24,11 @@ func TestAsyncEventDispatcher_ListenerIsContained(t *testing.T) {
 			failures := &eventemit.Failures{}
 			r.ShareEventFailures(failures)
 			var failed, delivered atomic.Int64
-			failures.SetHook(func(error, any) { failed.Add(1) })
+			var lastErr atomic.Pointer[error]
+			failures.SetHook(func(err error, _ any) {
+				failed.Add(1)
+				lastErr.Store(&err)
+			})
 
 			code := hostile.New(t, mode, func() {
 				_ = r.events.Dispatcher()(context.Background(), "inner")
@@ -43,10 +48,17 @@ func TestAsyncEventDispatcher_ListenerIsContained(t *testing.T) {
 			switch mode {
 			case hostile.Panic:
 				waitUntil(t, func() bool { return failed.Load() == 1 }, "the listener's panic counted as a failed event")
+				var rp contract.RecoveredPanic
+				if p := lastErr.Load(); p == nil || !errors.As(*p, &rp) {
+					t.Errorf("the failure handed to the policy is not a contract.RecoveredPanic: %v", p)
+				}
 				if err := r.events.Dispatcher()(context.Background(), "next"); err != nil {
 					t.Fatalf("dispatch after the panic: %v", err)
 				}
 				waitUntil(t, func() bool { return delivered.Load() >= 1 }, "the worker delivering after the panic")
+				if n := failed.Load(); n != 1 {
+					t.Errorf("failed events = %d, want the one panic counted once", n)
+				}
 			case hostile.Block:
 				<-code.Entered()
 				hostile.Within(t, hostile.Deadline, func() {
