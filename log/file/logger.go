@@ -378,8 +378,7 @@ func (f *FileLogger) cleanup() {
 // write, through f or a logger With returned from it, never reopens the
 // file; a warning or error goes to the framework's standalone fallback
 // logger instead, and Debug and Info are dropped. A second Shutdown
-// returns nil. A logger With
-// returned owns no file and closes nothing.
+// returns nil. A logger With returned owns no file and closes nothing.
 func (f *FileLogger) Shutdown(ctx context.Context) error {
 	if f.base != nil {
 		return nil
