@@ -602,10 +602,9 @@ func (s *Server) beginBuild() (*buildPlan, error) {
 }
 
 // abortBuild ends the Build b without publishing a server (its listener
-// failed to bind, or its application code panicked): it releases a
-// listener b bound itself (a caller-supplied one stays the caller's, as
-// Stop would treat it on the next Build) and clears the Build in progress
-// so a later Build can run.
+// failed to bind, or its application code panicked): it closes a listener
+// b bound itself, leaves a caller-supplied one open for the next Build,
+// and clears the Build in progress so a later Build can run.
 func (s *Server) abortBuild(b *buildPlan) {
 	if b.listener != nil && b.listener != b.providedListener {
 		_ = b.listener.Close()
@@ -703,8 +702,9 @@ func (s *Server) StartAsync() error {
 // Stop stops the gRPC server immediately. It also releases a listener that was
 // bound by Build but never served (Build succeeded, Start was never called, or
 // the caller abandoned the server), so a built-but-unstarted server does not
-// leak its socket. It interrupts a GracefulStop in progress, which is how
-// Shutdown's deadline cuts a drain short.
+// leak its socket. During a GracefulStop it closes the connections the drain
+// still holds, which cancels their calls' contexts; once the drain waits
+// only on handlers, grpc-go holds Stop until they return.
 //
 // Stop changes the server's state under its lock and then stops grpc-go,
 // closes the listener and logs without it, so a call still in flight, a
@@ -755,9 +755,9 @@ type stopPlan struct {
 
 // beginStop records a stop under the lock and returns what to do after
 // it. A running server stops running; force (Stop) stops a server that
-// was served even when it no longer runs, so it interrupts a GracefulStop
-// in progress (grpc-go allows Stop during GracefulStop, and a repeated
-// Stop is a no-op). A built but never served server gives up its
+// was served even when it no longer runs, so it reaches a GracefulStop in
+// progress (grpc-go accepts Stop during GracefulStop, and a repeated Stop
+// is a no-op). A built but never served server gives up its
 // listener, and grpcServer is reset so it never outlives that listener,
 // or a later Build() early-returns and Start() panics on a nil listener.
 // It calls no application code.
