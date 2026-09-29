@@ -22,7 +22,7 @@ import (
 // prune horizon so the three drivers converge on one at-most-once
 // memory window. Keys are held this long (well past any callback's
 // execution window) so a stale reaper re-push after the original entry
-// was consumed cannot re-enqueue it; see popLocked.
+// was consumed cannot re-enqueue it; see popWrapper.
 const dedupeKeyRetention = 7 * 24 * time.Hour
 
 // dedupeSweepInterval is how often processDelayedJobs prunes stale
@@ -49,7 +49,7 @@ type MemoryDriver struct {
 	// pushed via PushIfNotExistsCtx, mapped to their insertion time.
 	// Implements DedupeAwarePusher: a PushIfNotExistsCtx whose key is
 	// already present returns nil without inserting. Entries are
-	// INTENTIONALLY retained past Pop (see popLocked) to close the C-03
+	// INTENTIONALLY retained past Pop (see popWrapper) to close the C-03
 	// fb4 re-push hole; they are removed only by Clear (queue-scoped) and
 	// by the background sweep in processDelayedJobs, which prunes entries
 	// older than dedupeKeyRetention (7 days) ONLY once they no longer
@@ -313,10 +313,25 @@ func (m *MemoryDriver) PopCtxWithTrace(ctx context.Context, queueName string) (J
 	if err := ctx.Err(); err != nil {
 		return nil, TraceContext{}, err
 	}
-	return m.popLocked(queueName)
+	wrapper, tc, err := m.popWrapper(queueName)
+	if err != nil || wrapper == nil {
+		return nil, tc, err
+	}
+	// Same-process pop: wrapper.Job is non-nil and is returned directly via
+	// the fast path inside getJobFromWrapper. A wrapper rebuilt from bytes
+	// runs the registered factory, user code, so this runs after the lock
+	// is released.
+	job, err := getJobFromWrapper(wrapper)
+	if err != nil {
+		return nil, tc, fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err)
+	}
+	return job, tc, nil
 }
 
-func (m *MemoryDriver) popLocked(queueName string) (Job, TraceContext, error) {
+// popWrapper removes the next wrapper from the queue under the lock and
+// returns it with the producer-side trace context. A nil wrapper and nil
+// error mean the queue is empty.
+func (m *MemoryDriver) popWrapper(queueName string) (*jobWrapper, TraceContext, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -351,15 +366,7 @@ func (m *MemoryDriver) popLocked(queueName string) (Job, TraceContext, error) {
 		tc.SpanID = wrapper.Payload.SpanID
 		tc.ParentID = wrapper.Payload.ParentID
 	}
-
-	// Same-process pop: wrapper.Job is non-nil and is returned directly via
-	// the fast path inside getJobFromWrapper. Error path covers wrappers
-	// rebuilt from bytes (defensive; the memory driver never produces those).
-	job, err := getJobFromWrapper(wrapper)
-	if err != nil {
-		return nil, tc, fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err)
-	}
-	return job, tc, nil
+	return wrapper, tc, nil
 }
 
 // PopCtxReserved leases the next available job for the worker. The
@@ -382,6 +389,27 @@ func (m *MemoryDriver) PopCtxReserved(ctx context.Context, queueName string) (Jo
 		return nil, ReservationToken{}, TraceContext{}, err
 	}
 
+	wrapper, token, tc, err := m.reserveNext(queueName)
+	if err != nil || wrapper == nil {
+		return nil, ReservationToken{}, tc, err
+	}
+	// Rebuilding the job may run the registered factory, user code, so it
+	// runs after the lock is released. A job that cannot be rebuilt is
+	// dropped with its reservation, and the error returned.
+	job, err := getJobFromWrapper(wrapper)
+	if err != nil {
+		m.mu.Lock()
+		delete(m.reservations, token.ID)
+		m.mu.Unlock()
+		return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err)
+	}
+	return job, token, tc, nil
+}
+
+// reserveNext removes the next wrapper from the queue under the lock,
+// increments its attempts and records its reservation. A nil wrapper and
+// nil error mean the queue is empty.
+func (m *MemoryDriver) reserveNext(queueName string) (*jobWrapper, ReservationToken, TraceContext, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -408,11 +436,6 @@ func (m *MemoryDriver) PopCtxReserved(ctx context.Context, queueName string) (Jo
 		wrapper.Payload.Attempts++
 	}
 
-	job, err := getJobFromWrapper(wrapper)
-	if err != nil {
-		return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err)
-	}
-
 	m.nextReservationID++
 	id := m.nextReservationID
 	m.reservations[id] = &memReservation{wrapper: wrapper, queue: queueName}
@@ -421,7 +444,7 @@ func (m *MemoryDriver) PopCtxReserved(ctx context.Context, queueName string) (Jo
 	if wrapper.Payload != nil {
 		attempts = wrapper.Payload.Attempts
 	}
-	return job, ReservationToken{ID: id, Attempts: attempts}, tc, nil
+	return wrapper, ReservationToken{ID: id, Attempts: attempts}, tc, nil
 }
 
 // AckCtx removes the reservation entry after the handler succeeded.
@@ -738,7 +761,7 @@ func (m *MemoryDriver) processDelayedJobs() {
 // sweepStaleDedupeKeys prunes dedupe keys whose insertion time is older
 // than dedupeKeyRetention AND that no longer belong to a live job. Without
 // this the set grows for the lifetime of the process: keys are
-// intentionally held past Pop (see popLocked) and released elsewhere only
+// intentionally held past Pop (see popWrapper) and released elsewhere only
 // by Clear. The `now` argument is a seam for deterministic tests. Runs
 // under m.mu, the same lock guarding the map.
 //
