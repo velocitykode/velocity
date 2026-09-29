@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/velocitykode/velocity/contract"
@@ -191,5 +192,48 @@ func TestTransactionWithOutbox_PanickingLoggerOnRollbackFailure(t *testing.T) {
 	}()
 	if err == nil {
 		t.Error("TransactionWithOutbox = nil, want the panic as an error")
+	}
+}
+
+// A dispatcher that panics on the transaction's events (TransactionExecuted
+// on commit, TxRecover for a callback panic) is contained by the manager's
+// emitter: the commit returns nil, every commit callback runs, and each
+// panicking dispatch is counted once.
+func TestTransaction_PanickingDispatcherOnCommitPaths(t *testing.T) {
+	fallbacklogtest.Capture(t)
+	m := newTestManager(t)
+	t.Cleanup(func() { _ = m.Shutdown(context.Background()) })
+	var dispatched atomic.Int32
+	m.SetEventDispatcher(func(_ context.Context, ev any) error {
+		switch ev.(type) {
+		case *TransactionExecuted, *TxRecover:
+			dispatched.Add(1)
+			panic("dispatcher boom")
+		}
+		return nil
+	})
+	ran := false
+	var err error
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				t.Fatalf("a dispatcher panic escaped the transaction: %v", p)
+			}
+		}()
+		ctx := PrepareTxCallbacks(context.Background())
+		err = m.Transaction(ctx, func(ctx context.Context) error {
+			_ = OnCommit(ctx, func(context.Context) error { panic("callback boom") })
+			_ = OnCommit(ctx, func(context.Context) error { ran = true; return nil })
+			return nil
+		})
+	}()
+	if err != nil {
+		t.Fatalf("Transaction: %v", err)
+	}
+	if !ran {
+		t.Error("the commit callback after the panicking one did not run")
+	}
+	if got, want := m.events.FailureCount(), uint64(dispatched.Load()); got != want || want != 2 {
+		t.Errorf("failures counted = %d for %d panicking dispatches, want 2 each", got, want)
 	}
 }
