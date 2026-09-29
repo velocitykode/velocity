@@ -150,9 +150,7 @@ func (op *gateOp) publish(refuseSealed bool) bool {
 		return false
 	}
 	h.transition += op.bumps
-	for _, e := range op.staged {
-		h.afterSave = append(h.afterSave, e)
-	}
+	h.afterSave = append(h.afterSave, op.staged...)
 	if op.bumps > 0 {
 		h.torn = false
 	}
