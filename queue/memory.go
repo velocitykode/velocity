@@ -227,9 +227,12 @@ func (m *MemoryDriver) warnIfNonIdentifiable(ctx context.Context, job Job) {
 	if _, loaded := m.nonIdentifiableWarned.LoadOrStore(typ, struct{}{}); loaded {
 		return
 	}
-	m.log().With(trace.LogFields(ctx)...).Warn("velocity/queue: job type does not implement Identifiable; MaxAttempts cannot be enforced reliably across process restarts. Implement queue.Identifiable.JobID() to fix.",
-		"job_type", typ,
-	)
+	fields := trace.LogFields(ctx)
+	fallbacklog.Write(m.log(), func(l contract.Logger) {
+		l.With(fields...).Warn("velocity/queue: job type does not implement Identifiable; MaxAttempts cannot be enforced reliably across process restarts. Implement queue.Identifiable.JobID() to fix.",
+			"job_type", typ,
+		)
+	})
 }
 
 // PushCtx adds a job to the queue. Honours ctx cancellation before the

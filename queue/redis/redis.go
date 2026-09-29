@@ -148,13 +148,13 @@ func isLoopbackHost(host string) bool {
 }
 
 // warnIfInsecure logs a startup warning through logger (the fallback
-// logger when nil) when the driver connects to a non-loopback host with TLS
+// logger when nil, or when a write through logger panics) when the driver connects to a non-loopback host with TLS
 // disabled or with no password.
 func warnIfInsecure(logger contract.Logger, host, password string, tlsEnabled bool) {
 	if isLoopbackHost(host) {
 		return
 	}
-	logger = fallbacklog.Resolve(logger)
+	logger = fallbacklog.Contain(fallbacklog.Resolve(logger))
 	if !tlsEnabled {
 		logger.Warn(
 			"velocity/queue: redis driver connecting to non-loopback host without TLS; traffic (including the password and job payloads) is sent in cleartext. Set REDIS_TLS=true or RedisConfig.TLS.",
@@ -196,9 +196,12 @@ func (r *RedisDriver) warnIfNonIdentifiable(ctx context.Context, job queue.Job) 
 	if _, loaded := r.nonIdentifiableWarned.LoadOrStore(typ, struct{}{}); loaded {
 		return
 	}
-	r.log().With(trace.LogFields(ctx)...).Warn("velocity/queue: job type does not implement Identifiable; MaxAttempts cannot be enforced reliably across redelivery. Implement queue.Identifiable.JobID() to fix.",
-		"job_type", typ,
-	)
+	fields := trace.LogFields(ctx)
+	fallbacklog.Write(r.log(), func(l contract.Logger) {
+		l.With(fields...).Warn("velocity/queue: job type does not implement Identifiable; MaxAttempts cannot be enforced reliably across redelivery. Implement queue.Identifiable.JobID() to fix.",
+			"job_type", typ,
+		)
+	})
 }
 
 func (r *RedisDriver) rememberPoppedAttempts(job queue.Job, attempts int) {
