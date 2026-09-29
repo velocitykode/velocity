@@ -74,7 +74,7 @@ func TestRules_QueryFailureLogsNoValueAndNoDriverText(t *testing.T) {
 					t.Errorf("line carries %q: %s", leak, line)
 				}
 			}
-			for _, want := range []string{"field email", "table users", "column email", "driver postgres", "error_kind *dbcheck.driverError"} {
+			for _, want := range []string{"field email", "table users", "column email", "driver postgres", "error_kind other"} {
 				if !strings.Contains(line, want) {
 					t.Errorf("line %q does not carry %q", line, want)
 				}
@@ -83,12 +83,13 @@ func TestRules_QueryFailureLogsNoValueAndNoDriverText(t *testing.T) {
 	}
 }
 
-// An error without a wrapped cause is classified by its own type.
+// An error that is neither a listed sentinel nor a listed driver error is
+// classified as other, never by its text or its type.
 func TestRules_QueryFailureClassifiesAPlainError(t *testing.T) {
 	logs := &kvLog{}
 	failing := func(string, ...interface{}) (int64, error) { return 0, errors.New("plain secret-value") }
 	_ = UniqueRule("sqlite", failing, logs)("email", "v", []string{"users"}, nil)
-	if len(logs.entries) != 1 || strings.Contains(logs.entries[0], "secret-value") || !strings.Contains(logs.entries[0], "error_kind *errors.errorString") {
-		t.Errorf("lines = %q, want one line classifying *errors.errorString without its text", logs.entries)
+	if len(logs.entries) != 1 || strings.Contains(logs.entries[0], "secret-value") || !strings.Contains(logs.entries[0], "error_kind other") {
+		t.Errorf("lines = %q, want one line classifying the error as other without its text", logs.entries)
 	}
 }

@@ -114,7 +114,7 @@ func TestTransaction_RollbackFailureLogsErrorKindsOnly(t *testing.T) {
 		if len(lines) != 1 {
 			t.Fatalf("rollback lines = %v, want 1", logs.entries)
 		}
-		assertKindOnly(t, lines[0], map[string]string{"error_kind": "sql.ErrTxDone", "original_error_kind": "*errors.errorString"})
+		assertKindOnly(t, lines[0], map[string]string{"error_kind": "sql.ErrTxDone", "original_error_kind": "other"})
 	})
 	t.Run("panic", func(t *testing.T) {
 		m := newTestManager(t)
@@ -151,7 +151,7 @@ func TestTransactionWithOutbox_RollbackFailureLogsErrorKindsOnly(t *testing.T) {
 		if len(lines) != 1 {
 			t.Fatalf("rollback lines = %v, want 1", logs.entries)
 		}
-		assertKindOnly(t, lines[0], map[string]string{"error_kind": "sql.ErrTxDone", "original_error_kind": "*errors.errorString"})
+		assertKindOnly(t, lines[0], map[string]string{"error_kind": "sql.ErrTxDone", "original_error_kind": "other"})
 	})
 	t.Run("panic", func(t *testing.T) {
 		m := newTestManager(t)

@@ -13,16 +13,22 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"errors"
-	"fmt"
+	"reflect"
 )
 
 // Key is the log key Kind is written under.
 const Key = "error_kind"
 
-// sentinels are the value-free errors Kind names by their identifier rather
-// than by their type, which (an *errors.errorString) would not tell them
-// apart.
+// Other is the kind of an error that is neither a listed sentinel nor a
+// listed driver error, including one whose chain could not be walked.
+const Other = "other"
+
+// maxChain bounds how many errors of one chain Kind looks at, so a chain
+// that loops back on itself still ends.
+const maxChain = 32
+
+// sentinels are the value-free errors Kind names by their identifier, in
+// priority order: when a chain holds several, the first listed wins.
 var sentinels = []struct {
 	err  error
 	name string
@@ -35,38 +41,102 @@ var sentinels = []struct {
 	{driver.ErrBadConn, "driver.ErrBadConn"},
 }
 
-// Kind names what err is without saying what it holds: the identifier of a
-// well-known sentinel anywhere in its chain, otherwise the Go type of the
-// innermost error in its chain (the driver's own type, such as *pq.Error or
-// *mysql.MySQLError, beneath any wrapping). It returns "" for nil.
-func Kind(err error) string {
+// driverErrors are the error types of the database drivers the framework
+// ships, matched by package path and type name, so the package imports no
+// driver. Only a named type can match, and the answer is the entry's fixed
+// kind, never a string built from the error's own type.
+var driverErrors = []struct {
+	pkgPath, name string
+	pointer       bool
+	kind          string
+}{
+	{"github.com/lib/pq", "Error", true, "*pq.Error"},
+	{"github.com/go-sql-driver/mysql", "MySQLError", true, "*mysql.MySQLError"},
+	{"github.com/mattn/go-sqlite3", "Error", false, "sqlite3.Error"},
+	{"modernc.org/sqlite", "Error", true, "*sqlite.Error"},
+}
+
+// Kind names what err is without saying what it holds, from a fixed set:
+// the identifier of a listed sentinel anywhere in its chain (see
+// sentinels), else the kind of the first listed driver error in its chain
+// (see driverErrors), else Other. It returns "" for nil.
+//
+// The chain is walked once, breadth first through Unwrap() error and
+// Unwrap() []error, looking at no more than maxChain errors, so a chain
+// that loops back on itself ends and a loop in one branch of a join does
+// not hide the others. A sentinel is matched by identity or by
+// the error's own Is method. An Unwrap or Is that panics makes the answer
+// Other: Kind runs on failure lines inside cleanup, which must finish.
+func Kind(err error) (kind string) {
 	if err == nil {
 		return ""
 	}
-	for _, s := range sentinels {
-		if errors.Is(err, s.err) {
-			return s.name
+	defer func() {
+		if recover() != nil {
+			kind = Other
 		}
-	}
-	return fmt.Sprintf("%T", innermost(err))
-}
-
-// innermost follows err's Unwrap chain to its end, taking the first branch
-// of an error that joins several.
-func innermost(err error) error {
-	for {
-		var next error
-		switch u := err.(type) {
-		case interface{ Unwrap() error }:
-			next = u.Unwrap()
-		case interface{ Unwrap() []error }:
-			if errs := u.Unwrap(); len(errs) > 0 {
-				next = errs[0]
+	}()
+	best := len(sentinels)
+	driverKind := ""
+	queue := []error{err}
+	for seen := 0; seen < len(queue) && seen < maxChain; seen++ {
+		e := queue[seen]
+		if e == nil {
+			continue
+		}
+		for i := 0; i < best; i++ {
+			if matches(e, sentinels[i].err) {
+				best = i
+				break
 			}
 		}
-		if next == nil {
-			return err
+		if driverKind == "" {
+			driverKind = driverKindOf(e)
 		}
-		err = next
+		var next []error
+		switch u := e.(type) {
+		case interface{ Unwrap() error }:
+			next = []error{u.Unwrap()}
+		case interface{ Unwrap() []error }:
+			next = u.Unwrap()
+		}
+		room := max(maxChain-len(queue), 0)
+		queue = append(queue, next[:min(len(next), room)]...)
 	}
+	switch {
+	case best < len(sentinels):
+		return sentinels[best].name
+	case driverKind != "":
+		return driverKind
+	default:
+		return Other
+	}
+}
+
+// matches reports whether e is target, by identity or by e's own Is
+// method, without following e's chain (Kind walks it).
+func matches(e, target error) bool {
+	if reflect.TypeOf(e).Comparable() && e == target {
+		return true
+	}
+	if x, ok := e.(interface{ Is(error) bool }); ok {
+		return x.Is(target)
+	}
+	return false
+}
+
+// driverKindOf returns the fixed kind of e's type when it is a listed
+// driver error, else "".
+func driverKindOf(e error) string {
+	t := reflect.TypeOf(e)
+	pointer := t.Kind() == reflect.Pointer
+	if pointer {
+		t = t.Elem()
+	}
+	for _, d := range driverErrors {
+		if d.pointer == pointer && t.Name() == d.name && t.PkgPath() == d.pkgPath {
+			return d.kind
+		}
+	}
+	return ""
 }
