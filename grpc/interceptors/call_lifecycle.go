@@ -15,6 +15,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
+	"github.com/velocitykode/velocity/grpc/internal/callhook"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -77,8 +78,16 @@ type CallConfig struct {
 	EnableStackTrace bool
 
 	// events holds EventDispatcher and applies the failure policy to a
-	// failed dispatch; CallLifecycle builds it once the options are applied.
+	// failed dispatch; CallLifecycle builds it once the options are applied,
+	// unless a framework-built server handed over its own emitter (see
+	// callhook.WithEmitter), whose dispatcher it reads on each call.
 	events *eventemit.Emitter
+}
+
+func init() {
+	callhook.WithEmitter = func(e *eventemit.Emitter) any {
+		return CallOption(func(c *CallConfig) { c.events = e })
+	}
 }
 
 // CallOption configures CallLifecycle.
@@ -139,6 +148,7 @@ func WithExtraFields(fn func(ctx context.Context) []interface{}) CallOption {
 func WithEventDispatcher(dispatcher grpcevents.EventDispatchFunc) CallOption {
 	return func(c *CallConfig) {
 		c.EventDispatcher = dispatcher
+		c.events = nil
 	}
 }
 
@@ -217,7 +227,9 @@ func CallLifecycle(opts ...CallOption) InterceptorPair {
 	for _, opt := range opts {
 		opt(cfg)
 	}
-	cfg.events = newEventEmitter(cfg.EventDispatcher, cfg.Logger)
+	if cfg.events == nil {
+		cfg.events = newEventEmitter(cfg.EventDispatcher, cfg.Logger)
+	}
 
 	return InterceptorPair{
 		Unary:  callsUnary(cfg),

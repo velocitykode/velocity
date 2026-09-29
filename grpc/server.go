@@ -16,6 +16,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/grpc/interceptors"
+	"github.com/velocitykode/velocity/grpc/internal/callhook"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -450,12 +451,7 @@ func (s *Server) Build() error {
 		unary = append(unary, b.unaryInterceptors...)
 		stream = append(stream, b.streamInterceptors...)
 	} else {
-		callOpts := append([]interceptors.CallOption{
-			interceptors.WithLogger(b.logger),
-			interceptors.WithEventDispatcher(s.eventDispatchFunc()),
-			interceptors.WithReporter(b.reporter),
-		}, b.callOptions...)
-		calls := interceptors.CallLifecycle(callOpts...)
+		calls := s.defaultCallLifecycle(b.logger, b.reporter, b.callOptions)
 		unary = append(unary, calls.Unary)
 		for _, ic := range b.unaryInterceptors {
 			unary = append(unary, interceptors.ContainUnary(ic))
@@ -884,16 +880,19 @@ func (s *Server) dispatchEvent(ctx context.Context, evt any) {
 	s.events.Emit(ctx, evt)
 }
 
-// eventDispatchFunc adapts the Server's dispatcher to the interceptors
-// packages' grpcevents.EventDispatchFunc. The returned func reads the
-// dispatcher at call time, so SetEventDispatcher wiring after Build still
-// takes effect, and it always returns nil: an interceptor must never fail
-// a request because of an event-sink error.
-func (s *Server) eventDispatchFunc() grpcevents.EventDispatchFunc {
-	return func(ctx context.Context, event any) error {
-		s.dispatchEvent(ctx, event)
-		return nil
-	}
+// defaultCallLifecycle builds the call lifecycle interceptor Build installs
+// by default: it logs through logger, reports to reporter and dispatches
+// its events through the Server's own emitter, so it builds an event only
+// while a dispatcher is installed (SetEventDispatcher, before or after
+// Build) and a failed dispatch meets the Server's one failure policy;
+// callOptions apply last, so one of them wins.
+func (s *Server) defaultCallLifecycle(logger contract.Logger, reporter contract.Reporter, callOptions []interceptors.CallOption) interceptors.InterceptorPair {
+	opts := append([]interceptors.CallOption{
+		interceptors.WithLogger(logger),
+		callhook.WithEmitter(&s.events).(interceptors.CallOption),
+		interceptors.WithReporter(reporter),
+	}, callOptions...)
+	return interceptors.CallLifecycle(opts...)
 }
 
 // Address returns the address the server is listening on.

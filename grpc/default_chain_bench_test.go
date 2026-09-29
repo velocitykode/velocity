@@ -32,11 +32,7 @@ func benchUserChain(b *testing.B, dispatcher bool) {
 	if dispatcher {
 		s.SetEventDispatcher(func(context.Context, any) error { return nil })
 	}
-	calls := interceptors.CallLifecycle(
-		interceptors.WithLogger(s.logger),
-		interceptors.WithEventDispatcher(s.eventDispatchFunc()),
-		interceptors.WithReporter(s.reporter),
-	)
+	calls := s.defaultCallLifecycle(s.logger, s.reporter, nil)
 	pass := func(ctx context.Context, req any, _ *grpcgo.UnaryServerInfo, h grpcgo.UnaryHandler) (any, error) {
 		return h(ctx, req)
 	}
@@ -69,11 +65,7 @@ func benchDefaultChain(b *testing.B, dispatcher bool) {
 		// handed over, and dropped.
 		s.SetEventDispatcher(func(context.Context, any) error { return nil })
 	}
-	calls := interceptors.CallLifecycle(
-		interceptors.WithLogger(s.logger),
-		interceptors.WithEventDispatcher(s.eventDispatchFunc()),
-		interceptors.WithReporter(s.reporter),
-	)
+	calls := s.defaultCallLifecycle(s.logger, s.reporter, nil)
 	chain := []grpcgo.UnaryServerInterceptor{calls.Unary, calls.Unary}
 
 	info := &grpcgo.UnaryServerInfo{FullMethod: "/svc.Bench/Do"}
