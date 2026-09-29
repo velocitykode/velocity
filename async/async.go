@@ -119,15 +119,29 @@ func runPanicHook(ctx context.Context, p any) bool {
 // Extra key/value pairs (e.g. "name", "<callsite>") are appended after the
 // canonical "panic" / "stack" fields. debug.Stack() is invoked exactly once
 // per recovery so the formatted backtrace cost is paid only on the slow path.
+// The line goes to l, or the package logger when l is nil (see logError).
 func logRecoveredPanic(l contract.Logger, p any, kvs ...any) {
 	attrs := make([]any, 0, 4+len(kvs))
 	attrs = append(attrs, "panic", p, "stack", string(debug.Stack()))
 	attrs = append(attrs, kvs...)
-	if l != nil {
-		l.Error("async: panic recovered", attrs...)
-		return
+	logError(l, "async: panic recovered", attrs...)
+}
+
+// logError writes an Error line through l, or the package logger when l is
+// nil. The package writes its lines inside a helper's deferred recover or
+// on a goroutine with no recovery, so a logger that panics while writing
+// is contained: the line goes to the framework's standalone fallback
+// logger instead of crashing the process.
+func logError(l contract.Logger, msg string, kvs ...any) {
+	if l == nil {
+		l = GetLogger()
 	}
-	GetLogger().Error("async: panic recovered", attrs...)
+	defer func() {
+		if recover() != nil {
+			fallbacklog.Logger{}.Error(msg, kvs...)
+		}
+	}()
+	l.Error(msg, kvs...)
 }
 
 // handlePanic handles panics in goroutines: the installed panic hook takes
@@ -295,7 +309,7 @@ func GoCtx(ctx context.Context, fn func(ctx context.Context)) {
 			// fn may still be running. We log and return; the responsibility
 			// for fn returning rests with fn (it should respect ctx).
 			if err := ctx.Err(); err != nil {
-				GetLogger().Error("async: GoCtx context done", "error", err)
+				logError(nil, "async: GoCtx context done", "error", err)
 			}
 		}
 	}()
