@@ -18,6 +18,10 @@
 // Debug and Info lines are dropped: nobody reads the routine output of a
 // value used standalone, only its warnings and failures. Fatal writes an
 // ERROR line and never exits the process.
+//
+// Forwarder is the logger a value hands the values it owns, so a later
+// logger replacement reaches them all through one atomic store; unset, it
+// writes through the fallback Logger.
 package fallbacklog
 
 import (

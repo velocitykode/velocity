@@ -14,6 +14,7 @@ import (
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/internal/sqlerr"
 	"github.com/velocitykode/velocity/orm/drivers"
@@ -135,7 +136,7 @@ type Manager struct {
 	// query logger every connection that takes one holds. Its target is
 	// swapped atomically by SetLogger; unset, it forwards to the
 	// framework's standalone fallback logger.
-	logger loggerForwarder
+	logger fallbacklog.Forwarder
 	// unhanded holds the connections that take a logger
 	// (contract.LoggerAware) but have not been handed the forwarder yet,
 	// because the manager had no logger when they were added: such a
@@ -201,7 +202,7 @@ func NewManagerWithContext(ctx context.Context, config ManagerConfig) (*Manager,
 	// The forwarder is the connection's logger from its first statement
 	// (SQLite's connect-time PRAGMAs included) when the config names one.
 	if config.Logger != nil {
-		m.logger.set(config.Logger)
+		m.logger.Set(config.Logger)
 		connConfig.Logger = &m.logger
 	}
 
@@ -278,7 +279,7 @@ func (m *Manager) Connection(name string) (drivers.Driver, error) {
 func (m *Manager) AddConnection(name string, driver drivers.Driver) {
 	m.attachStatementObserver(driver)
 	la, aware := driver.(contract.LoggerAware)
-	handed := aware && m.logger.installed() != nil
+	handed := aware && m.logger.Target() != nil
 	if handed {
 		la.SetLogger(&m.logger)
 	}
@@ -287,7 +288,7 @@ func (m *Manager) AddConnection(name string, driver drivers.Driver) {
 	delete(m.unhanded, name)
 	// A SetLogger that ran since the check above left no pending entry for
 	// this connection: hand it here, once, after the lock is released.
-	late := aware && !handed && m.logger.installed() != nil
+	late := aware && !handed && m.logger.Target() != nil
 	if aware && !handed && !late {
 		if m.unhanded == nil {
 			m.unhanded = make(map[string]contract.LoggerAware)
@@ -1061,7 +1062,7 @@ func flushBufferedEntry(ctx context.Context, entry events.BufferedEvent, bus eve
 // logger installed last.
 func (m *Manager) SetLogger(logger contract.Logger) {
 	m.mu.Lock()
-	m.logger.set(logger)
+	m.logger.Set(logger)
 	pending := make([]contract.LoggerAware, 0, len(m.unhanded)+1)
 	if m.unhandedDefault != nil {
 		pending = append(pending, m.unhandedDefault)
@@ -1080,7 +1081,7 @@ func (m *Manager) SetLogger(logger contract.Logger) {
 // log returns the installed logger, or the framework's standalone fallback
 // logger when none is installed. Lock-free.
 func (m *Manager) log() contract.Logger {
-	return m.logger.resolve()
+	return fallbacklog.Resolve(m.logger.Target())
 }
 
 // Logger returns the logger the manager writes through: the one SetLogger

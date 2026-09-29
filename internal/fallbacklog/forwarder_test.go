@@ -1,4 +1,4 @@
-package orm
+package fallbacklog_test
 
 import (
 	"strings"
@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 	"github.com/velocitykode/velocity/log"
 	logdrivers "github.com/velocitykode/velocity/log/drivers"
@@ -13,15 +14,15 @@ import (
 
 // The zero forwarder, and one set back to nil, write through the fallback
 // logger; set to a logger, every level reaches it.
-func TestLoggerForwarder_ZeroValueAndNil(t *testing.T) {
+func TestForwarder_ZeroValueAndNil(t *testing.T) {
 	fallback := fallbacklogtest.Capture(t)
-	var f loggerForwarder
+	var f fallbacklog.Forwarder
 	f.Warn("zero warn")
 	if !strings.Contains(fallback.String(), "zero warn") {
 		t.Errorf("zero forwarder: fallback = %q, want the warn line", fallback.String())
 	}
 	l := &levelLog{}
-	f.set(l)
+	f.Set(l)
 	f.Debug("d")
 	f.Info("i")
 	f.Warn("w")
@@ -32,7 +33,7 @@ func TestLoggerForwarder_ZeroValueAndNil(t *testing.T) {
 			t.Errorf("target lines = %v, want %q once", l.entries, want)
 		}
 	}
-	f.set(nil)
+	f.Set(nil)
 	f.Error("after nil")
 	if !strings.Contains(fallback.String(), "after nil") {
 		t.Errorf("forwarder set to nil: fallback = %q, want the error line", fallback.String())
@@ -45,12 +46,12 @@ func TestLoggerForwarder_ZeroValueAndNil(t *testing.T) {
 // A logger bound from the forwarder keeps its fields and follows a later
 // swap: a connection or helper that bound fields once never writes to a
 // replaced logger.
-func TestLoggerForwarder_WithFollowsASwap(t *testing.T) {
-	var f loggerForwarder
+func TestForwarder_WithFollowsASwap(t *testing.T) {
+	var f fallbacklog.Forwarder
 	a, b := logdrivers.NewConsoleLoggerTo(&fallbacklogtest.Output{}, 0), &fallbacklogtest.Output{}
-	f.set(a)
+	f.Set(a)
 	bound := f.With("connection", "reports")
-	f.set(logdrivers.NewConsoleLoggerTo(b, 0))
+	f.Set(logdrivers.NewConsoleLoggerTo(b, 0))
 	bound.Warn("after swap", "query", "SELECT 1")
 	out := b.String()
 	if !strings.Contains(out, "after swap") || !strings.Contains(out, "connection=reports") || !strings.Contains(out, "query=SELECT 1") {
@@ -64,11 +65,11 @@ func TestLoggerForwarder_WithFollowsASwap(t *testing.T) {
 // A redacting logger behind the forwarder still redacts fields bound
 // through the forwarder: they reach it as the line's first pairs, which it
 // redacts on every write.
-func TestLoggerForwarder_WithFieldsAreRedactedByARedactingTarget(t *testing.T) {
+func TestForwarder_WithFieldsAreRedactedByARedactingTarget(t *testing.T) {
 	out := &fallbacklogtest.Output{}
 	mask := log.RedactorFunc(func(s string) string { return strings.ReplaceAll(s, "hunter2", "[REDACTED]") })
-	var f loggerForwarder
-	f.set(log.WithRedactors(logdrivers.NewConsoleLoggerTo(out, 0), mask))
+	var f fallbacklog.Forwarder
+	f.Set(log.WithRedactors(logdrivers.NewConsoleLoggerTo(out, 0), mask))
 	f.With("password", "hunter2").Warn("bound secret")
 	f.Warn("line secret", "password", "hunter2")
 	got := out.String()
@@ -83,9 +84,9 @@ func TestLoggerForwarder_WithFieldsAreRedactedByARedactingTarget(t *testing.T) {
 // Swapping the target while many goroutines write through the forwarder
 // and loggers bound from it is race-free, and every line lands on one of
 // the installed loggers.
-func TestLoggerForwarder_ConcurrentSetAndWrite(t *testing.T) {
+func TestForwarder_ConcurrentSetAndWrite(t *testing.T) {
 	fallbacklogtest.Capture(t)
-	var f loggerForwarder
+	var f fallbacklog.Forwarder
 	targets := []*levelLog{{}, {}, {}}
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
@@ -93,7 +94,7 @@ func TestLoggerForwarder_ConcurrentSetAndWrite(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			for j := 0; j < 200; j++ {
-				f.set(targets[(i+j)%len(targets)])
+				f.Set(targets[(i+j)%len(targets)])
 			}
 		}(i)
 		go func() {
@@ -106,7 +107,7 @@ func TestLoggerForwarder_ConcurrentSetAndWrite(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	f.set(targets[0])
+	f.Set(targets[0])
 	total := 0
 	for _, l := range targets {
 		total += l.count("WARN ")
@@ -117,4 +118,36 @@ func TestLoggerForwarder_ConcurrentSetAndWrite(t *testing.T) {
 		t.Errorf("lines on the targets = %d, want between 1 and %d", total, 8*400)
 	}
 	var _ contract.Logger = &f
+}
+
+// levelLog records each line as "LEVEL msg".
+type levelLog struct {
+	mu      sync.Mutex
+	entries []string
+}
+
+func (l *levelLog) Debug(msg string, _ ...any) { l.add("DEBUG " + msg) }
+func (l *levelLog) Info(msg string, _ ...any)  { l.add("INFO " + msg) }
+func (l *levelLog) Warn(msg string, _ ...any)  { l.add("WARN " + msg) }
+func (l *levelLog) Error(msg string, _ ...any) { l.add("ERROR " + msg) }
+func (l *levelLog) Fatal(msg string, _ ...any) { l.add("FATAL " + msg) }
+
+func (l *levelLog) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
+func (l *levelLog) add(e string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = append(l.entries, e)
+}
+
+func (l *levelLog) count(prefix string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, e := range l.entries {
+		if strings.HasPrefix(e, prefix) {
+			n++
+		}
+	}
+	return n
 }
