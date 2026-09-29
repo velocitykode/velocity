@@ -14,6 +14,7 @@ import (
 	"github.com/velocitykode/velocity/console"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/events"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
@@ -312,31 +313,110 @@ func TestFailedEventCount_AsyncRouterPoolCountsOnce(t *testing.T) {
 	}
 }
 
-// A listener failure of a detached delivery (DispatchAsync with no queue)
-// is the dispatcher's own AsyncFailed, reported through the failure-report
-// bridge; the app's failure policy does not count or hook it a second
-// time.
-func TestFailedEventCount_DetachedListenerFailureNotCountedTwice(t *testing.T) {
-	rec := &hookRecorder{}
-	a, _ := newLoggerWiringApp(t, nil, WithFailedEventHook(rec.hook))
-	var asyncFailed atomic.Int32
-	a.Services.Events.Listen(events.OfType[*events.AsyncFailed](), listenerFunc(func(context.Context, any) error {
-		asyncFailed.Add(1)
-		return nil
-	}))
-	a.Services.Events.Listen(events.OfType[*widgetSynced](), listenerFunc(func(context.Context, any) error {
-		return errors.New("detached listener failed")
-	}))
+// A listener failure of a detached delivery (no-queue DispatchAsync and
+// DispatchAfter, a debouncing or coalescing dispatcher's later delivery),
+// which no caller receives, is counted and handed to the hook once per
+// delivery, and reported to the error handler once, as the dispatcher's
+// AsyncFailed. A listener that fails on that AsyncFailed makes its
+// delivery one more failure, counted, hooked and reported once.
+func TestFailedEventCount_DetachedListenerFailureCountedOnce(t *testing.T) {
+	widgetFails := func(a *App) {
+		a.Services.Events.Listen(events.OfType[*widgetSynced](), listenerFunc(func(context.Context, any) error {
+			return errors.New("detached listener failed")
+		}))
+	}
+	cacheHitFails := func(a *App) {
+		a.Services.Events.Listen("cache.hit", failingListener{name: "cache"})
+	}
+	cacheHit := func(t *testing.T, a *App) {
+		if err := a.Cache.Put("k", "v", time.Minute); err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		if _, ok := a.Cache.Get("k"); !ok {
+			t.Fatal("cache miss, want a hit")
+		}
+	}
+	cases := []struct {
+		name       string
+		dispatcher contract.Dispatcher // installed as Services.Events when set
+		listen     func(a *App)
+		fire       func(t *testing.T, a *App)
+		asyncFails bool // a listener of AsyncFailed fails as well
+		wantEvent  string
+		want       int
+	}{
+		{name: "DispatchAsync", listen: widgetFails, want: 1, wantEvent: "*velocity.widgetSynced",
+			fire: func(t *testing.T, a *App) {
+				if err := a.Services.Events.DispatchAsync(context.Background(), &widgetSynced{ID: 1}); err != nil {
+					t.Fatalf("DispatchAsync: %v", err)
+				}
+			}},
+		{name: "DispatchAfter", listen: widgetFails, want: 1, wantEvent: "*velocity.widgetSynced",
+			fire: func(t *testing.T, a *App) {
+				if err := a.Services.Events.DispatchAfter(context.Background(), &widgetSynced{ID: 1}, time.Millisecond); err != nil {
+					t.Fatalf("DispatchAfter: %v", err)
+				}
+			}},
+		{name: "debounced framework event", dispatcher: events.NewDebouncingDispatcher(5 * time.Millisecond),
+			listen: cacheHitFails, fire: cacheHit, want: 1, wantEvent: "cache.hit"},
+		{name: "coalesced framework event", dispatcher: events.NewCoalescingDispatcher(5 * time.Millisecond),
+			listen: cacheHitFails, fire: cacheHit, want: 1, wantEvent: "cache.hit"},
+		{name: "AsyncFailed listener fails too", listen: widgetFails, asyncFails: true, want: 2, wantEvent: "*velocity.widgetSynced",
+			fire: func(t *testing.T, a *App) {
+				if err := a.Services.Events.DispatchAsync(context.Background(), &widgetSynced{ID: 1}); err != nil {
+					t.Fatalf("DispatchAsync: %v", err)
+				}
+			}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &hookRecorder{}
+			opts := []Option{WithFailedEventHook(rec.hook)}
+			if tc.dispatcher != nil {
+				opts = append(opts, WithModules(swapEventsModule{d: tc.dispatcher}))
+			}
+			a, _ := newLoggerWiringApp(t, nil, opts...)
+			reports := &recordingReporter{}
+			a.Services.Errors.AddReporter(reports)
+			tc.listen(a)
+			if tc.asyncFails {
+				a.Services.Events.Listen(events.OfType[*events.AsyncFailed](), listenerFunc(func(context.Context, any) error {
+					return errors.New("AsyncFailed listener failed")
+				}))
+			}
+			before, beforeCalls := a.FailedEventCount(), rec.calls()
 
-	if err := a.Services.Events.DispatchAsync(context.Background(), &widgetSynced{ID: 1}); err != nil {
-		t.Fatalf("DispatchAsync: %v", err)
-	}
-	testsync.Eventually(t, func() bool { return asyncFailed.Load() == 1 }, 5*time.Second, "AsyncFailed delivered")
-	if got := a.FailedEventCount(); got != 0 {
-		t.Errorf("FailedEventCount = %d, want 0 (the dispatcher reported it)", got)
-	}
-	if got := rec.calls(); got != 0 {
-		t.Errorf("hook calls = %d, want 0", got)
+			tc.fire(t, a)
+			want := uint64(tc.want)
+			// Wait for the detached delivery, then for nothing more to arrive.
+			for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+				if a.FailedEventCount()-before >= want && rec.calls()-beforeCalls >= tc.want && reports.count() >= tc.want {
+					break
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+			if got := a.FailedEventCount() - before; got != want {
+				t.Errorf("FailedEventCount grew by %d, want %d", got, want)
+			}
+			if got := rec.calls() - beforeCalls; got != tc.want {
+				t.Errorf("hook calls grew by %d, want %d", got, tc.want)
+			}
+			if got := reports.count(); got != tc.want {
+				t.Errorf("error handler reports = %d, want %d", got, tc.want)
+			}
+			rec.mu.Lock()
+			names := map[string]int{}
+			for _, ev := range rec.events[beforeCalls:] {
+				names[eventemit.EventName(ev)]++
+			}
+			rec.mu.Unlock()
+			if names[tc.wantEvent] != 1 {
+				t.Errorf("hook events = %v, want %s once", names, tc.wantEvent)
+			}
+			if tc.asyncFails && names["events.listener.failed"] != 1 {
+				t.Errorf("hook events = %v, want the AsyncFailed delivery once", names)
+			}
+		})
 	}
 }
 

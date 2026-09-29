@@ -224,7 +224,9 @@ func WithoutEvents() Option {
 }
 
 // WithFailedEventHook installs fn as the hook every failed framework event
-// dispatch is handed to: a listener that returned an error or panicked, a
+// dispatch is handed to: a listener that returned an error or panicked
+// (once per dispatch, detached deliveries included; see
+// App.FailedEventCount), a
 // dispatcher that panicked (as a recovered panic, contract.RecoveredPanic),
 // or an event the router or the ORM dropped before any listener saw it. fn
 // receives the failure and the event as it was dispatched, whatever its

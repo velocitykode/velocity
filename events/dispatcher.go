@@ -72,6 +72,10 @@ type DefaultDispatcher struct {
 	// (context.Background()), which the ctx marker alone cannot catch.
 	reportingMu sync.Mutex
 	reporting   map[uint64]struct{}
+
+	// detachedFailures, when set, records each detached delivery a
+	// listener failed on (see SetDetachedFailureRecorder).
+	detachedFailures atomic.Pointer[func(ctx context.Context, err error, event any)]
 }
 
 // listenerEntry wraps a Listener with an ID for tracking
@@ -386,8 +390,9 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, event interface{}) err
 // "exactly once" DETERMINISTIC for every event value, comparable or not,
 // instead of depending on the ctx marker's identity comparison; and each
 // listener's error or recovered panic, which no caller would receive, is
-// dispatched as its own AsyncFailed (see dispatchListenerFailure). Every
-// public entry point passes false.
+// dispatched as its own AsyncFailed (see dispatchListenerFailure) and the
+// delivery is recorded once (see SetDetachedFailureRecorder). Every public
+// entry point passes false.
 func (d *DefaultDispatcher) dispatch(ctx context.Context, event interface{}, detached bool) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -455,7 +460,8 @@ func (d *DefaultDispatcher) dispatch(ctx context.Context, event interface{}, det
 		return d.processListener(ctx, event, listener)
 	}
 	if detached {
-		deliver = d.dispatchingListenerFailures(ctx, event, deliver)
+		d.deliverDetached(ctx, event, deliver)
+		return nil
 	}
 	return d.dispatchToListeners(event, deliver)
 }
@@ -472,7 +478,7 @@ func (d *DefaultDispatcher) dispatchLater(ctx context.Context, event interface{}
 		return
 	}
 	// A detached dispatch returns an error only for a nil event, excluded
-	// above: every listener failure became an AsyncFailed.
+	// above: every listener failure became an AsyncFailed and was recorded.
 	_ = d.dispatch(d.reportFailure(ctx, event), event, true)
 }
 
@@ -496,22 +502,50 @@ func (d *DefaultDispatcher) dispatchNow(ctx context.Context, event interface{}, 
 		return d.processListener(ctx, event, listener)
 	}
 	if detached {
-		deliver = d.dispatchingListenerFailures(ctx, event, deliver)
+		d.deliverDetached(ctx, event, deliver)
+		return nil
 	}
 	return d.dispatchToListeners(event, deliver)
 }
 
-// dispatchingListenerFailures wraps deliver for a detached delivery of
-// event under ctx: a listener's error or recovered panic has no caller left
-// to return to, so it is dispatched as that listener's AsyncFailed (see
-// dispatchListenerFailure) and nil is returned in its place.
-func (d *DefaultDispatcher) dispatchingListenerFailures(ctx context.Context, event interface{}, deliver func(Listener) error) func(Listener) error {
-	return func(listener Listener) error {
-		if err := deliver(listener); err != nil {
+// deliverDetached delivers event under ctx to each of its listeners with
+// deliver, for a detached delivery: a listener's error or recovered panic
+// has no caller left to return to, so it is dispatched as that listener's
+// AsyncFailed (see dispatchListenerFailure), and when any listener failed
+// the delivery is handed, once, with the listeners' failures joined, to
+// the recorder SetDetachedFailureRecorder installed.
+func (d *DefaultDispatcher) deliverDetached(ctx context.Context, event interface{}, deliver func(Listener) error) {
+	err := d.dispatchToListeners(event, func(listener Listener) error {
+		err := deliver(listener)
+		if err != nil {
 			d.dispatchListenerFailure(ctx, event, listener, err)
 		}
-		return nil
+		return err
+	})
+	if err == nil {
+		return
 	}
+	if record := d.detachedFailures.Load(); record != nil {
+		(*record)(ctx, err, event)
+	}
+}
+
+// SetDetachedFailureRecorder installs fn as the recorder of detached
+// deliveries that failed: the no-queue fallbacks of DispatchAsync and
+// DispatchAfter, the later deliveries of a debouncing or coalescing
+// dispatcher, and the delivery of an AsyncFailed. No caller receives such
+// a delivery's result, so fn is called once per delivery a listener
+// failed on (however many did), with the listeners' failures joined, on
+// the goroutine that delivered it, after each failure was dispatched as
+// its AsyncFailed and reported. The framework installs the app's failure
+// policy here, which counts the delivery and hands it to the failure hook.
+// nil removes it. Safe for concurrent use with dispatching.
+func (d *DefaultDispatcher) SetDetachedFailureRecorder(fn func(ctx context.Context, err error, event any)) {
+	if fn == nil {
+		d.detachedFailures.Store(nil)
+		return
+	}
+	d.detachedFailures.Store(&fn)
 }
 
 // dispatchListenerFailure dispatches the AsyncFailed for listener, which

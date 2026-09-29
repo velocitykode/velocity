@@ -973,9 +973,10 @@ func (a *App) Version() string {
 // dispatch whose dispatcher itself panicked, each
 // event the router or the ORM dropped before any listener saw it (a full
 // buffer or queue, a stopped pool), and each panic of the hook
-// WithFailedEventHook installed. A listener failure of a detached delivery
-// (DispatchAsync, DispatchAfter), which the dispatcher reports as its own
-// failure event, is not counted here. Expose it as a metric in production.
+// WithFailedEventHook installed. A detached delivery a listener failed on
+// (no-queue DispatchAsync or DispatchAfter, a debounced or coalesced
+// dispatch, the delivery of an AsyncFailed), whoever dispatched it, counts
+// once as well. Expose it as a metric in production.
 // Safe for concurrent use.
 func (a *App) FailedEventCount() uint64 {
 	return a.eventFailures.Count()

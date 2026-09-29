@@ -258,6 +258,16 @@ func wireInstanceEvents(a *App) {
 	// router (SetAsyncEventDispatcher) survives the re-wire.
 	a.Router.BindEventDispatcher(dispatch)
 
+	// A detached delivery (no-queue DispatchAsync or DispatchAfter, a
+	// debounced or coalesced dispatch, an AsyncFailed) returns its
+	// listeners' failures to no dispatch closure: the dispatcher hands them
+	// to the same policy itself, once per delivery.
+	if dr, ok := a.Services.Events.(interface {
+		SetDetachedFailureRecorder(fn func(ctx context.Context, err error, event any))
+	}); ok {
+		dr.SetDetachedFailureRecorder(buildDetachedFailureRecorder(a))
+	}
+
 	// C-03-fb2 HIGH 1: the batch package fires lifecycle events
 	// (BatchCreated, BatchJobCompleted, BatchJobFailed, BatchCompleted,
 	// BatchCancelled) from inside the repository when ANY host observes
@@ -507,6 +517,18 @@ func buildEventDispatch(a *App) func(ctx context.Context, event any) error {
 	return a.eventFailures.Recording(func(ctx context.Context, event any) error {
 		return d.Dispatch(ctx, event)
 	}, a.Services.Log)
+}
+
+// buildDetachedFailureRecorder returns the recorder the dispatcher hands
+// its failed detached deliveries to: each is recorded in a.eventFailures
+// (counted, its event's first failure logged at warn level through the
+// logger a.Services.Log holds now, read once like buildEventDispatch's,
+// and handed to the failure hook).
+func buildDetachedFailureRecorder(a *App) func(ctx context.Context, err error, event any) {
+	logger := a.Services.Log
+	return func(ctx context.Context, err error, event any) {
+		a.eventFailures.Record(ctx, logger, err, event)
+	}
 }
 
 // wireComponentEvents wires the event dispatcher into every registry entry
