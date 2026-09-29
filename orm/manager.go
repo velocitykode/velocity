@@ -12,10 +12,10 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/events"
+	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
-	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/internal/sqlerr"
 	"github.com/velocitykode/velocity/orm/drivers"
@@ -149,15 +149,12 @@ type Manager struct {
 	// them, so a connection is handed the forwarder exactly once.
 	unhanded        map[string]contract.LoggerAware
 	unhandedDefault contract.LoggerAware
-	// closing is made by the first Shutdown to reach the close phase, under
-	// mu, and closed once it has closed every driver: that Shutdown owns
-	// the closes, and a later one waits on it (or on its own ctx), so a nil
-	// return still means every driver is closed.
-	closing chan struct{}
-	// closer is the goroutine running those closes (internal/goroutine),
-	// set with closing: a Shutdown from it (a driver's Close shutting the
-	// manager down) is refused at once instead of waiting on itself.
-	closer uint64
+	// closes coordinates Shutdown's close phase (internal/drain): the first
+	// Shutdown to reach it owns the drivers' closes, a later one waits for
+	// them (or its own ctx), so a nil return still means every driver is
+	// closed, and one called from inside a driver's Close is refused
+	// instead of waiting on itself. Begin and Ended run under mu.
+	closes drain.Coordinator
 }
 
 // NewManager creates a new ORM Manager with a connected database driver.
@@ -942,27 +939,18 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	// a driver's Close is user code, which may log through the manager's
 	// forwarder into a logger that calls back into the manager. Only the
 	// first Shutdown here owns the closes; a later one waits for them.
-	id := goroutine.ID()
 	m.mu.Lock()
-	if closing, closer := m.closing, m.closer; closing != nil {
+	if closed := m.closes.Ended(); closed != nil {
 		m.mu.Unlock()
-		select {
-		case <-closing:
-			return drainErr
-		default:
-		}
-		if closer == id {
+		if !drain.Closed(closed) && m.closes.Nested() {
 			return errors.Join(drainErr, errShutdownFromClose)
 		}
-		select {
-		case <-closing:
-			return drainErr
-		case <-ctx.Done():
-			return errors.Join(drainErr, ctx.Err())
+		if err := m.closes.Await(ctx, closed, nil); err != nil {
+			return errors.Join(drainErr, err)
 		}
+		return drainErr
 	}
-	m.closing, m.closer = make(chan struct{}), id
-	defer close(m.closing)
+	closed := m.closes.Begin()
 	defaultDriver := m.defaultDriver
 	m.defaultDriver = nil
 	conns := make([]drivers.Driver, 0, len(m.connections))
@@ -977,16 +965,18 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	// has the panic returned as its error, and the drivers after it are
 	// still closed.
 	var firstErr error
-	if defaultDriver != nil {
-		if err := closeContained(defaultDriver); err != nil {
-			firstErr = err
+	m.closes.Drain(closed, func() {
+		if defaultDriver != nil {
+			if err := closeContained(defaultDriver); err != nil {
+				firstErr = err
+			}
 		}
-	}
-	for _, conn := range conns {
-		if err := closeContained(conn); err != nil && firstErr == nil {
-			firstErr = err
+		for _, conn := range conns {
+			if err := closeContained(conn); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
-	}
+	})
 
 	if drainErr != nil {
 		return errors.Join(drainErr, firstErr)
