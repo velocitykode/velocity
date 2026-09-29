@@ -66,3 +66,29 @@ func TestMiddleware_FlushFailureLineCarriesTheRequestIDs(t *testing.T) {
 		t.Errorf("line still carries path: %v", last)
 	}
 }
+
+// The redirect-allowlist fallback warning, written on the request that
+// first hits the fallback, carries that request's ids.
+func TestRedirect_FallbackWarningCarriesTheRequestIDs(t *testing.T) {
+	b := setupBond(t)
+	var mu sync.Mutex
+	var last []any
+	b.SetLogger(flushFieldLogger{mu: &mu, last: &last})
+	ctx := trace.WithRequestID(trace.WithTrace(context.Background(), "t2", "s2"), "r2")
+	r := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+	r.Host = "same.example"
+
+	b.Redirect(httptest.NewRecorder(), r, "/dashboard")
+
+	mu.Lock()
+	defer mu.Unlock()
+	fields := map[any]any{}
+	for i := 0; i+1 < len(last); i += 2 {
+		fields[last[i]] = last[i+1]
+	}
+	for key, want := range map[string]string{"request_id": "r2", "trace_id": "t2", "span_id": "s2"} {
+		if got := fields[key]; got != want {
+			t.Errorf("%s = %v, want %q (%v)", key, got, want, last)
+		}
+	}
+}

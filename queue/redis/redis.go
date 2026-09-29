@@ -188,7 +188,7 @@ func (r *RedisDriver) log() contract.Logger {
 	return fallbacklog.Resolve(v.(redisLoggerHolder).Logger)
 }
 
-func (r *RedisDriver) warnIfNonIdentifiable(job queue.Job) {
+func (r *RedisDriver) warnIfNonIdentifiable(ctx context.Context, job queue.Job) {
 	if _, ok := job.(queue.Identifiable); ok {
 		return
 	}
@@ -196,7 +196,7 @@ func (r *RedisDriver) warnIfNonIdentifiable(job queue.Job) {
 	if _, loaded := r.nonIdentifiableWarned.LoadOrStore(typ, struct{}{}); loaded {
 		return
 	}
-	r.log().Warn("velocity/queue: job type does not implement Identifiable; MaxAttempts cannot be enforced reliably across redelivery. Implement queue.Identifiable.JobID() to fix.",
+	r.log().With(trace.LogFields(ctx)...).Warn("velocity/queue: job type does not implement Identifiable; MaxAttempts cannot be enforced reliably across redelivery. Implement queue.Identifiable.JobID() to fix.",
 		"job_type", typ,
 	)
 }
@@ -443,7 +443,7 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (qu
 		return j, qtc, qerr
 	}
 	r.rememberPoppedAttempts(job, payload.Attempts)
-	r.warnIfNonIdentifiable(job)
+	r.warnIfNonIdentifiable(ctx, job)
 	return job, tc, nil
 }
 

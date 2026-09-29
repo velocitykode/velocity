@@ -219,7 +219,7 @@ func (m *MemoryDriver) Start() {
 // best-effort cache. To surface the gap loudly per kind we gate on the
 // fully-qualified type name in a sync.Map; once warned, the type stays
 // quiet for the lifetime of the driver.
-func (m *MemoryDriver) warnIfNonIdentifiable(job Job) {
+func (m *MemoryDriver) warnIfNonIdentifiable(ctx context.Context, job Job) {
 	if _, ok := job.(Identifiable); ok {
 		return
 	}
@@ -227,7 +227,7 @@ func (m *MemoryDriver) warnIfNonIdentifiable(job Job) {
 	if _, loaded := m.nonIdentifiableWarned.LoadOrStore(typ, struct{}{}); loaded {
 		return
 	}
-	m.log().Warn("velocity/queue: job type does not implement Identifiable; MaxAttempts cannot be enforced reliably across process restarts. Implement queue.Identifiable.JobID() to fix.",
+	m.log().With(trace.LogFields(ctx)...).Warn("velocity/queue: job type does not implement Identifiable; MaxAttempts cannot be enforced reliably across process restarts. Implement queue.Identifiable.JobID() to fix.",
 		"job_type", typ,
 	)
 }
@@ -239,7 +239,7 @@ func (m *MemoryDriver) PushCtx(ctx context.Context, job Job, queueName ...string
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	m.warnIfNonIdentifiable(job)
+	m.warnIfNonIdentifiable(ctx, job)
 	name := resolveQueueName(job, queueName...)
 
 	wrapper, err := createJobWrapper(job, name)
@@ -269,7 +269,7 @@ func (m *MemoryDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.D
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	m.warnIfNonIdentifiable(job)
+	m.warnIfNonIdentifiable(ctx, job)
 	name := resolveQueueName(job, queueName...)
 
 	wrapper, err := createJobWrapper(job, name)
@@ -537,7 +537,7 @@ func (m *MemoryDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKe
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	m.warnIfNonIdentifiable(job)
+	m.warnIfNonIdentifiable(ctx, job)
 	name := resolveQueueName(job, queueName...)
 
 	wrapper, err := createJobWrapper(job, name)

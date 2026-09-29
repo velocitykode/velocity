@@ -7,6 +7,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // Redirect performs an SPA-compatible redirect
@@ -118,7 +119,7 @@ func (b *Bond) allowedHostsFor(r *http.Request) []string {
 		return hosts
 	}
 	if b.hostFallbackWarned.CompareAndSwap(false, true) {
-		b.log().Warn(
+		b.log().With(trace.LogFields(r.Context())...).Warn(
 			"velocity/bond: no RedirectAllowlist configured; falling back to r.Host for same-origin redirect checks. " +
 				"A misconfigured fronting proxy that copies X-Forwarded-Host into r.Host can bypass open-redirect protection. " +
 				"Set Router.RedirectAllowedHosts to your canonical hostnames.",

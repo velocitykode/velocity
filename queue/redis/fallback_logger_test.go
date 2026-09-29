@@ -3,12 +3,14 @@ package redis
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
 
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 	"github.com/velocitykode/velocity/queue"
+	"github.com/velocitykode/velocity/trace"
 )
 
 // A redis driver used standalone, with no logger, writes its insecure-host
@@ -112,5 +114,38 @@ func TestNewQueue_HandsConfigLoggerToTheDriver(t *testing.T) {
 
 	if got := logs.countContaining("velocity/queue: job type does not implement Identifiable"); got != 1 {
 		t.Errorf("config logger lines = %d, want 1", got)
+	}
+}
+
+// The advisory for a popped job without an id carries the ids of the
+// context it was popped under.
+func TestRedisDriver_NonIdentifiableWarningCarriesThePopContext(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("start miniredis: %v", err)
+	}
+	t.Cleanup(mr.Close)
+	fallback := fallbacklogtest.Capture(t)
+	saveAndRestoreSigningState(t)
+	queue.SetSigningKey(nil)
+
+	d, err := NewRedisDriver(queue.RedisConfig{Host: mr.Host(), Port: mr.Port(), DB: "0"})
+	if err != nil {
+		t.Fatalf("NewRedisDriver: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
+	const name = "correlated-probe"
+	if err := d.PushCtx(context.Background(), &fallbackProbeJob{ID: "1"}, name); err != nil {
+		t.Fatalf("PushCtx: %v", err)
+	}
+	ctx := trace.WithRequestID(trace.WithTrace(context.Background(), "t4", "s4"), "r4")
+	if _, err := d.PopCtx(ctx, name); err != nil {
+		t.Fatalf("PopCtx: %v", err)
+	}
+	out := fallback.String()
+	for _, want := range []string{"request_id=r4", "trace_id=t4", "span_id=s4"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("advisory = %q, want %s", out, want)
+		}
 	}
 }
