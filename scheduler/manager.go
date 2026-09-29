@@ -75,9 +75,11 @@ func (m *Manager) log() contract.Logger {
 }
 
 // logError emits an error event through the installed logger, or the
-// framework's standalone fallback logger when none is installed.
+// framework's standalone fallback logger when none is installed. A logger
+// that panics while writing it is contained, and the line goes to the
+// fallback: logError runs in recovery handlers.
 func (m *Manager) logError(msg string, kvs ...any) {
-	fallbacklog.Resolve(m.log()).Error(msg, kvs...)
+	fallbacklog.Write(m.log(), func(w contract.Logger) { w.Error(msg, kvs...) })
 }
 
 // Add adds a scheduler to the manager

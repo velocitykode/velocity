@@ -430,7 +430,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 	s.ValidateJobs()
 
-	s.log().Info("Scheduler started")
+	fallbacklog.Write(s.log(), func(w contract.Logger) { w.Info("Scheduler started") })
 
 	// Run immediately on start
 	s.runDueJobs()
@@ -479,19 +479,23 @@ func (s *Scheduler) ValidateJobs() {
 		j.mu.RUnlock()
 
 		if schedErr != nil {
-			s.log().Error(
-				"velocity/scheduler: invalid schedule configuration; job will never fire",
-				"task_name", jobName,
-				"error", schedErr,
-			)
+			fallbacklog.Write(s.log(), func(w contract.Logger) {
+				w.Error(
+					"velocity/scheduler: invalid schedule configuration; job will never fire",
+					"task_name", jobName,
+					"error", schedErr,
+				)
+			})
 		}
 	}
 	for name, count := range collisions {
-		s.log().Error(
-			"velocity/scheduler: WithoutOverlapping on job with default name; overlap guard keys on name, so unnamed closures will collide. Use Scheduler.Named(name, fn) or chain .Name(\"...\") to disambiguate.",
-			"task_name", name,
-			"count", count,
-		)
+		fallbacklog.Write(s.log(), func(w contract.Logger) {
+			w.Error(
+				"velocity/scheduler: WithoutOverlapping on job with default name; overlap guard keys on name, so unnamed closures will collide. Use Scheduler.Named(name, fn) or chain .Name(\"...\") to disambiguate.",
+				"task_name", name,
+				"count", count,
+			)
+		})
 	}
 }
 
@@ -539,7 +543,7 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 	close(s.stop)
 	s.mu.Unlock()
 
-	s.log().Info("Scheduler shutting down")
+	fallbacklog.Write(s.log(), func(w contract.Logger) { w.Info("Scheduler shutting down") })
 
 	// Wait for in-flight jobs with ctx deadline. Recover from panics so
 	// Shutdown always signals completion via done.
@@ -549,7 +553,10 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 	go func() { //safe-goroutine: close(done) on panic for shutdown, see comment above
 		defer func() {
 			if r := recover(); r != nil {
-				s.log().Error("velocity/scheduler: shutdown wait panic recovered", "error", panicerr.FromRecovered(r))
+				err := panicerr.FromRecovered(r)
+				fallbacklog.Write(s.log(), func(w contract.Logger) {
+					w.Error("velocity/scheduler: shutdown wait panic recovered", "error", err)
+				})
 			}
 			close(done)
 		}()
@@ -558,7 +565,7 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 
 	select {
 	case <-done:
-		s.log().Info("Scheduler stopped")
+		fallbacklog.Write(s.log(), func(w contract.Logger) { w.Info("Scheduler stopped") })
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -633,9 +640,12 @@ func (s *Scheduler) runDueJobs() {
 	// (runDueJobs is driven by Run's select loop). A bare panic in one
 	// would kill the whole scheduler, so each is isolated; there is no
 	// per-job context here, so a panic is logged rather than dispatched
-	// as scheduler.task.failed.
+	// as scheduler.task.failed. A logger that panics while writing that
+	// line is contained too, and the line goes to the fallback.
 	onCallbackPanic := func(err error) {
-		s.log().Error("velocity/scheduler: scheduler-level callback panicked", "error", err)
+		fallbacklog.Write(s.log(), func(w contract.Logger) {
+			w.Error("velocity/scheduler: scheduler-level callback panicked", "error", err)
+		})
 	}
 
 	// Run before callbacks
@@ -702,7 +712,7 @@ func (s *Scheduler) runDueJobs() {
 		var oneServerLock, overlapLock Lock
 		if onOneServer && locker != nil {
 			key := job.oneServerLockKey(now)
-			lk, err := locker.Acquire(runCtx, key, oneServerTTL)
+			lk, err := acquireLockSafely(locker, runCtx, key, oneServerTTL)
 			if err != nil {
 				// Balance the runWg.Add taken above on every skip
 				// path. ErrLockHeld is quiet contention; anything else
@@ -718,7 +728,7 @@ func (s *Scheduler) runDueJobs() {
 		if withoutOverlapping && locker != nil {
 			key := job.overlapLockKey()
 			ttl := job.effectiveOverlapTTL(overlapTTL)
-			lk, err := locker.Acquire(runCtx, key, ttl)
+			lk, err := acquireLockSafely(locker, runCtx, key, ttl)
 			if err != nil {
 				// Pre-dispatch failure: the job has NOT started on
 				// this host, so the minute's OnOneServer slot must
@@ -830,6 +840,19 @@ func logRunPanic(s *Scheduler, log contract.Logger, jobName string, r any) {
 func (s *Scheduler) skipAfterAcquireFailure(guard, jobName, key string, err error) {
 	defer s.runWg.Done()
 	fallbacklog.Write(s.log(), func(w contract.Logger) { logAcquireFailure(w, guard, jobName, key, err) })
+}
+
+// acquireLockSafely calls locker.Acquire, converting a panic in it
+// (panicerr.FromRecovered) into the returned error: a misbehaving backend
+// is then a failed acquire, skipped and warned about like any other,
+// instead of a panic that would kill the ticker goroutine.
+func acquireLockSafely(locker Locker, ctx context.Context, key string, ttl time.Duration) (lk Lock, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			lk, err = nil, panicerr.FromRecovered(r)
+		}
+	}()
+	return locker.Acquire(ctx, key, ttl)
 }
 
 // releaseLockSafely releases a scheduler Lock and contains any panic
