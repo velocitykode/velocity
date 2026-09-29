@@ -2,6 +2,7 @@ package queue
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 )
@@ -103,5 +104,29 @@ func (r *JobRegistry) Deserialize(payload *Payload) (Job, error) {
 		return nil, fmt.Errorf("velocity/queue: no handler registered for job type %s: %w", payload.Type, ErrJobNotFound)
 	}
 
-	return handler(payload.Data)
+	job, err := handler(payload.Data)
+	if err != nil {
+		return nil, err
+	}
+	// A factory is user code: one that returns no job and no error must
+	// not reach a driver as a success, or a reserved pop keeps a
+	// reservation for a job the worker takes for an empty queue, or runs a
+	// nil job.
+	if isNilJob(job) {
+		return nil, fmt.Errorf("velocity/queue: the factory registered for job type %s returned no job and no error", payload.Type)
+	}
+	return job, nil
+}
+
+// isNilJob reports whether job is nil, as an interface or as a nil value
+// of a nillable type (a typed nil pointer).
+func isNilJob(job Job) bool {
+	if job == nil {
+		return true
+	}
+	switch v := reflect.ValueOf(job); v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return v.IsNil()
+	}
+	return false
 }
