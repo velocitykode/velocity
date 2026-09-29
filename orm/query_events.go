@@ -20,8 +20,10 @@ const queryEventQueueSize = 1024
 // recorded with: listeners are slower than the query rate and the delivery
 // queue is full, so the event never reached a listener (the alternative
 // is stalling queries). The failure policy counts it as a failed event
-// (App.FailedEventCount), logs the first drop, and hands it to the failure
-// hook, so a hook can tell a drop from a listener failure with errors.Is.
+// (App.FailedEventCount) at once, and later, off the statement's path,
+// logs the first drop and hands it to the failure hook, so a hook can tell
+// a drop from a listener failure with errors.Is, and may itself use the
+// database.
 var ErrQueryEventQueueFull = errors.New("velocity/orm: query event queue full, dropping event")
 
 // pendingEvent is one queued item. A non-nil flush marks a barrier rather than
@@ -43,31 +45,70 @@ type pendingEvent struct {
 // callback only ever performs a non-blocking channel send.
 //
 // Delivery is FIFO. Events are dropped, never blocked on, when the queue is
-// full; each drop, and each listener panic the pump recovers, goes to fail,
-// the manager's failure policy.
+// full. Each listener panic the pump recovers goes to fail, the manager's
+// failure policy, on the pump goroutine. Each drop goes to failLater, which
+// counts it inside the driver callback without blocking; the rest of the
+// policy (the first-drop line and the failure hook, which may log, block,
+// or query the same pool) runs on a reporter goroutine of the pump's own,
+// after the callback has released its connection and whatever the
+// listener is doing.
 type eventPump struct {
-	ch   chan pendingEvent
-	quit chan struct{}
-	fail func(ctx context.Context, err error, event any)
+	ch        chan pendingEvent
+	reports   chan func()
+	quit      chan struct{}
+	fail      func(ctx context.Context, err error, event any)
+	failLater func(ctx context.Context, err error, event any) func()
 
 	stopped  atomic.Bool
 	stopOnce sync.Once
 }
 
-// newEventPump returns a pump that hands each dropped event and each
-// recovered listener panic to fail.
-func newEventPump(fail func(ctx context.Context, err error, event any)) *eventPump {
+// newEventPump returns a pump that hands each recovered listener panic to
+// fail and each dropped event to failLater, running the report failLater
+// returns on its reporter goroutine.
+func newEventPump(fail func(ctx context.Context, err error, event any), failLater func(ctx context.Context, err error, event any) func()) *eventPump {
 	return &eventPump{
-		ch:   make(chan pendingEvent, queryEventQueueSize),
-		quit: make(chan struct{}),
-		fail: fail,
+		ch:        make(chan pendingEvent, queryEventQueueSize),
+		reports:   make(chan func(), queryEventQueueSize),
+		quit:      make(chan struct{}),
+		fail:      fail,
+		failLater: failLater,
 	}
 }
 
-// start launches the delivery goroutine. dispatch is called once per event on
-// the pump goroutine.
+// start launches the delivery goroutine and the reporter goroutine.
+// dispatch is called once per event on the delivery goroutine.
 func (p *eventPump) start(dispatch func(context.Context, contract.Event)) {
 	async.Go(func() { p.run(dispatch) })
+	async.Go(p.runReports)
+}
+
+// runReports runs the drop reports enqueue hands over, in order, until
+// stop; it runs those already handed over before returning.
+func (p *eventPump) runReports() {
+	for {
+		select {
+		case report := <-p.reports:
+			runReport(report)
+		case <-p.quit:
+			for {
+				select {
+				case report := <-p.reports:
+					runReport(report)
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+// runReport runs one drop report, containing a panic in it (the hook's own
+// panic is recovered and counted by the policy; this covers the logger) so
+// the reporter goroutine survives to run the next one.
+func runReport(report func()) {
+	defer func() { _ = recover() }()
+	report()
 }
 
 func (p *eventPump) run(dispatch func(context.Context, contract.Event)) {
@@ -109,7 +150,10 @@ func (p *eventPump) deliver(dispatch func(context.Context, contract.Event), item
 }
 
 // enqueue hands an event to the pump. It never blocks: this runs inside a
-// driver callback holding a connection.
+// driver callback holding a connection. A drop is counted here and its
+// report handed to the reporter goroutine; when the reporter is as far
+// behind as the queue (its hook is slower still), the drop stays counted
+// and its line and hook are skipped rather than stall the statement.
 func (p *eventPump) enqueue(ctx context.Context, ev contract.Event) {
 	if p.stopped.Load() {
 		return
@@ -117,13 +161,19 @@ func (p *eventPump) enqueue(ctx context.Context, ev contract.Event) {
 	select {
 	case p.ch <- pendingEvent{ctx: ctx, event: ev}:
 	default:
-		p.fail(ctx, ErrQueryEventQueueFull, ev)
+		if report := p.failLater(ctx, ErrQueryEventQueueFull, ev); report != nil {
+			select {
+			case p.reports <- report:
+			default:
+			}
+		}
 	}
 }
 
-// flush blocks until every event queued before the call has been delivered.
+// flush blocks until every event queued before the call has been delivered
+// and the report of every event dropped before it has run.
 //
-// The barrier send is blocking, unlike enqueue, because a dropped barrier
+// The barrier sends are blocking, unlike enqueue, because a dropped barrier
 // would report a flush that never happened. That is safe only away from a
 // driver callback, which is the only place flush is called from.
 func (p *eventPump) flush(ctx context.Context) error {
@@ -131,8 +181,18 @@ func (p *eventPump) flush(ctx context.Context) error {
 		return nil
 	}
 	done := make(chan struct{})
+	if err := await(p, ctx, p.ch, pendingEvent{flush: done}, done); err != nil {
+		return err
+	}
+	reported := make(chan struct{})
+	return await(p, ctx, p.reports, func() { close(reported) }, reported)
+}
+
+// await sends barrier on ch, then waits for done, returning early (nil) when
+// the pump stops or with ctx's error when ctx ends first.
+func await[T any](p *eventPump, ctx context.Context, ch chan T, barrier T, done chan struct{}) error {
 	select {
-	case p.ch <- pendingEvent{flush: done}:
+	case ch <- barrier:
 	case <-p.quit:
 		return nil
 	case <-ctx.Done():

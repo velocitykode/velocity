@@ -940,7 +940,7 @@ func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event any) err
 	// dispatch, takes mu for reading and so simply waits for this call to
 	// return.
 	if m.pump.Load() == nil {
-		p := newEventPump(m.events.Fail)
+		p := newEventPump(m.events.Fail, m.events.FailLater)
 		p.start(m.dispatchEvent)
 		m.pump.Store(p)
 	}

@@ -19,8 +19,11 @@
 // recorded, so the component's Emitter does not record it a second time. A
 // component that drops events without calling the dispatcher (the router's
 // async buffer, the ORM statement-event queue) records those drops in the
-// Failures the app shares with it (Emitter.Share). A component used on its
-// own records into Failures of its own.
+// Failures the app shares with it (Emitter.Share); one whose drops happen
+// on a path that must not block (the ORM's, inside a database driver
+// callback) counts them there and applies the rest of the policy later
+// (Emitter.FailLater). A component used on its own records into Failures
+// of its own.
 //
 // # Concurrency
 //
@@ -179,6 +182,19 @@ func (f *Failures) leaveHook(gid uint64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.hooking, gid)
+}
+
+// hookRunningHere reports whether the calling goroutine is running the
+// hook.
+func (f *Failures) hookRunningHere() bool {
+	if f.hook.Load() == nil {
+		return false
+	}
+	gid := GoroutineID()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, running := f.hooking[gid]
+	return running
 }
 
 // firstOf reports whether name has not been logged before, and remembers it.
@@ -341,6 +357,28 @@ func (e *Emitter) Fail(ctx context.Context, err error, event any) {
 		ctx = context.Background()
 	}
 	e.failures().Record(ctx, e.log(), err, event)
+}
+
+// FailLater applies the failure policy to err, a failed dispatch of event,
+// in two steps, for a path that must not block (a database driver
+// callback, which holds its connection): the failure is counted now, and
+// the returned function applies the rest (the first-failure line, through
+// the component's logger read when it runs, and the hook) when the caller
+// runs it, away from that path. The caller runs it at most once. A failure
+// counted on a goroutine running the hook is not handed to the hook when
+// the function runs (see Failures.Record). FailLater returns nil, counting
+// nothing, for a nil err or one the dispatch function already recorded.
+func (e *Emitter) FailLater(ctx context.Context, err error, event any) func() {
+	if err == nil || Recorded(err) {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	f := e.failures()
+	f.count.Add(1)
+	nested := f.hookRunningHere()
+	return func() { f.report(ctx, e.log(), err, event, nested) }
 }
 
 // Share makes the emitter record its failures in f, the app's Failures;
