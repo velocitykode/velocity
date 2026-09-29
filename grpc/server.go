@@ -55,6 +55,13 @@ type Server struct {
 	// running, which toggles off on stop.
 	served bool
 
+	// drained is made by the stop that ends a running server, the one that
+	// owns its drain, and closed when grpc-go's stop for that server
+	// returns. A GracefulStop or Shutdown that overlaps waits on it, so it
+	// never reports success before the drain it overlaps has finished.
+	// Guarded by mu; nil until a stop ended a running server.
+	drained chan struct{}
+
 	// building is set while a Build constructs the server outside the
 	// lock, so a concurrent or re-entrant Build returns ErrBuildInProgress
 	// instead of constructing a second one. Guarded by mu.
@@ -716,14 +723,17 @@ func (s *Server) Stop() {
 	if st.log {
 		s.logLine(func(l contract.Logger) { l.Info("gRPC server stopping") })
 	}
-	if st.srv != nil {
+	if st.owner {
+		s.stopTransport(st, (*grpc.Server).Stop)
+	} else if st.srv != nil {
 		st.srv.Stop()
 	}
 	s.endStop(st)
 }
 
 // GracefulStop gracefully stops the gRPC server: it waits for the calls in
-// flight to finish. Like Stop, it also releases a listener bound by Build but
+// flight to finish. A GracefulStop that overlaps another graceful stop or
+// a Shutdown waits for that drain to finish. Like Stop, it also releases a listener bound by Build but
 // never served, so a built-but-unstarted server does not leak its socket. The
 // wait runs without the server's lock, so those calls may call the
 // server's accessors, and a Stop may interrupt it.
@@ -732,8 +742,11 @@ func (s *Server) GracefulStop() {
 	if st.log {
 		s.logLine(func(l contract.Logger) { l.Info("gRPC server gracefully stopping") })
 	}
-	if st.srv != nil {
-		st.srv.GracefulStop()
+	switch {
+	case st.owner:
+		s.stopTransport(st, (*grpc.Server).GracefulStop)
+	case st.drained != nil:
+		<-st.drained
 	}
 	s.endStop(st)
 }
@@ -741,8 +754,15 @@ func (s *Server) GracefulStop() {
 // stopPlan is what one Stop or GracefulStop does after it released the
 // lock.
 type stopPlan struct {
-	// srv is the grpc-go server to stop, nil when there is none to stop.
+	// srv is the grpc-go server to stop, or for a stop that overlaps the
+	// owner's drain, to force at a deadline; nil when there is none.
 	srv *grpc.Server
+	// owner is set when this stop ended a running server: it runs grpc-go's
+	// stop and closes drained when that returns.
+	owner bool
+	// drained is closed when the owning stop's grpc-go stop returned; nil
+	// when no stop ended a running server.
+	drained chan struct{}
 	// log is set when this stop ended a running server.
 	log bool
 	// start is when the server this stop ended started, zero when it
@@ -756,10 +776,11 @@ type stopPlan struct {
 }
 
 // beginStop records a stop under the lock and returns what to do after
-// it. A running server stops running; force (Stop) stops a server that
-// was served even when it no longer runs, so it reaches a GracefulStop in
-// progress (grpc-go accepts Stop during GracefulStop, and a repeated Stop
-// is a no-op). A built but never served server gives up its
+// it. A running server stops running, and this stop owns its drain; force
+// (Stop) stops a server that was served even when it no longer runs, so
+// it reaches a GracefulStop in progress (grpc-go accepts Stop during
+// GracefulStop, and a repeated Stop is a no-op), and a graceful stop that
+// overlaps the owner's waits on its drain. A built but never served server gives up its
 // listener, and grpcServer is reset so it never outlives that listener,
 // or a later Build() early-returns and Start() panics on a nil listener.
 // It calls no application code.
@@ -772,12 +793,19 @@ func (s *Server) beginStop(force bool) stopPlan {
 		// grpc-go closes the serving listener. Do NOT touch s.listener here: the
 		// StartAsync serve goroutine reads it without the lock, so writing it
 		// would race that read.
-		st.srv, st.log = s.grpcServer, true
+		st.srv, st.log, st.owner = s.grpcServer, true, true
 		s.running = false
 		st.start = s.startTime
 		s.startTime = time.Time{}
-	case force && s.grpcServer != nil && s.served:
-		st.srv = s.grpcServer
+		s.drained = make(chan struct{})
+		st.drained = s.drained
+	case s.grpcServer != nil && s.served:
+		// A stop already ended this server: force reaches its drain, and a
+		// graceful stop waits on it.
+		st.srv, st.drained = s.grpcServer, s.drained
+		if !force && st.drained == nil {
+			st.srv = nil
+		}
 	case !s.served && s.listener != nil:
 		// Built but never served (Start/StartAsync never ran): grpc-go never took
 		// ownership of this listener, so the bound socket leaks until exit unless
@@ -789,6 +817,13 @@ func (s *Server) beginStop(force bool) stopPlan {
 		s.grpcServer = nil
 	}
 	return st
+}
+
+// stopTransport runs the owning stop's grpc-go stop and then marks the
+// drain finished for every stop that overlaps it.
+func (s *Server) stopTransport(st stopPlan, stop func(*grpc.Server)) {
+	defer close(st.drained)
+	stop(st.srv)
 }
 
 // endStop finishes the stop st after grpc-go stopped: it closes an unserved
@@ -853,7 +888,9 @@ func (s *Server) serverStartedLocked() *grpcevents.ServerStarted {
 // Shutdown gracefully stops the server, waiting for the calls in flight
 // until ctx is done. At the deadline it returns the ctx error and forces
 // the stop; a handler that ignores its context may still run after
-// Shutdown returns.
+// Shutdown returns. A Shutdown that overlaps a stop already draining the
+// server waits for that drain the same way, so a nil return always means
+// the calls in flight have finished.
 //
 // Shutdown records the stop, logs it and dispatches ServerStopped itself,
 // once, before it returns, whichever stop ends the server. The goroutines
@@ -866,18 +903,20 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if st.log {
 		s.logLine(func(l contract.Logger) { l.Info("gRPC server gracefully stopping") })
 	}
+	if st.owner {
+		async.Go(func() { s.stopTransport(st, (*grpc.Server).GracefulStop) })
+	}
 	var err error
-	if srv := st.srv; srv != nil {
-		done := make(chan struct{})
-		async.Go(func() {
-			defer close(done)
-			srv.GracefulStop()
-		})
+	if st.drained != nil {
 		select {
-		case <-done:
+		case <-st.drained:
 		case <-ctx.Done():
-			async.Go(srv.Stop)
-			err = ctx.Err()
+			select {
+			case <-st.drained:
+			default:
+				async.Go(st.srv.Stop)
+				err = ctx.Err()
+			}
 		}
 	}
 	s.endStop(st)
