@@ -14,12 +14,11 @@ import (
 // and is the session-less default of NewE.
 //
 // A store is called while CSRF holds a lock for the request (reading a
-// token single-flights per request) or, for single-use tokens on a store
-// without AtomicConsumer, a lock for the whole process; a session scheme
-// rotating or revoking a token calls it under the request's
-// authentication lock. A store must therefore not call back into CSRF
-// validation or token reads, or into the session scheme, for the request
-// it is serving: that call waits on the lock its own caller holds.
+// token single-flights per request); a session scheme rotating or
+// revoking a token calls it under the request's authentication lock. A
+// store must therefore not call back into CSRF token reads, or into the
+// session scheme, for the request it is serving: that call waits on the
+// lock its own caller holds.
 type Store interface {
 	// Get returns the token held for session id, or
 	// stores.ErrTokenNotFound when none is held.
@@ -53,10 +52,10 @@ type Store interface {
 //   - err != nil     : underlying store failure (network, etc.); consumed is
 //     meaningless and must be ignored
 //
-// A store that cannot compare and remove in one step (e.g. a thin SQL store
-// without row-level locking) should not implement this interface; the CSRF
-// middleware then reads, compares and deletes under a per-process lock and
-// logs a one-time warning that single use is exact per process only.
+// Config.SingleUse requires it: NewE refuses single use with a Store that
+// does not implement it. A store that cannot compare and remove in one
+// step (e.g. a thin SQL store without row-level locking) should not
+// implement this interface, and cannot serve single-use tokens.
 //
 // Implementations MUST use constant-time comparison for the value match
 // (crypto/subtle.ConstantTimeCompare) to avoid leaking a token-length

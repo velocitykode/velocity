@@ -76,9 +76,9 @@ type Config struct {
 	// Mode selects how tokens are bound to the client. Default ModeSession.
 	Mode Mode
 
-	// SingleUse consumes a token on its first successful validation. How
-	// far that reaches depends on the Store: see AtomicConsumer and its
-	// ConsumptionScope. The session-bag store velocity.New installs makes
+	// SingleUse consumes a token on its first successful validation. It
+	// requires a Store implementing AtomicConsumer (NewE refuses any
+	// other), and how far it reaches is that store's ConsumptionScope. The session-bag store velocity.New installs makes
 	// it exact per instance, and New refuses it for a session with no
 	// absolute cap.
 	SingleUse bool

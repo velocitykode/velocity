@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"sync/atomic"
 
 	"github.com/velocitykode/velocity/contract"
@@ -50,13 +49,9 @@ var (
 // CSRF provides CSRF protection functionality
 type CSRF struct {
 	config *Config
-	// singleUseMu serializes validate+delete for single-use tokens when the
-	// configured Store does NOT implement AtomicConsumer; it protects only
-	// within this process. singleUseScopeLogged makes the middleware log,
-	// once, how far single use reaches when it is less than the whole
-	// deployment: per process (no AtomicConsumer) or per instance
-	// (ConsumedPerInstance).
-	singleUseMu          sync.Mutex
+	// singleUseScopeLogged makes the middleware log, once, that single use
+	// reaches only this instance (a Store whose ConsumptionScope is
+	// ConsumedPerInstance).
 	singleUseScopeLogged atomic.Bool
 
 	// events holds the optional event dispatcher (SetEventDispatcher), through
@@ -89,6 +84,8 @@ func New(config *Config) *CSRF {
 
 // NewE is the error-returning constructor. Prefer this in app bootstrap
 // so mis-set Config.Mode surfaces as a return error rather than a panic.
+// SingleUse with a Store that does not implement AtomicConsumer is refused
+// (ErrInsecureCSRFConfig).
 //
 // SessionIDResolver MUST be non-nil. The resolver is the binding-key
 // boundary between an attacker-controlled cookie value and the CSRF token
@@ -120,6 +117,17 @@ func NewE(config *Config) (*CSRF, error) {
 		store := stores.NewMemoryStore()
 		store.Start(context.Background())
 		config.Store = store
+	}
+
+	// Single use needs a store that compares and removes a token in one
+	// step: a read, compare and delete split across calls would let two
+	// requests accept the same token, and serializing them in the
+	// framework would hold every single-use check in the app behind one
+	// lock, across the store's own calls.
+	if config.SingleUse {
+		if _, ok := config.Store.(AtomicConsumer); !ok {
+			return nil, fmt.Errorf("%w: SingleUse requires a Store that implements AtomicConsumer; %T does not", ErrInsecureCSRFConfig, config.Store)
+		}
 	}
 
 	return &CSRF{config: config}, nil
@@ -479,13 +487,11 @@ func (c *CSRF) RouterMiddleware() router.MiddlewareFunc {
 
 // validateToken validates the CSRF token in the request.
 //
-// Single-use semantics: when SingleUse is enabled and the configured Store
-// implements AtomicConsumer, comparison and removal happen as one step
-// among the callers that share the store's consumption record; its
-// ConsumptionScope says whether that is every instance or only this one,
-// and the middleware logs once when it is only this one. When the store
-// lacks AtomicConsumer, the middleware serializes per process instead
-// (singleUseMu) and logs once that single use is exact per process only.
+// Single-use semantics: SingleUse requires a Store implementing
+// AtomicConsumer (NewE refuses any other), so comparison and removal
+// happen as one step among the callers that share the store's consumption
+// record; its ConsumptionScope says whether that is every instance or only
+// this one, and the middleware logs once when it is only this one.
 //
 // A request with no usable token is rejected with ErrTokenMissing before
 // the session is needed; reportMissingSession still dispatches
@@ -530,31 +536,24 @@ func (c *CSRF) validateToken(w http.ResponseWriter, r *http.Request) error {
 	// that; how far the guarantee reaches is the store's ConsumptionScope.
 	ctx := r.Context()
 	if c.config.SingleUse {
-		if consumer, ok := c.config.Store.(AtomicConsumer); ok {
-			if consumer.ConsumptionScope() != stores.ConsumedEverywhere && c.singleUseScopeLogged.CompareAndSwap(false, true) {
-				c.log(ctx).Warn("velocity/csrf: SingleUse is exact per instance only: the Store keeps the record of consumed tokens on the instance that accepted them (ConsumedPerInstance), so a token replayed on another instance can be accepted once there")
-			}
-			consumed, err := consumer.ConsumeIfMatch(ctx, sessionID, requestToken)
-			if err != nil {
-				c.log(ctx).Error("velocity/csrf: consume single-use token failed; the request is rejected", "error", err)
-				return ErrTokenInvalid
-			}
-			if !consumed {
-				return ErrTokenInvalid
-			}
-			return nil
+		consumer, ok := c.config.Store.(AtomicConsumer)
+		if !ok {
+			// NewE refuses this configuration; a Store swapped on the
+			// Config afterwards fails closed.
+			return ErrTokenInvalid
 		}
-		// The store cannot consume in one step: read, compare and delete
-		// under a per-process lock, which makes single use exact per
-		// process only.
-		if c.singleUseScopeLogged.CompareAndSwap(false, true) {
-			c.log(ctx).Warn("velocity/csrf: SingleUse is exact per process only: the Store does not implement AtomicConsumer, so two processes can each accept the same token once")
+		if consumer.ConsumptionScope() != stores.ConsumedEverywhere && c.singleUseScopeLogged.CompareAndSwap(false, true) {
+			c.log(ctx).Warn("velocity/csrf: SingleUse is exact per instance only: the Store keeps the record of consumed tokens on the instance that accepted them (ConsumedPerInstance), so a token replayed on another instance can be accepted once there")
 		}
-		err, deleteErr := c.consumeInProcess(ctx, sessionID, requestToken)
-		if deleteErr != nil {
-			c.log(ctx).Error("velocity/csrf: delete single-use token failed; the token stays valid until it expires", "error", deleteErr)
+		consumed, err := consumer.ConsumeIfMatch(ctx, sessionID, requestToken)
+		if err != nil {
+			c.log(ctx).Error("velocity/csrf: consume single-use token failed; the request is rejected", "error", err)
+			return ErrTokenInvalid
 		}
-		return err
+		if !consumed {
+			return ErrTokenInvalid
+		}
+		return nil
 	}
 
 	expectedToken, err := c.config.Store.Get(ctx, sessionID)
@@ -568,20 +567,6 @@ func (c *CSRF) validateToken(w http.ResponseWriter, r *http.Request) error {
 		return ErrTokenInvalid
 	}
 	return nil
-}
-
-// consumeInProcess validates requestToken against the token held for
-// sessionID and deletes it, under singleUseMu, for a store without
-// AtomicConsumer. err is the validation result; deleteErr a failed delete
-// of an accepted token, which the caller logs once the lock is released.
-func (c *CSRF) consumeInProcess(ctx context.Context, sessionID, requestToken string) (err, deleteErr error) {
-	c.singleUseMu.Lock()
-	defer c.singleUseMu.Unlock()
-	expectedToken, getErr := c.config.Store.Get(ctx, sessionID)
-	if getErr != nil || !ValidateToken(requestToken, expectedToken) {
-		return ErrTokenInvalid, nil
-	}
-	return nil, c.config.Store.Delete(ctx, sessionID)
 }
 
 // getTokenFromRequest extracts the CSRF token from the request.

@@ -28,8 +28,8 @@ const rawSessionID = "raw-session-id-4f1c9e"
 // errStoreDown is the failure the failing stores return.
 var errStoreDown = errors.New("token store unreachable")
 
-// failingDeleteStore holds tokens but fails every Delete.
-type failingDeleteStore struct{ *nonAtomicStore }
+// failingDeleteStore consumes tokens in one step but fails every Delete.
+type failingDeleteStore struct{ *stores.MemoryStore }
 
 func (failingDeleteStore) Delete(context.Context, string) error { return errStoreDown }
 
@@ -75,9 +75,8 @@ func singleUseCSRF(t *testing.T, store Store) (*CSRF, string) {
 	return New(cfg), token
 }
 
-// The three token-store failures the CSRF instance logs (consuming a
-// single-use token, deleting one, deleting the old session's token on
-// rotation) each write one error line through the instance's logger, and
+// The two token-store failures the CSRF instance logs (consuming a
+// single-use token, deleting the old session's token on rotation) each write one error line through the instance's logger, and
 // none of them names the session id. Nothing goes through the standard
 // library log or the fallback logger.
 func TestCSRF_StoreFailuresLogThroughItsLoggerWithoutTheSessionID(t *testing.T) {
@@ -97,20 +96,10 @@ func TestCSRF_StoreFailuresLogThroughItsLoggerWithoutTheSessionID(t *testing.T) 
 			},
 		},
 		{
-			name: "delete single-use token",
-			msg:  "velocity/csrf: delete single-use token failed",
-			run: func(t *testing.T, build func(Store) (*CSRF, string)) {
-				c, token := build(failingDeleteStore{newNonAtomicStore()})
-				if code := postWithSessionToken(c, token); code != http.StatusOK {
-					t.Fatalf("status = %d, want 200", code)
-				}
-			},
-		},
-		{
 			name: "rotate token",
 			msg:  "velocity/csrf: rotate token: delete the old session's token failed",
 			run: func(t *testing.T, build func(Store) (*CSRF, string)) {
-				c, _ := build(failingDeleteStore{newNonAtomicStore()})
+				c, _ := build(failingDeleteStore{stores.NewMemoryStore()})
 				if err := c.RotateToken(context.Background(), rawSessionID, "new-session-id"); err != nil {
 					t.Fatalf("RotateToken: %v", err)
 				}
@@ -152,11 +141,11 @@ func TestCSRF_StoreFailuresLogThroughItsLoggerWithoutTheSessionID(t *testing.T) 
 func TestCSRF_StoreFailureWithoutLoggerUsesTheFallback(t *testing.T) {
 	stdlib := fallbacklogtest.CaptureStdlib(t)
 	fallback := fallbacklogtest.Capture(t)
-	c, token := singleUseCSRF(t, failingDeleteStore{newNonAtomicStore()})
-	if code := postWithSessionToken(c, token); code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", code)
+	c, token := singleUseCSRF(t, failingConsumeStore{newNonAtomicStore()})
+	if code := postWithSessionToken(c, token); code == http.StatusOK {
+		t.Fatalf("status = %d, want a rejection", code)
 	}
-	if got := fallback.Count("ERROR", "velocity/csrf: delete single-use token failed"); got != 1 {
+	if got := fallback.Count("ERROR", "velocity/csrf: consume single-use token failed"); got != 1 {
 		t.Errorf("fallback error lines = %d, want 1 (%q)", got, fallback.String())
 	}
 	if strings.Contains(fallback.String(), rawSessionID) {
@@ -202,7 +191,7 @@ func TestCSRF_SetLoggerReachesTheSessionBagStore(t *testing.T) {
 func TestCSRF_SetLoggerWhileServingIsSafe(t *testing.T) {
 	fallbacklogtest.Capture(t)
 	out := &fallbacklogtest.Output{}
-	c, token := singleUseCSRF(t, failingDeleteStore{newNonAtomicStore()})
+	c, token := singleUseCSRF(t, failingDeleteStore{stores.NewMemoryStore()})
 	// Each bag writes its warning once, so each is read once: use many.
 	bags := make([]*stores.SessionBagStore, 50)
 	for i := range bags {
@@ -243,7 +232,7 @@ func withRequestIDs(ctx context.Context) context.Context {
 }
 
 // Every line the CSRF instance and its session-bag store write while
-// serving a request carries the request's ids: the three store failures,
+// serving a request carries the request's ids: the two store failures,
 // the single-use scope warning and the outside-the-session warning.
 func TestCSRF_LinesCarryTheRequestIDs(t *testing.T) {
 	post := func(c *CSRF, token string) {
@@ -263,13 +252,13 @@ func TestCSRF_LinesCarryTheRequestIDs(t *testing.T) {
 			c.SetLogger(logdrivers.NewConsoleLoggerTo(out, 0))
 			post(c, token)
 		}},
-		{"delete single-use token", []string{"WARN: velocity/csrf: SingleUse is exact per process only", "ERROR: velocity/csrf: delete single-use token failed"}, func(out *fallbacklogtest.Output) {
-			c, token := singleUseCSRF(t, failingDeleteStore{newNonAtomicStore()})
+		{"single-use scope", []string{"WARN: velocity/csrf: SingleUse is exact per instance only"}, func(out *fallbacklogtest.Output) {
+			c, token := singleUseCSRF(t, perInstanceStore{stores.NewMemoryStore()})
 			c.SetLogger(logdrivers.NewConsoleLoggerTo(out, 0))
 			post(c, token)
 		}},
 		{"rotate token", []string{"ERROR: velocity/csrf: rotate token"}, func(out *fallbacklogtest.Output) {
-			c, _ := singleUseCSRF(t, failingDeleteStore{newNonAtomicStore()})
+			c, _ := singleUseCSRF(t, failingDeleteStore{stores.NewMemoryStore()})
 			c.SetLogger(logdrivers.NewConsoleLoggerTo(out, 0))
 			_ = c.RotateToken(withRequestIDs(context.Background()), rawSessionID, "new-session-id")
 		}},
@@ -309,14 +298,14 @@ func TestCSRF_SetLoggerEdgeInputs(t *testing.T) {
 	t.Run("nil restores the fallback", func(t *testing.T) {
 		fallback := fallbacklogtest.Capture(t)
 		out := &fallbacklogtest.Output{}
-		c, token := singleUseCSRF(t, failingDeleteStore{newNonAtomicStore()})
+		c, token := singleUseCSRF(t, failingConsumeStore{newNonAtomicStore()})
 		c.SetLogger(logdrivers.NewConsoleLoggerTo(out, 0))
 		c.SetLogger(nil)
 		_ = postWithSessionToken(c, token)
 		if out.String() != "" {
 			t.Errorf("replaced logger got %q, want nothing", out.String())
 		}
-		if got := fallback.Count("ERROR", "velocity/csrf: delete single-use token failed"); got != 1 {
+		if got := fallback.Count("ERROR", "velocity/csrf: consume single-use token failed"); got != 1 {
 			t.Errorf("fallback error lines = %d, want 1 (%q)", got, fallback.String())
 		}
 	})
@@ -334,7 +323,7 @@ func TestCSRF_SetLoggerEdgeInputs(t *testing.T) {
 	t.Run("after shutdown", func(t *testing.T) {
 		fallback := fallbacklogtest.Capture(t)
 		out := &fallbacklogtest.Output{}
-		c, _ := singleUseCSRF(t, failingDeleteStore{newNonAtomicStore()})
+		c, _ := singleUseCSRF(t, failingDeleteStore{stores.NewMemoryStore()})
 		if err := c.Shutdown(context.Background()); err != nil {
 			t.Fatalf("Shutdown: %v", err)
 		}

@@ -1793,59 +1793,57 @@ func TestSingleUse_AtomicStore_ConcurrentValidate(t *testing.T) {
 	}
 }
 
-// TestSingleUse_NonAtomicStore_EmitsWarningOnce pins the operator-warning
-// half of M-01: when SingleUse is enabled and the Store does NOT
-// implement AtomicConsumer, the middleware must emit a one-time warning
-// so operators know their deployment is best-effort. The warning must
-// NOT repeat on subsequent validations.
-func TestSingleUse_NonAtomicStore_EmitsWarningOnce(t *testing.T) {
+// SingleUse needs a Store that compares and removes a token in one step:
+// NewE refuses a Store without AtomicConsumer, naming it, and New panics
+// on the same configuration. A Store swapped on the Config after
+// construction fails closed instead of accepting the token.
+func TestSingleUse_RequiresAnAtomicConsumer(t *testing.T) {
+	newConfig := func() *Config {
+		cfg := DefaultConfig()
+		cfg.SessionIDResolver = testCookieResolver("session_id")
+		cfg.SingleUse = true
+		cfg.Store = newNonAtomicStore()
+		return cfg
+	}
+
+	c, err := NewE(newConfig())
+	if !errors.Is(err, ErrInsecureCSRFConfig) || c != nil {
+		t.Fatalf("NewE = %v, %v; want nil and ErrInsecureCSRFConfig", c, err)
+	}
+	if !strings.Contains(err.Error(), "AtomicConsumer") || !strings.Contains(err.Error(), "nonAtomicStore") {
+		t.Errorf("error %q does not name the requirement and the store", err)
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("New accepted SingleUse over a Store without AtomicConsumer")
+			}
+		}()
+		New(newConfig())
+	}()
+
+	cfg := newConfig()
+	cfg.Store = stores.NewMemoryStore()
+	c = New(cfg)
+	store := newNonAtomicStore()
+	cfg.Store = store
 	const sessionID = "sess"
 	token, err := GenerateToken()
 	if err != nil {
-		t.Fatalf("GenerateToken: %v", err)
+		t.Fatal(err)
 	}
-
-	store := newNonAtomicStore()
 	if err := store.Set(context.Background(), sessionID, token); err != nil {
-		t.Fatalf("seed: %v", err)
+		t.Fatal(err)
 	}
-
-	cfg := DefaultConfig()
-	cfg.SessionIDResolver = testCookieResolver("session_id")
-	cfg.SingleUse = true
-	cfg.Store = store
-	c := New(cfg)
-
-	// The CSRF instance has no logger: capture the fallback logger.
-	buf := fallbacklogtest.Capture(t)
-
-	do := func(tok string) int {
-		req := httptest.NewRequest("POST", "/submit", nil)
-		req.Header.Set("X-CSRF-Token", tok)
-		req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
-		w := httptest.NewRecorder()
-		c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		})).ServeHTTP(w, req)
-		return w.Code
-	}
-
-	// First validate: consumed (degraded path), warning emitted.
-	if code := do(token); code != http.StatusOK {
-		t.Fatalf("first validate: expected 200, got %d (log=%s)", code, buf.String())
-	}
-	if !strings.Contains(buf.String(), "Store does not implement AtomicConsumer") {
-		t.Errorf("expected one-time warning on first single-use validate; log=%q", buf.String())
-	}
-	firstLog := buf.String()
-
-	// Second validate: token is gone (deleted by first), so 419. Critical
-	// assertion: warning must NOT repeat.
-	if code := do(token); code != 419 {
-		t.Fatalf("second validate: expected 419 (token consumed), got %d", code)
-	}
-	if buf.String() != firstLog {
-		t.Errorf("warning must not repeat; first=%q second=%q", firstLog, buf.String())
+	req := httptest.NewRequest(http.MethodPost, "/submit", nil)
+	req.Header.Set("X-CSRF-Token", token)
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
+	w := httptest.NewRecorder()
+	c.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("the handler ran over a Store without AtomicConsumer")
+	})).ServeHTTP(w, req)
+	if w.Code != 419 {
+		t.Errorf("status = %d, want 419", w.Code)
 	}
 }
 
@@ -1853,8 +1851,7 @@ func TestSingleUse_NonAtomicStore_EmitsWarningOnce(t *testing.T) {
 // wrong single-use token does NOT cause the legitimate token to be
 // deleted via the AtomicConsumer path. Without this guarantee, an
 // adversary who could observe POSTs could rapid-fire wrong tokens and
-// either DoS the legitimate user or race the delete on the non-atomic
-// fallback path.
+// either DoS the legitimate user or race its delete.
 func TestSingleUse_WrongTokenLeavesEntry(t *testing.T) {
 	const sessionID = "sess"
 	token, err := GenerateToken()

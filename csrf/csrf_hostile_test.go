@@ -2,9 +2,6 @@ package csrf
 
 import (
 	"context"
-	"errors"
-	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 
@@ -79,65 +76,5 @@ func TestCSRF_StoreSetLoggerIsUserCode(t *testing.T) {
 				t.Fatal("the store's logger does not reach the instance's")
 			}
 		})
-	}
-}
-
-// deleteFailingStore is a token store whose Delete fails, so accepting a
-// single-use token logs the failed delete.
-type deleteFailingStore struct {
-	*nonAtomicStore
-}
-
-func (deleteFailingStore) Delete(context.Context, string) error {
-	return errors.New("token store down")
-}
-
-// The failed-delete line of a single-use token is written after the
-// process-wide single-use lock is released: a logger that blocks on it
-// holds up its own request only, never another session's validation.
-func TestCSRF_SingleUseDeleteFailureLogDoesNotHoldTheLock(t *testing.T) {
-	store := deleteFailingStore{newNonAtomicStore()}
-	cfg := DefaultConfig()
-	cfg.SessionIDResolver = testCookieResolver("session_id")
-	cfg.SingleUse = true
-	cfg.Store = store
-	c := New(cfg)
-	code := hostile.New(t, hostile.Block, nil)
-	c.SetLogger(hostile.NewLogger(code, hostile.Error))
-
-	validate := func(sessionID string) int {
-		token, err := GenerateToken()
-		if err != nil {
-			t.Errorf("GenerateToken: %v", err)
-			return 0
-		}
-		if err := store.Set(context.Background(), sessionID, token); err != nil {
-			t.Errorf("seed: %v", err)
-			return 0
-		}
-		req := httptest.NewRequest(http.MethodPost, "/submit", nil)
-		req.Header.Set("X-CSRF-Token", token)
-		req.AddCookie(&http.Cookie{Name: "session_id", Value: sessionID})
-		w := httptest.NewRecorder()
-		c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		})).ServeHTTP(w, req)
-		return w.Code
-	}
-
-	go func() { //safe-goroutine: the test releases the block below
-		validate("first")
-	}()
-	<-code.Entered()
-	var status int
-	hostile.Within(t, hostile.Deadline, func() {
-		// Disarmed, so this request's own line does not block: only the
-		// first request's blocked line could hold it up.
-		code.Disarm()
-		status = validate("second")
-	})
-	code.Release()
-	if status != http.StatusOK {
-		t.Fatalf("second session's single-use validation answered %d, want 200", status)
 	}
 }
