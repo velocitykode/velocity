@@ -65,6 +65,12 @@ func TestMiddleware_FlushFailureLineCarriesTheRequestIDs(t *testing.T) {
 	if _, ok := fields["path"]; ok {
 		t.Errorf("line still carries path: %v", last)
 	}
+	if e, ok := fields["error"].(error); !ok || e.Error() != "broken pipe" {
+		t.Errorf("error = %v, want the flush failure under the error key (%v)", fields["error"], last)
+	}
+	if _, ok := fields["err"]; ok {
+		t.Errorf("line carries the failure under err: %v", last)
+	}
 }
 
 // The redirect-allowlist fallback warning, written on the request that

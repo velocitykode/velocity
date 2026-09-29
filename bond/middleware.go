@@ -104,7 +104,7 @@ func (b *Bond) serveBuffered(w http.ResponseWriter, r *http.Request, next http.H
 	// already committed, nothing useful to do except log.
 	if err := bw.flush(w); err != nil {
 		b.log().With(trace.LogFields(r.Context())...).Warn("velocity/bond: flush buffered response failed",
-			"err", err,
+			"error", err,
 			"url", r.URL.Path,
 		)
 	}
