@@ -673,8 +673,7 @@ func (s *Scheduler) runDueJobs() {
 				// and operators need to see it at WARN so a Redis
 				// outage doesn't look identical to "another host is
 				// healthily running this".
-				s.runWg.Done()
-				logAcquireFailure(s.log(), "OnOneServer", jobName, key, err)
+				s.skipAfterAcquireFailure("OnOneServer", jobName, key, err)
 				continue
 			}
 			oneServerLock = lk
@@ -695,8 +694,7 @@ func (s *Scheduler) runDueJobs() {
 				if oneServerLock != nil {
 					_ = releaseLockSafely(oneServerLock)
 				}
-				s.runWg.Done()
-				logAcquireFailure(s.log(), "WithoutOverlapping", jobName, key, err)
+				s.skipAfterAcquireFailure("WithoutOverlapping", jobName, key, err)
 				continue
 			}
 			overlapLock = lk
@@ -782,6 +780,23 @@ func logRunPanic(s *Scheduler, log contract.Logger, jobName string, r any) {
 		return
 	}
 	log.Error(msg, "error", err)
+}
+
+// skipAfterAcquireFailure writes the line for a due task skipped because
+// a Locker.Acquire for guard failed, then balances the runWg.Add taken for
+// the task. The count is released only after the line is written, so
+// Shutdown cannot return, and the app close the logger, under it. A logger
+// that panics while writing is contained (it would otherwise escape
+// runDueJobs and kill the ticker goroutine): the line goes to the
+// framework's standalone fallback logger, and the count is still released.
+func (s *Scheduler) skipAfterAcquireFailure(guard, jobName, key string, err error) {
+	defer s.runWg.Done()
+	defer func() {
+		if recover() != nil {
+			logAcquireFailure(fallbacklog.Logger{}, guard, jobName, key, err)
+		}
+	}()
+	logAcquireFailure(s.log(), guard, jobName, key, err)
 }
 
 // releaseLockSafely releases a scheduler Lock and contains any panic
