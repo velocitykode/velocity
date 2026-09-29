@@ -9,6 +9,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
@@ -23,10 +24,12 @@ var _ contract.Notifier = (*Manager)(nil)
 
 // Manager orchestrates sending notifications across multiple channels.
 type Manager struct {
-	channels        map[string]Channel
-	mu              sync.RWMutex
-	eventDispatcher func(ctx context.Context, event interface{}) error
-	logger          contract.Logger
+	channels map[string]Channel
+	mu       sync.RWMutex
+	// events holds the event dispatcher and handles a failed dispatch
+	// through the manager's logger.
+	events eventemit.Emitter
+	logger contract.Logger
 }
 
 // NewManager creates a new notification manager.
@@ -36,17 +39,20 @@ func NewManager() *Manager {
 	}
 }
 
-// SetEventDispatcher sets the function used to dispatch events.
+// SetEventDispatcher sets the function used to dispatch events; nil
+// removes it. Safe to call while the manager sends.
 func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.eventDispatcher = fn
+	// A failed dispatch is logged through the manager's logger as it is at
+	// the time of the failure. Installed here, not in NewManager, so a
+	// manager built as a literal gets it too.
+	m.events.UseLogger(m.log)
+	m.events.Set(fn)
 }
 
-// SetLogger installs the logger the manager writes its own lines to (an
-// event dispatch that failed) and hands it to every channel that takes one
-// (contract.LoggerAware): the channels registered now, and each channel
-// created or set later. Nil restores the framework's standalone fallback
+// SetLogger installs the logger the manager writes its own lines to (the
+// first failed dispatch of each event name) and hands it to every channel
+// that takes one (contract.LoggerAware): the channels registered now, and
+// each channel created or set later. Nil restores the framework's standalone fallback
 // logger. Safe to call while notifications are sent. The channels are
 // handed the logger under the manager's lock, as Channel and SetChannel
 // hand it, so concurrent calls leave the manager and every channel on the
@@ -79,28 +85,12 @@ func (m *Manager) handLogger(ch Channel) {
 	}
 }
 
-// getEventDispatcher returns the current event dispatcher under the read lock.
-func (m *Manager) getEventDispatcher() func(ctx context.Context, event interface{}) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.eventDispatcher
-}
-
 // dispatchEvent dispatches an event if a dispatcher is configured. The
 // caller-supplied ctx is propagated so listeners observe request-scoped
-// values. Errors from the dispatcher are logged but do not interrupt
-// notification delivery.
+// values. A failed dispatch is counted and its event's first failure
+// logged (see internal/eventemit); notification delivery is unaffected.
 func (m *Manager) dispatchEvent(ctx context.Context, event interface{}) {
-	dispatch := m.getEventDispatcher()
-	if dispatch == nil {
-		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := dispatch(ctx, event); err != nil {
-		m.log().Warn("velocity/notification: event dispatch failed", "error", err)
-	}
+	m.events.Emit(ctx, event)
 }
 
 // Shutdown tears down every channel that implements contract.ShutdownAware and

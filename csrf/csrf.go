@@ -16,6 +16,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf/stores"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/trace"
@@ -58,10 +59,10 @@ type CSRF struct {
 	singleUseMu          sync.Mutex
 	singleUseScopeLogged atomic.Bool
 
-	// eventDispatcher is optional; when set via SetEventDispatcher, the CSRF
-	// instance emits events such as csrf.session.missed.
-	eventMu         sync.RWMutex
-	eventDispatcher func(ctx context.Context, event interface{}) error
+	// events holds the optional event dispatcher (SetEventDispatcher), through
+	// which the CSRF instance emits events such as csrf.session.missed, and
+	// handles a failed dispatch through the instance's logger.
+	events eventemit.Emitter
 
 	// logMu guards logger, which SetLogger may replace while requests
 	// read it.
@@ -143,20 +144,22 @@ func (c *CSRF) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// SetEventDispatcher wires an event dispatcher into the CSRF instance.
-// Safe to call before or after requests are served; mutex-protected.
+// SetEventDispatcher wires an event dispatcher into the CSRF instance; nil
+// removes it. Safe to call before or after requests are served.
 func (c *CSRF) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	c.eventMu.Lock()
-	c.eventDispatcher = fn
-	c.eventMu.Unlock()
+	// A failed dispatch is logged through the instance's logger as it is
+	// at the time of the failure (the emitter binds the request's ids).
+	// Installed here, not in New, so an instance built as a literal gets
+	// it too.
+	c.events.UseLogger(c.currentLogger)
+	c.events.Set(fn)
 }
 
-// hasEventDispatcher reports whether an event dispatcher is installed, so
-// an event is built only when one is.
-func (c *CSRF) hasEventDispatcher() bool {
-	c.eventMu.RLock()
-	defer c.eventMu.RUnlock()
-	return c.eventDispatcher != nil
+// currentLogger returns the installed logger under logMu, or nil.
+func (c *CSRF) currentLogger() contract.Logger {
+	c.logMu.RLock()
+	defer c.logMu.RUnlock()
+	return c.logger
 }
 
 // SetLogger installs the logger the CSRF instance writes its warnings and
@@ -190,19 +193,11 @@ func (c *CSRF) log(ctx context.Context) contract.Logger {
 
 // dispatchEvent fires an event if a dispatcher is configured. The
 // caller-supplied ctx is propagated so listeners observe request-scoped
-// values. Failures from the dispatcher are swallowed: CSRF validation
-// must never fail because of an event sink.
+// values. A failed dispatch is counted and its event's first failure
+// logged (see internal/eventemit); CSRF validation never fails because of
+// an event sink.
 func (c *CSRF) dispatchEvent(ctx context.Context, evt interface{}) {
-	c.eventMu.RLock()
-	fn := c.eventDispatcher
-	c.eventMu.RUnlock()
-	if fn == nil {
-		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	_ = fn(ctx, evt)
+	c.events.Emit(ctx, evt)
 }
 
 // Middleware returns bare net/http middleware that runs Protect on every

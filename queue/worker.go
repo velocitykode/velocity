@@ -12,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
@@ -83,52 +84,37 @@ type Worker struct {
 	wg          sync.WaitGroup
 	logger      contract.Logger
 
-	// mu guards eventDispatcher. The setter is exposed publicly via
-	// SetEventDispatcher and may be called concurrently with pump goroutines
-	// that read the dispatcher to fire job lifecycle events. Without this
-	// guard the read/write race is reachable any time wireInstanceEvents
-	// runs after Start, and in tests that reassign the dispatcher between
-	// fixtures.
-	mu              sync.RWMutex
-	eventDispatcher func(ctx context.Context, event interface{}) error
+	// events holds the event dispatcher and handles a failed dispatch
+	// through the worker's logger. SetEventDispatcher may be called
+	// concurrently with pump goroutines that fire job lifecycle events
+	// (wireInstanceEvents after Start, tests that reassign the dispatcher
+	// between fixtures); the emitter stores and reads it atomically.
+	events eventemit.Emitter
 }
 
-// SetEventDispatcher sets the function used to dispatch events. Safe to
-// call concurrently with running pump goroutines.
+// SetEventDispatcher sets the function used to dispatch events; nil
+// removes it. Safe to call concurrently with running pump goroutines.
 func (w *Worker) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	w.mu.Lock()
-	w.eventDispatcher = fn
-	w.mu.Unlock()
+	w.events.Set(fn)
 }
 
 // dispatchEvent dispatches an event if a dispatcher is configured. The
 // caller-supplied ctx is propagated so listeners observe per-job scoped
-// values (deadline, trace ID).
+// values (deadline, trace ID). A failed dispatch is counted and its
+// event's first failure logged through the worker's logger (see
+// internal/eventemit); the job's outcome is unaffected.
 func (w *Worker) dispatchEvent(ctx context.Context, event interface{}) {
-	if fn := w.currentEventDispatcher(); fn != nil {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		fn(ctx, event)
-	}
+	w.events.Emit(ctx, event)
 }
 
 // jobEventDispatch returns dispatchEvent when an event dispatcher is
 // installed and nil when none is, so the job event helpers build no event
 // for no listener.
 func (w *Worker) jobEventDispatch() func(ctx context.Context, event interface{}) {
-	if w.currentEventDispatcher() == nil {
+	if !w.events.Installed() {
 		return nil
 	}
 	return w.dispatchEvent
-}
-
-// currentEventDispatcher returns the dispatcher SetEventDispatcher set, or
-// nil.
-func (w *Worker) currentEventDispatcher() func(ctx context.Context, event interface{}) error {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.eventDispatcher
 }
 
 // Option configures a worker
@@ -213,6 +199,7 @@ func NewWorker(queue Driver, queueName string, handler func(Job) error, opts ...
 	}
 
 	w.logger = fallbacklog.Resolve(w.logger)
+	w.events.UseLogger(func() contract.Logger { return w.logger })
 
 	return w
 }
@@ -841,7 +828,9 @@ func (w *Worker) failJob(ctx context.Context, log contract.Logger, job Job, jobT
 		}
 	}
 	failure := failureForEvent(job, err)
-	dispatch := w.currentEventDispatcher()
+	// Read once: the line below is written exactly when no dispatcher
+	// receives the queue.job.failed event.
+	dispatch := w.events.Dispatcher()
 	if dispatch == nil {
 		if !contract.IsReported(failure) {
 			log.Error("Job failed",
@@ -851,7 +840,11 @@ func (w *Worker) failJob(ctx context.Context, log contract.Logger, job Job, jobT
 		}
 		return
 	}
-	dispatchJobFailed(func(ctx context.Context, event interface{}) { _ = dispatch(ctx, event) }, ctx, jobType, w.queueName, failure, duration)
+	dispatchJobFailed(func(ctx context.Context, event interface{}) {
+		if err := dispatch(ctx, event); err != nil {
+			w.events.Fail(ctx, err, event)
+		}
+	}, ctx, jobType, w.queueName, failure, duration)
 }
 
 // failureForEvent returns the error the queue.job.failed event carries for a job

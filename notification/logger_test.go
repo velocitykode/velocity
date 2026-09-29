@@ -14,7 +14,7 @@ import (
 
 var _ contract.LoggerAware = (*Manager)(nil)
 
-const dispatchFailed = "velocity/notification: event dispatch failed"
+const dispatchFailed = "event dispatch failed"
 
 // failingDispatch is an event dispatcher whose listeners always fail.
 func failingDispatch(context.Context, interface{}) error {

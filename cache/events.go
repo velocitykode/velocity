@@ -105,7 +105,7 @@ func (e *CacheOperationFailed) UnmarshalJSON(data []byte) error {
 
 // dispatchCacheHit dispatches a CacheHit event
 func (m *Manager) dispatchCacheHit(ctx context.Context, key, store string) {
-	if !m.hasEventDispatcher() {
+	if !m.events.Installed() {
 		return
 	}
 	m.dispatchEvent(ctx, &CacheHit{EventMeta: eventmeta.Child(ctx), Key: key, Store: store})
@@ -113,7 +113,7 @@ func (m *Manager) dispatchCacheHit(ctx context.Context, key, store string) {
 
 // dispatchCacheMiss dispatches a CacheMiss event
 func (m *Manager) dispatchCacheMiss(ctx context.Context, key, store string) {
-	if !m.hasEventDispatcher() {
+	if !m.events.Installed() {
 		return
 	}
 	m.dispatchEvent(ctx, &CacheMiss{EventMeta: eventmeta.Child(ctx), Key: key, Store: store})
@@ -121,7 +121,7 @@ func (m *Manager) dispatchCacheMiss(ctx context.Context, key, store string) {
 
 // dispatchCacheWritten dispatches a CacheWritten event
 func (m *Manager) dispatchCacheWritten(ctx context.Context, key, store string, ttl time.Duration) {
-	if !m.hasEventDispatcher() {
+	if !m.events.Installed() {
 		return
 	}
 	m.dispatchEvent(ctx, &CacheWritten{EventMeta: eventmeta.Child(ctx), Key: key, Store: store, TTL: ttl})
@@ -129,7 +129,7 @@ func (m *Manager) dispatchCacheWritten(ctx context.Context, key, store string, t
 
 // dispatchCacheForgotten dispatches a CacheForgotten event
 func (m *Manager) dispatchCacheForgotten(ctx context.Context, key, store string) {
-	if !m.hasEventDispatcher() {
+	if !m.events.Installed() {
 		return
 	}
 	m.dispatchEvent(ctx, &CacheForgotten{EventMeta: eventmeta.Child(ctx), Key: key, Store: store})
@@ -139,7 +139,7 @@ func (m *Manager) dispatchCacheForgotten(ctx context.Context, key, store string)
 // failed store operation. op is one of the lowercase verbs documented on
 // CacheOperationFailed; key is empty for keyless operations (flush).
 func (m *Manager) dispatchCacheOperationFailed(ctx context.Context, store, op, key string, opErr error) {
-	if !m.hasEventDispatcher() {
+	if !m.events.Installed() {
 		return
 	}
 	m.dispatchEvent(ctx, &CacheOperationFailed{

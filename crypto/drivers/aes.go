@@ -69,6 +69,7 @@ import (
 	"golang.org/x/crypto/hkdf"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
@@ -114,12 +115,13 @@ type AESDriver struct {
 	// at driver construction; immutable after NewAESDriver returns.
 	debugDecrypt bool
 
-	// Event dispatcher wiring (mirrors the cache/queue/mail pattern).
-	// mu guards eventDispatcher and logger.
-	mu              sync.RWMutex
-	eventDispatcher func(ctx context.Context, event interface{}) error
-	logger          contract.Logger
-	legacyWarnOnce  sync.Once
+	// events holds the event dispatcher (the cache/queue/mail pattern) and
+	// handles a failed dispatch through the driver's logger.
+	events eventemit.Emitter
+	// mu guards logger.
+	mu             sync.RWMutex
+	logger         contract.Logger
+	legacyWarnOnce sync.Once
 
 	// gcmOnce builds the AEAD for the primary key exactly once. The key is
 	// immutable after NewAESDriver, and a GCM cipher.AEAD is safe for
@@ -263,17 +265,11 @@ func deriveSubkey(master []byte, size int, info []byte) ([]byte, error) {
 // cache/mail/queue pattern so bootstrap wiring can plug velocity's events
 // package in without the crypto package importing it.
 func (d *AESDriver) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.eventDispatcher = fn
-}
-
-// hasEventDispatcher reports whether an event dispatcher is installed, so
-// an event is built only when one is.
-func (d *AESDriver) hasEventDispatcher() bool {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.eventDispatcher != nil
+	// A failed dispatch is logged through the driver's logger as it is at
+	// the time of the failure. Installed here, not in NewAESDriver, so a
+	// driver built as a literal gets it too.
+	d.events.UseLogger(d.log)
+	d.events.Set(fn)
 }
 
 // SetLogger installs the logger the driver writes its warnings (the first
@@ -299,18 +295,12 @@ func (d *AESDriver) log() contract.Logger {
 // dispatchEvent dispatches an event if a dispatcher is configured.
 // Crypto operations operate without a request-scoped ctx (encryption is
 // CPU-bound and not request-bound), so callers pass context.Background()
-// here. Listeners that need a real ctx should plumb their own.
+// here. Listeners that need a real ctx should plumb their own. The
+// dispatcher is called inline, as in the cache package; listeners that
+// need async behaviour opt in via queued listeners. A failed dispatch is
+// counted and its event's first failure logged (see internal/eventemit).
 func (d *AESDriver) dispatchEvent(event interface{}) {
-	d.mu.RLock()
-	fn := d.eventDispatcher
-	d.mu.RUnlock()
-	if fn == nil {
-		return
-	}
-	// Dispatcher is called inline; mirrors the cache package which does
-	// not spawn a goroutine here. Listeners that need async behaviour can
-	// opt in via queued listeners.
-	_ = fn(context.Background(), event)
+	d.events.Emit(context.Background(), event)
 }
 
 // Encrypt encrypts plaintext
@@ -427,7 +417,7 @@ func (d *AESDriver) noteLegacyIfV0(version int) {
 	// Dispatch every time so operators can count/alert on the stream.
 	// The once-per-instance log is about noise, not signal. The event is
 	// built only when a dispatcher is installed.
-	if !d.hasEventDispatcher() {
+	if !d.events.Installed() {
 		return
 	}
 	d.dispatchEvent(&LegacyDecryptEvent{

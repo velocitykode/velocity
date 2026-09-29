@@ -68,7 +68,7 @@ func (e *NotificationFailed) UnmarshalJSON(data []byte) error {
 // delivery running under ctx's span. The event is built only when a
 // dispatcher is installed.
 func (m *Manager) dispatchNotificationSent(ctx context.Context, notifiable interface{}, n Notification, channel string, duration time.Duration) {
-	if m.getEventDispatcher() == nil {
+	if !m.events.Installed() {
 		return
 	}
 	m.dispatchEvent(ctx, &NotificationSent{
@@ -84,7 +84,7 @@ func (m *Manager) dispatchNotificationSent(ctx context.Context, notifiable inter
 // delivery running under ctx's span. The event is built only when a
 // dispatcher is installed.
 func (m *Manager) dispatchNotificationFailed(ctx context.Context, notifiable interface{}, n Notification, channel string, err error, duration time.Duration) {
-	if m.getEventDispatcher() == nil {
+	if !m.events.Installed() {
 		return
 	}
 	m.dispatchEvent(ctx, &NotificationFailed{

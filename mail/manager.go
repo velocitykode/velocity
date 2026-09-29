@@ -9,15 +9,17 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
 
 // Manager manages multiple mail channels
 type Manager struct {
-	channels        map[string]Mailer
-	mu              sync.RWMutex
-	eventDispatcher func(ctx context.Context, event interface{}) error
+	channels map[string]Mailer
+	mu       sync.RWMutex
+	// events holds the event dispatcher and handles a failed dispatch.
+	events eventemit.Emitter
 }
 
 // Manager must satisfy the contract mail manager interface. The assertion
@@ -36,20 +38,17 @@ func (m *Manager) SetAttachmentRoot(root *os.Root) {
 	SetDefaultAttachmentRoot(root)
 }
 
-// SetEventDispatcher sets the function used to dispatch events.
+// SetEventDispatcher sets the function used to dispatch events; nil
+// removes it. Safe to call while the manager sends.
 func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.eventDispatcher = fn
+	m.events.Set(fn)
 }
 
 // eventDispatch returns dispatchEvent when an event dispatcher is installed
 // and nil when none is, so the mail event helpers build no event for no
 // listener.
 func (m *Manager) eventDispatch() func(ctx context.Context, event interface{}) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.eventDispatcher == nil {
+	if !m.events.Installed() {
 		return nil
 	}
 	return m.dispatchEvent
@@ -57,17 +56,10 @@ func (m *Manager) eventDispatch() func(ctx context.Context, event interface{}) {
 
 // dispatchEvent dispatches an event if a dispatcher is configured. The
 // caller-supplied ctx is propagated so listeners observe request-scoped
-// values.
+// values. A failed dispatch is counted and its event's first failure
+// logged (see internal/eventemit); the send is unaffected.
 func (m *Manager) dispatchEvent(ctx context.Context, event interface{}) {
-	m.mu.RLock()
-	fn := m.eventDispatcher
-	m.mu.RUnlock()
-	if fn != nil {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		fn(ctx, event)
-	}
+	m.events.Emit(ctx, event)
 }
 
 // NewManager creates a new mail manager

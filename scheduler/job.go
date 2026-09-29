@@ -99,7 +99,7 @@ type Job struct {
 // captures the scheduler's dispatchEvent method so callers pass the per-job
 // ctx through to listeners.
 func (j *Job) getDispatch() func(context.Context, interface{}) {
-	if j.scheduler != nil && j.scheduler.hasEventDispatcher() {
+	if j.scheduler != nil && j.scheduler.events.Installed() {
 		return j.scheduler.dispatchEvent
 	}
 	return nil

@@ -29,9 +29,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/neturl"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -83,10 +83,10 @@ var sensitiveHeaders = []string{
 
 // Client is an instrumented HTTP client that dispatches events for APM monitoring
 type Client struct {
-	mu              sync.RWMutex
-	client          *http.Client
-	baseURL         string
-	eventDispatcher func(ctx context.Context, event interface{}) error
+	client  *http.Client
+	baseURL string
+	// events holds the event dispatcher and handles a failed dispatch.
+	events eventemit.Emitter
 
 	// Security options (configured via Option funcs).
 	minTLSVersion    uint16
@@ -777,34 +777,18 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// SetEventDispatcher sets the function used to dispatch events.
+// SetEventDispatcher sets the function used to dispatch events; nil
+// removes it. Safe to call while the client sends requests.
 func (c *Client) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.eventDispatcher = fn
-}
-
-// hasEventDispatcher reports whether an event dispatcher is installed, so
-// an event is built only when one is.
-func (c *Client) hasEventDispatcher() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.eventDispatcher != nil
+	c.events.Set(fn)
 }
 
 // dispatchEvent dispatches an event if a dispatcher is configured. The
 // caller-supplied ctx is propagated so listeners observe request-scoped
-// values.
+// values. A failed dispatch is counted and its event's first failure
+// logged (see internal/eventemit); the request is unaffected.
 func (c *Client) dispatchEvent(ctx context.Context, event interface{}) {
-	c.mu.RLock()
-	fn := c.eventDispatcher
-	c.mu.RUnlock()
-	if fn != nil {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		fn(ctx, event)
-	}
+	c.events.Emit(ctx, event)
 }
 
 // resolveURL resolves the URL with the base URL if set

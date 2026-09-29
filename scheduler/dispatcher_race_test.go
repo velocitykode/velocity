@@ -8,13 +8,13 @@ import (
 	"time"
 )
 
-// TestEventDispatcher_RaceFree verifies that SetEventDispatcher (writer
-// under s.mu.Lock) and dispatchEvent (reader that snapshots under
-// s.mu.RLock) do not race under the -race detector.
+// TestEventDispatcher_RaceFree verifies that SetEventDispatcher (writer)
+// and dispatchEvent (reader) do not race under the -race detector: the
+// dispatcher is stored and read atomically by the scheduler's emitter.
 //
-// Pre-fix, dispatchEvent read s.eventDispatcher without holding any lock
-// while SetEventDispatcher wrote under s.mu.Lock -- a data race the
-// detector flagged immediately under concurrent load.
+// An earlier dispatchEvent read the dispatcher without any
+// synchronisation while SetEventDispatcher wrote it under a lock -- a data
+// race the detector flagged immediately under concurrent load.
 func TestEventDispatcher_RaceFree(t *testing.T) {
 	s := New()
 

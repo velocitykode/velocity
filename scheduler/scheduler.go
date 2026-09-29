@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
@@ -76,8 +77,10 @@ type Scheduler struct {
 	// can read it lock-free and SetLogger doesn't contend with s.mu.
 	logger atomic.Value // holds schedLoggerHolder{contract.Logger}
 
-	eventDispatcher func(ctx context.Context, event interface{}) error
-	runWg           sync.WaitGroup // tracks in-flight job goroutines
+	// events holds the event dispatcher and handles a failed dispatch
+	// through the scheduler's logger.
+	events eventemit.Emitter
+	runWg  sync.WaitGroup // tracks in-flight job goroutines
 
 	// locker acquires named distributed locks for WithoutOverlapping() and
 	// OnOneServer() jobs. Defaults to an InMemoryLocker (process-local) so
@@ -122,41 +125,20 @@ type Scheduler struct {
 // type.
 type schedLoggerHolder struct{ contract.Logger }
 
-// SetEventDispatcher sets the function used to dispatch events.
+// SetEventDispatcher sets the function used to dispatch events; nil
+// removes it. Safe to call while the scheduler runs.
 func (s *Scheduler) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.eventDispatcher = fn
-}
-
-// hasEventDispatcher reports whether an event dispatcher is installed, so
-// an event is built only when one is.
-func (s *Scheduler) hasEventDispatcher() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.eventDispatcher != nil
+	s.events.Set(fn)
 }
 
 // dispatchEvent dispatches an event if a dispatcher is configured. The
 // caller-supplied ctx is propagated so listeners observe scheduler-job
-// scoped values.
-//
-// The dispatcher reference is snapshotted under s.mu.RLock() and released
-// before invocation so a concurrent SetEventDispatcher cannot race with
-// the read, and so the dispatcher itself runs without holding s.mu (the
-// dispatcher may take arbitrary time and must not block scheduler
-// operations).
+// scoped values. The dispatcher is read atomically and runs without
+// holding s.mu (it may take arbitrary time and must not block scheduler
+// operations). A failed dispatch is counted and its event's first failure
+// logged through the scheduler's logger (see internal/eventemit).
 func (s *Scheduler) dispatchEvent(ctx context.Context, event interface{}) {
-	s.mu.RLock()
-	fn := s.eventDispatcher
-	s.mu.RUnlock()
-	if fn == nil {
-		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	fn(ctx, event)
+	s.events.Emit(ctx, event)
 }
 
 // New creates a new scheduler instance
@@ -171,6 +153,7 @@ func New() *Scheduler {
 		shutdownGrace: 5 * time.Second,
 	}
 	s.logger.Store(schedLoggerHolder{Logger: fallbacklog.Logger{}})
+	s.events.UseLogger(s.log)
 	return s
 }
 

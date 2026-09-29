@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
@@ -455,8 +456,7 @@ func (b *Batch) fireTerminalCallbacks(ctx context.Context, updated *Batch) {
 // is called only when at least one of the two dispatchers is installed,
 // so no event is built for no listener.
 func dispatchBatchEvent(ctx context.Context, dispatch func(context.Context, interface{}), build func(contract.EventMeta) contract.Event) {
-	g := globalEventDispatcher()
-	if dispatch == nil && g == nil {
+	if dispatch == nil && !globalBatchEvents.Installed() {
 		return
 	}
 	if ctx == nil {
@@ -466,16 +466,12 @@ func dispatchBatchEvent(ctx context.Context, dispatch func(context.Context, inte
 	if dispatch != nil {
 		dispatch(ctx, event)
 	}
-	if g != nil {
-		_ = g(ctx, event)
-	}
+	globalBatchEvents.Emit(ctx, event)
 }
 
-// globalDispatcherFn is the type the framework wires when calling
-// SetGlobalEventDispatcher.
-type globalDispatcherFn func(ctx context.Context, event interface{}) error
-
-var globalEventDispatcherSlot atomic.Pointer[globalDispatcherFn]
+// globalBatchEvents holds the process-wide event dispatcher
+// SetGlobalEventDispatcher installs and handles a failed dispatch.
+var globalBatchEvents eventemit.Emitter
 
 // SetGlobalEventDispatcher installs a process-wide event dispatcher
 // that the batch lifecycle helpers will invoke for every batch event
@@ -487,20 +483,7 @@ var globalEventDispatcherSlot atomic.Pointer[globalDispatcherFn]
 //
 // Pass nil to clear.
 func SetGlobalEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	if fn == nil {
-		globalEventDispatcherSlot.Store(nil)
-		return
-	}
-	wrapped := globalDispatcherFn(fn)
-	globalEventDispatcherSlot.Store(&wrapped)
-}
-
-func globalEventDispatcher() globalDispatcherFn {
-	p := globalEventDispatcherSlot.Load()
-	if p == nil {
-		return nil
-	}
-	return *p
+	globalBatchEvents.Set(fn)
 }
 
 // PendingBatch is a fluent builder for creating and dispatching a batch

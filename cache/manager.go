@@ -10,6 +10,7 @@ import (
 	"github.com/velocitykode/velocity/cache/drivers"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/driverregistry"
+	"github.com/velocitykode/velocity/internal/eventemit"
 )
 
 // driverRegistry is the canonical Velocity driver registry for cache
@@ -38,11 +39,13 @@ var _ contract.CacheManager = (*Manager)(nil)
 
 // Manager manages multiple cache stores
 type Manager struct {
-	mu              sync.RWMutex
-	stores          map[string]Store
-	defaultStore    string
-	config          *Config
-	eventDispatcher func(ctx context.Context, event interface{}) error
+	mu           sync.RWMutex
+	stores       map[string]Store
+	defaultStore string
+	config       *Config
+	// events holds the event dispatcher and handles a failed dispatch
+	// through the manager's logger.
+	events eventemit.Emitter
 	// logger is handed to each store the manager builds (StoreConfig.Logger).
 	logger contract.Logger
 }
@@ -50,10 +53,10 @@ type Manager struct {
 // SetLogger installs the logger the manager hands to every store it builds
 // from then on (StoreConfig.Logger, unless the store's config sets its
 // own), for the store's startup warnings such as the Redis store's
-// cleartext and empty-prefix warnings. A store already built keeps what it
-// was built with. Nil hands nil: the store then writes through the
-// framework's standalone fallback logger. Safe to call concurrently with
-// store lookups.
+// cleartext and empty-prefix warnings, and writes a failed event dispatch
+// through. A store already built keeps what it was built with. Nil hands
+// nil: the store then writes through the framework's standalone fallback
+// logger. Safe to call concurrently with store lookups.
 func (m *Manager) SetLogger(l contract.Logger) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -62,35 +65,29 @@ func (m *Manager) SetLogger(l contract.Logger) {
 
 var _ contract.LoggerAware = (*Manager)(nil)
 
-// SetEventDispatcher sets the function used to dispatch events.
-// This is called by the events package to wire up event dispatching.
-func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.eventDispatcher = fn
-}
-
-// hasEventDispatcher reports whether an event dispatcher is installed, so
-// an event is built only when one is.
-func (m *Manager) hasEventDispatcher() bool {
+// currentLogger returns the installed logger under the read lock, or nil.
+func (m *Manager) currentLogger() contract.Logger {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.eventDispatcher != nil
+	return m.logger
+}
+
+// SetEventDispatcher sets the function used to dispatch events; nil
+// removes it. Safe to call while the manager is in use.
+func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
+	// A failed dispatch is logged through the manager's logger as it is at
+	// the time of the failure. Installed here, not in NewManager, so a
+	// manager built as a literal gets it too.
+	m.events.UseLogger(m.currentLogger)
+	m.events.Set(fn)
 }
 
 // dispatchEvent dispatches an event if a dispatcher is configured. The
 // caller-supplied ctx is propagated so listeners observe request-scoped
-// values.
+// values. A failed dispatch is counted and its event's first failure
+// logged (see internal/eventemit); the cache operation is unaffected.
 func (m *Manager) dispatchEvent(ctx context.Context, event interface{}) {
-	m.mu.RLock()
-	fn := m.eventDispatcher
-	m.mu.RUnlock()
-	if fn != nil {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		fn(ctx, event)
-	}
+	m.events.Emit(ctx, event)
 }
 
 // Config holds cache configuration
