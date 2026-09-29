@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 )
@@ -107,5 +108,63 @@ func TestDetachedBuilder_AdoptsTheDefaultForDriverAndLogger(t *testing.T) {
 	}
 	if out := fallback.String(); strings.Contains(out, hookFailedLine) {
 		t.Errorf("fallback got the hook failure: %q", out)
+	}
+}
+
+// swapToLockedCtx swaps the default to next the first time anything reads
+// a value from it, holding next's lock from then on, as next's Shutdown
+// does while it closes a blocked driver.
+type swapToLockedCtx struct {
+	context.Context
+	next *Manager
+	once sync.Once
+}
+
+func (c *swapToLockedCtx) Value(key any) any {
+	c.once.Do(func() {
+		SetDefault(c.next)
+		c.next.mu.Lock()
+	})
+	return c.Context.Value(key)
+}
+
+// A static write helper never touches a manager other than the one it
+// resolved: when the default changes to a manager whose lock is held, the
+// write on the first manager still completes.
+func TestStaticWriteHelpers_IgnoreALaterDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(ctx context.Context) error
+	}{
+		{"FirstOrCreate", func(ctx context.Context) error {
+			_, err := (failingHookModel{}).FirstOrCreate(ctx, map[string]any{"name": "locked-first"}, nil)
+			return err
+		}},
+		{"UpdateOrCreate", func(ctx context.Context) error {
+			_, err := (failingHookModel{}).UpdateOrCreate(ctx, map[string]any{"name": "locked-update"}, nil)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, cleanupA := setupTxTest(t)
+			defer cleanupA()
+			b, cleanupB := setupTxTest(t)
+			defer cleanupB()
+			SetDefault(a)
+			ctx := &swapToLockedCtx{Context: context.Background(), next: b}
+			done := make(chan error, 1)
+			go func() { done <- tc.run(ctx) }()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("write: %v", err)
+				}
+				b.mu.Unlock()
+			case <-time.After(2 * time.Second):
+				b.mu.Unlock()
+				<-done
+				t.Fatal("the write on manager a waited on manager b's lock: the helper resolved the default again")
+			}
+		})
 	}
 }

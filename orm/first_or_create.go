@@ -113,8 +113,7 @@ func firstOrCreateWithDriver[T any](ctx context.Context, m *Manager, drv drivers
 		return nil, err
 	}
 
-	q := newQuery[T]()
-	q.driver, q.mgr = drv, m
+	q := newQueryOn[T](m, drv)
 	for field, value := range conditions {
 		q = q.Where(field+" = ?", value)
 	}
@@ -170,8 +169,7 @@ func updateOrCreateWithDriver[T any](ctx context.Context, m *Manager, drv driver
 		return nil, err
 	}
 
-	q := newQuery[T]()
-	q.driver, q.mgr = drv, m
+	q := newQueryOn[T](m, drv)
 	for field, value := range conditions {
 		q = q.Where(field+" = ?", value)
 	}

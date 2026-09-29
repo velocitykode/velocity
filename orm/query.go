@@ -148,13 +148,21 @@ func (q *Query[T]) Err() error {
 	return q.err
 }
 
-// newQuery creates a new query builder for type T
+// newQuery creates a new query builder for type T on the package default
+// manager and its default driver.
 func newQuery[T any]() *Query[T] {
 	var drv drivers.Driver
 	m := Default()
 	if m != nil {
 		drv = m.DefaultDriver()
 	}
+	return newQueryOn[T](m, drv)
+}
+
+// newQueryOn creates a new query builder for type T on m and drv, which a
+// caller that has already resolved them passes, so the builder never reads
+// the package default (which may name another manager by then).
+func newQueryOn[T any](m *Manager, drv drivers.Driver) *Query[T] {
 	q := &Query[T]{
 		driver:        drv,
 		mgr:           m,
