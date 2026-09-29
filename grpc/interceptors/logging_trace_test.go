@@ -45,9 +45,9 @@ func (c *eventCollector) contexts() []context.Context {
 	return out
 }
 
-func TestLoggingUnary_TraceMintedWhenNoIncomingTrace(t *testing.T) {
+func TestCallLifecycleUnary_TraceMintedWhenNoIncomingTrace(t *testing.T) {
 	collector := &eventCollector{}
-	pair := interceptors.Logging(interceptors.WithEventDispatcher(collector.dispatch))
+	pair := interceptors.CallLifecycle(interceptors.WithRequestLine(), interceptors.WithEventDispatcher(collector.dispatch))
 
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		if trace.GetTraceID(ctx) == "" {
@@ -92,9 +92,9 @@ func TestLoggingUnary_TraceMintedWhenNoIncomingTrace(t *testing.T) {
 	}
 }
 
-func TestLoggingUnary_TraceExtendedWhenIncomingTracePresent(t *testing.T) {
+func TestCallLifecycleUnary_TraceExtendedWhenIncomingTracePresent(t *testing.T) {
 	collector := &eventCollector{}
-	pair := interceptors.Logging(interceptors.WithEventDispatcher(collector.dispatch))
+	pair := interceptors.CallLifecycle(interceptors.WithRequestLine(), interceptors.WithEventDispatcher(collector.dispatch))
 
 	upstreamTrace := "trace12345678901234567890123456"
 	upstreamSpan := "span1234567890ab"
@@ -138,9 +138,9 @@ func TestLoggingUnary_TraceExtendedWhenIncomingTracePresent(t *testing.T) {
 	}
 }
 
-func TestLoggingStream_TracePropagatedThroughEventDispatcher(t *testing.T) {
+func TestCallLifecycleStream_TracePropagatedThroughEventDispatcher(t *testing.T) {
 	collector := &eventCollector{}
-	pair := interceptors.Logging(interceptors.WithEventDispatcher(collector.dispatch))
+	pair := interceptors.CallLifecycle(interceptors.WithRequestLine(), interceptors.WithEventDispatcher(collector.dispatch))
 
 	upstreamTrace := "stream1234567890abcdef1234567890"
 	upstreamSpan := "stsp1234567890ab"
@@ -187,9 +187,9 @@ func TestLoggingStream_TracePropagatedThroughEventDispatcher(t *testing.T) {
 	}
 }
 
-func TestRecovery_PanicRecoveredEventCarriesTrace(t *testing.T) {
+func TestCallLifecycle_PanicRecoveredEventCarriesTrace(t *testing.T) {
 	collector := &eventCollector{}
-	pair := interceptors.Recovery(interceptors.WithRecoveryEventDispatcher(collector.dispatch))
+	pair := interceptors.CallLifecycle(interceptors.WithEventDispatcher(collector.dispatch))
 
 	traceID := "trace12345678901234567890123456"
 	spanID := "span1234567890ab"
@@ -216,8 +216,8 @@ func TestRecovery_PanicRecoveredEventCarriesTrace(t *testing.T) {
 	if seen.TraceID != traceID {
 		t.Errorf("PanicRecovered TraceID: got %q want %q", seen.TraceID, traceID)
 	}
-	if seen.SpanID != spanID {
-		t.Errorf("PanicRecovered SpanID: got %q want %q", seen.SpanID, spanID)
+	if seen.ParentID != spanID || seen.SpanID == spanID || seen.SpanID == "" {
+		t.Errorf("PanicRecovered span %q parent %q, want the call's own span under %q", seen.SpanID, seen.ParentID, spanID)
 	}
 	if seen.Method != "/test.Service/Boom" {
 		t.Errorf("PanicRecovered Method: got %q", seen.Method)
@@ -289,8 +289,8 @@ func (r *recordingStream) SetHeader(md metadata.MD) error  { r.setHdrCalls++; re
 func (r *recordingStream) SendHeader(md metadata.MD) error { r.sendHdrCalls++; return nil }
 func (r *recordingStream) SetTrailer(md metadata.MD)       { r.setTrlrCalls++ }
 
-func TestLoggingStream_ForwardsAllServerStreamMethods(t *testing.T) {
-	pair := interceptors.Logging(interceptors.WithEventDispatcher(func(context.Context, any) error { return nil }))
+func TestCallLifecycleStream_ForwardsAllServerStreamMethods(t *testing.T) {
+	pair := interceptors.CallLifecycle(interceptors.WithRequestLine(), interceptors.WithEventDispatcher(func(context.Context, any) error { return nil }))
 
 	rec := &recordingStream{ctx: context.Background()}
 

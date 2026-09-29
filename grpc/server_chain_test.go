@@ -59,7 +59,9 @@ var chainDesc = grpcgo.ServiceDesc{
 }
 
 // chainServer fails every call the way its outcome says (a returned
-// Internal error, or a panic) and records the ids its handler ran under.
+// Internal error, or a panic; for "interceptor panic" the handler succeeds
+// and an interceptor after it panics) and records the ids its handler ran
+// under.
 type chainServer struct {
 	outcome string
 
@@ -73,8 +75,11 @@ func (c *chainServer) run(ctx context.Context) error {
 	c.mu.Lock()
 	c.requestID, c.traceID, c.spanID = trace.GetRequestID(ctx), trace.GetTraceID(ctx), trace.GetSpanID(ctx)
 	c.mu.Unlock()
-	if c.outcome == "panic" {
+	switch c.outcome {
+	case "panic":
 		panic("handler broke")
+	case "interceptor panic":
+		return nil
 	}
 	return status.Error(codes.Internal, "handler failed")
 }
@@ -107,13 +112,13 @@ func (r *chainReports) all() ([]error, []*contract.ErrorContext) {
 
 // TestServerChain_FailedCallEndsWithItsEventsAndCorrelatedReport runs a
 // unary call and a stream through a framework-built server (its default
-// recovery plus the logging interceptor) whose handler returns an Internal
-// error or panics. Every such call ends with its failed and completed
+// call lifecycle interceptor with its request line) whose handler returns an Internal
+// error or panics, or whose user interceptor panics after the handler. Every such call ends with its failed and completed
 // events, and is reported once, under the request, trace and span ids the
-// handler and the logging interceptor's line saw.
+// handler and the call lifecycle interceptor's request line saw.
 func TestServerChain_FailedCallEndsWithItsEventsAndCorrelatedReport(t *testing.T) {
 	for _, kind := range []string{"unary", "stream"} {
-		for _, outcome := range []string{"error", "panic"} {
+		for _, outcome := range []string{"error", "panic", "interceptor panic"} {
 			t.Run(kind+"/"+outcome, func(t *testing.T) {
 				srv := &chainServer{outcome: outcome}
 				reports := &chainReports{}
@@ -125,12 +130,22 @@ func TestServerChain_FailedCallEndsWithItsEventsAndCorrelatedReport(t *testing.T
 					t.Fatalf("listen: %v", err)
 				}
 				quiet, _ := log.NewLogger(log.LogConfig{Driver: "null"})
-				s := NewServer(WithListener(lis), WithLogger(quiet), WithEnvironment("testing"), WithReporter(reports))
-				s.UseAll(interceptors.Logging(
-					interceptors.WithLoggingLogger(lines),
+				s := NewServer(WithListener(lis), WithLogger(quiet), WithEnvironment("testing"), WithReporter(reports), WithCallOptions(
+					interceptors.WithRequestLine(),
+					interceptors.WithLogger(lines),
 					interceptors.WithEventDispatcher(evs.dispatch),
 				))
 				s.MarkAuthConfigured()
+				if outcome == "interceptor panic" {
+					s.Use(func(ctx context.Context, req any, _ *grpcgo.UnaryServerInfo, h grpcgo.UnaryHandler) (any, error) {
+						_, _ = h(ctx, req)
+						panic("interceptor broke")
+					})
+					s.UseStream(func(srv any, ss grpcgo.ServerStream, _ *grpcgo.StreamServerInfo, h grpcgo.StreamHandler) error {
+						_ = h(srv, ss)
+						panic("interceptor broke")
+					})
+				}
 				s.RegisterService(func(g interface{}) {
 					g.(*grpcgo.Server).RegisterService(&chainDesc, srv)
 				})
@@ -209,11 +224,12 @@ func TestServerChain_FailedCallEndsWithItsEventsAndCorrelatedReport(t *testing.T
 				if got := lines.last(); got != reqID {
 					t.Errorf("logging line request_id = %q, want the handler's %q", got, reqID)
 				}
-				if ec.Recovered != (outcome == "panic") {
-					t.Errorf("report Recovered = %v, want %v", ec.Recovered, outcome == "panic")
+				panicked := outcome != "error"
+				if ec.Recovered != panicked {
+					t.Errorf("report Recovered = %v, want %v", ec.Recovered, panicked)
 				}
 				var pe contract.RecoveredPanic
-				if outcome == "panic" && !errors.As(errs[0], &pe) {
+				if panicked && !errors.As(errs[0], &pe) {
 					t.Errorf("reported panic %v is not a recovered panic", errs[0])
 				}
 			})

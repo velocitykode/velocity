@@ -1,36 +1,28 @@
 // Package interceptors provides gRPC interceptors for Velocity applications.
 //
-// Interceptors are middleware for gRPC that can:
-//   - Log requests and responses
-//   - Handle authentication
-//   - Recover from panics
-//   - Add request IDs
-//   - Rate limit requests
+// Interceptors are middleware for gRPC. CallLifecycle owns a call's
+// observability: its correlation (span and request id), panic recovery,
+// request line, lifecycle events and one error report. Auth authenticates
+// calls, and Propagation carries the trace and request id on outgoing
+// client calls.
 //
-// Usage:
+// A framework-built server installs CallLifecycle at both ends of its chain by
+// default (see grpc.WithCallOptions to configure it), so every call is
+// observed under one span and request id, and a panic anywhere in the
+// chain ends the call as an error:
 //
-//	server := grpc.NewServer(grpc.WithPort("50051"))
-//	server.Use(
-//	    interceptors.RecoveryInterceptor(),
-//	    interceptors.LoggingInterceptor(),
+//	server := grpc.NewServer(grpc.WithPort("50051"), grpc.WithReporter(reporter))
+//	server.UseAll(interceptors.Auth(validator))
+//
+// A chain built on a bare grpc-go server installs the same CallLifecycle pair
+// first and last:
+//
+//	calls := interceptors.CallLifecycle(interceptors.WithReporter(reporter))
+//	auth := interceptors.Auth(validator)
+//	grpc.NewServer(
+//	    grpc.ChainUnaryInterceptor(calls.Unary, auth.Unary, calls.Unary),
+//	    grpc.ChainStreamInterceptor(calls.Stream, auth.Stream, calls.Stream),
 //	)
-//	server.UseStream(
-//	    interceptors.StreamRecoveryInterceptor(),
-//	    interceptors.StreamLoggingInterceptor(),
-//	)
-//
-// Or using UseAll with pairs:
-//
-//	server.UseAll(
-//	    interceptors.Recovery(),
-//	    interceptors.Logging(),
-//	)
-//
-// A framework-built server runs Correlation first in its chain, so every
-// interceptor reports and logs under the call's one span and request id,
-// and runs its default Recovery at both ends, so a handler panic ends the
-// call as an error inside the other interceptors. A chain built on a bare
-// grpc-go server puts Correlation first as well.
 package interceptors
 
 import (

@@ -81,17 +81,23 @@ type Server struct {
 	// Guarded by mu.
 	authConfigured bool
 
-	// disableDefaultRecovery suppresses the panic-recovery interceptor that
-	// Build installs outermost by default. grpc-go does NOT auto-recover
-	// interceptor/handler panics, so without this the first panic crashes the
-	// serve loop; the default keeps a server alive out of the box. Set via
-	// WithoutDefaultRecovery for callers that wire their own outermost recovery.
-	disableDefaultRecovery bool
+	// disableDefaultCallLifecycle suppresses the call lifecycle interceptor
+	// (interceptors.CallLifecycle) that Build installs at both ends of the chain by
+	// default. grpc-go does NOT auto-recover interceptor/handler panics, so
+	// without it the first panic crashes the serve loop; the default keeps a
+	// server alive out of the box. Set via WithoutDefaultCallLifecycle
+	// for callers that install their own.
+	disableDefaultCallLifecycle bool
 
-	// reporter receives the default recovery interceptor's reports: every
-	// recovered panic and every internal error a handler returns. Set via
+	// reporter receives the default call lifecycle interceptor's one error report
+	// per call: a recovered panic or an internal error. Set via
 	// WithReporter.
 	reporter contract.Reporter
+
+	// callOptions configure the default call lifecycle interceptor after the
+	// server's logger, reporter and event dispatcher. Set via
+	// WithCallOptions.
+	callOptions []interceptors.CallOption
 
 	// Registration functions to call after server is built
 	registrations []RegistrationFunc
@@ -250,30 +256,43 @@ func WithMaxSendMsgSize(size int) ServerOption {
 	}
 }
 
-// WithoutDefaultRecovery disables the panic-recovery interceptor that Build
-// installs by default at both ends of the chain, after its correlation
-// interceptor. Use it only when you wire your own recovery interceptor
-// first in the chain; otherwise an interceptor/handler panic crashes the
-// gRPC serve loop (grpc-go does not auto-recover).
-func WithoutDefaultRecovery() ServerOption {
+// WithoutDefaultCallLifecycle disables the call lifecycle interceptor
+// (interceptors.CallLifecycle) that Build installs by default at both ends of the
+// chain. Use it only when you install interceptors.CallLifecycle yourself, first
+// and last in the chain; otherwise the calls are not correlated, observed
+// or reported, and an interceptor/handler panic crashes the gRPC serve
+// loop (grpc-go does not auto-recover).
+func WithoutDefaultCallLifecycle() ServerOption {
 	return func(s *Server) {
-		s.disableDefaultRecovery = true
+		s.disableDefaultCallLifecycle = true
 	}
 }
 
-// WithReporter sets where the panic-recovery interceptor Build installs
-// reports a recovered panic and an internal error a handler returns
-// (codes.Internal or codes.Unknown, as the client gets it), each once, with
-// the method named: pass the app's error handler (Services.Errors), so they
-// reach the Reporter chain. The client gets the same status either way. Without it, a
-// recovered panic is logged and a handler error is not reported.
+// WithCallOptions configures the call lifecycle interceptor Build installs by
+// default, applied after the server's logger (WithLogger), reporter
+// (WithReporter) and event dispatcher (SetEventDispatcher), so an option
+// here wins. The request line is off by default: turn it on with
+// interceptors.WithRequestLine().
+func WithCallOptions(opts ...interceptors.CallOption) ServerOption {
+	return func(s *Server) {
+		s.callOptions = append(s.callOptions, opts...)
+	}
+}
+
+// WithReporter sets where the call lifecycle interceptor Build installs reports a
+// call's one error: a recovered panic, or else the error the call ended
+// with when it is an internal error (codes.Internal or codes.Unknown, as
+// the client gets it), with the method named: pass the app's error handler
+// (Services.Errors), so it reaches the Reporter chain. The client gets the
+// same status either way. Without it, a recovered panic is logged and a
+// handler error is not reported.
 func WithReporter(reporter contract.Reporter) ServerOption {
 	return func(s *Server) {
 		s.reporter = reporter
 	}
 }
 
-// WithLogger sets the logger for the gRPC server and its default recovery
+// WithLogger sets the logger for the gRPC server and its default call
 // interceptor. Without it, or with nil, the server writes through the
 // framework's standalone fallback logger, which writes warnings and errors
 // to standard error.
@@ -303,7 +322,7 @@ func (s *Server) UseStream(interceptors ...grpc.StreamServerInterceptor) *Server
 
 // InterceptorPair holds both unary and stream interceptor variants.
 // It is an alias for interceptors.InterceptorPair so the pairs returned by
-// interceptors.Recovery/Logging/Auth can be passed straight to UseAll.
+// interceptors.Auth and interceptors.CallLifecycle can be passed straight to UseAll.
 type InterceptorPair = interceptors.InterceptorPair
 
 // UseAll adds both unary and stream interceptor pairs.
@@ -420,35 +439,34 @@ func (s *Server) Build() error {
 	}
 	s.listener = lis
 
-	// Build server options with interceptor chains. Correlation runs
-	// first, so every interceptor after it (the default recovery's reports
-	// and the logging interceptor's line and events included) runs under
-	// the call's one span and request id. The panic-recovery interceptor
-	// runs at both ends by default: the innermost layer turns a handler
-	// panic into the call's codes.Internal error inside every other
-	// interceptor, so the logging interceptor ends the call with its failed
-	// and completed events; the outer layer converts a panic in any other
-	// interceptor (e.g. logging's user-agent handling) instead of crashing
-	// the serve loop: grpc-go does not auto-recover interceptor panics.
-	// Local slices keep s.* fields unmutated so a second Build (or
-	// inspection) sees the configured set.
+	// Build server options with interceptor chains. The call lifecycle interceptor
+	// (interceptors.CallLifecycle) runs at both ends by default. The first
+	// occurrence owns the call: it correlates it, and when the call ends,
+	// however it ends (a handler or interceptor panic included), it writes
+	// the request line (when enabled), dispatches the terminal events and
+	// makes the one error report, all under the call's one span and
+	// request id. The last occurrence contains a handler panic on the
+	// goroutine that runs the handler, which an interceptor may have
+	// started. grpc-go does not auto-recover interceptor panics. Local
+	// slices keep s.* fields unmutated so a second Build (or inspection)
+	// sees the configured set.
 	opts := make([]grpc.ServerOption, 0, len(s.serverOptions)+2)
 	opts = append(opts, s.serverOptions...)
 
-	corr := interceptors.Correlation()
-	unary := []grpc.UnaryServerInterceptor{corr.Unary}
-	stream := []grpc.StreamServerInterceptor{corr.Stream}
-	if s.disableDefaultRecovery {
+	var unary []grpc.UnaryServerInterceptor
+	var stream []grpc.StreamServerInterceptor
+	if s.disableDefaultCallLifecycle {
 		unary = append(unary, s.unaryInterceptors...)
 		stream = append(stream, s.streamInterceptors...)
 	} else {
-		rec := interceptors.Recovery(
-			interceptors.WithRecoveryLogger(s.logger),
-			interceptors.WithRecoveryEventDispatcher(s.eventDispatchFunc()),
-			interceptors.WithRecoveryReporter(s.reporter),
-		)
-		unary = append(append(append(unary, rec.Unary), s.unaryInterceptors...), rec.Unary)
-		stream = append(append(append(stream, rec.Stream), s.streamInterceptors...), rec.Stream)
+		callOpts := append([]interceptors.CallOption{
+			interceptors.WithLogger(s.logger),
+			interceptors.WithEventDispatcher(s.eventDispatchFunc()),
+			interceptors.WithReporter(s.reporter),
+		}, s.callOptions...)
+		calls := interceptors.CallLifecycle(callOpts...)
+		unary = append(append(append(unary, calls.Unary), s.unaryInterceptors...), calls.Unary)
+		stream = append(append(append(stream, calls.Stream), s.streamInterceptors...), calls.Stream)
 	}
 
 	if len(unary) > 0 {

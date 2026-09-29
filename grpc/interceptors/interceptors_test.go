@@ -38,10 +38,10 @@ func (m *mockServerStream) Context() context.Context {
 	return m.ctx
 }
 
-// TestRecoveryInterceptor tests the recovery interceptor
-func TestRecoveryInterceptor(t *testing.T) {
+// TestCallLifecycle_Recovery tests the call lifecycle interceptor's panic recovery
+func TestCallLifecycle_Recovery(t *testing.T) {
 	t.Run("no panic", func(t *testing.T) {
-		pair := interceptors.Recovery()
+		pair := interceptors.CallLifecycle()
 
 		handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 			return "success", nil
@@ -57,7 +57,7 @@ func TestRecoveryInterceptor(t *testing.T) {
 	})
 
 	t.Run("panic recovery", func(t *testing.T) {
-		pair := interceptors.Recovery()
+		pair := interceptors.CallLifecycle()
 
 		handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 			panic("test panic")
@@ -81,7 +81,7 @@ func TestRecoveryInterceptor(t *testing.T) {
 	})
 
 	t.Run("stream panic recovery", func(t *testing.T) {
-		pair := interceptors.Recovery()
+		pair := interceptors.CallLifecycle()
 
 		handler := func(srv interface{}, stream grpc.ServerStream) error {
 			panic("stream panic")
@@ -105,7 +105,7 @@ func TestRecoveryInterceptor(t *testing.T) {
 
 	t.Run("with custom panic handler", func(t *testing.T) {
 		customErr := status.Error(codes.Unavailable, "custom error")
-		pair := interceptors.Recovery(
+		pair := interceptors.CallLifecycle(
 			interceptors.WithPanicHandler(func(ctx context.Context, p interface{}) error {
 				return customErr
 			}),
@@ -120,24 +120,12 @@ func TestRecoveryInterceptor(t *testing.T) {
 			t.Errorf("expected custom error, got %v", err)
 		}
 	})
-
-	t.Run("convenience functions", func(t *testing.T) {
-		unary := interceptors.RecoveryInterceptor()
-		if unary == nil {
-			t.Error("RecoveryInterceptor returned nil")
-		}
-
-		stream := interceptors.StreamRecoveryInterceptor()
-		if stream == nil {
-			t.Error("StreamRecoveryInterceptor returned nil")
-		}
-	})
 }
 
-// TestLoggingInterceptor tests the logging interceptor
-func TestLoggingInterceptor(t *testing.T) {
+// TestCallLifecycle_RequestLine tests the call lifecycle interceptor's request line
+func TestCallLifecycle_RequestLine(t *testing.T) {
 	t.Run("logs successful request", func(t *testing.T) {
-		pair := interceptors.Logging()
+		pair := interceptors.CallLifecycle(interceptors.WithRequestLine())
 
 		handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 			return "success", nil
@@ -153,7 +141,7 @@ func TestLoggingInterceptor(t *testing.T) {
 	})
 
 	t.Run("logs error request", func(t *testing.T) {
-		pair := interceptors.Logging()
+		pair := interceptors.CallLifecycle(interceptors.WithRequestLine())
 
 		handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 			return nil, status.Error(codes.NotFound, "not found")
@@ -166,7 +154,7 @@ func TestLoggingInterceptor(t *testing.T) {
 	})
 
 	t.Run("skips health checks", func(t *testing.T) {
-		pair := interceptors.Logging(interceptors.WithSkipHealthChecks(true))
+		pair := interceptors.CallLifecycle(interceptors.WithRequestLine(), interceptors.WithSkipHealthChecks(true))
 
 		handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 			return "success", nil
@@ -182,7 +170,7 @@ func TestLoggingInterceptor(t *testing.T) {
 	})
 
 	t.Run("skips configured methods", func(t *testing.T) {
-		pair := interceptors.Logging(interceptors.WithSkipMethods("/test.Service/Noisy"))
+		pair := interceptors.CallLifecycle(interceptors.WithRequestLine(), interceptors.WithSkipMethods("/test.Service/Noisy"))
 
 		handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 			return "success", nil
@@ -198,7 +186,7 @@ func TestLoggingInterceptor(t *testing.T) {
 	})
 
 	t.Run("stream logging", func(t *testing.T) {
-		pair := interceptors.Logging()
+		pair := interceptors.CallLifecycle(interceptors.WithRequestLine())
 
 		handler := func(srv interface{}, stream grpc.ServerStream) error {
 			return nil
@@ -211,20 +199,8 @@ func TestLoggingInterceptor(t *testing.T) {
 		}
 	})
 
-	t.Run("convenience functions", func(t *testing.T) {
-		unary := interceptors.LoggingInterceptor()
-		if unary == nil {
-			t.Error("LoggingInterceptor returned nil")
-		}
-
-		stream := interceptors.StreamLoggingInterceptor()
-		if stream == nil {
-			t.Error("StreamLoggingInterceptor returned nil")
-		}
-	})
-
 	t.Run("with extra fields", func(t *testing.T) {
-		pair := interceptors.Logging(interceptors.WithExtraFields(func(ctx context.Context) []interface{} {
+		pair := interceptors.CallLifecycle(interceptors.WithRequestLine(), interceptors.WithExtraFields(func(ctx context.Context) []interface{} {
 			return []interface{}{"custom_field", "custom_value"}
 		}))
 

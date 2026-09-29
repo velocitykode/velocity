@@ -66,24 +66,24 @@ func (l optionLogger) all() []optionLine {
 	return append([]optionLine(nil), *l.lines...)
 }
 
-// optionRun is what one unary call through the logging interceptor left
+// optionRun is what one unary call through the call lifecycle interceptor left
 // behind: the lines of the logger it was given and the fallback's output.
 type optionRun struct {
 	lines    []optionLine
 	fallback string
 }
 
-// runLoggingCall sends one unary call to method through Logging(opts...),
+// runLoggingCall sends one unary call to method through CallLifecycle(WithRequestLine(), opts...),
 // with a logger unless noLogger; the handler waits for delay and returns
 // err.
-func runLoggingCall(t *testing.T, method string, delay time.Duration, err error, noLogger bool, opts ...interceptors.LoggingOption) optionRun {
+func runLoggingCall(t *testing.T, method string, delay time.Duration, err error, noLogger bool, opts ...interceptors.CallOption) optionRun {
 	t.Helper()
 	fallback := fallbacklogtest.Capture(t)
 	logger := newOptionLogger()
 	if !noLogger {
-		opts = append([]interceptors.LoggingOption{interceptors.WithLoggingLogger(logger)}, opts...)
+		opts = append([]interceptors.CallOption{interceptors.WithLogger(logger)}, opts...)
 	}
-	pair := interceptors.Logging(opts...)
+	pair := interceptors.CallLifecycle(append([]interceptors.CallOption{interceptors.WithRequestLine()}, opts...)...)
 	handler := func(context.Context, interface{}) (interface{}, error) {
 		time.Sleep(delay)
 		return "ok", err
@@ -111,10 +111,10 @@ func (d *countingDispatcher) count() int {
 	return d.n
 }
 
-// loggingOptionCases holds, per exported LoggingOption constructor, a check
+// loggingOptionCases holds, per exported CallOption constructor, a check
 // that the option changes what the interceptor writes or dispatches.
 var loggingOptionCases = map[string]func(t *testing.T){
-	"WithLoggingLogger": func(t *testing.T) {
+	"WithLogger": func(t *testing.T) {
 		failing := status.Error(codes.Internal, "boom")
 		without := runLoggingCall(t, "/svc.S/M", 0, failing, true)
 		with := runLoggingCall(t, "/svc.S/M", 0, failing, false)
@@ -144,13 +144,13 @@ var loggingOptionCases = map[string]func(t *testing.T){
 		const delay = 30 * time.Millisecond
 		for _, tt := range []struct {
 			name      string
-			opts      []interceptors.LoggingOption
+			opts      []interceptors.CallOption
 			wantLevel string
 			wantMsg   string
 		}{
 			{name: "default 5s", wantLevel: "info", wantMsg: "gRPC request"},
-			{name: "10ms", opts: []interceptors.LoggingOption{interceptors.WithSlowThreshold(10 * time.Millisecond)}, wantLevel: "warn", wantMsg: "gRPC request (slow)"},
-			{name: "zero disables", opts: []interceptors.LoggingOption{interceptors.WithSlowThreshold(0)}, wantLevel: "info", wantMsg: "gRPC request"},
+			{name: "10ms", opts: []interceptors.CallOption{interceptors.WithSlowThreshold(10 * time.Millisecond)}, wantLevel: "warn", wantMsg: "gRPC request (slow)"},
+			{name: "zero disables", opts: []interceptors.CallOption{interceptors.WithSlowThreshold(0)}, wantLevel: "info", wantMsg: "gRPC request"},
 		} {
 			run := runLoggingCall(t, "/svc.S/Slow", delay, nil, false, tt.opts...)
 			if len(run.lines) != 1 {
@@ -177,6 +177,47 @@ var loggingOptionCases = map[string]func(t *testing.T){
 			t.Errorf("with: tenant = %v, want acme", with.lines[0].kvs["tenant"])
 		}
 	},
+	"WithRequestLine": func(t *testing.T) {
+		handler := func(context.Context, interface{}) (interface{}, error) { return nil, nil }
+		without, with := newOptionLogger(), newOptionLogger()
+		_, _ = interceptors.CallLifecycle(interceptors.WithLogger(without)).Unary(context.Background(), nil, mockUnaryServerInfo("/svc.S/M"), handler)
+		_, _ = interceptors.CallLifecycle(interceptors.WithLogger(with), interceptors.WithRequestLine()).Unary(context.Background(), nil, mockUnaryServerInfo("/svc.S/M"), handler)
+		if len(without.all()) != 0 || len(with.all()) != 1 {
+			t.Errorf("lines without = %d, with = %d, want 0 (the line is opt-in) and 1", len(without.all()), len(with.all()))
+		}
+	},
+	"WithReporter": func(t *testing.T) {
+		reports := &layerReports{}
+		failing := func(context.Context, interface{}) (interface{}, error) {
+			return nil, status.Error(codes.Internal, "boom")
+		}
+		_, _ = interceptors.CallLifecycle().Unary(context.Background(), nil, mockUnaryServerInfo("/svc.S/M"), failing)
+		_, _ = interceptors.CallLifecycle(interceptors.WithReporter(reports)).Unary(context.Background(), nil, mockUnaryServerInfo("/svc.S/M"), failing)
+		if reports.count() != 1 {
+			t.Errorf("reports = %d, want 1", reports.count())
+		}
+	},
+	"WithPanicHandler": func(t *testing.T) {
+		panicking := func(context.Context, interface{}) (interface{}, error) { panic("boom") }
+		_, without := interceptors.CallLifecycle(interceptors.WithStackTrace(false)).Unary(context.Background(), nil, mockUnaryServerInfo("/svc.S/M"), panicking)
+		_, with := interceptors.CallLifecycle(interceptors.WithStackTrace(false), interceptors.WithPanicHandler(func(context.Context, interface{}) error {
+			return status.Error(codes.Unavailable, "retry")
+		})).Unary(context.Background(), nil, mockUnaryServerInfo("/svc.S/M"), panicking)
+		if status.Code(without) != codes.Internal || status.Code(with) != codes.Unavailable {
+			t.Errorf("codes without = %v, with = %v, want Internal and Unavailable", status.Code(without), status.Code(with))
+		}
+	},
+	"WithStackTrace": func(t *testing.T) {
+		panicking := func(context.Context, interface{}) (interface{}, error) { panic("boom") }
+		for _, enabled := range []bool{true, false} {
+			reports := &layerReports{}
+			_, _ = interceptors.CallLifecycle(interceptors.WithReporter(reports), interceptors.WithStackTrace(enabled)).Unary(context.Background(), nil, mockUnaryServerInfo("/svc.S/M"), panicking)
+			ecs := reports.contexts()
+			if len(ecs) != 1 || (ecs[0].PanicStack != "") != enabled {
+				t.Errorf("WithStackTrace(%v): reports = %d, stack captured = %v", enabled, len(ecs), len(ecs) == 1 && ecs[0].PanicStack != "")
+			}
+		}
+	},
 	"WithEventDispatcher": func(t *testing.T) {
 		d := &countingDispatcher{}
 		runLoggingCall(t, "/svc.S/M", 0, nil, false)
@@ -190,15 +231,15 @@ var loggingOptionCases = map[string]func(t *testing.T){
 	},
 }
 
-// Every exported LoggingOption constructor changes what the logging
-// interceptor writes or dispatches; the table has a row for each one the
+// Every exported CallOption constructor changes what the call lifecycle interceptor
+// writes, dispatches or reports, or what the call ends with; the table has a row for each one the
 // package declares, so an option that does nothing cannot be added
 // without a row that fails.
-func TestLoggingOptions_EachChangesObservableOutput(t *testing.T) {
+func TestCallOptions_EachChangesObservableOutput(t *testing.T) {
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "logging.go", nil, 0)
+	f, err := parser.ParseFile(fset, "call_lifecycle.go", nil, 0)
 	if err != nil {
-		t.Fatalf("parse logging.go: %v", err)
+		t.Fatalf("parse call_lifecycle.go: %v", err)
 	}
 	var declared []string
 	for _, decl := range f.Decls {
@@ -206,13 +247,13 @@ func TestLoggingOptions_EachChangesObservableOutput(t *testing.T) {
 		if !ok || fn.Recv != nil || !fn.Name.IsExported() || fn.Type.Results == nil || len(fn.Type.Results.List) != 1 {
 			continue
 		}
-		if id, ok := fn.Type.Results.List[0].Type.(*ast.Ident); ok && id.Name == "LoggingOption" {
+		if id, ok := fn.Type.Results.List[0].Type.(*ast.Ident); ok && id.Name == "CallOption" {
 			declared = append(declared, fn.Name.Name)
 		}
 	}
 	sort.Strings(declared)
 	if len(declared) == 0 {
-		t.Fatal("found no LoggingOption constructors in logging.go")
+		t.Fatal("found no CallOption constructors in call_lifecycle.go")
 	}
 	for _, name := range declared {
 		check, ok := loggingOptionCases[name]
@@ -224,7 +265,7 @@ func TestLoggingOptions_EachChangesObservableOutput(t *testing.T) {
 	}
 	for name := range loggingOptionCases {
 		if !contains(declared, name) {
-			t.Errorf("row %s names no LoggingOption constructor in logging.go", name)
+			t.Errorf("row %s names no CallOption constructor in call_lifecycle.go", name)
 		}
 	}
 }

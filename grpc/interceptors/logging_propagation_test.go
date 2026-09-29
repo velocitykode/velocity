@@ -62,12 +62,12 @@ func incoming(pairs ...string) context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs(pairs...))
 }
 
-// TestLoggingUnary_ContinuesTraceparentFromMetadata pins the server half of
+// TestCallLifecycleUnary_ContinuesTraceparentFromMetadata pins the server half of
 // the gRPC edge: a valid traceparent in the incoming metadata is continued
 // with a new span whose parent is the caller's span.
-func TestLoggingUnary_ContinuesTraceparentFromMetadata(t *testing.T) {
+func TestCallLifecycleUnary_ContinuesTraceparentFromMetadata(t *testing.T) {
 	collector := &eventCollector{}
-	pair := interceptors.Logging(interceptors.WithEventDispatcher(collector.dispatch))
+	pair := interceptors.CallLifecycle(interceptors.WithRequestLine(), interceptors.WithEventDispatcher(collector.dispatch))
 
 	ctx := incoming("traceparent", "00-"+callerTrace+"-"+callerSpan+"-01")
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) { return "ok", nil }
@@ -104,10 +104,10 @@ func TestLoggingUnary_ContinuesTraceparentFromMetadata(t *testing.T) {
 	}
 }
 
-// TestLoggingStream_ContinuesTraceparentFromMetadata is the stream variant.
-func TestLoggingStream_ContinuesTraceparentFromMetadata(t *testing.T) {
+// TestCallLifecycleStream_ContinuesTraceparentFromMetadata is the stream variant.
+func TestCallLifecycleStream_ContinuesTraceparentFromMetadata(t *testing.T) {
 	collector := &eventCollector{}
-	pair := interceptors.Logging(interceptors.WithEventDispatcher(collector.dispatch))
+	pair := interceptors.CallLifecycle(interceptors.WithRequestLine(), interceptors.WithEventDispatcher(collector.dispatch))
 
 	stream := &mockServerStream{ctx: incoming("traceparent", "00-"+callerTrace+"-"+callerSpan+"-00")}
 	handler := func(srv interface{}, ss grpc.ServerStream) error { return nil }
@@ -130,9 +130,9 @@ func TestLoggingStream_ContinuesTraceparentFromMetadata(t *testing.T) {
 	}
 }
 
-// TestLoggingUnary_MalformedTraceparentStartsRoot covers hostile or broken
+// TestCallLifecycleUnary_MalformedTraceparentStartsRoot covers hostile or broken
 // carriers: each is ignored and the call starts a root span.
-func TestLoggingUnary_MalformedTraceparentStartsRoot(t *testing.T) {
+func TestCallLifecycleUnary_MalformedTraceparentStartsRoot(t *testing.T) {
 	for _, header := range []string{
 		"garbage",
 		"00-" + callerTrace + "-" + callerSpan, // no flags
@@ -145,7 +145,7 @@ func TestLoggingUnary_MalformedTraceparentStartsRoot(t *testing.T) {
 		"01-" + callerTrace + "-" + callerSpan + "-01-" + strings.Repeat("x", 1024), // oversized
 	} {
 		collector := &eventCollector{}
-		pair := interceptors.Logging(interceptors.WithEventDispatcher(collector.dispatch))
+		pair := interceptors.CallLifecycle(interceptors.WithRequestLine(), interceptors.WithEventDispatcher(collector.dispatch))
 		handler := func(ctx context.Context, req interface{}) (interface{}, error) { return "ok", nil }
 		if _, err := pair.Unary(incoming("traceparent", header), nil, mockUnaryServerInfo("/test.Service/Method"), handler); err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -162,7 +162,7 @@ func TestLoggingUnary_MalformedTraceparentStartsRoot(t *testing.T) {
 	// A repeated carrier is ambiguous, even when each value is valid.
 	valid := "00-" + callerTrace + "-" + callerSpan + "-01"
 	collector := &eventCollector{}
-	pair := interceptors.Logging(interceptors.WithEventDispatcher(collector.dispatch))
+	pair := interceptors.CallLifecycle(interceptors.WithRequestLine(), interceptors.WithEventDispatcher(collector.dispatch))
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) { return "ok", nil }
 	if _, err := pair.Unary(incoming("traceparent", valid, "traceparent", valid), nil, mockUnaryServerInfo("/test.Service/Method"), handler); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -174,11 +174,11 @@ func TestLoggingUnary_MalformedTraceparentStartsRoot(t *testing.T) {
 	}
 }
 
-// TestLoggingUnary_KeepsRequestIDFromMetadata pins that the x-request-id the
+// TestCallLifecycleUnary_KeepsRequestIDFromMetadata pins that the x-request-id the
 // caller sent is the request id of the call on the server.
-func TestLoggingUnary_KeepsRequestIDFromMetadata(t *testing.T) {
+func TestCallLifecycleUnary_KeepsRequestIDFromMetadata(t *testing.T) {
 	logger := &fieldLogger{}
-	pair := interceptors.Logging(interceptors.WithLoggingLogger(logger))
+	pair := interceptors.CallLifecycle(interceptors.WithRequestLine(), interceptors.WithLogger(logger))
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) { return "ok", nil }
 	if _, err := pair.Unary(incoming("x-request-id", "gateway-7f3a"), nil, mockUnaryServerInfo("/test.Service/Method"), handler); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -188,10 +188,10 @@ func TestLoggingUnary_KeepsRequestIDFromMetadata(t *testing.T) {
 	}
 }
 
-// TestLoggingUnary_GeneratesRequestIDWhenAbsentOrInvalid pins that every
+// TestCallLifecycleUnary_GeneratesRequestIDWhenAbsentOrInvalid pins that every
 // call has a request id: absent or unusable inbound values are replaced by
 // one from the framework's generator.
-func TestLoggingUnary_GeneratesRequestIDWhenAbsentOrInvalid(t *testing.T) {
+func TestCallLifecycleUnary_GeneratesRequestIDWhenAbsentOrInvalid(t *testing.T) {
 	for name, ctx := range map[string]context.Context{
 		"absent":    context.Background(),
 		"space":     incoming("x-request-id", "has space"),
@@ -200,7 +200,7 @@ func TestLoggingUnary_GeneratesRequestIDWhenAbsentOrInvalid(t *testing.T) {
 		"repeated":  incoming("x-request-id", "one", "x-request-id", "two"),
 	} {
 		logger := &fieldLogger{}
-		pair := interceptors.Logging(interceptors.WithLoggingLogger(logger))
+		pair := interceptors.CallLifecycle(interceptors.WithRequestLine(), interceptors.WithLogger(logger))
 		handler := func(ctx context.Context, req interface{}) (interface{}, error) { return "ok", nil }
 		if _, err := pair.Unary(ctx, nil, mockUnaryServerInfo("/test.Service/Method"), handler); err != nil {
 			t.Fatalf("%s: unexpected error: %v", name, err)

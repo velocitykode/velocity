@@ -125,7 +125,7 @@ func (f *Failures) Record(ctx context.Context, logger contract.Logger, err error
 func (f *Failures) report(ctx context.Context, logger contract.Logger, err error, event any, skipHook bool) {
 	name := EventName(event)
 	if f.firstOf(name) {
-		writeLine(ctx, logger, func(l contract.Logger) {
+		WriteLine(ctx, logger, func(l contract.Logger) {
 			l.Warn(FailureMessage, "event", name, "error", err)
 		})
 	}
@@ -134,12 +134,14 @@ func (f *Failures) report(ctx context.Context, logger contract.Logger, err error
 	}
 }
 
-// writeLine writes one of the policy's lines with write, through logger
-// bound to the ids ctx carries. A logger that panics, in With or in the
-// write, is contained and the same line goes to the fallback logger: a
-// panicking logger never skips the accounting or the hook, is not counted
-// as a failure of its own, and does not hide the failure it was logging.
-func writeLine(ctx context.Context, logger contract.Logger, write func(contract.Logger)) {
+// WriteLine writes one line with write, through logger (the fallback when
+// nil) bound to the ids ctx carries. A logger that panics, in With or in
+// the write, is contained and the same line goes to the fallback logger:
+// a diagnostic written this way never fails the work it describes, and a
+// panicking logger does not hide the line. The failure policy writes its
+// lines through it, so a panicking logger never skips the accounting or
+// the hook and is not counted as a failure of its own.
+func WriteLine(ctx context.Context, logger contract.Logger, write func(contract.Logger)) {
 	if logger != nil && tryLine(ctx, logger, write) {
 		return
 	}
@@ -187,7 +189,7 @@ func (f *Failures) callHook(ctx context.Context, logger contract.Logger, err err
 		if p := recover(); p != nil {
 			f.count.Add(1)
 			if f.hookPanicLogged.CompareAndSwap(false, true) {
-				writeLine(ctx, logger, func(l contract.Logger) {
+				WriteLine(ctx, logger, func(l contract.Logger) {
 					l.Error(HookPanicMessage, "event", name, "panic", fmt.Sprint(p))
 				})
 			}

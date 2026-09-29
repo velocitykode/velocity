@@ -11,7 +11,7 @@ import (
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 )
 
-// The recovery and logging interceptors built without a logger write
+// The call lifecycle interceptor built without a logger writes
 // through the one framework fallback, and nothing through the standard
 // library log package or slog.Default.
 func TestInterceptors_WithoutLoggerWriteThroughTheFallback(t *testing.T) {
@@ -19,10 +19,10 @@ func TestInterceptors_WithoutLoggerWriteThroughTheFallback(t *testing.T) {
 	stdlib := fallbacklogtest.CaptureStdlib(t)
 	info := &grpc.UnaryServerInfo{FullMethod: "/svc.Test/Call"}
 
-	_, _ = Recovery().Unary(context.Background(), nil, info, func(context.Context, any) (any, error) {
+	_, _ = CallLifecycle().Unary(context.Background(), nil, info, func(context.Context, any) (any, error) {
 		panic("handler blew up")
 	})
-	_, _ = Logging().Unary(context.Background(), nil, info, func(context.Context, any) (any, error) {
+	_, _ = CallLifecycle(WithRequestLine()).Unary(context.Background(), nil, info, func(context.Context, any) (any, error) {
 		return nil, status.Error(codes.Internal, "store down")
 	})
 

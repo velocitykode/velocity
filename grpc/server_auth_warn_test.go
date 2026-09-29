@@ -95,7 +95,7 @@ func TestBuild_WarnsWhenServiceUnauthenticated(t *testing.T) {
 			name: "non-auth interceptors only: warns",
 			setup: func(s *Server) {
 				s.RegisterService(regNoop)
-				s.UseAll(interceptors.Recovery(), interceptors.Logging())
+				s.UseAll(interceptors.CallLifecycle(), interceptors.CallLifecycle(interceptors.WithRequestLine()))
 			},
 			wantWarn: true,
 		},

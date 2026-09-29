@@ -133,7 +133,7 @@ func (l *grpcEventLog) started() *grpcevents.RequestStarted {
 	return nil
 }
 
-// echoRig is a running velocity gRPC server with the logging interceptor
+// echoRig is a running velocity gRPC server with the call lifecycle interceptor
 // wired to a request log and an event log.
 type echoRig struct {
 	addr   string
@@ -150,9 +150,9 @@ func startEchoRig(t *testing.T) *echoRig {
 	}
 	quiet, _ := log.NewLogger(log.LogConfig{Driver: "null"})
 	rig := &echoRig{addr: lis.Addr().String(), echo: &echoServer{}, logs: &requestLog{}, events: &grpcEventLog{}}
-	s := NewServer(WithListener(lis), WithLogger(quiet), WithEnvironment("testing"))
-	s.UseAll(interceptors.Logging(
-		interceptors.WithLoggingLogger(rig.logs),
+	s := NewServer(WithListener(lis), WithLogger(quiet), WithEnvironment("testing"), WithCallOptions(
+		interceptors.WithRequestLine(),
+		interceptors.WithLogger(rig.logs),
 		interceptors.WithEventDispatcher(rig.events.dispatch),
 	))
 	s.MarkAuthConfigured()

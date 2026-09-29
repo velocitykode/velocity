@@ -62,9 +62,9 @@ func (l boundLogger) last(t *testing.T) boundLine {
 	return l.sink.lines[len(l.sink.lines)-1]
 }
 
-// The line the logging interceptor writes for a call carries the call's
+// The line the call lifecycle interceptor writes for a call carries the call's
 // request id, trace id and span id, unary and stream alike.
-func TestLogging_LineCarriesTheCallCorrelation(t *testing.T) {
+func TestCallLifecycle_LineCarriesTheCallCorrelation(t *testing.T) {
 	traceparent := "00-" + callerTrace + "-" + callerSpan + "-01"
 	for name, call := range map[string]func(pair interceptors.InterceptorPair) (trace, span, request string){
 		"unary": func(pair interceptors.InterceptorPair) (string, string, string) {
@@ -94,7 +94,7 @@ func TestLogging_LineCarriesTheCallCorrelation(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			logger := newBoundLogger()
-			traceID, spanID, requestID := call(interceptors.Logging(interceptors.WithLoggingLogger(logger)))
+			traceID, spanID, requestID := call(interceptors.CallLifecycle(interceptors.WithRequestLine(), interceptors.WithLogger(logger)))
 			if traceID != callerTrace || spanID == "" || requestID == "" {
 				t.Fatalf("handler ran with trace %q span %q request %q", traceID, spanID, requestID)
 			}
@@ -108,18 +108,25 @@ func TestLogging_LineCarriesTheCallCorrelation(t *testing.T) {
 	}
 }
 
-// The recovery interceptor's panic line carries the trace of the call it
-// recovered.
-func TestRecovery_LineCarriesTheCallTrace(t *testing.T) {
+// The panic line of a recovered call carries the call's ids: its request
+// id and its own span under the incoming trace.
+func TestCallLifecycle_LineCarriesTheCallTrace(t *testing.T) {
 	logger := newBoundLogger()
-	pair := interceptors.Recovery(interceptors.WithRecoveryLogger(logger), interceptors.WithStackTrace(false))
+	pair := interceptors.CallLifecycle(interceptors.WithLogger(logger), interceptors.WithStackTrace(false))
 	ctx := trace.WithRequestID(trace.WithTrace(context.Background(), callerTrace, callerSpan), "req-9")
-	handler := func(context.Context, interface{}) (interface{}, error) { panic("boom") }
+	var callSpan string
+	handler := func(ctx context.Context, _ interface{}) (interface{}, error) {
+		callSpan = trace.GetSpanID(ctx)
+		panic("boom")
+	}
 
 	_, _ = pair.Unary(ctx, nil, mockUnaryServerInfo("/test.Service/Method"), handler)
 
+	if callSpan == callerSpan {
+		t.Fatalf("the call ran under the caller's span %q, want a span of its own", callSpan)
+	}
 	line := logger.last(t)
-	for key, want := range map[string]string{"trace_id": callerTrace, "span_id": callerSpan, "request_id": "req-9"} {
+	for key, want := range map[string]string{"trace_id": callerTrace, "span_id": callSpan, "request_id": "req-9"} {
 		if got := line[key]; got != want {
 			t.Errorf("%s = %v, want %q (%v)", key, got, want, line)
 		}

@@ -124,10 +124,8 @@ func TestAppLog_PassesToEveryLoggerOption(t *testing.T) {
 		{"problem.WithHandlerLogger", func() { _ = problem.WithHandlerLogger(log) }},
 		{"grpc.WithLogger", func() { _ = grpc.WithLogger(log) }},
 		{"grpc.GatewayWithLogger", func() { _ = grpc.GatewayWithLogger(log) }},
-		{"interceptors.WithLoggingLogger", func() { _ = interceptors.WithLoggingLogger(log) }},
-		{"interceptors.WithRecoveryLogger", func() { _ = interceptors.WithRecoveryLogger(log) }},
-		{"interceptors.LoggingConfig.Logger", func() { _ = interceptors.LoggingConfig{Logger: log} }},
-		{"interceptors.RecoveryConfig.Logger", func() { _ = interceptors.RecoveryConfig{Logger: log} }},
+		{"interceptors.WithLogger", func() { _ = interceptors.WithLogger(log) }},
+		{"interceptors.CallConfig.Logger", func() { _ = interceptors.CallConfig{Logger: log} }},
 	}
 	for _, s := range seams {
 		t.Run(s.name, func(t *testing.T) {

@@ -22,7 +22,7 @@ type ClientInterceptorPair struct {
 // context's trace and request id to the server: traceparent naming the
 // context's trace and current span as the server's parent, and
 // x-request-id with its request id (see trace.Propagate). The server's
-// Logging interceptor continues that trace and keeps that request id. The
+// call lifecycle interceptor (CallLifecycle) continues that trace and keeps that request id. The
 // HTTP gateway installs it on the client it proxies through; install it on
 // any other client the application builds:
 //

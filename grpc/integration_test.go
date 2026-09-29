@@ -51,7 +51,7 @@ func (v *staticValidator) ValidateToken(ctx context.Context, token string) (inte
 
 // panickingHealth is a Health service whose Check method panics. It's
 // registered alongside the real HealthService so we can exercise the
-// recovery interceptor against an explicitly-failing RPC without
+// call lifecycle interceptor against an explicitly-failing RPC without
 // needing a generated proto for a bespoke service.
 type panickingHealth struct {
 	grpc_health_v1.UnimplementedHealthServer
@@ -139,16 +139,14 @@ func startRig(t *testing.T, configure func(s *grpc.Server, p *panickingHealth)) 
 	}
 }
 
-// TestIntegration_RecoveryInterceptor_ConvertsPanicToInternalError
-// asserts that a panic inside a handler is caught by the recovery
-// interceptor and surfaces as status.Code Internal to the client. The
+// TestIntegration_CallInterceptor_ConvertsPanicToInternalError
+// asserts that a panic inside a handler is caught by the call lifecycle interceptor
+// the server installs by default and surfaces as status.Code Internal to
+// the client. The
 // negative outcome (server drops the TCP connection, client sees
 // Unavailable or EOF) is what we are guarding against.
-func TestIntegration_RecoveryInterceptor_ConvertsPanicToInternalError(t *testing.T) {
-	rig := startRig(t, func(s *grpc.Server, _ *panickingHealth) {
-		rec := interceptors.Recovery(interceptors.WithStackTrace(false))
-		s.Use(rec.Unary).UseStream(rec.Stream)
-	})
+func TestIntegration_CallInterceptor_ConvertsPanicToInternalError(t *testing.T) {
+	rig := startRig(t, func(*grpc.Server, *panickingHealth) {})
 
 	rig.panic.panicMu.Lock()
 	rig.panic.shouldPanic = true
@@ -258,18 +256,16 @@ func TestIntegration_AuthInterceptor_PublicMethodBypass(t *testing.T) {
 	}
 }
 
-// TestIntegration_InterceptorChainOrder guards the order: Recovery
-// outermost, then Auth. If Auth were outermost and a panic happened in
-// Auth, the recovery interceptor would never see it — and the client
+// TestIntegration_InterceptorChainOrder guards the order: the server's
+// default call lifecycle interceptor outermost, then Auth. If Auth were outermost
+// and a panic happened in Auth, nothing would recover it, and the client
 // would observe Unavailable instead of Internal. The test triggers a
-// handler panic under a valid token; Recovery must catch it.
+// handler panic under a valid token; the call lifecycle interceptor must catch it.
 func TestIntegration_InterceptorChainOrder(t *testing.T) {
 	validator := &staticValidator{validToken: "ok"}
 	rig := startRig(t, func(s *grpc.Server, _ *panickingHealth) {
-		rec := interceptors.Recovery(interceptors.WithStackTrace(false))
 		auth := interceptors.Auth(validator, interceptors.WithPublicMethods())
-		// Recovery MUST be added first so it's the outermost in the chain.
-		s.Use(rec.Unary, auth.Unary).UseStream(rec.Stream, auth.Stream)
+		s.Use(auth.Unary).UseStream(auth.Stream)
 	})
 
 	rig.panic.panicMu.Lock()
@@ -289,7 +285,7 @@ func TestIntegration_InterceptorChainOrder(t *testing.T) {
 		t.Errorf("got code %v want Internal — recovery did not see the panic (check chain order)", st.Code())
 	}
 	if strings.Contains(st.Message(), "handler panicked") {
-		// Recovery MUST scrub the panic message before returning to client.
+		// The call lifecycle interceptor must scrub the panic message before returning to the client.
 		t.Errorf("recovery leaked raw panic message to client: %q", st.Message())
 	}
 }

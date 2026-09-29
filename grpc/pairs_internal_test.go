@@ -15,7 +15,7 @@ func TestUseAllAcceptsInterceptorPairs(t *testing.T) {
 	beforeUnary := len(s.unaryInterceptors)
 	beforeStream := len(s.streamInterceptors)
 
-	s.UseAll(interceptors.Recovery(), interceptors.Logging())
+	s.UseAll(interceptors.CallLifecycle(), interceptors.CallLifecycle(interceptors.WithRequestLine()))
 
 	if got, want := len(s.unaryInterceptors), beforeUnary+2; got != want {
 		t.Fatalf("unaryInterceptors = %d, want %d", got, want)

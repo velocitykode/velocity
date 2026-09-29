@@ -58,17 +58,21 @@ func (l *errorLines) count() int {
 	return l.n
 }
 
-// TestRecovery_ReportsPanicOnce asserts a panic the recovery interceptor
+// TestCallLifecycle_ReportsPanicOnce asserts a panic the call lifecycle interceptor
 // recovers is reported once to its reporter, as a recovered panic naming
 // the method and carrying the call's request and trace IDs and the stack,
 // instead of being logged; the client gets the same codes.Internal status.
-func TestRecovery_ReportsPanicOnce(t *testing.T) {
+func TestCallLifecycle_ReportsPanicOnce(t *testing.T) {
 	reports := &reportLog{}
 	logger := &errorLines{}
-	pair := Recovery(WithRecoveryReporter(reports), WithRecoveryLogger(logger))
+	pair := CallLifecycle(WithReporter(reports), WithLogger(logger))
 
 	ctx := trace.WithRequestID(trace.WithTrace(context.Background(), "trace-grpc", "span-grpc"), "req-grpc")
-	handler := func(context.Context, interface{}) (interface{}, error) { panic("handler exploded") }
+	var callSpan string
+	handler := func(ctx context.Context, _ interface{}) (interface{}, error) {
+		callSpan = trace.GetSpanID(ctx)
+		panic("handler exploded")
+	}
 	_, err := pair.Unary(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/svc.Orders/Ship"}, handler)
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("status = %v, want codes.Internal", status.Code(err))
@@ -87,8 +91,9 @@ func TestRecovery_ReportsPanicOnce(t *testing.T) {
 	if !exCtx.Recovered || exCtx.PanicStack == "" {
 		t.Errorf("report context = %+v, want a recovered panic with its stack", exCtx)
 	}
-	if exCtx.RequestID != "req-grpc" || exCtx.TraceID != "trace-grpc" || exCtx.SpanID != "span-grpc" {
-		t.Errorf("report IDs = %q/%q/%q, want the call's", exCtx.RequestID, exCtx.TraceID, exCtx.SpanID)
+	// The call runs as a new span under the incoming trace.
+	if exCtx.RequestID != "req-grpc" || exCtx.TraceID != "trace-grpc" || exCtx.SpanID != callSpan || callSpan == "span-grpc" {
+		t.Errorf("report IDs = %q/%q/%q, want the call's req-grpc/trace-grpc/%q", exCtx.RequestID, exCtx.TraceID, exCtx.SpanID, callSpan)
 	}
 	if logger.count() != 0 {
 		t.Errorf("reported panic also logged %d times, want 0", logger.count())
@@ -104,12 +109,12 @@ func TestRecovery_ReportsPanicOnce(t *testing.T) {
 	}
 }
 
-// TestRecovery_ReportsInternalHandlerErrors asserts an internal error a
+// TestCallLifecycle_ReportsInternalHandlerErrors asserts an internal error a
 // handler returns (codes.Internal or codes.Unknown, a plain Go error
 // included) is reported once with the method named, the client getting the
 // same error, while a client-outcome status and a call ended by its own
 // context are not reported.
-func TestRecovery_ReportsInternalHandlerErrors(t *testing.T) {
+func TestCallLifecycle_ReportsInternalHandlerErrors(t *testing.T) {
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 	plain := errors.New("database unreachable")
@@ -130,7 +135,7 @@ func TestRecovery_ReportsInternalHandlerErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			reports := &reportLog{}
-			pair := Recovery(WithRecoveryReporter(reports))
+			pair := CallLifecycle(WithReporter(reports))
 			handler := func(context.Context, interface{}) (interface{}, error) { return nil, tt.err }
 			_, err := pair.Unary(tt.ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/svc.Orders/Get"}, handler)
 			if err != tt.err {
@@ -168,11 +173,11 @@ type panickingReporter struct{}
 
 func (panickingReporter) Report(error, *contract.ErrorContext) { panic("reporter exploded") }
 
-// TestRecovery_PanickingReporterContained asserts a reporter that panics
+// TestCallLifecycle_PanickingReporterContained asserts a reporter that panics
 // cannot crash the call: the client still gets codes.Internal for a panic
 // and the handler's own error otherwise.
-func TestRecovery_PanickingReporterContained(t *testing.T) {
-	pair := Recovery(WithRecoveryReporter(panickingReporter{}))
+func TestCallLifecycle_PanickingReporterContained(t *testing.T) {
+	pair := CallLifecycle(WithReporter(panickingReporter{}))
 	info := &grpc.UnaryServerInfo{FullMethod: "/svc.Orders/Ship"}
 	_, err := pair.Unary(context.Background(), nil, info, func(context.Context, interface{}) (interface{}, error) { panic("boom") })
 	if status.Code(err) != codes.Internal {

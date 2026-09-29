@@ -17,7 +17,7 @@
 //	    grpc.WithPort("50051"),
 //	    grpc.WithReflection(true),
 //	)
-//	server.UseAll(interceptors.Recovery(), interceptors.Logging())
+//	server.UseAll(interceptors.Auth(validator))
 //	server.RegisterService(func(srv interface{}) {
 //	    pb.RegisterMyServiceServer(srv.(*googlegrpc.Server), &myService{})
 //	})

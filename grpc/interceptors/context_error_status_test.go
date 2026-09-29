@@ -58,7 +58,7 @@ func (r *ctxErrorReports) count() int {
 // call with the status grpc-go sends for it (Canceled or DeadlineExceeded):
 // the failed and completed events and the logging line carry that code, and
 // recovery does not report it as an internal error.
-func TestLogging_ContextErrorsGetTheirStatus(t *testing.T) {
+func TestCallLifecycle_ContextErrorsGetTheirStatus(t *testing.T) {
 	cases := []struct {
 		name string
 		err  error
@@ -75,11 +75,11 @@ func TestLogging_ContextErrorsGetTheirStatus(t *testing.T) {
 				evs := &statusEvents{}
 				lines := newBoundLogger()
 				reports := &ctxErrorReports{}
-				logging := interceptors.Logging(
-					interceptors.WithLoggingLogger(lines),
+				logging := interceptors.CallLifecycle(interceptors.WithRequestLine(),
+					interceptors.WithLogger(lines),
 					interceptors.WithEventDispatcher(evs.dispatch),
 				)
-				rec := interceptors.Recovery(interceptors.WithRecoveryReporter(reports))
+				rec := interceptors.CallLifecycle(interceptors.WithReporter(reports))
 				if kind == "unary" {
 					_, _ = rec.Unary(context.Background(), nil, mockUnaryServerInfo("/svc.Work/Do"),
 						func(ctx context.Context, req any) (any, error) {

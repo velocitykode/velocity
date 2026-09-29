@@ -84,7 +84,7 @@ func TestRequestLifecycle_HTTPAndGRPCFollowOneRule(t *testing.T) {
 			}
 
 			unaryEvents := &eventNameRecorder{}
-			pair := interceptors.Logging(interceptors.WithEventDispatcher(unaryEvents.dispatch))
+			pair := interceptors.CallLifecycle(interceptors.WithEventDispatcher(unaryEvents.dispatch))
 			_, _ = pair.Unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/svc.Work/Do"},
 				func(context.Context, any) (any, error) {
 					if tt.fail {
@@ -94,7 +94,7 @@ func TestRequestLifecycle_HTTPAndGRPCFollowOneRule(t *testing.T) {
 				})
 
 			streamEvents := &eventNameRecorder{}
-			pair = interceptors.Logging(interceptors.WithEventDispatcher(streamEvents.dispatch))
+			pair = interceptors.CallLifecycle(interceptors.WithEventDispatcher(streamEvents.dispatch))
 			_ = pair.Stream(nil, &contextServerStream{ctx: context.Background()}, &grpc.StreamServerInfo{FullMethod: "/svc.Work/Stream"},
 				func(any, grpc.ServerStream) error {
 					if tt.fail {

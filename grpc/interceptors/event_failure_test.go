@@ -14,9 +14,9 @@ import (
 // A failed event dispatch goes to the one failure policy: counted, and the
 // first failure of each event name logged at warn level through the
 // component's logger (the standalone fallback here), not ignored.
-func TestLogging_FailedEventDispatchLoggedOncePerEvent(t *testing.T) {
+func TestCallLifecycle_FailedEventDispatchLoggedOncePerEvent(t *testing.T) {
 	out := fallbacklogtest.Capture(t)
-	unary := Logging(WithEventDispatcher(func(context.Context, any) error { return errors.New("listener failed") })).Unary
+	unary := CallLifecycle(WithRequestLine(), WithEventDispatcher(func(context.Context, any) error { return errors.New("listener failed") })).Unary
 	info := &grpc.UnaryServerInfo{FullMethod: "/svc.Test/Call"}
 	for i := 0; i < 2; i++ {
 		if _, err := unary(context.Background(), nil, info, func(context.Context, any) (any, error) { return "ok", nil }); err != nil {
