@@ -125,3 +125,34 @@ func (c *C) OnceFunc() func() {
 		c.hook() // want func
 	})
 }
+
+// wrapHook only builds a func: the literal runs when the result is called,
+// not during wrapHook, so calling wrapHook under a lock is fine.
+func (c *C) wrapHook() func() {
+	return pass(func() { c.hook() })
+}
+
+func pass(fn func()) func() { return fn }
+
+// hookInPlace runs its literals during the call.
+func (c *C) hookInPlace() {
+	func() { c.hook() }()
+}
+
+func (c *C) hookDeferred() {
+	defer func() { c.hook() }()
+}
+
+func (c *C) hookInOnce() {
+	c.once.Do(func() { c.hook() }) // want func
+}
+
+func (c *C) PassedAlongLiteral() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_ = c.wrapHook()
+	_ = sub.Wrap(func() { c.hook() })
+	c.hookInPlace()  // want reach
+	c.hookDeferred() // want reach
+	c.hookInOnce()   // want reach
+}

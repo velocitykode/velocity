@@ -30,8 +30,11 @@
 //   - format: an fmt call with an interface-typed argument other than
 //     error, and Error() or String() called on an interface value;
 //   - reach: a call to a function of the module whose body makes one of the
-//     calls above, directly or through other module functions (goroutine
-//     bodies it starts excluded).
+//     calls above, directly or through other module functions. Only code
+//     that runs during the call counts: the body itself, func literals it
+//     invokes in place or defers, and Once.Do bodies. A goroutine it starts
+//     and a func literal it only passes along or returns (a middleware
+//     wrapper, a hook it installs) do not.
 //
 // Known limits: an error argument to fmt.Errorf is not flagged (wrapping is
 // everywhere, and a framework error formats framework text); a plain
@@ -43,11 +46,14 @@
 // `//lock-held-ok: <rationale>` comment, the rationale at least 5
 // characters. A bare `//lock-held-ok:` does not suppress.
 //
-// Scope: the non-test files of the module's packages, except test
+// Scope: the non-test files of the packages the patterns name, except test
 // infrastructure, excluded by directory: any directory whose name ends in
 // "test" (cachetest, queuetest, fallbacklogtest, ...) or is "testing"
 // (httpclient/testing, orm/testing, storage/testing: fakes and helpers for
 // tests), internal/hostile, and scripts/.
+//
+// The other packages of the module that those import are read too, for
+// reach, but are not reported on.
 //
 // Type information comes from `go list -export` and the standard library
 // importer, so the tool needs no dependency outside the standard library.
@@ -103,6 +109,7 @@ type listedPackage struct {
 	Dir             string
 	Export          string
 	CompiledGoFiles []string
+	DepOnly         bool
 	Module          *struct{ Path, Dir string }
 	Error           *struct{ Err string }
 }
@@ -156,7 +163,7 @@ func check(dir string, patterns []string, all bool) ([]string, error) {
 	})
 	a := &analysis{fset: fset, root: mod.Dir, funcs: map[string]*funcSummary{}, all: all}
 	for _, p := range targets {
-		u := &unit{info: &types.Info{
+		u := &unit{report: !p.DepOnly, info: &types.Info{
 			Types:      map[ast.Expr]types.TypeAndValue{},
 			Uses:       map[*ast.Ident]types.Object{},
 			Defs:       map[*ast.Ident]types.Object{},
@@ -221,8 +228,9 @@ func excluded(module, path string) bool {
 }
 
 type unit struct {
-	files []*ast.File
-	info  *types.Info
+	files  []*ast.File
+	info   *types.Info
+	report bool // named by the patterns, not only a dependency of one
 }
 
 // funcSummary is what one declared function does that counts as user code.
@@ -245,6 +253,9 @@ func (a *analysis) run() []string {
 	a.hits = map[string]bool{}
 	a.summarize()
 	for _, u := range a.units {
+		if !u.report {
+			continue
+		}
 		for _, f := range u.files {
 			for _, d := range f.Decls {
 				if fd, ok := d.(*ast.FuncDecl); ok && fd.Body != nil {
@@ -278,13 +289,30 @@ func (a *analysis) summarize() {
 				}
 				s := &funcSummary{}
 				a.funcs[funcKey(obj)] = s
+				// Only the literals that run during the call count; a
+				// call is visited before its operands, so it marks them
+				// first.
+				runs := map[*ast.FuncLit]bool{}
 				ast.Inspect(fd.Body, func(n ast.Node) bool {
-					if _, ok := n.(*ast.GoStmt); ok {
+					switch n := n.(type) {
+					case *ast.GoStmt:
 						return false
+					case *ast.FuncLit:
+						return runs[n]
 					}
 					call, ok := n.(*ast.CallExpr)
 					if !ok {
 						return true
+					}
+					if lit, ok := ast.Unparen(call.Fun).(*ast.FuncLit); ok {
+						runs[lit] = true
+					}
+					if op, _ := syncOp(u, call); op == "do" {
+						for _, arg := range call.Args {
+							if lit, ok := ast.Unparen(arg).(*ast.FuncLit); ok {
+								runs[lit] = true
+							}
+						}
 					}
 					if k, d := classify(u, call); k != "" && k != kindIface && s.direct == "" {
 						s.direct = k + " " + d
@@ -725,7 +753,7 @@ func (w *walker) expr(e ast.Expr, h held) {
 			for _, arg := range x.Args {
 				w.expr(arg, h)
 			}
-			if lit, ok := x.Fun.(*ast.FuncLit); ok { // invoked in place
+			if lit, ok := ast.Unparen(x.Fun).(*ast.FuncLit); ok { // invoked in place
 				w.block(lit.Body.List, h.copy())
 				return false
 			}

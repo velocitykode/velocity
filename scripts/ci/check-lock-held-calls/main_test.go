@@ -66,6 +66,25 @@ func TestCheck(t *testing.T) {
 	}
 }
 
+// TestScope names only the root package: the package it imports is read,
+// so reach through it is still found, but its own lines are not reported.
+func TestScope(t *testing.T) {
+	hits, err := check(filepath.Join("testdata", "src"), []string{"."}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reach := false
+	for _, h := range hits {
+		if !strings.HasPrefix(h, "cases.go:") {
+			t.Errorf("hit outside the named package: %s", h)
+		}
+		reach = reach || strings.Contains(h, "CallHook")
+	}
+	if !reach {
+		t.Errorf("reach through the imported package not found:\n%s", strings.Join(hits, "\n"))
+	}
+}
+
 func TestExcluded(t *testing.T) {
 	const mod = "example.com/m"
 	for path, want := range map[string]bool{
