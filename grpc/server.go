@@ -768,10 +768,11 @@ func (s *Server) Stop() {
 
 // GracefulStop gracefully stops the gRPC server: it waits for the calls in
 // flight to finish. A GracefulStop that overlaps another graceful stop or
-// a Shutdown waits for that drain to finish. Like Stop, it also releases a listener bound by Build but
-// never served, so a built-but-unstarted server does not leak its socket. The
-// wait runs without the server's lock, so those calls may call the
-// server's accessors, and a Stop may interrupt it.
+// a Shutdown waits for that drain to finish. Like Stop, it also releases
+// a listener bound by Build but never served, so a built-but-unstarted
+// server does not leak its socket. The wait runs without the server's
+// lock, so those calls may call the server's accessors, and a Stop may
+// interrupt it.
 func (s *Server) GracefulStop() {
 	st := s.beginStop(false)
 	if st.log {
@@ -815,9 +816,10 @@ type stopPlan struct {
 // (Stop) stops a server that was served even when it no longer runs, so
 // it reaches a GracefulStop in progress (grpc-go accepts Stop during
 // GracefulStop, and a repeated Stop is a no-op), and a graceful stop that
-// overlaps the owner's waits on its drain. A built but never served server gives up its
-// listener, and grpcServer is reset so it never outlives that listener,
-// or a later Build() early-returns and Start() panics on a nil listener.
+// overlaps the owner's waits on its drain. A built but never served
+// server gives up its listener, and grpcServer is reset so it never
+// outlives that listener, or a later Build() early-returns and Start()
+// panics on a nil listener.
 // It calls no application code.
 func (s *Server) beginStop(force bool) stopPlan {
 	s.mu.Lock()
