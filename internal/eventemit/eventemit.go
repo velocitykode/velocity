@@ -243,7 +243,7 @@ func (f *Failures) Recording(dispatch func(ctx context.Context, event any) error
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		err := dispatchRecovering(dispatch, ctx, event)
+		err := DispatchContained(ctx, dispatch, event)
 		if err == nil {
 			return nil
 		}
@@ -252,9 +252,13 @@ func (f *Failures) Recording(dispatch func(ctx context.Context, event any) error
 	}
 }
 
-// dispatchRecovering calls dispatch, returning a panic in it as the typed
-// panic error.
-func dispatchRecovering(dispatch dispatchFunc, ctx context.Context, event any) (err error) {
+// DispatchContained calls dispatch, returning a panic in it as the typed
+// panic error (a contract.RecoveredPanic). It is the one recover for a
+// dispatch target: Emit and Recording call it, and so does any framework
+// goroutine that calls a stored dispatch target directly, since a recover
+// only catches panics on its own goroutine. It does not record the
+// failure; the caller routes the error to its failure policy.
+func DispatchContained(ctx context.Context, dispatch func(ctx context.Context, event any) error, event any) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = panicerr.FromRecovered(p)
@@ -362,7 +366,7 @@ func (e *Emitter) Emit(ctx context.Context, event any) bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := dispatchRecovering(*p, ctx, event); err != nil {
+	if err := DispatchContained(ctx, *p, event); err != nil {
 		e.Fail(ctx, err, event)
 	}
 	return true
