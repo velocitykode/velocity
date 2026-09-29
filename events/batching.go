@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/internal/goroutine"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // batchEntry pairs a buffered event with the ctx that originally dispatched
@@ -16,7 +19,17 @@ type batchEntry struct {
 	event interface{}
 }
 
-// BatchingDispatcher batches events and dispatches them in groups
+// BatchingDispatcher batches events and dispatches them in groups.
+//
+// A batch is flushed by the caller (Flush, or a Dispatch that fills the
+// batch) or by the background loop Start runs (on each interval and once
+// more on Stop). A caller's flush returns the first failure and keeps the
+// failed entry and the rest for a retry. The background loop has no caller
+// to return a failure to, so it delivers each entry detached, like a
+// debounced or coalesced delivery: a listener's failure is dispatched as
+// its AsyncFailed and recorded (see SetDetachedFailureRecorder), and the
+// entry is not requeued. Before, a background flush dropped the failure
+// and requeued the entry, retrying it on every interval without end.
 type BatchingDispatcher struct {
 	*DefaultDispatcher
 	batchSize     int
@@ -27,6 +40,9 @@ type BatchingDispatcher struct {
 	stopCh        chan struct{}
 	stopOnce      sync.Once
 	wg            sync.WaitGroup
+	// loopID is the background loop's goroutine id, 0 until it runs, so
+	// a Stop called on that goroutine does not wait for itself.
+	loopID atomic.Uint64
 }
 
 // NewBatchingDispatcher creates a new batching dispatcher.
@@ -56,18 +72,59 @@ func (d *BatchingDispatcher) Start() {
 // flushLoop periodically flushes the batch
 func (d *BatchingDispatcher) flushLoop() {
 	defer d.wg.Done()
+	d.loopID.Store(goroutine.ID())
 	ticker := time.NewTicker(d.flushInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			d.Flush()
+			d.flushDetached()
 		case <-d.stopCh:
-			d.Flush()
+			d.flushDetached()
 			return
 		}
 	}
+}
+
+// flushDetached is the background loop's flush: no caller receives its
+// result, so each entry is delivered detached (see dispatchLater), and a
+// failed entry is dispatched as its AsyncFailed and recorded, not
+// requeued.
+func (d *BatchingDispatcher) flushDetached() {
+	entries := d.takeBatch()
+	if entries == nil {
+		return
+	}
+	defer d.endFlush()
+	for _, entry := range entries {
+		d.dispatchLater(entry.ctx, entry.event)
+	}
+}
+
+// takeBatch takes the batch for a flush and marks the flush in progress.
+// It returns nil when the batch is empty or a flush is already in
+// progress: a re-entrant or concurrent flush is a no-op, so the one in
+// progress keeps control of its entries and their order (see Flush).
+func (d *BatchingDispatcher) takeBatch() []batchEntry {
+	d.batchMu.Lock()
+	if d.flushing || len(d.batch) == 0 {
+		d.batchMu.Unlock()
+		return nil
+	}
+	entries := make([]batchEntry, len(d.batch))
+	copy(entries, d.batch)
+	d.batch = d.batch[:0]
+	d.flushing = true
+	d.batchMu.Unlock()
+	return entries
+}
+
+// endFlush marks the flush in progress as done.
+func (d *BatchingDispatcher) endFlush() {
+	d.batchMu.Lock()
+	d.flushing = false
+	d.batchMu.Unlock()
 }
 
 // Dispatch adds an event to the batch.
@@ -107,68 +164,78 @@ func (d *BatchingDispatcher) Dispatch(ctx context.Context, event interface{}) er
 // entry plus every entry after it are spliced back into the batch ahead of
 // any events recorded re-entrantly during the flush, and the error is
 // returned so a subsequent Flush resumes from the failed entry. Successful
-// entries (0..i-1) are not redelivered.
+// entries (0..i-1) are not redelivered. A panic while an entry is
+// dispatched (its event's Name, say) is that entry's failure, returned as
+// the recovered panic on the same path.
 func (d *BatchingDispatcher) Flush() error {
-	d.batchMu.Lock()
 	// A flush already in progress (re-entrant or concurrent call) must be a
 	// no-op: the outer Flush retains exclusive control of its snapshot so it
 	// can splice a failed entry plus the remainder ahead of any events
 	// recorded re-entrantly by listeners during the flush. Letting a nested
 	// Flush drain the batch here would deliver those re-entrant events before
 	// the outer snapshot's remainder, violating ordering.
-	if d.flushing {
-		d.batchMu.Unlock()
-		return nil
-	}
-	if len(d.batch) == 0 {
-		d.batchMu.Unlock()
+	entries := d.takeBatch()
+	if entries == nil {
 		return nil
 	}
 
-	entries := make([]batchEntry, len(d.batch))
-	copy(entries, d.batch)
-	d.batch = d.batch[:0]
-	d.flushing = true
-	d.batchMu.Unlock()
-
-	// Dispatch all events
-	for i, entry := range entries {
-		if err := d.DefaultDispatcher.Dispatch(entry.ctx, entry.event); err != nil {
-			// Put the failing entry plus the remainder back ahead of any
-			// events recorded re-entrantly during this flush so a retry
-			// resumes from the failure without losing later entries.
-			remainder := entries[i:]
-			d.batchMu.Lock()
-			if len(d.batch) > 0 {
-				combined := make([]batchEntry, 0, len(remainder)+len(d.batch))
-				combined = append(combined, remainder...)
-				combined = append(combined, d.batch...)
-				d.batch = combined
-			} else {
-				// Copy to detach from the snapshot's backing array.
-				dup := make([]batchEntry, len(remainder))
-				copy(dup, remainder)
-				d.batch = dup
-			}
-			d.flushing = false
-			d.batchMu.Unlock()
-			return err
+	if i, err := d.dispatchEntries(entries); err != nil {
+		// Put the failing entry plus the remainder back ahead of any
+		// events recorded re-entrantly during this flush so a retry
+		// resumes from the failure without losing later entries.
+		remainder := entries[i:]
+		d.batchMu.Lock()
+		if len(d.batch) > 0 {
+			combined := make([]batchEntry, 0, len(remainder)+len(d.batch))
+			combined = append(combined, remainder...)
+			combined = append(combined, d.batch...)
+			d.batch = combined
+		} else {
+			// Copy to detach from the snapshot's backing array.
+			dup := make([]batchEntry, len(remainder))
+			copy(dup, remainder)
+			d.batch = dup
 		}
+		d.flushing = false
+		d.batchMu.Unlock()
+		return err
 	}
 
-	d.batchMu.Lock()
-	d.flushing = false
-	d.batchMu.Unlock()
-
+	d.endFlush()
 	return nil
 }
 
-// Stop stops the batching dispatcher. Safe to call more than once; the
-// stopOnce guard prevents a panic on double close of stopCh.
+// dispatchEntries dispatches entries in order until one fails, returning
+// its index and failure. A panic while an entry is dispatched is that
+// entry's failure, returned as the recovered panic; one recover covers the
+// whole run, so an entry costs no more than its dispatch.
+func (d *BatchingDispatcher) dispatchEntries(entries []batchEntry) (i int, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = panicerr.FromRecovered(p)
+		}
+	}()
+	for i = range entries {
+		if err = d.DefaultDispatcher.Dispatch(entries[i].ctx, entries[i].event); err != nil {
+			return i, err
+		}
+	}
+	return len(entries), nil
+}
+
+// Stop stops the batching dispatcher and waits for the background loop to
+// finish its final flush. Safe to call more than once; the stopOnce guard
+// prevents a panic on double close of stopCh. Called on the loop's own
+// goroutine (by a listener its flush runs), Stop signals the loop and
+// returns without waiting, since the loop cannot end while Stop runs on
+// it; the loop ends after the flush in progress and its final flush.
 func (d *BatchingDispatcher) Stop() {
 	d.stopOnce.Do(func() {
 		close(d.stopCh)
 	})
+	if id := d.loopID.Load(); id != 0 && id == goroutine.ID() {
+		return
+	}
 	d.wg.Wait()
 }
 
