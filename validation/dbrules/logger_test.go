@@ -43,8 +43,8 @@ func TestDatabaseRules_QueryFailureLogsThroughTheManagerLogger(t *testing.T) {
 			if got := strings.Count(out.String(), "ERROR: "+tc.msg); got != 1 {
 				t.Errorf("manager logger error lines = %d, want 1 (%q)", got, out.String())
 			}
-			if !strings.Contains(out.String(), "table=no_such_table") || !strings.Contains(out.String(), "error=") {
-				t.Errorf("error line does not name the table and the error: %q", out.String())
+			if !strings.Contains(out.String(), "table=no_such_table") || !strings.Contains(out.String(), "error_kind=") || strings.Contains(out.String(), " error=") {
+				t.Errorf("error line does not name the table and the kind of error (and only its kind): %q", out.String())
 			}
 			if s := stdlib.String() + fallback.String(); s != "" {
 				t.Errorf("stdlib / slog.Default / fallback got %q, want nothing", s)

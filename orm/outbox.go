@@ -42,6 +42,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/sqlerr"
 )
 
 // OutboxTableName is the canonical outbox table name. Callers must apply the
@@ -251,7 +252,7 @@ func (m *Manager) TransactionWithOutbox(ctx context.Context, fn func(tx *sql.Tx,
 	defer func() {
 		if r := recover(); r != nil {
 			if rbErr := tx.Rollback(); rbErr != nil {
-				logger.Error("velocity/orm: rollback failed after panic in outbox tx", "error", rbErr, "panic", fmt.Sprint(r))
+				logger.Error("velocity/orm: rollback failed after panic in outbox tx", sqlerr.Key, sqlerr.Kind(rbErr), "panic", fmt.Sprint(r))
 				m.dispatchTxRecover(ctx, &TxRecover{
 					Cause:       "panic",
 					PanicValue:  fmt.Sprint(r),
@@ -268,7 +269,7 @@ func (m *Manager) TransactionWithOutbox(ctx context.Context, fn func(tx *sql.Tx,
 
 	if err := fn(tx, pendingFor(p, driverName)); err != nil {
 		if rbErr := tx.Rollback(); rbErr != nil {
-			logger.Error("velocity/orm: rollback failed in outbox tx", "error", rbErr, "original_error", err)
+			logger.Error("velocity/orm: rollback failed in outbox tx", sqlerr.Key, sqlerr.Kind(rbErr), "original_"+sqlerr.Key, sqlerr.Kind(err))
 			m.dispatchTxRecover(ctx, &TxRecover{
 				Cause:       "error",
 				OriginalErr: err,
@@ -776,7 +777,7 @@ func (r *Relay) loop(ctx context.Context) {
 func (r *Relay) tick(ctx context.Context, sem chan struct{}) {
 	rows, err := r.claimBatch(ctx)
 	if err != nil {
-		r.log().Warn("velocity/orm: relay claim batch failed", "error", err)
+		r.log().Warn("velocity/orm: relay claim batch failed", sqlerr.Key, sqlerr.Kind(err))
 		return
 	}
 	for i, row := range rows {
@@ -890,7 +891,7 @@ func (r *Relay) claimBatch(ctx context.Context) ([]outboxRow, error) {
 			if part != "" {
 				r.activePart.Delete(part)
 			}
-			r.log().Warn("velocity/orm: relay claim row failed", "error", err, "row_id", id)
+			r.log().Warn("velocity/orm: relay claim row failed", sqlerr.Key, sqlerr.Kind(err), "row_id", id)
 			continue
 		}
 		if !ok {
@@ -1017,7 +1018,7 @@ func (r *Relay) dispatch(ctx context.Context, row outboxRow) {
 		return
 	}
 	if err := r.recordSuccess(ctx, row); err != nil {
-		r.log().Warn("velocity/orm: relay record success failed", "error", err, "row_id", row.ID)
+		r.log().Warn("velocity/orm: relay record success failed", sqlerr.Key, sqlerr.Kind(err), "row_id", row.ID)
 	}
 }
 

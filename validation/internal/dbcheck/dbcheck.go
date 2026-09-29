@@ -17,8 +17,9 @@
 //
 // This package is under validation/internal so only validation and its
 // subpackages may import it. It depends ONLY on the standard library,
-// contract (which the core validation package already imports) and the
-// framework's standalone fallback logger (itself stdlib plus contract), so
+// contract (which the core validation package already imports), the
+// framework's standalone fallback logger (itself stdlib plus contract) and
+// internal/sqlerr (stdlib only), so
 // importing it into core adds no orm or SQL-driver dependency. It must NOT
 // import validation itself, which would create a cycle; the classifier
 // registry in core is reached through the Classifier function parameter the
@@ -38,12 +39,13 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/sqlerr"
 )
 
 // CountFunc runs a SELECT COUNT(*) query and returns the scanned count. The
 // caller binds the database handle and request context, so this package stays
-// free of any database/sql or orm dependency. The raw error is returned
-// verbatim so the rule helpers can log it and emit the generic
+// free of any orm dependency. The raw error is returned verbatim so the rule
+// helpers can log its kind (sqlerr.Kind) and emit the generic
 // "Unable to validate <field>." message.
 type CountFunc func(query string, args ...any) (int64, error)
 
@@ -114,8 +116,10 @@ func Placeholder(driver string, n int) string {
 // Raw DB errors are deliberately swallowed and replaced with a generic
 // "Unable to validate <field>." message: schema names, table existence, and
 // query text are server-side details that must not surface to a client-visible
-// validation error string. The underlying error is logged through logger at
-// ERROR level so operators retain a trail; a nil logger writes it through the
+// validation error string. The failure is logged through logger at ERROR
+// level with the field, table, column, driver and the error's kind
+// (sqlerr.Kind), never the bound value nor the driver's error text, which
+// drivers fill with the offending value; a nil logger writes it through the
 // framework's standalone fallback logger.
 func UniqueRule(driver string, count CountFunc, logger contract.Logger) contract.RuleHandler {
 	logger = fallbacklog.Resolve(logger)
@@ -161,7 +165,7 @@ func UniqueRule(driver string, count CountFunc, logger contract.Logger) contract
 				"table", table,
 				"column", column,
 				"driver", driver,
-				"error", err.Error(),
+				sqlerr.Key, sqlerr.Kind(err),
 			)
 			return fmt.Errorf("Unable to validate %s.", field)
 		}
@@ -179,8 +183,9 @@ func UniqueRule(driver string, count CountFunc, logger contract.Logger) contract
 // Parameters, in order: table, column.
 //
 // Same error handling as UniqueRule: the query runs through the count seam and
-// raw DB errors are suppressed in the client-visible message but logged
-// through logger (the fallback logger when nil).
+// raw DB errors are suppressed in the client-visible message and logged by
+// kind only, without the bound value or the driver's error text, through
+// logger (the fallback logger when nil).
 func ExistsRule(driver string, count CountFunc, logger contract.Logger) contract.RuleHandler {
 	logger = fallbacklog.Resolve(logger)
 	return func(field string, value interface{}, params []string, data map[string]interface{}) error {
@@ -210,7 +215,7 @@ func ExistsRule(driver string, count CountFunc, logger contract.Logger) contract
 				"table", table,
 				"column", column,
 				"driver", driver,
-				"error", err.Error(),
+				sqlerr.Key, sqlerr.Kind(err),
 			)
 			return fmt.Errorf("Unable to validate %s.", field)
 		}
