@@ -110,6 +110,12 @@ type sessionHolder struct {
 	// changing the session: no read uses the session and the commit does
 	// not save it until a later sign-in or logout publishes a whole state.
 	torn bool
+	// ended is set when a Logout of the request published: the holder's
+	// session is ended, whatever the session object reports (a custom
+	// auth.Session may not say it was invalidated). It is never saved as
+	// live nor reused for a sign-in: a Login that follows starts from a
+	// fresh session, and publishing it clears the mark.
+	ended bool
 
 	// commitOnce makes the session middleware's commit run once per
 	// request, whichever write or return fires it.
@@ -156,6 +162,14 @@ func (h *sessionHolder) isSealed() bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.sealed
+}
+
+// isEnded reports whether a Logout of the request ended the holder's
+// session (see ended).
+func (h *sessionHolder) isEnded() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.ended
 }
 
 // queueAfterSave appends write to the writes the seam runs after the
@@ -1481,6 +1495,11 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 	}()
 	session, err := g.loginReserved(r, holder, user, &op, remember...)
 	finished = true
+	if err != nil {
+		// A sign-in that failed installs no session: after a Logout the
+		// request stays ended.
+		op.fresh = nil
+	}
 	published := op.publish(true)
 	if err != nil {
 		return err
@@ -1506,7 +1525,8 @@ func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, us
 	}
 
 	session := g.getSession(r)
-	if session == nil {
+	switch {
+	case session == nil:
 		var err error
 		session, err = g.store.Create("")
 		if err != nil {
@@ -1516,6 +1536,16 @@ func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, us
 		if cached, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && cached != nil {
 			cached.setSession(session)
 		}
+	case holder.isEnded():
+		// A Logout of this request ended the holder's session: its id is
+		// retired and its record gone, so the sign-in starts from a fresh
+		// session, installed on the holder when op publishes.
+		var err error
+		session, err = g.store.Create("")
+		if err != nil {
+			return nil, err
+		}
+		op.fresh = session
 	}
 
 	// Capture the pre-regenerate session ID so the CSRF rotator can
@@ -1605,6 +1635,10 @@ func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, us
 			},
 			write: func(w http.ResponseWriter) {
 				if cookie != nil {
+					// A Logout earlier in the request wrote the cookie's
+					// deletion: this sign-in's cookie replaces it, so the
+					// response carries one line for the name.
+					dropCookieDeletions(w.Header(), cookie.Name)
 					http.SetCookie(w, cookie)
 				}
 			},
@@ -1796,6 +1830,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	// with no reservation, and a standalone logout's commit, on the
 	// holder that is this logout's own, with nothing held.
 	op.beginTransition()
+	op.endsSession = true
 	op.publish(false)
 
 	// The session middleware saves the invalidated session, which

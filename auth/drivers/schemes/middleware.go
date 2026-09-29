@@ -534,28 +534,8 @@ func (g *SessionScheme) endSessionDeletedBy(r *http.Request, w http.ResponseWrit
 	if ms, ok := session.(modifiedSession); ok && ms.IsDestroyed() {
 		return false
 	}
-	header := w.Header()
-	lines := header.Values("Set-Cookie")
-	kept := lines[:0:0]
-	deleted := false
-	prefix := g.config.Name + "="
-	for _, line := range lines {
-		if !strings.HasPrefix(line, prefix) {
-			kept = append(kept, line)
-			continue
-		}
-		if c, err := http.ParseSetCookie(line); err == nil && c.MaxAge < 0 {
-			deleted = true
-			continue
-		}
-		kept = append(kept, line)
-	}
-	if !deleted {
+	if !dropCookieDeletions(w.Header(), g.config.Name) {
 		return false
-	}
-	header.Del("Set-Cookie")
-	for _, line := range kept {
-		header.Add("Set-Cookie", line)
 	}
 	id := session.ID()
 	if err := session.Invalidate(); err != nil {
@@ -569,6 +549,33 @@ func (g *SessionScheme) endSessionDeletedBy(r *http.Request, w http.ResponseWrit
 	}
 	if err := g.retireServerRecord(r, id); err != nil {
 		g.logWarn("velocity/auth: server session store delete (session cookie deleted) failed", "session_id", id, "error", err)
+	}
+	return true
+}
+
+// dropCookieDeletions removes the Set-Cookie lines in header that delete
+// the cookie name (Max-Age < 0), keeping every other line in order, and
+// reports whether it removed one.
+func dropCookieDeletions(header http.Header, name string) bool {
+	lines := header.Values("Set-Cookie")
+	kept := lines[:0:0]
+	dropped := false
+	prefix := name + "="
+	for _, line := range lines {
+		if strings.HasPrefix(line, prefix) {
+			if c, err := http.ParseSetCookie(line); err == nil && c.MaxAge < 0 {
+				dropped = true
+				continue
+			}
+		}
+		kept = append(kept, line)
+	}
+	if !dropped {
+		return false
+	}
+	header.Del("Set-Cookie")
+	for _, line := range kept {
+		header.Add("Set-Cookie", line)
 	}
 	return true
 }

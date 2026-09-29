@@ -51,6 +51,12 @@ type gateOp struct {
 	// so an operation may publish as soon as its state is whole and run
 	// the rest of its work with the gate free.
 	ended bool
+	// endsSession marks a Logout: publishing marks the holder's session
+	// ended (sessionHolder.ended).
+	endsSession bool
+	// fresh is the session a sign-in started after the holder's session
+	// was ended: publishing installs it and clears the mark.
+	fresh auth.Session
 }
 
 // reserve takes the gate for op, or returns auth.ErrOperationInProgress
@@ -151,6 +157,13 @@ func (op *gateOp) publish(refuseSealed bool) bool {
 	}
 	h.transition += op.bumps
 	h.afterSave = append(h.afterSave, op.staged...)
+	if op.endsSession {
+		h.ended = true
+	}
+	if op.fresh != nil {
+		h.session = op.fresh
+		h.ended = false
+	}
 	if op.bumps > 0 {
 		h.torn = false
 	}
