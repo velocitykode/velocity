@@ -970,8 +970,8 @@ func (a *App) Version() string {
 // FailedEventCount returns how many framework event dispatches have failed
 // since New: each dispatch a listener failed on (an error or a panic;
 // one dispatch counts once however many of its listeners failed), each
-// dispatch whose dispatcher itself panicked, each
-// event the router or the ORM dropped before any listener saw it (a full
+// dispatch whose dispatcher itself panicked, each event the router or the
+// ORM dropped before any listener saw it (a full
 // buffer or queue, a stopped pool), and each panic of the hook
 // WithFailedEventHook installed. A detached delivery a listener failed on
 // (no-queue DispatchAsync or DispatchAfter, a debounced or coalesced

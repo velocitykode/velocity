@@ -263,9 +263,9 @@ func WithoutDefaultRecovery() ServerOption {
 
 // WithReporter sets where the panic-recovery interceptor Build installs
 // reports a recovered panic and an internal error a handler returns
-// (codes.Internal or codes.Unknown, as the client gets it), each once, with the method named: pass
-// the app's error handler (Services.Errors), so they reach the Reporter
-// chain. The client gets the same status either way. Without it, a
+// (codes.Internal or codes.Unknown, as the client gets it), each once, with
+// the method named: pass the app's error handler (Services.Errors), so they
+// reach the Reporter chain. The client gets the same status either way. Without it, a
 // recovered panic is logged and a handler error is not reported.
 func WithReporter(reporter contract.Reporter) ServerOption {
 	return func(s *Server) {
