@@ -182,6 +182,29 @@ jobs:
             exit 1
           fi
 
+  # Reports event fields whose type does not survive the queue codec, and
+  # event failures a component records outside the app's failure counter.
+  # A go/types walker, stdlib only; see the package comment of
+  # scripts/ci/check-events for the rules. There is no suppression marker.
+  events-lint:
+    name: event rules lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+      - name: Test the event checker against its golden cases
+        run: go test -count=1 ./scripts/ci/check-events/
+      - name: Check event fields and emitter failure accounting
+        run: |
+          set -e
+          if ! scripts/ci/check-events.sh; then
+            echo "::error::an event field does not survive the queue codec, or an emitter records failures outside the app's counter; see the hints above"
+            exit 1
+          fi
+
   # Runs golangci-lint to enforce the forbidigo rule for unbounded
   # io.ReadAll. See .golangci.yml for the scope rationale (forbidigo
   # only; vet/gofmt/staticcheck have their own jobs above).
@@ -256,7 +279,7 @@ jobs:
     # Release only on direct push to main. PRs and the weekly cron
     # don't publish anything.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [vet, windows-build, staticcheck, race-tests, skip-lint, goroutine-lint, lock-held-lint, golangci-lint, coverage-floors]
+    needs: [vet, windows-build, staticcheck, race-tests, skip-lint, goroutine-lint, lock-held-lint, events-lint, golangci-lint, coverage-floors]
     runs-on: ubuntu-latest
     permissions:
       contents: write
