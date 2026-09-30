@@ -203,3 +203,50 @@ func TestSessionScheme_MutatorPanicAfterChangeTearsTheRequest(t *testing.T) {
 		})
 	}
 }
+
+// sealCountingSession is a hookSession that counts Seal calls.
+type sealCountingSession struct {
+	*hookSession
+	seals atomic.Int32
+}
+
+func (s *sealCountingSession) Seal() { s.seals.Add(1) }
+
+// The commit changes the session (Seal) only once it holds the request's
+// reservation: a commit refused because an operation holds it leaves the
+// session alone, so a custom session is never changed by the commit while
+// the operation changes it.
+func TestCommitSession_RefusedCommitDoesNotSealTheSession(t *testing.T) {
+	s := &sealCountingSession{hookSession: newHookSession()}
+	g, _ := newHookScheme(t, s)
+	r, w, h := seamRequest(s)
+	var op gateOp
+	if err := h.reserve(&op); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	defer op.release()
+
+	if err := commitSession(g, r, w, h); !errors.Is(err, auth.ErrOperationInProgress) {
+		t.Fatalf("commit while an operation holds the gate returned %v, want auth.ErrOperationInProgress", err)
+	}
+	if n := s.seals.Load(); n != 0 {
+		t.Errorf("refused commit sealed the session %d time(s), want none", n)
+	}
+}
+
+// A commit that holds the reservation seals the session before it saves.
+func TestCommitSession_SealsTheSessionItSaves(t *testing.T) {
+	s := &sealCountingSession{hookSession: newHookSession()}
+	g, _ := newHookScheme(t, s)
+	r, w, h := seamRequest(s)
+	if err := commitSession(g, r, w, h); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if n := s.seals.Load(); n != 1 {
+		t.Errorf("commit sealed the session %d time(s), want 1", n)
+	}
+	if n := s.saves.Load(); n != 1 {
+		t.Errorf("commit saved the session %d time(s), want 1", n)
+	}
+}
+

@@ -249,7 +249,8 @@ func (p *preCommitWriter) Unwrap() http.ResponseWriter {
 // undo steps instead, and is returned.
 //
 // The commit takes the request's authentication gate (see gate.go) and
-// seals the request in the same step. It never waits: when an
+// seals the request in the same step; it seals the session itself only
+// once it holds the gate. It never waits: when an
 // authentication operation holds the gate (a recall between writing the
 // user and swapping the remember token, a Login, a Logout), or one was
 // torn by a panic, it saves nothing, since the session may be halfway
@@ -286,9 +287,6 @@ func (p *preCommitWriter) Unwrap() http.ResponseWriter {
 // panic) is served and a write queued afterwards is refused; the panic
 // goes on to the router unchanged (see finishCommit).
 func commitSession(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) error {
-	if s, ok := holder.getSession().(sealableSession); ok {
-		s.Seal()
-	}
 	if err := holder.reserveCommit(); err != nil {
 		refuseCommit(g, holder, err)
 		return err
@@ -303,6 +301,11 @@ func commitSession(g *SessionScheme, r *http.Request, w http.ResponseWriter, hol
 		}()
 		finishCommit(g, r, w, holder, saved)
 	}()
+	// Seal under the reservation: the session is changed by one party at
+	// a time, and a refused commit leaves it to the operation in flight.
+	if s, ok := holder.getSession().(sealableSession); ok {
+		s.Seal()
+	}
 	writes, err := commitSessionHeld(g, r, w, holder, &saved)
 	if err != nil {
 		return err
