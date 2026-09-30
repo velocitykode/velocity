@@ -464,7 +464,16 @@ func dispatchBatchEvent(ctx context.Context, dispatch func(context.Context, inte
 	}
 	event := build(eventmeta.Current(ctx))
 	if dispatch != nil {
-		dispatch(ctx, event)
+		// The batch's own dispatcher is user code: a panic in it is
+		// contained and goes to the batch events' failure policy, and the
+		// process-wide delivery and the caller's work (the terminal
+		// callbacks, the worker's own events) still run.
+		if err := eventemit.DispatchContained(ctx, func(ctx context.Context, event any) error {
+			dispatch(ctx, event)
+			return nil
+		}, event); err != nil {
+			globalBatchEvents.Fail(ctx, err, event)
+		}
 	}
 	globalBatchEvents.Emit(ctx, event)
 }
