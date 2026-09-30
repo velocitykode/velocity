@@ -329,9 +329,8 @@ func (s *state) Flag(int) bool               { return false }
 // operand that is not a plain value (a boolean, a number, a string or a
 // byte slice, of a type without methods) standing in as its Sprint text,
 // so the hostile operand reads Unreadable and the rest of the message
-// stays. A %w operand stands in as an error whose Unwrap returns the
-// operand, so the result still wraps it (one level deeper); a %T or %p
-// of a stand-in names the stand-in. For a benign operand the result is
+// stays. The result unwraps to the original %w operands, as fmt.Errorf's
+// does; a %T or %p of a stand-in names the stand-in. For a benign operand the result is
 // fmt.Errorf's own, text and type. Like Text it does not bound how long a
 // method runs.
 func Errorf(format string, args ...any) (err error) {
@@ -353,17 +352,70 @@ func Sprintf(format string, args ...any) (text string) {
 	return fmt.Sprintf(format, args...)
 }
 
-// standInErrorf is Errorf's second formatting, with stand-ins. Every
-// stand-in formats contained, so it cannot panic; the recover is a last
-// guard, and an error of fixed text is what it yields.
+// standInErrorf is Errorf's second formatting, with stand-ins: its text
+// is fmt's over the stand-ins, and it unwraps to the original %w operands,
+// as fmt.Errorf's result does, never to a stand-in. Every stand-in formats
+// contained, so it cannot panic; the recover is a last guard, and an error
+// of fixed text wrapping the same operands is what it yields.
 func standInErrorf(format string, args []any) (err error) {
+	text := Unreadable
+	var wrapped []error
 	defer func() {
 		if recover() != nil {
-			err = errors.New(Unreadable)
+			err = newWrapped(Unreadable, wrapped)
 		}
 	}()
-	return fmt.Errorf(format, standIns(args)...)
+	e := fmt.Errorf(format, standIns(args)...)
+	text = e.Error()
+	switch u := e.(type) {
+	case interface{ Unwrap() error }:
+		wrapped = originals([]error{u.Unwrap()})
+	case interface{ Unwrap() []error }:
+		wrapped = originals(u.Unwrap())
+	}
+	return newWrapped(text, wrapped)
 }
+
+// originals maps the stand-ins fmt wrapped back to their operands.
+func originals(errs []error) []error {
+	out := make([]error, 0, len(errs))
+	for _, e := range errs {
+		if s, ok := e.(*errorStandIn); ok {
+			e = s.err
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// newWrapped returns an error of text unwrapping to errs the way
+// fmt.Errorf's result does: none, one (Unwrap() error) or several
+// (Unwrap() []error).
+func newWrapped(text string, errs []error) error {
+	switch len(errs) {
+	case 0:
+		return errors.New(text)
+	case 1:
+		return &wrapError{text: text, err: errs[0]}
+	}
+	return &wrapErrors{text: text, errs: errs}
+}
+
+type wrapError struct {
+	text string
+	err  error
+}
+
+func (e *wrapError) Error() string { return e.text }
+func (e *wrapError) Unwrap() error { return e.err }
+
+type wrapErrors struct {
+	text string
+	errs []error
+}
+
+func (e *wrapErrors) Error() string   { return e.text }
+func (e *wrapErrors) Unwrap() []error { return e.errs }
 
 // standInSprintf is Sprintf's second formatting, guarded as standInErrorf.
 func standInSprintf(format string, args []any) (text string) {

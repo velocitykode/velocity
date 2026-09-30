@@ -51,8 +51,8 @@ func TestFormat_HostileValues(t *testing.T) {
 			if e, ok := v.(error); ok {
 				err := Errorf("prefix %d: %w suffix", 7, e)
 				check("Errorf %w", err.Error())
-				if !Is(err, e) {
-					t.Errorf("Errorf %%w does not wrap the operand")
+				if Unwrap(err) != e {
+					t.Errorf("Errorf %%w unwraps to %T, want the operand itself", Unwrap(err))
 				}
 			}
 		})
@@ -86,8 +86,15 @@ func TestFormat_StandInKeepsPlainOperands(t *testing.T) {
 	}
 	// Two %w operands, one hostile: both stay wrapped.
 	err := Errorf("%w and %w", io.EOF, hostile.PanicError{Nested: true})
-	if !Is(err, io.EOF) || !strings.HasPrefix(err.Error(), "EOF and ") {
+	if !strings.HasPrefix(err.Error(), "EOF and ") {
 		t.Errorf("Errorf = %q, lost the benign %%w operand", err)
+	}
+	multi, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		t.Fatalf("Errorf with two %%w = %T, want Unwrap() []error", err)
+	}
+	if got := multi.Unwrap(); len(got) != 2 || got[0] != io.EOF || got[1] != (hostile.PanicError{Nested: true}) {
+		t.Errorf("Unwrap() = %#v, want the two operands themselves", got)
 	}
 }
 
