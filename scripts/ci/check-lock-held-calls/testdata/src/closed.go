@@ -29,11 +29,11 @@ func noop() error { return nil }
 func (k *K) withLoud(fn func()) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	fn() // want reach
+	fn() // the literals passed in are walked held, and reported there
 }
 
 func (k *K) Quiet() { k.withLoud(func() {}) }
-func (k *K) Loud()  { k.withLoud(func() { k.logger.Warn("x") }) }
+func (k *K) Loud()  { k.withLoud(func() { k.logger.Warn("x") }) } // want logger
 
 func runLocked(mu *sync.Mutex, fn func()) {
 	mu.Lock()

@@ -699,7 +699,7 @@ func (s *FileStore) PutCtx(ctx context.Context, key string, value interface{}, t
 	defer s.mu.Unlock()
 
 	// Marshal the value
-	valueData, err := MarshalValue(value)
+	valueData, err := MarshalValue(value) //lock-held-ok: runs the value's MarshalJSON, user code, under the key lock and s.mu; the fix is filed
 	if err != nil {
 		return fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
@@ -783,7 +783,7 @@ func (s *FileStore) AddCtx(ctx context.Context, key string, value interface{}, t
 	defer s.mu.Unlock()
 
 	path := s.getCacheFilePath(key)
-	valueData, err := MarshalValue(value)
+	valueData, err := MarshalValue(value) //lock-held-ok: runs the value's MarshalJSON, user code, under the key lock and s.mu; the fix is filed
 	if err != nil {
 		return false, fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
@@ -875,7 +875,7 @@ func (s *FileStore) ForeverCtx(ctx context.Context, key string, value interface{
 	defer s.mu.Unlock()
 
 	// Marshal the value
-	valueData, err := MarshalValue(value)
+	valueData, err := MarshalValue(value) //lock-held-ok: runs the value's MarshalJSON, user code, under the key lock and s.mu; the fix is filed
 	if err != nil {
 		return fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}

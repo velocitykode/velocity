@@ -85,30 +85,24 @@ func TestScope(t *testing.T) {
 	}
 }
 
-// TestStaleMarkers lists, with -all only, the markers that suppress no
-// call under a lock, and never the markers of an excluded package.
+// TestStaleMarkers reports the markers that suppress no call under a
+// lock, with or without -all, and never the markers of an excluded
+// package.
 func TestStaleMarkers(t *testing.T) {
 	dir := filepath.Join("testdata", "src")
-	var stale []string
-	hits, err := check(dir, []string{"./..."}, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, h := range hits {
-		if strings.Contains(h, ": stale: ") {
-			stale = append(stale, h)
+	for _, all := range []bool{false, true} {
+		hits, err := check(dir, []string{"./..."}, all)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	if len(stale) != 1 || !strings.HasPrefix(stale[0], "rules.go:") {
-		t.Errorf("stale markers = %q, want the one in rules.go StaleMarker", stale)
-	}
-	plain, err := check(dir, []string{"./..."}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, h := range plain {
-		if strings.Contains(h, ": stale: ") {
-			t.Errorf("stale marker reported without -all: %s", h)
+		var stale []string
+		for _, h := range hits {
+			if strings.Contains(h, ": stale: ") {
+				stale = append(stale, h)
+			}
+		}
+		if len(stale) != 1 || !strings.HasPrefix(stale[0], "rules.go:") {
+			t.Errorf("all=%v: stale markers = %q, want the one in rules.go StaleMarker", all, stale)
 		}
 	}
 }

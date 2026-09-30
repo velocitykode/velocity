@@ -1,9 +1,9 @@
 // check-lock-held-calls reports calls to user code made while framework
 // code holds a lock or runs inside a sync.Once. User code (a logger, a func
 // value the caller supplied, a value formatted through its own String or
-// Error) can panic, block, or call back into the component that called it;
-// under the component's lock a call back deadlocks for good, and inside a
-// Once it deadlocks every later caller.
+// Error, a value an encoder or io.Copy calls into) can panic, block, or call
+// back into the component that called it; under the component's lock a call
+// back deadlocks for good, and inside a Once it deadlocks every later caller.
 //
 // Held regions (per function, following statement order):
 //
@@ -14,11 +14,23 @@
 //     continues or jumps does not count), so a lock released on every
 //     branch is no longer held; a loop body's unlocks end the region inside
 //     the body only;
-//   - defer x.Unlock(): held to the end of the function, including the
-//     deferred calls registered after it (they run first, lock still held);
+//   - a call to a lock-returning helper: a function of the module that
+//     returns a func value and still holds a lock when it returns, on any
+//     path (lockPath() { mu.Lock(); return mu.Unlock }). The lock is held
+//     from the call until the variable the result was assigned to is
+//     called, or the lock is unlocked; a lock naming the helper's receiver
+//     or a parameter is renamed to the caller's expression for it;
+//   - deferred statements run in execution order: at every return, and at
+//     an explicit panic, they run last registered first, each with what is
+//     held at that point, and each one's unlocks and locks change what the
+//     ones registered before it run with. A deferred literal is walked
+//     whole, so `defer func() { l.Warn("x"); mu.Unlock() }()` is reported
+//     and `defer func() { mu.Unlock(); l.Warn("x") }()` is not;
 //   - once.Do(f), sync.OnceFunc(f), sync.OnceValue(f), sync.OnceValues(f):
 //     the body of f (a literal, or a named function of the module).
 //
+// A func literal invoked in place is walked as a function of its own, with
+// what is held at the call, and leaves held what it holds when it returns.
 // A func literal that is not invoked in place, and a go statement's body,
 // start with nothing held.
 //
@@ -31,10 +43,23 @@
 //     code writing to stderr);
 //   - func: a call through a func-typed variable, field, parameter, map or
 //     slice element, or call result (not a declared function or method,
-//     not a literal);
+//     not a literal, not the release func of a lock-returning helper);
 //   - format: an fmt call with an interface-typed argument other than
 //     error, and the error or fmt.Stringer method called on an interface
 //     value;
+//   - callback: a call to encoding/json, encoding/xml, encoding/gob or io
+//     that calls methods of a value it is given (Marshal, Unmarshal,
+//     Encoder.Encode, Decoder.Decode, io.Copy, io.ReadAll, io.ReadFull and
+//     their siblings; callbacks.go lists them all), when that value can be
+//     any code: its type, walked the way the encoder walks it (exported
+//     fields, json:"-" and xml:"-" skipped, pointers, slices, arrays, map
+//     keys and elements), holds an interface or a type parameter, or it is
+//     a stdlib encoder, decoder or reader wrapping one. A decode into a
+//     local variable declared without a value and not used before the call
+//     finds only nil interfaces and is not flagged. A concrete type's own
+//     MarshalJSON (or MarshalText, UnmarshalJSON, GobEncode, Read, Write
+//     and the rest) declared in the module is followed as reach; one
+//     declared in the standard library or a dependency is fixed code;
 //   - reach: a call to a function of the module whose body makes one of the
 //     calls above, directly or through other module functions. Only code
 //     that runs during the call counts: the body itself, func literals it
@@ -46,8 +71,10 @@
 // is closed when every call site of it in the package's non-test files
 // passes a func literal or a declared function (test files are outside the
 // scope, so a test passing a hostile func does not open it). Calling a
-// closed parameter counts as calling those bodies: it is reported as reach
-// only when one of them reaches user code. The parameter is open (a call
+// closed parameter counts as calling those bodies: a literal is walked with
+// what is held at the call, so a user-code call in it is reported on its own
+// line, and a declared function is reported as reach at the call when it
+// reaches user code. The parameter is open (a call
 // through it is a func call as above) when any call site passes another
 // value (a variable, a field, a call result, a literal stored first), when
 // the function is used other than by calling it (a method value, a method
@@ -57,15 +84,20 @@
 //
 // Known limits: an error argument to fmt.Errorf is not flagged (wrapping is
 // everywhere, and a framework error formats framework text); a plain
-// interface method call is not flagged (io.Writer, hash.Hash, drivers); a
-// lock taken inside a helper method is not tracked; files excluded by the
-// current GOOS build constraints are not read.
+// interface method call is not flagged (io.Writer, hash.Hash, drivers), so
+// r.Read on an io.Reader is not either, while io.Copy of it is; a lock
+// that is not a sync.Mutex or sync.RWMutex (a file lock) is not tracked;
+// a panic that is not an explicit panic call is not a return point for
+// deferred statements; a stdlib reader built by the framework (an HKDF
+// reader, crypto/rand.Reader) looks like any io.Reader and needs a marker;
+// files excluded by the current GOOS build constraints are not read.
 //
 // Suppression: a call that is fine under the lock carries a same-line
 // `//lock-held-ok: <rationale>` comment, the rationale at least 5
-// characters. A bare `//lock-held-ok:` does not suppress, and the hit on
-// its line says so. A marker that suppresses nothing is stale; stale
-// markers are listed by -all only and never fail the check.
+// characters, saying why the held call is safe, or that it runs user code
+// and its fix is filed. A bare `//lock-held-ok:` does not suppress, and the
+// hit on its line says so. A marker that suppresses nothing is stale and
+// is reported, so a marker cannot outlive the call it was written for.
 //
 // Scope: the non-test files of the packages the patterns name, except test
 // infrastructure, excluded by directory: any directory whose name ends in
@@ -83,8 +115,7 @@
 // Prints "file:line: kind: call while holding lock" per offender, then on
 // stderr how to fix each kind reported and the marker syntax, and exits 1
 // when there is any; prints nothing and exits 0 otherwise. -all prints
-// every call to user code, held or not, and the stale markers (for
-// inventories).
+// every call to user code, held or not (for inventories).
 package main
 
 import (
@@ -136,6 +167,8 @@ var fixes = []struct{ kind, fix string }{
 	{kindFunc, "func: copy the func under the lock and call it after unlocking; claim any state it guards atomically first"},
 	{kindFormat, "format: format the value (its Error or String text) before taking the lock"},
 	{kindReach, "reach: call the function after unlocking, or take the user-code call out of it (the chain after the name shows where it is)"},
+	{kindStale, "stale: remove the //lock-held-ok: marker; nothing on its line runs user code under a lock any more"},
+	{kindCallback, "callback: encode, decode or copy before taking the lock or after releasing it (json, gob, xml and io calls run methods of the values they are given)"},
 }
 
 // hints returns the fix lines for the kinds in hits, and the marker
@@ -212,9 +245,9 @@ func check(dir string, patterns []string, all bool) ([]string, error) {
 		}
 		return os.Open(f)
 	})
-	a := &analysis{fset: fset, root: mod.Dir, funcs: map[string]*funcSummary{}, all: all}
+	a := &analysis{fset: fset, root: mod.Dir, funcs: map[string]*funcSummary{}, lits: map[string]*ast.FuncLit{}, inClosed: map[*ast.FuncLit]bool{}, all: all}
 	for _, p := range targets {
-		u := &unit{report: !p.DepOnly, info: &types.Info{
+		u := &unit{report: !p.DepOnly, module: mod.Path, info: &types.Info{
 			Types:      map[ast.Expr]types.TypeAndValue{},
 			Uses:       map[*ast.Ident]types.Object{},
 			Defs:       map[*ast.Ident]types.Object{},
@@ -247,6 +280,7 @@ func check(dir string, patterns []string, all bool) ([]string, error) {
 			return nil, fmt.Errorf("type-check %s: %w", p.ImportPath, typeErr)
 		}
 		u.resolve(pkg, imp, mod.Path)
+		u.indexZeroVars()
 		a.units = append(a.units, u)
 	}
 	return a.run(), nil
@@ -283,7 +317,14 @@ func excluded(module, path string) bool {
 type unit struct {
 	files  []*ast.File
 	info   *types.Info
-	report bool // named by the patterns, not only a dependency of one
+	report bool   // named by the patterns, not only a dependency of one
+	module string // the module's path: methods declared under it are module code
+
+	// zeroVars are the local variables declared without a value (var v T);
+	// uses holds every position each of them is used at. Together they tell
+	// a decode into a variable still at its zero value (see fresh).
+	zeroVars map[*types.Var]bool
+	uses     map[*types.Var][]token.Pos
 
 	// The module's logger interface and fallback logger as this unit sees
 	// them (its own objects when it declares them, the imported ones
@@ -328,6 +369,12 @@ type funcSummary struct {
 	direct  string   // the first user-code call it makes itself, "" if none
 	callees []string // the module functions it calls
 	reach   string   // how it reaches user code, "" if it does not
+
+	// holds are the locks a function returning a func value still holds
+	// when it returns: a lock-returning helper, whose result releases them.
+	// A key naming the receiver or a parameter starts with a placeholder
+	// (see hole) that a call site replaces with its own expression.
+	holds []string
 }
 
 type analysis struct {
@@ -335,8 +382,11 @@ type analysis struct {
 	root  string
 	units []*unit
 	funcs map[string]*funcSummary
+	lits  map[string]*ast.FuncLit // the literal each "func literal at" key names
 	all   bool
 	hits  map[string]bool
+
+	inClosed map[*ast.FuncLit]bool // closed-parameter literals being walked
 
 	lines map[string][]string     // file contents by line, for markers
 	used  map[string]map[int]bool // marker lines that suppressed a held call
@@ -360,9 +410,7 @@ func (a *analysis) run() []string {
 			}
 		}
 	}
-	if a.all {
-		a.staleMarkers()
-	}
+	a.staleMarkers()
 	out := make([]string, 0, len(a.hits))
 	for h := range a.hits {
 		out = append(out, h)
@@ -377,6 +425,7 @@ func (a *analysis) summarize() {
 	for _, u := range a.units {
 		a.closeParams(u)
 	}
+	a.lockEffects()
 	for _, u := range a.units {
 		for _, f := range u.files {
 			for _, d := range f.Decls {
@@ -388,7 +437,11 @@ func (a *analysis) summarize() {
 				if obj == nil {
 					continue
 				}
-				a.funcs[funcKey(obj)] = summarizeBody(u, fd.Body)
+				s := summarizeBody(a, u, fd.Body)
+				if old := a.funcs[funcKey(obj)]; old != nil {
+					s.holds = old.holds
+				}
+				a.funcs[funcKey(obj)] = s
 			}
 		}
 	}
@@ -422,8 +475,21 @@ func (a *analysis) summarize() {
 
 // summarizeBody records the user code body calls and the module functions
 // it calls, counting only the code that runs during the call.
-func summarizeBody(u *unit, body *ast.BlockStmt) *funcSummary {
+func summarizeBody(a *analysis, u *unit, body *ast.BlockStmt) *funcSummary {
 	s := &funcSummary{}
+	// A call through a variable holding a lock-returning helper's result
+	// releases a lock; it runs no user code.
+	releases := map[types.Object]bool{}
+	ast.Inspect(body, func(n ast.Node) bool {
+		if as, ok := n.(*ast.AssignStmt); ok && len(as.Rhs) == 1 {
+			if call, ok := ast.Unparen(as.Rhs[0]).(*ast.CallExpr); ok && len(a.holdsOf(u, call)) > 0 {
+				for _, obj := range assignedObjects(u, as) {
+					releases[obj] = true
+				}
+			}
+		}
+		return true
+	})
 	// Only the literals that run during the call count; a call is visited
 	// before its operands, so it marks them first.
 	runs := map[*ast.FuncLit]bool{}
@@ -448,11 +514,17 @@ func summarizeBody(u *unit, body *ast.BlockStmt) *funcSummary {
 				}
 			}
 		}
-		if k, d := classify(u, call); k != "" && k != kindIface && s.direct == "" {
+		if id, ok := ast.Unparen(call.Fun).(*ast.Ident); ok && releases[u.info.Uses[id]] {
+			return true
+		}
+		if k, d := classify(u, call, body); k != "" && k != kindIface && s.direct == "" {
 			s.direct = k + " " + d
 		}
 		if c := staticCallee(u, call); c != nil {
 			s.callees = append(s.callees, funcKey(c))
+		}
+		for _, m := range u.callback(call, body).methods {
+			s.callees = append(s.callees, funcKey(m))
 		}
 		s.callees = append(s.callees, u.closedCall(call)...)
 		return true
@@ -595,7 +667,8 @@ func (a *analysis) bodyKey(u *unit, arg ast.Expr) string {
 		p := a.fset.Position(x.Pos())
 		key := fmt.Sprintf("func literal at %s:%d:%d", a.rel(p.Filename), p.Line, p.Column)
 		if _, ok := a.funcs[key]; !ok {
-			a.funcs[key] = summarizeBody(u, x.Body)
+			a.funcs[key] = summarizeBody(a, u, x.Body)
+			a.lits[key] = x
 		}
 		return key
 	case *ast.Ident:
@@ -671,18 +744,24 @@ func (u *unit) closedCall(call *ast.CallExpr) []string {
 }
 
 const (
-	kindLogger = "logger"
-	kindFunc   = "func"
-	kindFormat = "format"
-	kindReach  = "reach"
-	kindIface  = "iface" // interface method call: listed by -all only
+	kindLogger   = "logger"
+	kindFunc     = "func"
+	kindFormat   = "format"
+	kindReach    = "reach"
+	kindCallback = "callback"
+	kindStale    = "stale"
+	kindIface    = "iface" // interface method call: listed by -all only
 )
 
-// classify reports the kind of user code call is, "" when it is none.
-func classify(u *unit, call *ast.CallExpr) (kind, desc string) {
+// classify reports the kind of user code call is, "" when it is none. body
+// is the function body the call is in.
+func classify(u *unit, call *ast.CallExpr, body *ast.BlockStmt) (kind, desc string) {
 	fun := ast.Unparen(call.Fun)
 	if tv, ok := u.info.Types[fun]; ok && (tv.IsType() || tv.IsBuiltin()) {
 		return "", ""
+	}
+	if cb := u.callback(call, body); cb.open != "" {
+		return kindCallback, types.ExprString(fun) + " " + cb.open
 	}
 	switch f := fun.(type) {
 	case *ast.FuncLit:
@@ -920,10 +999,11 @@ func syncOp(u *unit, call *ast.CallExpr) (op, key string) {
 var onceFuncs = map[string]bool{"OnceFunc": true, "OnceValue": true, "OnceValues": true}
 
 type walker struct {
-	a        *analysis
-	u        *unit
-	deferred held // locks whose unlock is deferred in the current function
-	pending  []pendingBody
+	a       *analysis
+	u       *unit
+	silent  bool // follow what is held only: report nothing, queue nothing
+	scope   *scope
+	pending []pendingBody
 }
 
 type pendingBody struct {
@@ -931,18 +1011,105 @@ type pendingBody struct {
 	held held
 }
 
+// scope is one function body being walked: its deferred statements, what
+// it holds when it returns, and its variables holding a lock-returning
+// helper's result.
+type scope struct {
+	parent   *scope
+	body     *ast.BlockStmt
+	defers   []*deferred
+	exit     held
+	releases map[types.Object][]string
+}
+
+// deferred is one deferred statement: an unlock (or a call releasing
+// locks), a literal to walk, or another call to check, with the locks held
+// whenever it runs.
+type deferred struct {
+	unlock []string
+	lit    *ast.FuncLit
+	call   *ast.CallExpr
+	entry  held
+	ran    bool
+}
+
 // walkFunc walks one function body with h held on entry, then the func
 // literals it found that run separately.
 func (w *walker) walkFunc(body *ast.BlockStmt, h held) {
-	saved := w.deferred
-	w.deferred = held{}
-	w.block(body.List, h.copy())
-	w.deferred = saved
+	w.runScope(body, h.copy())
 	for len(w.pending) > 0 {
 		p := w.pending[0]
 		w.pending = w.pending[1:]
-		w.walkFunc(p.body, p.held)
+		w.runScope(p.body, p.held)
 	}
+}
+
+// runScope walks body as a function of its own with h held on entry and
+// returns what is held when it returns, once its deferred statements ran.
+// Each deferred literal and call is then checked with every lock held at
+// any of the times it runs.
+func (w *walker) runScope(body *ast.BlockStmt, h held) held {
+	s := &scope{parent: w.scope, body: body, exit: held{}, releases: map[types.Object][]string{}}
+	w.scope = s
+	if !w.block(body.List, h) {
+		w.exitWith(h)
+	}
+	for _, d := range s.defers {
+		if !d.ran || w.silent {
+			continue
+		}
+		switch {
+		case d.lit != nil:
+			w.runScope(d.lit.Body, d.entry.copy())
+		case d.call != nil:
+			w.call(d.call, d.entry)
+		}
+	}
+	w.scope = s.parent
+	return s.exit
+}
+
+// exitWith records a return from the current function with h held: the
+// deferred statements run last registered first, each with what the ones
+// after it left held.
+func (w *walker) exitWith(h held) {
+	s := w.scope
+	cur := h.copy()
+	for i := len(s.defers) - 1; i >= 0; i-- {
+		d := s.defers[i]
+		d.ran = true
+		for k := range cur {
+			d.entry[k] = true
+		}
+		switch {
+		case d.unlock != nil:
+			for _, k := range d.unlock {
+				delete(cur, k)
+			}
+		case d.lit != nil:
+			sw := &walker{a: w.a, u: w.u, silent: true, scope: s}
+			cur = sw.runScope(d.lit.Body, cur)
+		}
+	}
+	for k := range cur {
+		s.exit[k] = true
+	}
+}
+
+// releaseKeys returns the locks a call through a variable holding a
+// lock-returning helper's result releases, nil for any other call.
+func (w *walker) releaseKeys(call *ast.CallExpr) []string {
+	id, ok := ast.Unparen(call.Fun).(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	obj := w.u.info.Uses[id]
+	for s := w.scope; s != nil; s = s.parent {
+		if keys, ok := s.releases[obj]; ok {
+			return keys
+		}
+	}
+	return nil
 }
 
 // block walks stmts in order with h held, updating h to what is held at
@@ -1000,29 +1167,30 @@ func (w *walker) stmt(s ast.Stmt, h held) (terminates bool) {
 				return false
 			}
 			w.expr(s.X, h)
-			return w.isPanic(call)
-		}
-		w.expr(s.X, h)
-	case *ast.DeferStmt:
-		op, key := syncOp(w.u, s.Call)
-		if op == "unlock" {
-			w.deferred[key] = true
-			return false
-		}
-		for _, arg := range s.Call.Args {
-			w.expr(arg, h)
-		}
-		// A deferred call runs at return, while every lock whose unlock
-		// was deferred before it is still held.
-		if lit, ok := s.Call.Fun.(*ast.FuncLit); ok {
-			if !unlocks(w.u, lit.Body) {
-				w.pending = append(w.pending, pendingBody{lit.Body, w.deferred.copy()})
+			if w.isPanic(call) {
+				w.exitWith(h)
+				return true
 			}
 			return false
 		}
-		w.call(s.Call, w.deferred.copy())
+		w.expr(s.X, h)
+	case *ast.DeferStmt:
+		for _, arg := range s.Call.Args {
+			w.expr(arg, h)
+		}
+		d := &deferred{entry: held{}}
+		if op, key := syncOp(w.u, s.Call); op == "unlock" {
+			d.unlock = []string{key}
+		} else if keys := w.releaseKeys(s.Call); keys != nil {
+			d.unlock = keys
+		} else if lit, ok := ast.Unparen(s.Call.Fun).(*ast.FuncLit); ok {
+			d.lit = lit
+		} else if op == "" {
+			d.call = s.Call
+		}
+		w.scope.defers = append(w.scope.defers, d)
 	case *ast.GoStmt:
-		if lit, ok := s.Call.Fun.(*ast.FuncLit); ok {
+		if lit, ok := s.Call.Fun.(*ast.FuncLit); ok && !w.silent {
 			w.pending = append(w.pending, pendingBody{lit.Body, held{}})
 		}
 		for _, arg := range s.Call.Args {
@@ -1111,10 +1279,20 @@ func (w *walker) stmt(s ast.Stmt, h held) (terminates bool) {
 		for _, e := range s.Lhs {
 			w.expr(e, h)
 		}
+		if len(s.Rhs) == 1 {
+			if call, ok := ast.Unparen(s.Rhs[0]).(*ast.CallExpr); ok {
+				if keys := w.a.holdsOf(w.u, call); len(keys) > 0 {
+					for _, obj := range assignedObjects(w.u, s) {
+						w.scope.releases[obj] = keys
+					}
+				}
+			}
+		}
 	case *ast.ReturnStmt:
 		for _, e := range s.Results {
 			w.expr(e, h)
 		}
+		w.exitWith(h)
 		return true
 	case *ast.DeclStmt:
 		ast.Inspect(s, func(n ast.Node) bool {
@@ -1139,22 +1317,8 @@ func (w *walker) isPanic(call *ast.CallExpr) bool {
 	return ok && w.u.info.Uses[id] == types.Universe.Lookup("panic")
 }
 
-// unlocks reports whether body unlocks something (a deferred closure that
-// releases the lock itself).
-func unlocks(u *unit, body *ast.BlockStmt) bool {
-	found := false
-	ast.Inspect(body, func(n ast.Node) bool {
-		if c, ok := n.(*ast.CallExpr); ok {
-			if op, _ := syncOp(u, c); op == "unlock" {
-				found = true
-			}
-		}
-		return !found
-	})
-	return found
-}
-
-// expr walks an expression evaluated with h held.
+// expr walks an expression evaluated with h held, updating h with the
+// locks a call in it takes or releases.
 func (w *walker) expr(e ast.Expr, h held) {
 	if e == nil {
 		return
@@ -1162,14 +1326,23 @@ func (w *walker) expr(e ast.Expr, h held) {
 	ast.Inspect(e, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.FuncLit:
-			w.pending = append(w.pending, pendingBody{x.Body, held{}})
+			if !w.silent {
+				w.pending = append(w.pending, pendingBody{x.Body, held{}})
+			}
 			return false
 		case *ast.CallExpr:
 			for _, arg := range x.Args {
 				w.expr(arg, h)
 			}
 			if lit, ok := ast.Unparen(x.Fun).(*ast.FuncLit); ok { // invoked in place
-				w.block(lit.Body.List, h.copy())
+				exit := w.runScope(lit.Body, h.copy())
+				join(h, exit)
+				return false
+			}
+			if keys := w.releaseKeys(x); keys != nil {
+				for _, k := range keys {
+					delete(h, k)
+				}
 				return false
 			}
 			if op, key := syncOp(w.u, x); op == "do" {
@@ -1184,6 +1357,9 @@ func (w *walker) expr(e ast.Expr, h held) {
 			}
 			w.call(x, h)
 			w.expr(x.Fun, h)
+			for _, k := range w.a.holdsOf(w.u, x) {
+				h[k] = true
+			}
 			return false
 		}
 		return true
@@ -1196,7 +1372,10 @@ func (w *walker) onceBody(args []ast.Expr, h held) {
 	for _, arg := range args {
 		switch x := ast.Unparen(arg).(type) {
 		case *ast.FuncLit:
-			w.walkFunc(x.Body, h)
+			if w.silent {
+				continue
+			}
+			w.runScope(x.Body, h.copy())
 		default:
 			var fn *types.Func
 			switch x := x.(type) {
@@ -1220,13 +1399,13 @@ func (w *walker) onceBody(args []ast.Expr, h held) {
 
 // call checks one call made with h held.
 func (w *walker) call(call *ast.CallExpr, h held) {
-	if len(h) == 0 && !w.a.all {
+	if w.silent || (len(h) == 0 && !w.a.all) {
 		return
 	}
 	if op, _ := syncOp(w.u, call); op != "" {
 		return
 	}
-	if k, d := classify(w.u, call); k != "" {
+	if k, d := classify(w.u, call, w.scope.body); k != "" {
 		if k != kindIface || (w.a.all && len(h) == 0) {
 			w.report(call.Pos(), h, k, d)
 		}
@@ -1235,16 +1414,33 @@ func (w *walker) call(call *ast.CallExpr, h held) {
 	if len(h) == 0 {
 		return
 	}
+	for _, m := range w.u.callback(call, w.scope.body).methods {
+		if s, ok := w.a.funcs[funcKey(m)]; ok && s.reach != "" {
+			w.report(call.Pos(), h, kindReach, types.ExprString(call.Fun)+": "+shortName(funcKey(m))+" -> "+s.reach)
+			return
+		}
+	}
 	if fn := staticCallee(w.u, call); fn != nil {
 		if s, ok := w.a.funcs[funcKey(fn)]; ok && s.reach != "" {
 			w.report(call.Pos(), h, kindReach, fn.Name()+": "+s.reach)
 		}
 		return
 	}
+	// A closed parameter's literal bodies are walked with what is held
+	// here, so each user-code call in them is reported on its own line
+	// and a marker covers that call only; a declared function passed in
+	// is reported here as reach.
 	for _, k := range w.u.closedCall(call) {
+		if lit, ok := w.a.lits[k]; ok {
+			if !w.a.inClosed[lit] {
+				w.a.inClosed[lit] = true
+				w.runScope(lit.Body, h.copy())
+				delete(w.a.inClosed, lit)
+			}
+			continue
+		}
 		if s, ok := w.a.funcs[k]; ok && s.reach != "" {
 			w.report(call.Pos(), h, kindReach, types.ExprString(call.Fun)+": "+shortName(k)+" -> "+s.reach)
-			return
 		}
 	}
 }
@@ -1298,8 +1494,9 @@ func (a *analysis) line(file string, n int) string {
 	return ""
 }
 
-// staleMarkers adds, for -all, every marker in a reported package that
-// suppressed no call under a lock.
+// staleMarkers adds every marker in a reported package that suppressed no
+// call under a lock: the lock or the call it names is gone, and a marker
+// left behind would silence the next call someone writes on that line.
 func (a *analysis) staleMarkers() {
 	for _, u := range a.units {
 		if !u.report {

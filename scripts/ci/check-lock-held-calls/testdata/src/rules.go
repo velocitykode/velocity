@@ -150,5 +150,5 @@ func (r *R) Markers() {
 }
 
 func (r *R) StaleMarker() {
-	r.hook() //lock-held-ok: nothing is held here any more
+	r.hook() //lock-held-ok: nothing is held here any more // want stale
 }

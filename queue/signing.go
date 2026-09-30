@@ -80,7 +80,7 @@ func ConfigureSigning(rawSigningKey, appKey string) error {
 // Must be called from velocity.New() after config is loaded.
 func ConfigureSigningWith(rawSigningKey, appKey string, opts SigningOptions) error {
 	signingMu.Lock()
-	warning, err := configureSigningLocked(rawSigningKey, appKey, opts)
+	warning, err := configureSigningLocked(rawSigningKey, appKey, opts) //lock-held-ok: reads an HKDF reader built from the app key, stdlib code, never user code
 	logger := signingLogger
 	signingMu.Unlock()
 

@@ -801,7 +801,7 @@ func (d *DatabaseDriver) commitFailedReservation(ctx context.Context, token Rese
 	insertQuery := d.rewriteQuery(
 		"INSERT INTO failed_jobs (queue, payload, exception, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
 	)
-	if _, err := tx.ExecContext(ctx, insertQuery, queueName, string(payload), jobErr.Error(), now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, insertQuery, queueName, string(payload), jobErr.Error(), now, now); err != nil { //lock-held-ok: reads the handler error's text, user code, under the worker-path lock; the fix is filed
 		return fmt.Errorf("velocity/queue: failed to record failed job: %w", err)
 	}
 

@@ -338,8 +338,8 @@ func (l *LazyTrace) IDs() (traceID, spanID string) {
 	var fellBack bool
 	l.once.Do(func() {
 		var traceFell, spanFell bool
-		l.traceID, traceFell = mustTraceID()
-		l.spanID, spanFell = mustSpanID()
+		l.traceID, traceFell = mustTraceID() //lock-held-ok: reads crypto/rand.Reader, reassigned only by tests
+		l.spanID, spanFell = mustSpanID()    //lock-held-ok: reads crypto/rand.Reader, reassigned only by tests
 		fellBack = traceFell || spanFell
 	})
 	if fellBack {

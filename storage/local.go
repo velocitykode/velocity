@@ -466,7 +466,7 @@ func (d *LocalDriver) MimeType(path string) (string, error) {
 			return mapOpenError(err)
 		}
 		defer file.Close()
-		detected, err = sniffMimeType(file)
+		detected, err = sniffMimeType(file) //lock-held-ok: reads a framework-owned file opened from the root, no user code
 		return err
 	})
 	return detected, err
