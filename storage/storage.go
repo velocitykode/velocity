@@ -8,6 +8,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/driverregistry"
+	"github.com/velocitykode/velocity/internal/teardown"
 )
 
 // drivers is the canonical Velocity driver registry for storage. Disk
@@ -134,8 +135,8 @@ func (m *Manager) SetDefault(name string) error {
 // contract.ShutdownAware (e.g. LocalDriver, which holds an *os.Root
 // file descriptor) get their Shutdown called; drivers that don't are
 // skipped. Every driver's Shutdown is attempted even if an earlier one
-// fails, and the errors are aggregated via errors.Join so no partial
-// failure is masked. The disk registry is cleared regardless of errors
+// fails or panics (a panic is that driver's error), and the errors are
+// aggregated via errors.Join so no partial failure is masked. The disk registry is cleared regardless of errors
 // so a closed driver is no longer resolvable via Disk() and a second
 // call is a no-op returning nil.
 func (m *Manager) Shutdown(ctx context.Context) error {
@@ -146,11 +147,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 
 	var errs []error
 	for name, driver := range disks {
-		sd, ok := driver.(contract.ShutdownAware)
-		if !ok {
-			continue
-		}
-		if err := sd.Shutdown(ctx); err != nil {
+		if err := teardown.Close(ctx, driver); err != nil {
 			errs = append(errs, fmt.Errorf("velocity/storage: shutdown disk %q: %w", name, err))
 		}
 	}

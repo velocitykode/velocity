@@ -6,7 +6,11 @@
 // It imports the standard library and internal/panicerr only.
 package teardown
 
-import "github.com/velocitykode/velocity/internal/panicerr"
+import (
+	"context"
+
+	"github.com/velocitykode/velocity/internal/panicerr"
+)
 
 // Step runs one teardown step and returns its error, or the panic it
 // raised as a *panicerr.Error holding the raw recovered value (formatted
@@ -19,4 +23,16 @@ func Step(step func() error) (err error) {
 		}
 	}()
 	return step()
+}
+
+// Close shuts v down as one Step when v has a Shutdown(ctx) error method
+// (contract.ShutdownAware, log.Shutdowner) and returns nil when it has
+// none. A manager uses it for each child it shuts down and for a child it
+// built but never published.
+func Close(ctx context.Context, v any) error {
+	sd, ok := v.(interface{ Shutdown(context.Context) error })
+	if !ok {
+		return nil
+	}
+	return Step(func() error { return sd.Shutdown(ctx) })
 }

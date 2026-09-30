@@ -11,6 +11,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/panicerr"
+	"github.com/velocitykode/velocity/internal/teardown"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -248,7 +249,7 @@ type ShutdownableMailer = contract.ShutdownAware
 
 // Shutdown tears down per-channel mailers that opt into ShutdownableMailer and
 // clears the channel registry. Every opted-in channel gets a Shutdown attempt
-// even if an earlier one fails; the errors are aggregated via errors.Join so
+// even if an earlier one fails or panics (a panic is that channel's error); the errors are aggregated via errors.Join so
 // the caller sees every partial failure without any being masked. Clearing the
 // registry up front makes a second call a no-op that returns nil.
 func (m *Manager) Shutdown(ctx context.Context) error {
@@ -264,11 +265,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 
 	var errs []error
 	for name, mailer := range channels {
-		sm, ok := mailer.(ShutdownableMailer)
-		if !ok {
-			continue
-		}
-		if err := sm.Shutdown(ctx); err != nil {
+		if err := teardown.Close(ctx, mailer); err != nil {
 			errs = append(errs, fmt.Errorf("velocity/mail: shutdown channel %q: %w", name, err))
 		}
 	}

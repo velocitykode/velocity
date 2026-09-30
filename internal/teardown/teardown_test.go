@@ -1,6 +1,7 @@
 package teardown_test
 
 import (
+	"context"
 	"errors"
 	"os/exec"
 	"runtime"
@@ -103,5 +104,62 @@ func TestTeardownImportsOnlyItsLeaves(t *testing.T) {
 		if strings.Contains(imp, ".") && imp != "github.com/velocitykode/velocity/internal/panicerr" {
 			t.Errorf("internal/teardown imports %s; it may import only the standard library and internal/panicerr", imp)
 		}
+	}
+}
+
+type closer struct {
+	ctx   context.Context
+	calls int
+	err   error
+	panic any
+}
+
+func (c *closer) Shutdown(ctx context.Context) error {
+	c.calls++
+	c.ctx = ctx
+	if c.panic != nil {
+		panic(c.panic)
+	}
+	return c.err
+}
+
+// Close shuts down a value that has Shutdown, with the caller's ctx, and
+// returns its error.
+func TestClose_ShutsDownWithTheCallersContext(t *testing.T) {
+	type key struct{}
+	ctx := context.WithValue(context.Background(), key{}, "v")
+	want := errors.New("close failed")
+	c := &closer{err: want}
+	if err := teardown.Close(ctx, c); err != want {
+		t.Fatalf("Close = %v, want the Shutdown error", err)
+	}
+	if c.calls != 1 || c.ctx != ctx {
+		t.Fatalf("Shutdown calls = %d, ctx passed = %v", c.calls, c.ctx == ctx)
+	}
+}
+
+// Close contains a panicking Shutdown.
+func TestClose_ContainsAPanic(t *testing.T) {
+	c := &closer{panic: "boom"}
+	err := teardown.Close(context.Background(), c)
+	if pe := panicerr.AsTyped(err); pe == nil || pe.Recovered() != "boom" {
+		t.Fatalf("Close = %v, want the panic as a *panicerr.Error", err)
+	}
+}
+
+// Close ignores a value with no Shutdown, and nil.
+func TestClose_NothingToShutDown(t *testing.T) {
+	for _, v := range []any{nil, 42, struct{}{}} {
+		if err := teardown.Close(context.Background(), v); err != nil {
+			t.Errorf("Close(%#v) = %v, want nil", v, err)
+		}
+	}
+}
+
+// A nil pointer whose Shutdown dereferences it is a contained panic.
+func TestClose_NilPointerChild(t *testing.T) {
+	var c *closer
+	if err := teardown.Close(context.Background(), c); panicerr.AsTyped(err) == nil {
+		t.Fatalf("Close(nil *closer) = %v, want a contained panic", err)
 	}
 }

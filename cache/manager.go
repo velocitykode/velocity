@@ -12,6 +12,7 @@ import (
 	"github.com/velocitykode/velocity/driverregistry"
 	"github.com/velocitykode/velocity/internal/buildonce"
 	"github.com/velocitykode/velocity/internal/eventemit"
+	"github.com/velocitykode/velocity/internal/teardown"
 )
 
 // driverRegistry is the canonical Velocity driver registry for cache
@@ -295,7 +296,7 @@ func (m *Manager) DefaultStoreWithContext(ctx context.Context) (Store, error) {
 // Shutdown closes all cache stores, honoring the context deadline. All
 // built-in stores implement ShutdownAware; unknown types are ignored.
 // Each ShutdownAware store gets a Shutdown attempt even if a previous one
-// fails; errors are collected per-store and returned joined via
+// fails or panics (a panic is that store's error); errors are collected per-store and returned joined via
 // errors.Join. The internal store map is cleared regardless of errors so
 // callers cannot accidentally reuse a half-torn-down Manager.
 func (m *Manager) Shutdown(ctx context.Context) error {
@@ -307,10 +308,8 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 
 	var errs []error
 	for name, store := range stores {
-		if sd, ok := store.(contract.ShutdownAware); ok {
-			if err := sd.Shutdown(ctx); err != nil {
-				errs = append(errs, fmt.Errorf("cache store %q shutdown: %w", name, err))
-			}
+		if err := teardown.Close(ctx, store); err != nil {
+			errs = append(errs, fmt.Errorf("cache store %q shutdown: %w", name, err))
 		}
 	}
 

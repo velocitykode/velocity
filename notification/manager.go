@@ -14,6 +14,7 @@ import (
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
+	"github.com/velocitykode/velocity/internal/teardown"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -131,8 +132,8 @@ func (m *Manager) dispatchEvent(ctx context.Context, event interface{}) {
 // Shutdown tears down every channel that implements contract.ShutdownAware and
 // clears the channel registry. Channels that hold no long-lived resources do
 // not implement the interface and are skipped. Every opted-in channel gets a
-// Shutdown attempt even if an earlier one fails, and the errors are aggregated
-// via errors.Join so no partial failure is masked. Clearing the registry makes
+// Shutdown attempt even if an earlier one fails or panics (a panic is that
+// channel's error), and the errors are aggregated via errors.Join so no partial failure is masked. Clearing the registry makes
 // a second call a no-op returning nil.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
@@ -146,11 +147,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 
 	var errs []error
 	for name, ch := range channels {
-		sd, ok := ch.(contract.ShutdownAware)
-		if !ok {
-			continue
-		}
-		if err := sd.Shutdown(ctx); err != nil {
+		if err := teardown.Close(ctx, ch); err != nil {
 			errs = append(errs, fmt.Errorf("velocity/notification: shutdown channel %q: %w", name, err))
 		}
 	}
