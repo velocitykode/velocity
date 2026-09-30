@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/log/internal/sanitize"
 )
 
@@ -69,9 +70,9 @@ func appendPairs(line string, kvs []any) string {
 	for i := 0; i+1 < len(kvs); i += 2 {
 		// Sanitise both halves: a user-tainted kv key forges
 		// a log line just as effectively as a tainted value.
-		k := sanitize.Value(fmt.Sprintf("%v", kvs[i]))
-		v := sanitize.Value(fmt.Sprintf("%v", kvs[i+1]))
-		line += fmt.Sprintf(" %s=%s", k, v)
+		k := sanitize.Value(errchain.Sprint(kvs[i]))
+		v := sanitize.Value(errchain.Sprint(kvs[i+1]))
+		line += " " + k + "=" + v
 	}
 	return line
 }

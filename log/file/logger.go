@@ -10,6 +10,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/log/internal/sanitize"
 )
@@ -322,9 +323,9 @@ func appendPairs(line string, kvs []any) string {
 		// the framework prevents a user-tainted string from
 		// being passed as a key, and a CRLF in the key forges
 		// a log line just as effectively as one in the value.
-		k := sanitize.Value(fmt.Sprintf("%v", kvs[i]))
-		v := sanitize.Value(fmt.Sprintf("%v", kvs[i+1]))
-		line += fmt.Sprintf(" %s=%s", k, v)
+		k := sanitize.Value(errchain.Sprint(kvs[i]))
+		v := sanitize.Value(errchain.Sprint(kvs[i+1]))
+		line += " " + k + "=" + v
 	}
 	return line
 }

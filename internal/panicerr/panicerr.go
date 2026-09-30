@@ -4,8 +4,6 @@
 package panicerr
 
 import (
-	"fmt"
-
 	"github.com/velocitykode/velocity/internal/errchain"
 )
 
@@ -48,7 +46,7 @@ func (e *Error) Error() string {
 	if err, ok := e.value.(error); ok {
 		return "panic: " + errchain.Text(err)
 	}
-	return fmt.Sprintf("panic: %v", e.value)
+	return "panic: " + errchain.Sprint(e.value)
 }
 
 // Unwrap returns the underlying error if the recovered value was an error,

@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // benchStringer is a kv value whose text comes from String.
@@ -65,6 +67,23 @@ func TestRedactingLogger_FaultyStringerDoesNotPanic(t *testing.T) {
 			wrapped.Info("m", "k", tc.value)
 			if len(cap.kvs) != 2 {
 				t.Fatalf("kvs = %v, want the pair", cap.kvs)
+			}
+		})
+	}
+}
+
+// A value whose Error, String or Format method panics, a nested panic
+// included, reaches the inner logger as errchain.Unreadable.
+func TestRedactingLogger_UnformattableValues(t *testing.T) {
+	for name, v := range hostile.Unformattables() {
+		t.Run(name, func(t *testing.T) {
+			cap := &capturingLogger{}
+			wrapped := WithRedactors(cap, RedactorFunc(func(s string) string { return s }))
+			if p := hostile.Within(t, hostile.Deadline, func() { wrapped.Info("m", "k", v) }); p != nil {
+				t.Fatalf("a panic escaped: %v", p)
+			}
+			if len(cap.kvs) != 2 || cap.kvs[1] != errchain.Unreadable {
+				t.Fatalf("kvs = %v, want the value as Unreadable", cap.kvs)
 			}
 		})
 	}

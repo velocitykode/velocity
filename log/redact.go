@@ -2,13 +2,13 @@ package log
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Redactor mutates a single string immediately before it is handed to
@@ -468,34 +468,20 @@ func (r *redactingLogger) redact(msg string, kvs []any) (string, []any) {
 	}
 	out := make([]any, len(kvs))
 	for i, v := range kvs {
-		// Drivers stringify everything via fmt.Sprintf("%v", v) before
-		// the sanitiser sees it; we mirror that here so the redactor
-		// sees the same surface area. Already-string values bypass
-		// the Sprintf to keep the common path allocation-free, and so
-		// does a fmt.Stringer, through stringerText.
-		switch t := v.(type) {
-		case string:
-			out[i] = r.redactor.Redact(t)
-		case fmt.Stringer:
-			out[i] = r.redactor.Redact(stringerText(t))
-		default:
-			out[i] = r.redactor.Redact(fmt.Sprintf("%v", v))
+		// Drivers stringify every value with errchain.Sprint before the
+		// sanitiser sees it; we mirror that here so the redactor sees
+		// the same text. A value's String, Error or Format method is
+		// user code, and errchain.Sprint contains its panic, a nested
+		// one included, so a faulty value never panics out of a log
+		// call. Already-string values bypass it to keep the common
+		// path allocation-free.
+		if s, ok := v.(string); ok {
+			out[i] = r.redactor.Redact(s)
+		} else {
+			out[i] = r.redactor.Redact(errchain.Sprint(v))
 		}
 	}
 	return rMsg, out
-}
-
-// stringerText returns s.String(). A String method is user code: when it
-// panics (a nil receiver included), the text is what fmt prints for s
-// instead, as every driver's formatting does, so a faulty value never
-// panics out of a log call.
-func stringerText(s fmt.Stringer) (text string) {
-	defer func() {
-		if recover() != nil {
-			text = fmt.Sprintf("%v", s)
-		}
-	}()
-	return s.String()
 }
 
 func (r *redactingLogger) Debug(msg string, kvs ...any) {

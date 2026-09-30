@@ -4,9 +4,11 @@
 // app, velocity.New hands the app logger to every framework value that
 // takes one, so these lines go to the app's log instead.
 //
-// It depends on the standard library, the contract leaf and
-// internal/panicerr only, so any framework package can use it without
-// growing its import graph.
+// It depends on the standard library, the contract leaf, internal/errchain
+// and internal/panicerr only, so any framework package can use it without
+// growing its import graph. A value is formatted with errchain.Sprint, so
+// one whose String, Error or Format method panics (a nested panic
+// included) writes errchain.Unreadable instead of losing the line.
 //
 // Warn, Error and Fatal lines go to standard error, one line each, in one
 // format: a UTC timestamp, the level, the message, then the key-value pairs
@@ -26,7 +28,6 @@
 package fallbacklog
 
 import (
-	"fmt"
 	"io"
 	"os"
 	"strconv"
@@ -36,6 +37,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Logger is the fallback logger. The zero value is ready to use and every
@@ -105,12 +107,12 @@ func write(level, msg string, kvs []any) {
 		if i+1 == len(kvs) {
 			// A key without a value: keep the value, name the gap.
 			b = append(b, "!BADKEY="...)
-			b = appendValue(b, fmt.Sprint(kvs[i]))
+			b = appendValue(b, errchain.Sprint(kvs[i]))
 			break
 		}
-		b = appendKey(b, fmt.Sprint(kvs[i]))
+		b = appendKey(b, errchain.Sprint(kvs[i]))
 		b = append(b, '=')
-		b = appendValue(b, fmt.Sprint(kvs[i+1]))
+		b = appendValue(b, errchain.Sprint(kvs[i+1]))
 	}
 	b = append(b, '\n')
 
