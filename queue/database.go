@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -476,7 +477,7 @@ func (d *DatabaseDriver) popSelect(ctx context.Context, queueName string, mode p
 
 	job, tc, poisonErr := hydrateRecord(rec)
 	if poisonErr != nil {
-		return nil, ReservationToken{}, tc, d.quarantineReserved(ctx, token, rec, queueName, poisonErr, poisonErr.Error())
+		return nil, ReservationToken{}, tc, d.quarantineReserved(ctx, token, rec, queueName, poisonErr, errchain.Text(poisonErr))
 	}
 
 	if mode == popModeDelete {

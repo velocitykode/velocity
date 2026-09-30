@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -121,10 +122,11 @@ func (r *JobRegistry) Deserialize(payload *Payload) (Job, error) {
 }
 
 // rebuildContained runs a registered factory, user code, inside one
-// contained boundary, together with the Error method of the error it
-// returns, which is user code too. A panic in either becomes a
-// hydrationPanic; a factory error comes back as a factoryError whose text
-// was read here, so no later Error call on it runs user code. Every
+// contained boundary: a panic becomes a hydrationPanic. The Error method
+// of the error a factory returns is user code too: a factory error comes
+// back as a factoryError whose text was read here, contained (errchain.Text,
+// errchain.Unreadable when Error panics), so no later Error call on it
+// runs user code. Every
 // driver's pop rebuilds jobs through the registry, so this is where a job
 // that cannot be rebuilt becomes an error the driver quarantines as poison
 // instead of a panic that unwinds the pop and loses the job.
@@ -136,7 +138,7 @@ func rebuildContained(handler func([]byte) (Job, error), data []byte) (job Job, 
 	}()
 	job, err = handler(data)
 	if err != nil {
-		return nil, factoryError{text: err.Error(), cause: err}
+		return nil, factoryError{text: errchain.Text(err), cause: err}
 	}
 	return job, nil
 }

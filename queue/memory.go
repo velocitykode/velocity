@@ -12,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
@@ -343,7 +344,7 @@ func (m *MemoryDriver) PopCtxWithTrace(ctx context.Context, queueName string) (J
 // lease no longer covers the row.
 func (m *MemoryDriver) quarantine(queueName string, token ReservationToken, wrapper *jobWrapper, cause error) error {
 	poisonErr := fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", cause)
-	exception := poisonErr.Error()
+	exception := errchain.Text(poisonErr)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

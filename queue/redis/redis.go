@@ -18,6 +18,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/trace"
@@ -490,7 +491,7 @@ func (r *RedisDriver) quarantinePoisonedPayload(queueName, rawPayload string, po
 	record := map[string]interface{}{
 		"queue":       queueName,
 		"payload_b64": base64.StdEncoding.EncodeToString([]byte(storedPayload)),
-		"exception":   poisonErr.Error(),
+		"exception":   errchain.Text(poisonErr),
 		"failed_at":   time.Now().UTC(),
 		"poison":      true,
 	}

@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/hostile"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
@@ -25,11 +26,11 @@ func (e *countedError) Error() string {
 }
 
 // The registry's factory is user code, and so is the Error method of the
-// error it returns. Deserialize contains both: a panic in either comes back
+// error it returns. Deserialize contains both: a factory panic comes back
 // as the fixed-text rebuild panic with the recovered value reachable, and a
-// factory error's text is read once, inside the containment, so every
-// later Error call on what Deserialize returns runs no user code. The
-// factory's error stays reachable through Unwrap.
+// factory error's text is read once, contained (errchain.Unreadable when
+// its Error panics), so every later Error call on what Deserialize returns
+// runs no user code. The factory's error stays reachable through Unwrap.
 func TestJobRegistry_DeserializeContainsTheFactory(t *testing.T) {
 	const typ = "containedFactoryJob"
 	cases := []struct {
@@ -47,7 +48,7 @@ func TestJobRegistry_DeserializeContainsTheFactory(t *testing.T) {
 		}, false, "factory broke", true},
 		{"factory error whose Error panics", func(e *countedError) func([]byte) (Job, error) {
 			return func([]byte) (Job, error) { return nil, e }
-		}, true, errHydrationPanicked, false},
+		}, true, errchain.Unreadable, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
