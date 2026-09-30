@@ -11,6 +11,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
 
 	"github.com/velocitykode/velocity/async"
@@ -74,7 +75,7 @@ type Server struct {
 	startTime time.Time
 
 	// tlsOpted tracks whether the caller supplied transport credentials via
-	// WithCreds or WithServerOption(grpc.Creds(...)). Build uses this together
+	// WithCreds. Build uses this together
 	// with the environment and the GRPC_INSECURE escape hatch to decide
 	// whether to refuse a cleartext production start.
 	tlsOpted bool
@@ -97,14 +98,6 @@ type Server struct {
 	// to decide whether to warn that the whole service surface is unauthenticated.
 	// Guarded by mu.
 	authConfigured bool
-
-	// disableDefaultCallLifecycle suppresses the call lifecycle interceptor
-	// (interceptors.CallLifecycle) that Build installs at both ends of the chain by
-	// default. grpc-go does NOT auto-recover interceptor/handler panics, so
-	// without it the first panic crashes the serve loop; the default keeps a
-	// server alive out of the box. Set via WithoutDefaultCallLifecycle
-	// for callers that install their own.
-	disableDefaultCallLifecycle bool
 
 	// reporter receives the default call lifecycle interceptor's one error report
 	// per call: a recovered panic or an internal error. Set via
@@ -216,21 +209,6 @@ func WithReflection(enabled bool) ServerOption {
 	}
 }
 
-// WithServerOption adds a grpc.ServerOption to the server.
-//
-// If the option carries transport credentials (e.g., grpc.Creds(...)), the
-// production TLS guard in Build cannot detect that fact: grpc.ServerOption is
-// an opaque interface whose concrete type lives behind unexported wrappers in
-// google.golang.org/grpc. Callers that route credentials through this hook
-// must also call WithExplicitTLS() so the guard recognises the opt-in.
-// Prefer WithCreds for new code; it both attaches the credentials and marks
-// the server as TLS-configured in a single step.
-func WithServerOption(opt grpc.ServerOption) ServerOption {
-	return func(s *Server) {
-		s.serverOptions = append(s.serverOptions, opt)
-	}
-}
-
 // WithCreds attaches transport credentials to the gRPC server and marks the
 // server as having opted into TLS so the production guard in Build does not
 // refuse the start. Pass credentials produced via credentials.NewTLS,
@@ -238,19 +216,6 @@ func WithServerOption(opt grpc.ServerOption) ServerOption {
 func WithCreds(creds credentials.TransportCredentials) ServerOption {
 	return func(s *Server) {
 		s.serverOptions = append(s.serverOptions, grpc.Creds(creds))
-		s.tlsOpted = true
-	}
-}
-
-// WithExplicitTLS marks the server as having opted into TLS without attaching
-// any credentials itself. It is the escape hatch for callers that route
-// credentials via WithServerOption(grpc.Creds(...)) or any other path the
-// production guard cannot inspect (e.g., a custom grpc.ServerOption wrapper).
-// Without this option, the production guard in Build refuses to start a
-// server whose TLS configuration it cannot see, even when the caller has
-// configured TLS correctly.
-func WithExplicitTLS() ServerOption {
-	return func(s *Server) {
 		s.tlsOpted = true
 	}
 }
@@ -273,18 +238,23 @@ func WithMaxSendMsgSize(size int) ServerOption {
 	}
 }
 
-// WithoutDefaultCallLifecycle disables the call lifecycle interceptor
-// (interceptors.CallLifecycle) that Build installs by default at both ends of the
-// chain. Use it only when you install interceptors.CallLifecycle yourself, first
-// and last in the chain, with every interceptor between them wrapped in
-// interceptors.ContainUnary or interceptors.ContainStream (the server
-// then installs Use, UseStream and UseAll interceptors as given, without
-// wrapping them); otherwise the calls are not correlated, observed or
-// reported, and an interceptor/handler panic crashes the gRPC serve loop
-// (grpc-go does not auto-recover).
-func WithoutDefaultCallLifecycle() ServerOption {
+// WithKeepaliveParams sets the server's keepalive parameters
+// (google.golang.org/grpc/keepalive): how long a connection may stay idle
+// or open, and how often the server pings an idle client. The values are
+// handed to grpc-go as given.
+func WithKeepaliveParams(params keepalive.ServerParameters) ServerOption {
 	return func(s *Server) {
-		s.disableDefaultCallLifecycle = true
+		s.serverOptions = append(s.serverOptions, grpc.KeepaliveParams(params))
+	}
+}
+
+// WithKeepaliveEnforcementPolicy sets the server's keepalive enforcement
+// policy (google.golang.org/grpc/keepalive): how often a client may ping,
+// and whether it may ping without an active call, before the server
+// closes the connection. The values are handed to grpc-go as given.
+func WithKeepaliveEnforcementPolicy(policy keepalive.EnforcementPolicy) ServerOption {
+	return func(s *Server) {
+		s.serverOptions = append(s.serverOptions, grpc.KeepaliveEnforcementPolicy(policy))
 	}
 }
 
@@ -325,8 +295,15 @@ func WithLogger(logger contract.Logger) ServerOption {
 	}
 }
 
-// Use adds unary interceptors to the server.
-// Interceptors are executed in the order they are added.
+// Use adds unary interceptors to the server. They run in the order they
+// are added, between the two ends of the server's call lifecycle
+// interceptor, each contained (interceptors.ContainUnary): Use, UseStream
+// and UseAll are the only way to add an interceptor, so correlation,
+// panic recovery and the call's events and report are outermost for every
+// interceptor and handler. grpc-go runs a few things outside any
+// interceptor (its own stats handlers, tap handles, codecs and
+// compressors), and a hand-written grpc.MethodDesc.Handler that does not
+// call the interceptor it is given bypasses the chain for its method.
 func (s *Server) Use(interceptors ...grpc.UnaryServerInterceptor) *Server {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -334,8 +311,8 @@ func (s *Server) Use(interceptors ...grpc.UnaryServerInterceptor) *Server {
 	return s
 }
 
-// UseStream adds stream interceptors to the server.
-// Interceptors are executed in the order they are added.
+// UseStream adds stream interceptors to the server, in the order they are
+// added, each contained (interceptors.ContainStream); see Use.
 func (s *Server) UseStream(interceptors ...grpc.StreamServerInterceptor) *Server {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -348,8 +325,9 @@ func (s *Server) UseStream(interceptors ...grpc.StreamServerInterceptor) *Server
 // interceptors.Auth and interceptors.CallLifecycle can be passed straight to UseAll.
 type InterceptorPair = interceptors.InterceptorPair
 
-// UseAll adds both unary and stream interceptor pairs.
-// This is convenient for interceptors that have both unary and stream variants.
+// UseAll adds both unary and stream interceptor pairs, as Use and
+// UseStream do. This is convenient for interceptors that have both unary
+// and stream variants.
 func (s *Server) UseAll(pairs ...InterceptorPair) *Server {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -399,9 +377,7 @@ func (s *Server) RegisterService(regFunc RegistrationFunc) *Server {
 //
 // Build also enforces the production TLS guard: when the environment is
 // "production" (APP_ENV=production or WithEnvironment("production")) and no
-// transport credentials were attached via WithCreds (or signalled via
-// WithExplicitTLS for legacy WithServerOption(grpc.Creds(...)) callers),
-// Build returns an error unless GRPC_INSECURE=true opts the deployment out
+// transport credentials were attached via WithCreds, Build returns an error unless GRPC_INSECURE=true opts the deployment out
 // for a known-internal mTLS mesh or a sidecar-terminated mesh. Outside
 // production, a missing creds configuration only emits a one-shot warning.
 //
@@ -449,45 +425,10 @@ func (s *Server) Build() error {
 	}
 	b.listener = lis
 
-	// Build server options with interceptor chains. The call lifecycle interceptor
-	// (interceptors.CallLifecycle) runs at both ends by default. The first
-	// occurrence owns the call: it correlates it, and when the call ends,
-	// however it ends (a handler or interceptor panic included), it writes
-	// the request line (when enabled), dispatches the terminal events and
-	// makes the one error report, all under the call's one span and
-	// request id. The last occurrence contains a handler panic on the
-	// goroutine that runs the handler, which an interceptor may have
-	// started, and each user interceptor is wrapped in ContainUnary or
-	// ContainStream, which contains its panic on whatever goroutine runs
-	// it. grpc-go does not auto-recover interceptor panics.
+	calls := s.defaultCallLifecycle(b.logger, b.reporter, b.callOptions)
 	opts := make([]grpc.ServerOption, 0, len(b.serverOptions)+2)
 	opts = append(opts, b.serverOptions...)
-
-	var unary []grpc.UnaryServerInterceptor
-	var stream []grpc.StreamServerInterceptor
-	if b.disableDefaultCallLifecycle {
-		unary = append(unary, b.unaryInterceptors...)
-		stream = append(stream, b.streamInterceptors...)
-	} else {
-		calls := s.defaultCallLifecycle(b.logger, b.reporter, b.callOptions)
-		unary = append(unary, calls.Unary)
-		for _, ic := range b.unaryInterceptors {
-			unary = append(unary, interceptors.ContainUnary(ic))
-		}
-		unary = append(unary, calls.Unary)
-		stream = append(stream, calls.Stream)
-		for _, ic := range b.streamInterceptors {
-			stream = append(stream, interceptors.ContainStream(ic))
-		}
-		stream = append(stream, calls.Stream)
-	}
-
-	if len(unary) > 0 {
-		opts = append(opts, grpc.ChainUnaryInterceptor(unary...))
-	}
-	if len(stream) > 0 {
-		opts = append(opts, grpc.ChainStreamInterceptor(stream...))
-	}
+	opts = append(opts, chains(calls, b.unaryInterceptors, b.streamInterceptors)...)
 
 	srv := grpc.NewServer(opts...)
 	for _, regFunc := range b.registrations {
@@ -539,23 +480,45 @@ func (s *Server) Build() error {
 	return nil
 }
 
+// chains returns the server options that install the server's interceptor
+// chains: calls, the call lifecycle pair, first and last, and between them
+// each of unary and stream wrapped in interceptors.ContainUnary or
+// interceptors.ContainStream, in registration order. It is the only place
+// interceptors reach grpc-go, and no ServerOption can carry one, so the
+// call lifecycle (correlation, recovery, request line, events and the one
+// error report) is the outermost interceptor of every call.
+func chains(calls interceptors.InterceptorPair, unary []grpc.UnaryServerInterceptor, stream []grpc.StreamServerInterceptor) []grpc.ServerOption {
+	u := make([]grpc.UnaryServerInterceptor, 0, len(unary)+2)
+	u = append(u, calls.Unary)
+	for _, ic := range unary {
+		u = append(u, interceptors.ContainUnary(ic))
+	}
+	u = append(u, calls.Unary)
+	st := make([]grpc.StreamServerInterceptor, 0, len(stream)+2)
+	st = append(st, calls.Stream)
+	for _, ic := range stream {
+		st = append(st, interceptors.ContainStream(ic))
+	}
+	st = append(st, calls.Stream)
+	return []grpc.ServerOption{grpc.ChainUnaryInterceptor(u...), grpc.ChainStreamInterceptor(st...)}
+}
+
 // buildPlan is the configuration one Build constructs the server from,
 // copied under the lock so the construction runs without it.
 type buildPlan struct {
-	logger                      contract.Logger
-	reporter                    contract.Reporter
-	port                        string
-	bindNetwork, bindAddress    string
-	providedListener            net.Listener
-	serverOptions               []grpc.ServerOption
-	unaryInterceptors           []grpc.UnaryServerInterceptor
-	streamInterceptors          []grpc.StreamServerInterceptor
-	callOptions                 []interceptors.CallOption
-	registrations               []RegistrationFunc
-	disableDefaultCallLifecycle bool
-	enableReflection            bool
-	authConfigured              bool
-	warnTLS                     bool
+	logger                   contract.Logger
+	reporter                 contract.Reporter
+	port                     string
+	bindNetwork, bindAddress string
+	providedListener         net.Listener
+	serverOptions            []grpc.ServerOption
+	unaryInterceptors        []grpc.UnaryServerInterceptor
+	streamInterceptors       []grpc.StreamServerInterceptor
+	callOptions              []interceptors.CallOption
+	registrations            []RegistrationFunc
+	enableReflection         bool
+	authConfigured           bool
+	warnTLS                  bool
 
 	// listener is the listener this Build bound or adopted, once it has.
 	listener net.Listener
@@ -603,7 +566,7 @@ func (s *Server) beginBuild() (*buildPlan, error) {
 		insecureOptOut := os.Getenv("GRPC_INSECURE") == "true"
 		isProd := contract.IsProductionEnv(s.environment)
 		if isProd && !insecureOptOut {
-			return nil, fmt.Errorf("velocity/grpc: TLS credentials are required in production. Use WithCreds, or call WithExplicitTLS if you supplied credentials via WithServerOption(grpc.Creds(...)). Set GRPC_INSECURE=true to opt out for a known-internal mTLS mesh")
+			return nil, fmt.Errorf("velocity/grpc: TLS credentials are required in production. Use WithCreds, or set GRPC_INSECURE=true to opt out for a known-internal mTLS mesh")
 		}
 		warnTLS = !isProd
 	}
@@ -615,22 +578,21 @@ func (s *Server) beginBuild() (*buildPlan, error) {
 	}
 
 	s.build = &buildPlan{
-		logger:                      s.logger,
-		reporter:                    s.reporter,
-		port:                        s.port,
-		bindNetwork:                 s.bindNetwork,
-		bindAddress:                 s.bindAddress,
-		providedListener:            s.providedListener,
-		ownsListener:                s.providedListener == nil,
-		serverOptions:               append([]grpc.ServerOption(nil), s.serverOptions...),
-		unaryInterceptors:           append([]grpc.UnaryServerInterceptor(nil), s.unaryInterceptors...),
-		streamInterceptors:          append([]grpc.StreamServerInterceptor(nil), s.streamInterceptors...),
-		callOptions:                 append([]interceptors.CallOption(nil), s.callOptions...),
-		registrations:               append([]RegistrationFunc(nil), s.registrations...),
-		disableDefaultCallLifecycle: s.disableDefaultCallLifecycle,
-		enableReflection:            s.enableReflection,
-		authConfigured:              s.authConfigured,
-		warnTLS:                     warnTLS,
+		logger:             s.logger,
+		reporter:           s.reporter,
+		port:               s.port,
+		bindNetwork:        s.bindNetwork,
+		bindAddress:        s.bindAddress,
+		providedListener:   s.providedListener,
+		ownsListener:       s.providedListener == nil,
+		serverOptions:      append([]grpc.ServerOption(nil), s.serverOptions...),
+		unaryInterceptors:  append([]grpc.UnaryServerInterceptor(nil), s.unaryInterceptors...),
+		streamInterceptors: append([]grpc.StreamServerInterceptor(nil), s.streamInterceptors...),
+		callOptions:        append([]interceptors.CallOption(nil), s.callOptions...),
+		registrations:      append([]RegistrationFunc(nil), s.registrations...),
+		enableReflection:   s.enableReflection,
+		authConfigured:     s.authConfigured,
+		warnTLS:            warnTLS,
 	}
 	return s.build, nil
 }
