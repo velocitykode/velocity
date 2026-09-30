@@ -2,13 +2,13 @@ package problem
 
 import (
 	"bufio"
-	"errors"
 	"net"
 	"net/http"
 	"runtime/debug"
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -58,7 +58,7 @@ func recoverInto(h contract.ErrorHandler, w http.ResponseWriter, r *http.Request
 	if p == nil {
 		return
 	}
-	if err, ok := p.(error); ok && errors.Is(err, http.ErrAbortHandler) {
+	if err, ok := p.(error); ok && errchain.Is(err, http.ErrAbortHandler) {
 		panic(p)
 	}
 	ctx := trace.NewErrorContext(r.Context())

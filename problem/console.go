@@ -2,12 +2,12 @@ package problem
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -43,12 +43,11 @@ func (h *Handler) HandleConsole(stderr io.Writer, err error) int {
 
 // consoleMessage returns the one-line message HandleConsole prints.
 func consoleMessage(err error, debug bool) string {
-	msg := err.Error()
+	msg := errchain.Text(err)
 	if !debug {
 		if status, _, ok := contract.StatusOf(err); ok {
 			msg = contract.StatusTitle(status)
-			var he *contract.HTTPError
-			if errors.As(err, &he) && he.StatusCode() == status && he.Message != "" {
+			if he, ok := errchain.As[*contract.HTTPError](err); ok && he.StatusCode() == status && he.Message != "" {
 				msg = he.Message
 			}
 		}
@@ -58,8 +57,7 @@ func consoleMessage(err error, debug bool) string {
 
 // exitCode returns the ExitCoder code in err's chain, or 1.
 func exitCode(err error) int {
-	var coder contract.ExitCoder
-	if errors.As(err, &coder) {
+	if coder, ok := errchain.As[contract.ExitCoder](err); ok {
 		if code := coder.ExitCode(); code >= 0 {
 			return code
 		}

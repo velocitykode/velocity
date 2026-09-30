@@ -2,7 +2,6 @@ package problem
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"mime"
 	"net/http"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -73,7 +73,7 @@ func (h *Handler) HandleRequest(rc RenderContext, err error, ctx *ErrorContext) 
 		r := requestOf(rc)
 		h.report(s, err, ctx, r)
 		if serverCancelled(err, r) {
-			safeWarn(s.logger, "problem: request cut off by server shutdown", append(trace.LogFields(r.Context()), "error", err.Error(), "method", r.Method, "url", requestPath(r))...)
+			safeWarn(s.logger, "problem: request cut off by server shutdown", append(trace.LogFields(r.Context()), "error", errchain.Text(err), "method", r.Method, "url", requestPath(r))...)
 		}
 	}
 	if written || rc == nil {
@@ -225,8 +225,8 @@ func outsidePanic(err error, ctx *ErrorContext, match func(error) bool) bool {
 // carriesRecoveredPanic reports whether err's chain holds a
 // contract.RecoveredPanic node.
 func carriesRecoveredPanic(err error) bool {
-	var rp contract.RecoveredPanic
-	return errors.As(err, &rp)
+	_, ok := errchain.As[contract.RecoveredPanic](err)
+	return ok
 }
 
 // passes runs the report gate with the rules written for ctx's source (a
@@ -246,16 +246,17 @@ func (h *Handler) passes(s *snapshot, err error, ctx *ErrorContext, r *http.Requ
 		// shutting down), not a property of the error, so no ShouldReport
 		// answer overrides it: a Timeout 503 wrapping the cancel is
 		// dropped like the bare cancel.
-		if errors.Is(err, context.Canceled) && requestGone(r) {
+		if errchain.Is(err, context.Canceled) && requestGone(r) {
 			return false
 		}
 		ownDecision := false
-		var rep contract.Reportable
-		if source.Includes(contract.ErrorSourceRequest) && errors.As(err, &rep) {
-			if !rep.ShouldReport() {
-				return false
+		if source.Includes(contract.ErrorSourceRequest) {
+			if rep, ok := errchain.As[contract.Reportable](err); ok {
+				if !rep.ShouldReport() {
+					return false
+				}
+				ownDecision = true
 			}
-			ownDecision = true
 		}
 		if !ownDecision && anyIgnoreMatch(s.frameworkIgnores, err, source) {
 			return false
@@ -311,7 +312,7 @@ func sourceOf(ctx *ErrorContext) contract.ErrorSource {
 func (h *Handler) report(s *snapshot, err error, ctx *ErrorContext, r *http.Request) (handled bool) {
 	defer func() {
 		if p := recover(); p != nil {
-			safeLog(s.logger, "problem: report failed", "panic", fmt.Sprint(p), "error", err.Error())
+			safeLog(s.logger, "problem: report failed", "panic", fmt.Sprint(p), "error", errchain.Text(err))
 		}
 	}()
 	if !h.passes(s, err, ctx, r, true) {
@@ -321,8 +322,7 @@ func (h *Handler) report(s *snapshot, err error, ctx *ErrorContext, r *http.Requ
 		ctx.Recovered = true
 	}
 
-	var self contract.SelfReporting
-	if errors.As(err, &self) && self.ReportError(ctx) {
+	if self, ok := errchain.As[contract.SelfReporting](err); ok && self.ReportError(ctx) {
 		return true
 	}
 	for _, rule := range s.reportRules {
@@ -331,8 +331,7 @@ func (h *Handler) report(s *snapshot, err error, ctx *ErrorContext, r *http.Requ
 		}
 	}
 
-	var contextual contract.Contextual
-	if errors.As(err, &contextual) {
+	if contextual, ok := errchain.As[contract.Contextual](err); ok {
 		for k, v := range contextual.Context() {
 			ctx.WithExtra(k, v)
 		}
@@ -377,7 +376,7 @@ func selectLevel(s *snapshot, err error, current contract.LogLevel, source contr
 func callReporter(logger contract.Logger, reporter Reporter, err error, ctx *ErrorContext) {
 	defer func() {
 		if p := recover(); p != nil {
-			safeLog(logger, "problem: reporter panicked", "panic", fmt.Sprint(p), "error", err.Error())
+			safeLog(logger, "problem: reporter panicked", "panic", fmt.Sprint(p), "error", errchain.Text(err))
 		}
 	}()
 	reporter.Report(err, ctx)
@@ -405,7 +404,7 @@ func callReporter(logger contract.Logger, reporter Reporter, err error, ctx *Err
 func (h *Handler) stage(s *snapshot, rc RenderContext, ctx *ErrorContext, write func()) {
 	defer func() {
 		if p := recover(); p != nil {
-			if pe, ok := p.(error); ok && errors.Is(pe, http.ErrAbortHandler) {
+			if pe, ok := p.(error); ok && errchain.Is(pe, http.ErrAbortHandler) {
 				panic(p)
 			}
 			h.reportRenderPanic(s, rc, ctx, p)
@@ -487,8 +486,7 @@ func (h *Handler) renderStage(s *snapshot, rc RenderContext, err error, ctx *Err
 	if dispatch {
 		// A Renderable error answers for itself, checked on the error as
 		// the handler returned it.
-		var renderable contract.Renderable
-		if errors.As(err, &renderable) && renderable.RenderError(rc, ctx) {
+		if renderable, ok := errchain.As[contract.Renderable](err); ok && renderable.RenderError(rc, ctx) {
 			return
 		}
 		if rc.Written() {
@@ -630,7 +628,7 @@ func (h *Handler) respond(s *snapshot, rc RenderContext, err error, ctx *ErrorCo
 	}
 	if renderErr != nil {
 		policy.undo(rc)
-		safeLog(s.logger, "problem: rendering failed", "render_error", renderErr.Error(), "error", err.Error())
+		safeLog(s.logger, "problem: rendering failed", "render_error", errchain.Text(renderErr), "error", errchain.Text(err))
 		lastResort(s.logger, rc)
 		return
 	}
@@ -770,7 +768,7 @@ func renderErrorPage(s *snapshot, rc RenderContext, err error, status int) (bool
 		return true, pageErr
 	}
 	if pageErr != nil {
-		safeLog(s.logger, "problem: error page failed", "render_error", pageErr.Error())
+		safeLog(s.logger, "problem: error page failed", "render_error", errchain.Text(pageErr))
 	}
 	return false, nil
 }
@@ -941,13 +939,12 @@ func safeWarn(logger contract.Logger, msg string, kvs ...any) {
 // names the same status, else the status title.
 func clientMessage(err error, status int, debug bool) string {
 	if debug {
-		return err.Error()
+		return errchain.Text(err)
 	}
 	if status >= http.StatusInternalServerError {
 		return contract.StatusTitle(status)
 	}
-	var me contract.MessageError
-	if errors.As(err, &me) && me.StatusCode() == status {
+	if me, ok := errchain.As[contract.MessageError](err); ok && me.StatusCode() == status {
 		if msg := me.ClientMessage(); msg != "" {
 			return msg
 		}

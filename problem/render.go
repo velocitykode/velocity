@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Renderer renders an error response for one content type.
@@ -102,8 +103,7 @@ func buildProblem(rc RenderContext, err error, ctx *ErrorContext, status int, de
 		Status: status,
 		Detail: clientMessage(err, status, debug),
 	}
-	var typer ProblemTyper
-	if errors.As(err, &typer) {
+	if typer, ok := errchain.As[ProblemTyper](err); ok {
 		if t := typer.ProblemType(); t != "" {
 			body.Type = t
 		}
@@ -111,9 +111,10 @@ func buildProblem(rc RenderContext, err error, ctx *ErrorContext, status int, de
 	if r := requestOf(rc); r != nil && r.URL != nil {
 		body.Instance = r.URL.Path
 	}
-	var fields FieldErrors
-	if (debug || status < http.StatusInternalServerError) && errors.As(err, &fields) {
-		body.Errors = fields.Errors()
+	if debug || status < http.StatusInternalServerError {
+		if fields, ok := errchain.As[FieldErrors](err); ok {
+			body.Errors = fields.Errors()
+		}
 	}
 	if ctx != nil {
 		body.RequestID = ctx.RequestID
@@ -125,8 +126,8 @@ func buildProblem(rc RenderContext, err error, ctx *ErrorContext, status int, de
 	body.ErrorType = errorTypeName(err)
 	body.Origin = originOf(err)
 	body.Context = debugContext(err, ctx)
-	if prev := errors.Unwrap(err); prev != nil {
-		body.Previous = prev.Error()
+	if prev := errchain.Unwrap(err); prev != nil {
+		body.Previous = errchain.Text(prev)
 	}
 	if ctx != nil && ctx.StackTrace != nil {
 		for _, f := range ctx.StackTrace.Frames {
@@ -146,8 +147,7 @@ func errorTypeName(err error) string {
 
 // originOf returns the recorded origin of the HTTPError in err's chain.
 func originOf(err error) string {
-	var he *contract.HTTPError
-	if errors.As(err, &he) {
+	if he, ok := errchain.As[*contract.HTTPError](err); ok {
 		return he.Origin()
 	}
 	return ""
@@ -163,8 +163,7 @@ func debugContext(err error, ctx *ErrorContext) map[string]any {
 			out[k] = v
 		}
 	}
-	var contextual contract.Contextual
-	if errors.As(err, &contextual) {
+	if contextual, ok := errchain.As[contract.Contextual](err); ok {
 		for k, v := range contextual.Context() {
 			out[k] = v
 		}
@@ -328,8 +327,8 @@ func (r *HTMLRenderer) Render(rc RenderContext, err error, ctx *ErrorContext, st
 		data.ErrorType = errorTypeName(err)
 		data.Origin = originOf(err)
 		data.Context = debugContext(err, ctx)
-		if prev := errors.Unwrap(err); prev != nil {
-			data.Previous = prev.Error()
+		if prev := errchain.Unwrap(err); prev != nil {
+			data.Previous = errchain.Text(prev)
 		}
 		if ctx != nil && ctx.StackTrace != nil {
 			data.Frames = ctx.StackTrace.GetFramesWithSource(5)

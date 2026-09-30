@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
@@ -94,13 +95,13 @@ func (r *LogReporter) Report(err error, ctx *ErrorContext) {
 	}
 	switch level {
 	case contract.LogLevelDebug:
-		logger.Debug(err.Error(), fields...)
+		logger.Debug(errchain.Text(err), fields...)
 	case contract.LogLevelInfo:
-		logger.Info(err.Error(), fields...)
+		logger.Info(errchain.Text(err), fields...)
 	case contract.LogLevelWarn:
-		logger.Warn(err.Error(), fields...)
+		logger.Warn(errchain.Text(err), fields...)
 	default:
-		logger.Error(err.Error(), fields...)
+		logger.Error(errchain.Text(err), fields...)
 	}
 }
 

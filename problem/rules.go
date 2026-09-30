@@ -2,11 +2,11 @@ package problem
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"reflect"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // upsert returns rules with rule added: a keyed rule replaces the earlier
@@ -381,13 +381,13 @@ func requestGone(r *http.Request) bool {
 // shuttingDown reports whether r's context is done because the server is
 // shutting down: its cause is contract.ErrServerShuttingDown.
 func shuttingDown(r *http.Request) bool {
-	return requestGone(r) && errors.Is(context.Cause(r.Context()), contract.ErrServerShuttingDown)
+	return requestGone(r) && errchain.Is(context.Cause(r.Context()), contract.ErrServerShuttingDown)
 }
 
 // serverCancelled reports whether err is a context.Canceled for a request
 // the server cut off while shutting down.
 func serverCancelled(err error, r *http.Request) bool {
-	return shuttingDown(r) && errors.Is(err, context.Canceled)
+	return shuttingDown(r) && errchain.Is(err, context.Canceled)
 }
 
 // serverShutdownError is the answer to a request the server cut off while
@@ -413,11 +413,11 @@ func typeKey[T error]() any {
 }
 
 // matchAs returns a matcher that reports whether an error's chain holds a T
-// (errors.As).
+// (errchain.As: bounded and contained, shallowest match first).
 func matchAs[T error]() contract.ErrorMatcher {
 	return func(err error) bool {
-		var target T
-		return errors.As(err, &target)
+		_, ok := errchain.As[T](err)
+		return ok
 	}
 }
 
@@ -428,8 +428,8 @@ func matchAs[T error]() contract.ErrorMatcher {
 // Internal().WithCause(err)) owns the answer instead.
 func matchStatusOwner[T contract.StatusError]() contract.ErrorMatcher {
 	return func(err error) bool {
-		var target T
-		if !errors.As(err, &target) {
+		target, ok := errchain.As[T](err)
+		if !ok {
 			return false
 		}
 		status, _, _ := contract.StatusOf(err)
@@ -441,7 +441,7 @@ func matchStatusOwner[T contract.StatusError]() contract.ErrorMatcher {
 // matchIs returns a matcher that reports whether an error's chain holds
 // target (errors.Is).
 func matchIs(target error) contract.ErrorMatcher {
-	return func(err error) bool { return errors.Is(err, target) }
+	return func(err error) bool { return errchain.Is(err, target) }
 }
 
 // RenderFor registers fn to render errors whose chain holds a T. fn receives
@@ -457,8 +457,8 @@ func RenderFor[T error](h contract.ErrorHandler, fn func(rc RenderContext, err T
 		Key:   typeKey[T](),
 		Match: matchAs[T](),
 		Render: func(rc RenderContext, err error, ctx *ErrorContext) bool {
-			var target T
-			if !errors.As(err, &target) {
+			target, ok := errchain.As[T](err)
+			if !ok {
 				return false
 			}
 			return fn(rc, target, ctx)
@@ -500,8 +500,8 @@ func ReportFor[T error](h contract.ErrorHandler, fn func(err T, ctx *ErrorContex
 		Key:   typeKey[T](),
 		Match: matchAs[T](),
 		Report: func(err error, ctx *ErrorContext) bool {
-			var target T
-			if !errors.As(err, &target) {
+			target, ok := errchain.As[T](err)
+			if !ok {
 				return false
 			}
 			return fn(target, ctx)
@@ -525,8 +525,8 @@ func MapFor[T error](h contract.ErrorHandler, fn func(err T) error) {
 		Key:   typeKey[T](),
 		Match: matchAs[T](),
 		Map: func(err error) error {
-			var target T
-			if !errors.As(err, &target) {
+			target, ok := errchain.As[T](err)
+			if !ok {
 				return nil
 			}
 			return fn(target)

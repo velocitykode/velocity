@@ -14,6 +14,7 @@ import (
 	"net/http"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/router"
 )
@@ -95,7 +96,7 @@ func logUnhandled(logger contract.Logger, c *router.Context, err error, info rou
 		logger = fallbacklog.Resolve(logger)
 	}
 	defer func() { _ = recover() }()
-	kvs := []any{"error", err.Error()}
+	kvs := []any{"error", errchain.Text(err)}
 	if r := c.Request; r != nil {
 		logger = logger.With(c.LogFields()...)
 		if r.URL != nil {
