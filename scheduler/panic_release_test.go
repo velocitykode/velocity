@@ -23,20 +23,24 @@ func TestM35_BeforeHookPanic_LockReleased(t *testing.T) {
 	t.Parallel()
 
 	shared := NewInMemoryLocker()
-	cron := fmt.Sprintf("%d * * * *", time.Now().Minute())
+	const cron = "* * * * *" // due at every tick, whatever the minute
 
 	s := New()
 	s.SetLocker(shared)
 	job := s.Named("flaky.before", func() {
 		// would-be work; never reached on Before panic.
 	}).Cron(cron).WithoutOverlapping()
+	var beforeRan atomic.Bool
 	job.Before(func() {
+		beforeRan.Store(true)
 		panic("before-hook intentional test panic")
 	})
 
 	s.runDueJobs()
 	waitTicks(s)
-	time.Sleep(10 * time.Millisecond)
+	if !beforeRan.Load() {
+		t.Fatal("the Before hook never ran; the test proves nothing")
+	}
 
 	// If the lock leaked the Acquire below would return ErrLockHeld
 	// until the default 24h TTL.
@@ -62,7 +66,7 @@ func TestM35_AfterHookPanic_LockReleased(t *testing.T) {
 	t.Parallel()
 
 	shared := NewInMemoryLocker()
-	cron := fmt.Sprintf("%d * * * *", time.Now().Minute())
+	const cron = "* * * * *" // due at every tick, whatever the minute
 
 	var workRan atomic.Bool
 	s := New()
@@ -70,16 +74,20 @@ func TestM35_AfterHookPanic_LockReleased(t *testing.T) {
 	job := s.Named("flaky.after", func() {
 		workRan.Store(true)
 	}).Cron(cron).WithoutOverlapping()
+	var afterRan atomic.Bool
 	job.After(func() {
+		afterRan.Store(true)
 		panic("after-hook intentional test panic")
 	})
 
 	s.runDueJobs()
 	waitTicks(s)
-	time.Sleep(10 * time.Millisecond)
 
 	if !workRan.Load() {
 		t.Fatal("main work must run before After hook panics")
+	}
+	if !afterRan.Load() {
+		t.Fatal("the After hook never ran; the test proves nothing")
 	}
 
 	overlapKey := "velocity/scheduler/overlap:flaky.after"
@@ -101,20 +109,24 @@ func TestM35_OnSuccessHookPanic_LockReleased(t *testing.T) {
 	t.Parallel()
 
 	shared := NewInMemoryLocker()
-	cron := fmt.Sprintf("%d * * * *", time.Now().Minute())
+	const cron = "* * * * *" // due at every tick, whatever the minute
 
 	s := New()
 	s.SetLocker(shared)
 	job := s.Named("flaky.onsuccess", func() {
 		// successful work
 	}).Cron(cron).WithoutOverlapping()
+	var hookRan atomic.Bool
 	job.OnSuccess(func() {
+		hookRan.Store(true)
 		panic("on-success-hook intentional test panic")
 	})
 
 	s.runDueJobs()
 	waitTicks(s)
-	time.Sleep(10 * time.Millisecond)
+	if !hookRan.Load() {
+		t.Fatal("the OnSuccess hook never ran; the test proves nothing")
+	}
 
 	overlapKey := "velocity/scheduler/overlap:flaky.onsuccess"
 	if _, err := shared.Acquire(context.Background(), overlapKey, time.Second); err != nil {
@@ -129,20 +141,24 @@ func TestM35_OnFailureHookPanic_LockReleased(t *testing.T) {
 	t.Parallel()
 
 	shared := NewInMemoryLocker()
-	cron := fmt.Sprintf("%d * * * *", time.Now().Minute())
+	const cron = "* * * * *" // due at every tick, whatever the minute
 
 	s := New()
 	s.SetLocker(shared)
 	job := s.NamedE("flaky.onfailure", func() error {
 		return fmt.Errorf("intentional work failure")
 	}).Cron(cron).WithoutOverlapping()
+	var hookRan atomic.Bool
 	job.OnFailure(func(err error) {
+		hookRan.Store(true)
 		panic("on-failure-hook intentional test panic")
 	})
 
 	s.runDueJobs()
 	waitTicks(s)
-	time.Sleep(10 * time.Millisecond)
+	if !hookRan.Load() {
+		t.Fatal("the OnFailure hook never ran; the test proves nothing")
+	}
 
 	overlapKey := "velocity/scheduler/overlap:flaky.onfailure"
 	if _, err := shared.Acquire(context.Background(), overlapKey, time.Second); err != nil {
@@ -158,7 +174,7 @@ func TestM35_OnFailureHookPanic_LockReleased(t *testing.T) {
 func TestM35_MultipleBeforeHooks_PanicIsolated(t *testing.T) {
 	t.Parallel()
 
-	cron := fmt.Sprintf("%d * * * *", time.Now().Minute())
+	const cron = "* * * * *" // due at every tick, whatever the minute
 
 	var first, third atomic.Bool
 
@@ -188,17 +204,21 @@ func TestM35_HandlerPanic_LockReleased(t *testing.T) {
 	t.Parallel()
 
 	shared := NewInMemoryLocker()
-	cron := fmt.Sprintf("%d * * * *", time.Now().Minute())
+	const cron = "* * * * *" // due at every tick, whatever the minute
 
 	s := New()
 	s.SetLocker(shared)
+	var handlerRan atomic.Bool
 	s.Named("flaky.handler", func() {
+		handlerRan.Store(true)
 		panic("handler intentional test panic")
 	}).Cron(cron).WithoutOverlapping()
 
 	s.runDueJobs()
 	waitTicks(s)
-	time.Sleep(10 * time.Millisecond)
+	if !handlerRan.Load() {
+		t.Fatal("the handler never ran; the test proves nothing")
+	}
 
 	overlapKey := "velocity/scheduler/overlap:flaky.handler"
 	if _, err := shared.Acquire(context.Background(), overlapKey, time.Second); err != nil {
