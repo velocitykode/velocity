@@ -6,15 +6,16 @@ import (
 
 	grpcgo "google.golang.org/grpc"
 
-	"github.com/velocitykode/velocity/grpc/interceptors"
+	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/log"
 )
 
 // BenchmarkDefaultChain_Unary measures one successful unary call through
-// the interceptors Build installs by default (no user interceptors, no
-// reporter), the chain composed once as grpc-go's chained interceptor
-// composes it: without an event dispatcher, and with an app dispatcher
-// that has no listener for the gRPC events.
+// the interceptors Build installs by default (admission into the server's
+// run and the call lifecycle; no user interceptors, no reporter), the
+// chain composed once as grpc-go's chained interceptor composes it:
+// without an event dispatcher, and with an app dispatcher that has no
+// listener for the gRPC events.
 //
 // The "2 user interceptors" variants add two pass-through interceptors,
 // each wrapped in interceptors.ContainUnary as Build wraps them, and the
@@ -32,11 +33,10 @@ func benchUserChain(b *testing.B, dispatcher bool) {
 	if dispatcher {
 		s.SetEventDispatcher(func(context.Context, any) error { return nil })
 	}
-	calls := s.defaultCallLifecycle(s.logger, s.reporter, nil)
 	pass := func(ctx context.Context, req any, _ *grpcgo.UnaryServerInfo, h grpcgo.UnaryHandler) (any, error) {
 		return h(ctx, req)
 	}
-	chain := []grpcgo.UnaryServerInterceptor{calls.Unary, interceptors.ContainUnary(pass), interceptors.ContainUnary(pass), calls.Unary}
+	chain, _ := benchChains(s, []grpcgo.UnaryServerInterceptor{pass, pass}, nil)
 	info := &grpcgo.UnaryServerInfo{FullMethod: "/svc.Bench/Do"}
 	final := func(context.Context, any) (any, error) { return nil, nil }
 	// grpc-go's chainUnaryInterceptors and getChainUnaryHandler.
@@ -65,8 +65,7 @@ func benchDefaultChain(b *testing.B, dispatcher bool) {
 		// handed over, and dropped.
 		s.SetEventDispatcher(func(context.Context, any) error { return nil })
 	}
-	calls := s.defaultCallLifecycle(s.logger, s.reporter, nil)
-	chain := []grpcgo.UnaryServerInterceptor{calls.Unary, calls.Unary}
+	chain, _ := benchChains(s, nil, nil)
 
 	info := &grpcgo.UnaryServerInfo{FullMethod: "/svc.Bench/Do"}
 	var h grpcgo.UnaryHandler = func(context.Context, any) (any, error) { return nil, nil }
@@ -80,6 +79,13 @@ func benchDefaultChain(b *testing.B, dispatcher bool) {
 	for b.Loop() {
 		_, _ = h(ctx, nil)
 	}
+}
+
+// benchChains returns the chains Build installs on s, with unary and
+// stream as the user interceptors, admitting into a run of its own.
+func benchChains(s *Server, unary []grpcgo.UnaryServerInterceptor, stream []grpcgo.StreamServerInterceptor) ([]grpcgo.UnaryServerInterceptor, []grpcgo.StreamServerInterceptor) {
+	var own drain.Owner
+	return interceptorChains(own.NewRun(), s.defaultCallLifecycle(s.logger, s.reporter, nil), unary, stream)
 }
 
 // benchStream is a server stream that only carries a context.
@@ -97,11 +103,10 @@ func (s benchStream) Context() context.Context { return s.ctx }
 func BenchmarkDefaultChain_Stream(b *testing.B) {
 	quiet, _ := log.NewLogger(log.LogConfig{Driver: "null"})
 	s := NewServer(WithLogger(quiet))
-	calls := s.defaultCallLifecycle(s.logger, s.reporter, nil)
 	pass := func(srv any, ss grpcgo.ServerStream, _ *grpcgo.StreamServerInfo, h grpcgo.StreamHandler) error {
 		return h(srv, ss)
 	}
-	chain := []grpcgo.StreamServerInterceptor{calls.Stream, interceptors.ContainStream(pass), interceptors.ContainStream(pass), calls.Stream}
+	_, chain := benchChains(s, nil, []grpcgo.StreamServerInterceptor{pass, pass})
 	info := &grpcgo.StreamServerInfo{FullMethod: "/svc.Bench/Stream"}
 	final := func(any, grpcgo.ServerStream) error { return nil }
 	var next func(curr int) grpcgo.StreamHandler

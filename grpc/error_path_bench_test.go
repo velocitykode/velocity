@@ -44,8 +44,7 @@ func benchErrorChain(b *testing.B, handlerErr error, dispatcher bool) {
 	if dispatcher {
 		s.SetEventDispatcher(func(context.Context, any) error { return nil })
 	}
-	calls := s.defaultCallLifecycle(s.logger, s.reporter, nil)
-	chain := []grpcgo.UnaryServerInterceptor{calls.Unary, calls.Unary}
+	chain, _ := benchChains(s, nil, nil)
 
 	info := &grpcgo.UnaryServerInfo{FullMethod: "/svc.Bench/Do"}
 	var h grpcgo.UnaryHandler = func(context.Context, any) (any, error) { return nil, handlerErr }

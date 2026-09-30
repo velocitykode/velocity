@@ -13,8 +13,8 @@ import (
 )
 
 // buildBlockedStop starts a Build whose registration blocks, stops the
-// server while it does, then lets the Build finish. It returns Build's
-// error once both have returned.
+// server while it does, then, once Stop has returned, lets the Build
+// finish. It returns Build's error.
 func buildBlockedStop(t *testing.T, s *grpc.Server) error {
 	t.Helper()
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -34,20 +34,21 @@ func buildBlockedStop(t *testing.T, s *grpc.Server) error {
 		defer close(stopped)
 		s.Stop()
 	}()
-	time.Sleep(50 * time.Millisecond) // let Stop reach the server
-	close(release)
-	var err error
-	select {
-	case err = <-built:
-	case <-time.After(3 * time.Second):
-		t.Fatal("Build did not return")
-	}
+	// Stop does not wait on the Build: its return is the acknowledgement
+	// that the stop reached the server before the Build publishes.
 	select {
 	case <-stopped:
 	case <-time.After(3 * time.Second):
-		t.Fatal("Stop did not return")
+		t.Fatal("Stop waited on the Build in progress")
 	}
-	return err
+	close(release)
+	select {
+	case err := <-built:
+		return err
+	case <-time.After(3 * time.Second):
+		t.Fatal("Build did not return")
+	}
+	return nil
 }
 
 // A Stop during a Build in progress leaves nothing live behind: the Build

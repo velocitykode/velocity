@@ -25,7 +25,7 @@ func TestBuild_DefaultBindsTCP(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	defer s.Stop()
-	if got := s.listener.Addr().Network(); got != "tcp" {
+	if got := servedListener(s).Addr().Network(); got != "tcp" {
 		t.Errorf("default network = %q, want tcp", got)
 	}
 }
@@ -38,7 +38,7 @@ func TestBuild_BindAddressLoopback(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	defer s.Stop()
-	addr := s.listener.Addr().String()
+	addr := servedListener(s).Addr().String()
 	if !strings.HasPrefix(addr, "127.0.0.1:") {
 		t.Errorf("bound addr = %q, want 127.0.0.1:*", addr)
 	}
@@ -52,10 +52,10 @@ func TestBuild_BindAddressUnix(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	defer s.Stop()
-	if got := s.listener.Addr().Network(); got != "unix" {
+	if got := servedListener(s).Addr().Network(); got != "unix" {
 		t.Errorf("network = %q, want unix", got)
 	}
-	if got := s.listener.Addr().String(); got != sock {
+	if got := servedListener(s).Addr().String(); got != sock {
 		t.Errorf("socket path = %q, want %q", got, sock)
 	}
 }
@@ -77,17 +77,17 @@ func TestBuild_ListenerTakesPrecedence(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	defer s.Stop()
-	if s.listener != lis {
+	if servedListener(s).Listener != lis {
 		t.Error("WithListener did not take precedence")
 	}
-	if got := s.listener.Addr().String(); got != want {
+	if got := servedListener(s).Addr().String(); got != want {
 		t.Errorf("adopted listener addr = %q, want %q", got, want)
 	}
 }
 
 // TestBuild_ValidationFailureLeavesNoListener guards the ordering invariant: a
 // fallible check (reflection-in-production) must fail BEFORE the listener is
-// bound, so s.listener and s.grpcServer stay nil and a caller-supplied listener
+// bound, so no listener or server is published and a caller-supplied listener
 // is never silently adopted (and thus never leaked on the failed build).
 func TestBuild_ValidationFailureLeavesNoListener(t *testing.T) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -103,11 +103,11 @@ func TestBuild_ValidationFailureLeavesNoListener(t *testing.T) {
 	if err := s.Build(); err == nil {
 		t.Fatal("expected Build to fail on reflection-in-production")
 	}
-	if s.listener != nil {
-		t.Error("s.listener set after a failed Build")
+	if servedListener(s) != nil {
+		t.Error("a listener published after a failed Build")
 	}
-	if s.grpcServer != nil {
-		t.Error("s.grpcServer set after a failed Build")
+	if s.GRPCServer() != nil {
+		t.Error("a server published after a failed Build")
 	}
 }
 
@@ -119,13 +119,13 @@ func TestBuild_StopReleasesUnstartedListener(t *testing.T) {
 	if err := s.Build(); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	addr := s.listener.Addr().String()
+	addr := servedListener(s).Addr().String()
 
 	s.Stop()
-	if s.listener != nil {
+	if servedListener(s) != nil {
 		t.Error("listener not released after Stop on an unstarted server")
 	}
-	if s.grpcServer != nil {
+	if s.GRPCServer() != nil {
 		t.Error("grpcServer not reset after Stop on an unstarted server")
 	}
 
@@ -166,4 +166,15 @@ func TestBuild_BadBindAddressErrors(t *testing.T) {
 	if !strings.Contains(err.Error(), "velocity/grpc") {
 		t.Errorf("error not prefixed velocity/grpc: %q", err.Error())
 	}
+}
+
+// servedListener returns the listener the built server serves, nil when
+// no Build has published one.
+func servedListener(s *Server) *serveListener {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if c := s.publishedLocked(); c != nil {
+		return c.lis
+	}
+	return nil
 }
