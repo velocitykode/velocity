@@ -186,8 +186,9 @@ func TestGatewayStartAsync_ReturnsTheBindError(t *testing.T) {
 	}
 }
 
-// StartAsync publishes the start before it returns: the gateway accepts
-// connections and reports running, and the starting line is written.
+// StartAsync publishes the start before it returns: the gateway reports
+// running (set when its serve loop enters the first Accept) and the
+// starting line is written; a request then gets the gateway's answer.
 func TestGatewayStartAsync_PublishesTheStartBeforeReturning(t *testing.T) {
 	for range 50 {
 		log := &startLog{}
@@ -195,10 +196,17 @@ func TestGatewayStartAsync_PublishesTheStartBeforeReturning(t *testing.T) {
 		if err := g.StartAsync(); err != nil {
 			t.Fatalf("StartAsync: %v", err)
 		}
-		up, running, lines := lis.accepted.Load(), g.IsRunning(), log.all()
+		running, lines := g.IsRunning(), log.all()
+		resp, err := http.Get("http://" + lis.Addr().String() + "/")
+		if err == nil {
+			_ = resp.Body.Close()
+		}
 		g.Stop()
-		if !up || !running || len(lines) != 1 {
-			t.Fatalf("at StartAsync's return: accepting %v, running %v, lines %v: want all published", up, running, lines)
+		if !running || len(lines) != 1 {
+			t.Fatalf("at StartAsync's return: running %v, lines %v: want both published", running, lines)
+		}
+		if err != nil {
+			t.Fatalf("request after StartAsync: %v", err)
 		}
 	}
 }
