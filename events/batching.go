@@ -250,18 +250,7 @@ func (d *BatchingDispatcher) GetBatchSize() int {
 type DebouncingDispatcher struct {
 	*DefaultDispatcher
 	debounce time.Duration
-	timers   map[string]debounceTimer
-	timersMu sync.RWMutex
-	// timerGen numbers the timers, so a fired timer can tell whether the
-	// entry for its name is still its own.
-	timerGen uint64
-	stopCh   chan struct{}
-}
-
-// debounceTimer is a pending debounced delivery: its timer and its number.
-type debounceTimer struct {
-	gen   uint64
-	timer *time.Timer
+	timers   keyedTimers[batchEntry]
 }
 
 // NewDebouncingDispatcher creates a new debouncing dispatcher
@@ -269,8 +258,6 @@ func NewDebouncingDispatcher(debounce time.Duration) *DebouncingDispatcher {
 	return &DebouncingDispatcher{
 		DefaultDispatcher: NewDispatcher(),
 		debounce:          debounce,
-		timers:            make(map[string]debounceTimer),
-		stopCh:            make(chan struct{}),
 	}
 }
 
@@ -293,31 +280,13 @@ func (d *DebouncingDispatcher) Dispatch(ctx context.Context, event interface{}) 
 		ctx = context.Background()
 	}
 	eventName := d.getEventName(event)
-
-	d.timersMu.Lock()
-	defer d.timersMu.Unlock()
-
-	// Cancel existing timer if any
-	if pending, exists := d.timers[eventName]; exists {
-		pending.timer.Stop()
-	}
-
-	// Create new timer. Once it has fired, it removes its own entry only:
-	// a listener, or a concurrent Dispatch, may have installed a newer
-	// timer for the name, which stays pending (and stoppable).
-	d.timerGen++
-	gen := d.timerGen
-	d.timers[eventName] = debounceTimer{gen: gen, timer: time.AfterFunc(d.debounce, func() {
+	d.timers.schedule(eventName, d.debounce, func(batchEntry, bool) batchEntry {
+		return batchEntry{ctx: ctx, event: event}
+	}, func(e batchEntry) {
 		// Detached only when it fires, so a dispatch superseded within
 		// the window never pays for the wrapper.
-		d.dispatchLater(context.WithoutCancel(ctx), event)
-		d.timersMu.Lock()
-		if d.timers[eventName].gen == gen {
-			delete(d.timers, eventName)
-		}
-		d.timersMu.Unlock()
-	})}
-
+		d.dispatchLater(context.WithoutCancel(e.ctx), e.event)
+	})
 	return nil
 }
 
@@ -326,34 +295,20 @@ func (d *DebouncingDispatcher) DispatchNow(ctx context.Context, event interface{
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	eventName := d.getEventName(event)
-
-	d.timersMu.Lock()
-	if pending, exists := d.timers[eventName]; exists {
-		pending.timer.Stop()
-		delete(d.timers, eventName)
-	}
-	d.timersMu.Unlock()
-
+	d.timers.cancel(d.getEventName(event))
 	return d.DefaultDispatcher.Dispatch(ctx, event)
 }
 
-// Stop stops all debounce timers
+// Stop stops all debounce timers. A pending delivery is dropped, including
+// one whose timer fired but had not yet taken its event when Stop ran; a
+// delivery already taken runs to completion.
 func (d *DebouncingDispatcher) Stop() {
-	d.timersMu.Lock()
-	defer d.timersMu.Unlock()
-
-	for _, pending := range d.timers {
-		pending.timer.Stop()
-	}
-	d.timers = make(map[string]debounceTimer)
+	d.timers.stopAll()
 }
 
 // GetPendingCount returns the number of pending debounced events
 func (d *DebouncingDispatcher) GetPendingCount() int {
-	d.timersMu.RLock()
-	defer d.timersMu.RUnlock()
-	return len(d.timers)
+	return d.timers.count()
 }
 
 // ThrottlingDispatcher throttles event dispatching to a maximum rate
@@ -504,17 +459,15 @@ func (d *RateLimitedDispatcher) GetRemainingEvents(eventName string) int {
 // CoalescingDispatcher coalesces rapid identical events into a single dispatch
 type CoalescingDispatcher struct {
 	*DefaultDispatcher
-	coalesce  time.Duration
-	pending   map[string]*coalescedEvent
-	pendingMu sync.RWMutex
-	ctx       context.Context
-	cancel    context.CancelFunc
+	coalesce time.Duration
+	pending  keyedTimers[coalescedEvent]
+	ctx      context.Context
+	cancel   context.CancelFunc
 }
 
 type coalescedEvent struct {
 	ctx   context.Context
 	event interface{}
-	timer *time.Timer
 	count int
 }
 
@@ -524,7 +477,6 @@ func NewCoalescingDispatcher(coalesce time.Duration) *CoalescingDispatcher {
 	return &CoalescingDispatcher{
 		DefaultDispatcher: NewDispatcher(),
 		coalesce:          coalesce,
-		pending:           make(map[string]*coalescedEvent),
 		ctx:               ctx,
 		cancel:            cancel,
 	}
@@ -553,76 +505,30 @@ func (d *CoalescingDispatcher) Dispatch(ctx context.Context, event interface{}) 
 	}
 	bgCtx := context.WithoutCancel(ctx)
 	eventName := d.getEventName(event)
-
-	d.pendingMu.Lock()
-	defer d.pendingMu.Unlock()
-
-	// Check if event is already pending
-	if ce, exists := d.pending[eventName]; exists {
-		ce.timer.Stop()
-		ce.ctx = bgCtx
-		ce.event = event // Update to latest
-		ce.count++
-		ce.timer = time.AfterFunc(d.coalesce, func() {
-			d.dispatchCoalesced(eventName)
-		})
-		return nil
-	}
-
-	// Create new pending event
-	ce := &coalescedEvent{
-		ctx:   bgCtx,
-		event: event,
-		count: 1,
-	}
-	ce.timer = time.AfterFunc(d.coalesce, func() {
-		d.dispatchCoalesced(eventName)
+	d.pending.schedule(eventName, d.coalesce, func(old coalescedEvent, _ bool) coalescedEvent {
+		return coalescedEvent{ctx: bgCtx, event: event, count: old.count + 1}
+	}, func(ce coalescedEvent) {
+		d.dispatchLater(ce.ctx, ce.event)
 	})
-	d.pending[eventName] = ce
-
 	return nil
-}
-
-// dispatchCoalesced dispatches a coalesced event
-func (d *CoalescingDispatcher) dispatchCoalesced(eventName string) {
-	d.pendingMu.Lock()
-	ce, exists := d.pending[eventName]
-	if !exists {
-		d.pendingMu.Unlock()
-		return
-	}
-	delete(d.pending, eventName)
-	d.pendingMu.Unlock()
-
-	d.dispatchLater(ce.ctx, ce.event)
 }
 
 // GetCoalescedCount returns how many times an event has been coalesced
 func (d *CoalescingDispatcher) GetCoalescedCount(eventName string) int {
-	d.pendingMu.RLock()
-	defer d.pendingMu.RUnlock()
-
-	if ce, exists := d.pending[eventName]; exists {
-		return ce.count
-	}
-	return 0
+	ce, _ := d.pending.peek(eventName)
+	return ce.count
 }
 
 // Stop stops the coalescing dispatcher by cancelling its context and
 // stopping every pending coalesce timer.
 //
-// Stop does NOT wait for an in-flight dispatchCoalesced to finish: a timer
-// that has already fired runs its AfterFunc goroutine to completion
-// independently, and that goroutine is not tracked. Stop only guarantees
-// that timers which have not yet fired will not fire.
+// Stop does NOT wait for an in-flight delivery to finish: a timer that has
+// already taken its event runs that delivery to completion independently,
+// and that goroutine is not tracked. Every other pending delivery is
+// dropped, including one whose timer fired but had not yet taken its event.
 func (d *CoalescingDispatcher) Stop() {
 	d.cancel()
-	d.pendingMu.Lock()
-	for _, ce := range d.pending {
-		ce.timer.Stop()
-	}
-	d.pending = make(map[string]*coalescedEvent)
-	d.pendingMu.Unlock()
+	d.pending.stopAll()
 }
 
 // ErrRateLimitExceeded is returned when rate limit is exceeded
