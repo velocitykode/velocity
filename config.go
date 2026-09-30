@@ -3,6 +3,7 @@ package velocity
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -190,6 +191,17 @@ func WithConfig(config Config) Option {
 func WithPort(port string) Option {
 	return func(a *App) {
 		a.config.Port = port
+	}
+}
+
+// WithListener makes Serve serve HTTP on a caller-supplied net.Listener
+// instead of binding the configured port (WithPort, PORT); the start line
+// reports the listener's address. Once Serve serves on it the listener is
+// the app's, closed when the app shuts down as it would close its own; a
+// Serve that fails before serving (a bootstrap error) leaves it open.
+func WithListener(lis net.Listener) Option {
+	return func(a *App) {
+		a.listener = lis
 	}
 }
 

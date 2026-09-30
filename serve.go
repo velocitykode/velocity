@@ -85,6 +85,9 @@ func (a *App) serveHTTP() error {
 	}
 
 	addr := ":" + a.config.Port
+	if a.listener != nil {
+		addr = listenerAddr(a.listener)
+	}
 	a.server = &http.Server{
 		Addr:              addr,
 		Handler:           a.Router,
@@ -129,7 +132,13 @@ func (a *App) serveHTTP() error {
 	errCh := make(chan error, 1)
 	async.Go(func() {
 		fallbacklog.Write(a.Log, func(l contract.Logger) { l.Info("Velocity server started", "version", a.version, "addr", addr) })
-		if err := a.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if a.listener != nil {
+			err = a.server.Serve(a.listener)
+		} else {
+			err = a.server.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 	})
@@ -156,6 +165,21 @@ func (a *App) serveHTTP() error {
 	defer cancel()
 
 	return a.Shutdown(ctx)
+}
+
+// listenerAddr returns lis's address for the start line. The listener is
+// the caller's: a panic in its Addr, or in the address's String, is
+// contained and reads as an empty address.
+func listenerAddr(lis net.Listener) (addr string) {
+	defer func() {
+		if recover() != nil {
+			addr = ""
+		}
+	}()
+	if a := lis.Addr(); a != nil {
+		return a.String()
+	}
+	return ""
 }
 
 // Shutdown gracefully shuts down all services in reverse initialization order:

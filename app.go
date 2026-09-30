@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -135,6 +136,10 @@ type App struct {
 	// via UseOutboxRelay. Shutdown stops it before tearing down the queue
 	// and database so in-flight dispatches can complete.
 	outboxRelay *orm.Relay
+
+	// listener is the caller's listener (WithListener) Serve serves HTTP
+	// on instead of binding the configured port, nil when there is none.
+	listener net.Listener
 
 	// serveHTTPHook is a test-only seam used by the regression test for
 	// the serveRunCmd → Serve() recursion bug. When non-nil, serveHTTP()
