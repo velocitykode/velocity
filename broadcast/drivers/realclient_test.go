@@ -27,17 +27,16 @@ type pipeListener struct {
 	last atomic.Pointer[writeTracker]
 }
 
-// writeTracker is the server end of a pipe; it counts the writes in
-// progress, so a test can see writePump blocked on a peer that does not
-// read.
+// writeTracker is the server end of a pipe; it counts the writes begun,
+// so a test can see writePump take a message to a peer that does not
+// read: on a pipe, that write cannot return until the peer reads.
 type writeTracker struct {
 	net.Conn
-	writing atomic.Int32
+	begun atomic.Int32
 }
 
 func (w *writeTracker) Write(p []byte) (int, error) {
-	w.writing.Add(1)
-	defer w.writing.Add(-1)
+	w.begun.Add(1)
 	return w.Conn.Write(p)
 }
 
@@ -144,13 +143,19 @@ func (h *clientHost) full(tb testing.TB) (*websocket.Client, *gorillaws.Conn) {
 	tb.Helper()
 	c, ws := h.connect(tb)
 	w := h.l.last.Load()
+	// The peer has read the welcome, so every write begun so far is the
+	// welcome's; the next write to begin is the first filler's, which the
+	// peer never reads. A write still in progress is not evidence: on one
+	// CPU it is the welcome's tail, and writePump then takes a filler off
+	// the queue after the queue was seen full.
+	welcome := w.begun.Load()
 	if err := c.SendMessage(websocket.Message{Type: "filler"}); err != nil {
 		tb.Fatalf("fill: %v", err)
 	}
-	// Once writePump is blocked writing to the peer, it takes nothing more
-	// from the queue, so the queue stays full once it fills.
+	// Once writePump is blocked writing the filler to the peer, it takes
+	// nothing more from the queue, so the queue stays full once it fills.
 	hostile.Eventually(tb, hostile.Deadline, "writePump blocked on the peer", func() bool {
-		return w.writing.Load() > 0
+		return w.begun.Load() > welcome
 	})
 	for range 4096 {
 		err := c.SendMessage(websocket.Message{Type: "filler"})

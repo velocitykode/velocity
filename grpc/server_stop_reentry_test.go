@@ -65,7 +65,7 @@ func (l *stopLineLogger) Fatal(msg string, _ ...any)  { l.line(msg) }
 func (l *stopLineLogger) With(...any) contract.Logger { return l }
 
 // nestedListener fires its nested stop from Close, which grpc-go calls
-// while it stops the server, and from Addr once armed.
+// while it stops the server, once armed.
 type nestedListener struct {
 	net.Listener
 	nested *nestedStop
@@ -182,7 +182,14 @@ func TestServerStop_NestedStopFromTheListenersCloseDoesNotWaitOnItself(t *testin
 				nested.server.Store(s)
 				counter := &stoppedCounter{}
 				s.SetEventDispatcher(counter.dispatch)
-				startHealth(t, s)
+				client := startHealth(t, s)
+				// The nested stop must fire from the Close grpc-go runs
+				// while it stops the server, so wait until grpc-go serves
+				// the listener: before that (StartAsync returns first), a
+				// stop finds nothing to close, and Serve then closes the
+				// listener itself, after the stop has ended, so a Shutdown
+				// called from there has nothing to wait on and returns nil.
+				served(t, client)
 				nested.armed.Store(true)
 
 				checkNested(t, s, outer, nested, nestedName)
@@ -193,6 +200,18 @@ func TestServerStop_NestedStopFromTheListenersCloseDoesNotWaitOnItself(t *testin
 				}
 			})
 		}
+	}
+}
+
+// served waits until the server behind client serves its listener: a
+// call completing proves grpc-go's Serve accepted the connection, so a
+// stop closes the listener from its drain.
+func served(t *testing.T, client grpc_health_v1.HealthClient) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := client.Check(ctx, &grpc_health_v1.HealthCheckRequest{}); err != nil {
+		t.Fatalf("Check before the stop: %v", err)
 	}
 }
 
