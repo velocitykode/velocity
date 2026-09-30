@@ -91,16 +91,16 @@ type Server struct {
 	stopped  bool
 	stopChan chan struct{}
 
-	// wg tracks the run-loop goroutine and every per-client read/write
-	// pump so Shutdown can wait for them to drain within a caller-supplied
-	// deadline.
-	wg sync.WaitGroup
+	// lifetime is the server's one run, nil before Start. Its units are the run
+	// loop, the fan-out and every per-client read/write pump, so Shutdown
+	// can wait for them to drain within a caller-supplied deadline; the
+	// first Shutdown owns the drain and a later one waits for it or its own
+	// ctx. Set under s.mu.
+	lifetime *drain.Run
 
-	// stops coordinates the Shutdowns: the first owns the drain (waiting
-	// on wg), a later one waits for it or its own ctx, and one called from
-	// a goroutine wg tracks (recorded in stops' work set while it runs)
-	// does not wait for itself. Begin and Ended are guarded by s.mu.
-	stops drain.Coordinator
+	// own records the goroutines the run's units run on, so a Shutdown
+	// called from one of them does not wait for itself.
+	own drain.Owner
 	// runLoop is the run-loop goroutine's id, so a Broadcast it makes (from
 	// a connect callback) delivers inline instead of waiting for itself to
 	// drain the broadcast channel.
@@ -245,6 +245,10 @@ func (s *Server) Start() error {
 		return ErrServerAlreadyRunning
 	}
 	s.running = true
+	run := s.own.NewRun()
+	s.lifetime = run
+	run.Admit() // the run loop
+	run.Admit() // the fan-out
 	s.mu.Unlock()
 
 	s.logInfo("WebSocket server starting", "host", s.config.Host, "port", s.config.Port, "path", s.config.Path)
@@ -254,9 +258,8 @@ func (s *Server) Start() error {
 	// closed-channel send, etc.) is contained instead of crashing the
 	// process. async.Go installs a deferred recover and routes through
 	// the package panic hook so observers still see the failure.
-	s.wg.Add(1)
 	async.Go(func() {
-		defer s.wg.Done()
+		defer run.Release()
 		s.serveWork(func() {
 			s.runLoop.Store(goroutine.ID())
 			s.run()
@@ -267,11 +270,10 @@ func (s *Server) Start() error {
 	// s.mu on the run loop, then hands the snapshot here so the actual sends
 	// happen off the run-loop dispatch path - the run loop keeps draining
 	// register/unregister/broadcast while a fan-out is in flight. Tracked on
-	// s.wg so Shutdown waits for it to drain. Wrapped in async.Go for the
+	// the server's run so Shutdown waits for it to drain. Wrapped in async.Go for the
 	// same process-level panic containment as the run loop.
-	s.wg.Add(1)
 	async.Go(func() {
-		defer s.wg.Done()
+		defer run.Release()
 		s.serveWork(s.fanoutLoop)
 	})
 	return nil
@@ -280,33 +282,35 @@ func (s *Server) Start() error {
 // serveWork runs fn, the body of a goroutine Shutdown waits for, recorded
 // as the server's work so a Shutdown it calls does not wait for itself.
 func (s *Server) serveWork(fn func()) {
-	id := goroutine.ID()
-	s.stops.Work().Enter(id)
-	defer s.stops.Work().Leave(id)
-	fn()
+	s.own.Do(fn)
 }
 
 // Shutdown gracefully stops the server and waits for the run-loop goroutine
 // and every per-client read/write pump to drain, bounded by ctx.
 //
 // It closes the stop channel (which both the run loop and every writePump
-// select on) and every live client connection (which unblocks readPump's
-// ReadJSON), then waits on the server's WaitGroup. If ctx fires before the
-// goroutines finish, Shutdown returns ctx.Err() and they go on draining;
-// otherwise it returns nil. Shutdown is safe to call more than once: a call
-// that overlaps or follows the first waits for the same drain, or its own
-// ctx, and returns nil once it is over.
+// select on), then, on a goroutine of its own, closes every live client
+// connection (which unblocks readPump's ReadJSON) and waits for the
+// server's goroutines. A connection's Close runs outside the server's
+// lock and off the caller's goroutine, so one that blocks cannot hold
+// Shutdown past ctx, and one that calls Shutdown is refused rather than
+// waiting on itself. If ctx fires before the goroutines finish, Shutdown
+// returns ctx.Err() and they go on draining; otherwise it returns nil.
+// Shutdown is safe to call more than once: a call that overlaps or follows
+// the first waits for the same drain, or its own ctx, and returns nil once
+// it is over.
 //
 // A Shutdown called from one of the server's own goroutines (a connect or
 // disconnect callback on the run loop, a message handler on a client's read
-// pump, the broadcast fan-out) cannot wait for the goroutine it runs on: it
-// stops the server and returns an error wrapping ErrServerClosed at once.
+// pump, the broadcast fan-out, a connection's Close during the drain)
+// cannot wait for the goroutine it runs on: it stops the server and returns
+// an error wrapping ErrServerClosed at once.
 //
 // Shutdown is terminal: it marks the server stopped so a later Start returns
 // ErrServerClosed. The lifecycle is one-shot - create a new Server with New to
 // run again.
 func (s *Server) Shutdown(ctx context.Context) error {
-	nested := s.stops.Nested()
+	nested := s.own.Nested()
 	s.mu.Lock()
 	// Mark the lifecycle terminal regardless of whether the server ever
 	// started: any Shutdown is one-shot, so a later Start must return
@@ -315,50 +319,49 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// always observes a closed stopChan and drops instead of wedging on the
 	// undrained buffer. Guard on the prior stopped flag so it is closed exactly
 	// once across repeated Shutdown calls.
-	alreadyStopped := s.stopped
-	wasRunning := s.running
+	if !s.stopped {
+		close(s.stopChan)
+	}
 	s.running = false
 	s.stopped = true
-	if alreadyStopped {
-		drained := s.stops.Ended()
-		s.mu.Unlock()
-		return s.awaitDrain(ctx, drained, nested)
-	}
-	close(s.stopChan)
-	var drained chan struct{}
-	if wasRunning {
-		drained = s.stops.Begin()
-	}
+	run := s.lifetime
 	s.mu.Unlock()
 
-	if !wasRunning {
+	if run == nil {
 		// Never started: no run loop, clients, or pumps to drain. The closed
 		// stopChan above is enough to make Broadcast drop.
 		return nil
 	}
-
-	// Close each live connection so readPump's blocked ReadJSON fails and
-	// returns. writePump independently observes stopChan being closed.
-	s.mu.RLock()
-	for _, client := range s.clients {
-		client.Conn.Close()
+	work := func() error {
+		s.closeConnections()
+		<-run.Idle()
+		return nil
 	}
-	s.mu.RUnlock()
-
-	async.Go(func() { s.stops.Drain(drained, s.wg.Wait) })
-	return s.awaitDrain(ctx, drained, nested)
+	if !nested {
+		return s.own.Stop(ctx, run, work, nil)
+	}
+	s.own.Signal(run, work)
+	if drain.Closed(run.Finished()) {
+		return nil
+	}
+	return fmt.Errorf("websocket: Shutdown called from a server goroutine (run loop, fan-out, a client pump or a connection's Close); the server drains without this call waiting for it: %w: %w", contract.ErrStopFromOwnWork, ErrServerClosed)
 }
 
-// awaitDrain waits for the drain a Shutdown began, nil when the server
-// never ran, or ctx; a nested Shutdown does not wait.
-func (s *Server) awaitDrain(ctx context.Context, drained chan struct{}, nested bool) error {
-	switch {
-	case drained == nil || drain.Closed(drained):
-		return nil
-	case nested:
-		return fmt.Errorf("websocket: Shutdown called from a server goroutine (run loop, fan-out or a client pump); the server drains without this call waiting for it: %w: %w", contract.ErrStopFromOwnWork, ErrServerClosed)
+// closeConnections closes every live client connection so each readPump's
+// blocked ReadJSON fails and returns; writePump independently observes
+// stopChan being closed. The connections are snapshotted under the lock and
+// closed after it is released, each contained: a Close is the hijacked
+// connection's, which a ResponseWriter wrapper can supply.
+func (s *Server) closeConnections() {
+	s.mu.RLock()
+	conns := make([]*websocket.Conn, 0, len(s.clients))
+	for _, client := range s.clients {
+		conns = append(conns, client.Conn)
 	}
-	return s.stops.Await(ctx, drained, nil)
+	s.mu.RUnlock()
+	for _, conn := range conns {
+		s.callWithRecover("close connection", func() { _ = conn.Close() })
+	}
 }
 
 // run is the main event loop.
@@ -427,7 +430,7 @@ func (s *Server) RecoveredPanics() uint64 {
 // HandleConnection upgrades HTTP connection to WebSocket
 func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
-	running := s.running
+	running, run := s.running, s.lifetime
 	s.mu.RUnlock()
 	if !running {
 		http.Error(w, "Server not running", http.StatusServiceUnavailable)
@@ -446,7 +449,8 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 		}
 		s.activeConns.Add(-1)
 		if pumpsReserved {
-			s.wg.Add(-2)
+			run.Release()
+			run.Release()
 		}
 	}()
 
@@ -476,17 +480,17 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reserve pump slots on the WaitGroup while still holding the running
-	// check, so a concurrent Shutdown (which acquires the write lock before
-	// spawning its wg.Wait goroutine) cannot observe a zero counter and
-	// race the Add.
+	// Reserve the pump slots as units of the server's run while still
+	// holding the running check: a Shutdown flips running under the write
+	// lock before it closes the run's admission, so a running server
+	// always admits them, and one that stopped admits nothing.
 	s.mu.RLock()
-	if !s.running {
+	if !s.running || !run.Admit() {
 		s.mu.RUnlock()
 		http.Error(w, "Server not running", http.StatusServiceUnavailable)
 		return
 	}
-	s.wg.Add(2)
+	run.Join()
 	pumpsReserved = true
 	s.mu.RUnlock()
 
@@ -519,8 +523,8 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start client goroutines. Pump slots already reserved on the WaitGroup
-	// above so Shutdown can wait for them to drain.
+	// Start client goroutines. Pump slots already reserved on the server's
+	// run above so Shutdown can wait for them to drain.
 	//
 	// Audit D-04: route through async.Go so a panic that escapes the
 	// pump's own recover (e.g. inside an onConnect callback that captures
@@ -530,11 +534,11 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	// last-resort net.
 	pumpsStarted = true
 	async.Go(func() {
-		defer s.wg.Done()
+		defer run.Release()
 		s.serveWork(client.writePump)
 	})
 	async.Go(func() {
-		defer s.wg.Done()
+		defer run.Release()
 		s.serveWork(client.readPump)
 	})
 

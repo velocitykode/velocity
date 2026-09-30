@@ -834,7 +834,7 @@ func TestServer_ShutdownWaitsForClientPumps(t *testing.T) {
 
 // TestServer_ShutdownRespectsCtxDeadline verifies that Shutdown honours the
 // caller's deadline when a tracked goroutine refuses to exit. We register a
-// synthetic goroutine on the server WaitGroup that blocks until the test
+// synthetic goroutine on the server's run that blocks until the test
 // releases it, then assert Shutdown returns context.DeadlineExceeded rather
 // than hanging.
 func TestServer_ShutdownRespectsCtxDeadline(t *testing.T) {
@@ -844,13 +844,19 @@ func TestServer_ShutdownRespectsCtxDeadline(t *testing.T) {
 	}
 
 	// Simulate an uncooperative tracked goroutine. Because server_test.go
-	// lives in package websocket, we can register directly on s.wg.
+	// lives in package websocket, we can admit it directly into the
+	// server's run.
 	release := make(chan struct{})
 	var released sync.WaitGroup
 	released.Add(1)
-	s.wg.Add(1)
+	s.mu.RLock()
+	run := s.lifetime
+	s.mu.RUnlock()
+	if !run.Admit() {
+		t.Fatal("a running server's run refused a unit")
+	}
 	go func() {
-		defer s.wg.Done()
+		defer run.Release()
 		defer released.Done()
 		<-release
 	}()

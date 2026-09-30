@@ -95,10 +95,18 @@ func (o *Owner) Stop(ctx context.Context, r *Run, work func() error, force func(
 		}
 		return fmt.Errorf("velocity: stop called from the work it would wait for: %w", contract.ErrStopFromOwnWork)
 	}
+	o.Signal(r, work)
+	return r.Await(ctx, force)
+}
+
+// Signal begins r's stop without waiting for it: when no stop began r, it
+// closes r's admission and runs work as Stop does, on a goroutine of its
+// own, recorded as the owner's work. It is for a component whose stop,
+// called from its own work, begins the stop instead of refusing it.
+func (o *Owner) Signal(r *Run, work func() error) {
 	if r.Close() {
 		o.Go(func() { r.Finish(runContained(work)) })
 	}
-	return r.Await(ctx, force)
 }
 
 // runContained runs work, returning a panic in it as its error.

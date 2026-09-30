@@ -303,6 +303,30 @@ func TestOwner_StopHostileWork(t *testing.T) {
 	}
 }
 
+// Signal from own work begins the stop without waiting: the work runs once,
+// and a Stop from outside awaits it.
+func TestOwner_SignalFromOwnWorkBeginsTheStop(t *testing.T) {
+	var o drain.Owner
+	r := o.NewRun()
+	gate := make(chan struct{})
+	var runs atomic.Int32
+	work := func() error { runs.Add(1); <-gate; return nil }
+	o.Do(func() {
+		o.Signal(r, work)
+		o.Signal(r, work)
+	})
+	if !r.Stopping() {
+		t.Fatal("Signal did not close admission")
+	}
+	close(gate)
+	if err := o.Stop(context.Background(), r, work, nil); err != nil {
+		t.Fatalf("Stop = %v", err)
+	}
+	if n := runs.Load(); n != 1 {
+		t.Fatalf("work ran %d times, want 1", n)
+	}
+}
+
 // Once the run finished, a Stop from own work gets the result instead of
 // the refusal: it no longer waits on anything.
 func TestOwner_NestedStopAfterFinishGetsTheResult(t *testing.T) {
