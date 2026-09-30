@@ -5,15 +5,16 @@ import (
 	"errors"
 	"os/exec"
 	"strings"
-	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/velocitykode/velocity/internal/drain"
 )
 
 // internal/drain sits under the router's graph (through the scheduler),
-// so it imports only the standard library, internal/goroutine and async.
+// so it imports only the standard library and leaves the router already
+// depends on: contract, internal/goroutine, internal/panicerr and async.
 func TestDrainImportsOnlyItsLeaves(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go tool not on PATH")
@@ -25,10 +26,12 @@ func TestDrainImportsOnlyItsLeaves(t *testing.T) {
 	allowed := map[string]bool{
 		"github.com/velocitykode/velocity/internal/goroutine": true,
 		"github.com/velocitykode/velocity/async":              true,
+		"github.com/velocitykode/velocity/contract":           true,
+		"github.com/velocitykode/velocity/internal/panicerr":  true,
 	}
 	for _, imp := range strings.Fields(string(out)) {
 		if strings.Contains(imp, ".") && !allowed[imp] {
-			t.Errorf("internal/drain imports %s; it may import only the standard library, internal/goroutine and async", imp)
+			t.Errorf("internal/drain imports %s; it may import only the standard library, contract, internal/goroutine, internal/panicerr and async", imp)
 		}
 	}
 }
@@ -60,24 +63,20 @@ func TestCoordinator_DrainAndNested(t *testing.T) {
 // At its ctx, Await returns the ctx error and starts force, as stop work,
 // without waiting on it; with a nil force it only returns.
 func TestCoordinator_AwaitForcesAtItsDeadline(t *testing.T) {
-	var c drain.Coordinator
-	d := c.Begin()
-	var forced atomic.Bool
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if err := c.Await(ctx, d, func() { forced.Store(c.Nested()) }); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Await = %v, want the deadline", err)
-	}
-	for range 200 {
-		if forced.Load() {
-			break
+	synctest.Test(t, func(t *testing.T) {
+		var c drain.Coordinator
+		d := c.Begin()
+		forced := make(chan bool, 1)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		if err := c.Await(ctx, d, func() { forced <- c.Nested() }); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Await = %v, want the deadline", err)
 		}
-		time.Sleep(time.Millisecond)
-	}
-	if !forced.Load() {
-		t.Error("force did not run as stop work")
-	}
-	if err := c.Await(ctx, d, nil); !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("Await without force = %v, want the deadline", err)
-	}
+		if !<-forced {
+			t.Error("force did not run as stop work")
+		}
+		if err := c.Await(ctx, d, nil); !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("Await without force = %v, want the deadline", err)
+		}
+	})
 }
