@@ -4,8 +4,9 @@
 // app, velocity.New hands the app logger to every framework value that
 // takes one, so these lines go to the app's log instead.
 //
-// It depends on the standard library and the contract leaf only, so any
-// framework package can use it without growing its import graph.
+// It depends on the standard library, the contract leaf and
+// internal/panicerr only, so any framework package can use it without
+// growing its import graph.
 //
 // Warn, Error and Fatal lines go to standard error, one line each, in one
 // format: a UTC timestamp, the level, the message, then the key-value pairs

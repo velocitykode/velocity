@@ -72,8 +72,8 @@ func TestManager_HandsItsLoggerWithHostileChannel(t *testing.T) {
 						return
 					}
 					hostile.Within(t, hostile.Deadline, func() { entry(m) })
-				} else {
-					hostile.Within(t, hostile.Deadline, hand)
+				} else if p := hostile.Within(t, hostile.Deadline, hand); p != nil {
+					t.Errorf("SetLogger let a channel's panic escape: %v", p)
 				}
 				code.Release()
 				code.Disarm()

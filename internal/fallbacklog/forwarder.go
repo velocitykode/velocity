@@ -4,6 +4,7 @@ import (
 	"sync/atomic"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // Forwarder is a logger that writes through a target set later. A value
@@ -48,4 +49,22 @@ func (f *Forwarder) Fatal(msg string, kvs ...any) { Resolve(f.Installed()).Fatal
 // line's first pairs.
 func (f *Forwarder) With(kvs ...any) contract.Logger {
 	return contract.BindFields(f, kvs...)
+}
+
+// Hand hands f to la: la.SetLogger(f). la's SetLogger is user code, so a
+// panic in it is contained: warning is written through f with the panic
+// under "error" (through Write, so a panicking logger cannot escape
+// either), la keeps the logger it had, and the caller goes on to hand the
+// rest. A nil la is ignored.
+func (f *Forwarder) Hand(la contract.LoggerAware, warning string) {
+	if la == nil {
+		return
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			err := panicerr.FromRecovered(p)
+			Write(f, func(l contract.Logger) { l.Warn(warning, "error", err) })
+		}
+	}()
+	la.SetLogger(f)
 }

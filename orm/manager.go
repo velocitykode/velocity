@@ -1177,15 +1177,7 @@ func (m *Manager) SetLogger(logger contract.Logger) {
 // SetLogger is user code: a panic in it is contained and written as a
 // warning, so the drivers after it are still handed the forwarder.
 func (m *Manager) handLogger(la contract.LoggerAware) {
-	defer func() {
-		if p := recover(); p != nil {
-			err := panicerr.FromRecovered(p)
-			fallbacklog.Write(m.log(), func(l contract.Logger) {
-				l.Warn("velocity/orm: a connection's SetLogger panicked; it keeps its own logger", "error", err)
-			})
-		}
-	}()
-	la.SetLogger(&m.logger)
+	m.logger.Hand(la, "velocity/orm: a connection's SetLogger panicked; it keeps its own logger")
 }
 
 // log returns the installed logger, or the framework's standalone fallback

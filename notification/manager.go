@@ -74,7 +74,9 @@ func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event interfac
 // Every channel that takes a logger (contract.LoggerAware) is handed the
 // manager's forwarding logger once, from the first SetLogger with a logger
 // on: the channels registered then, and each channel created or set
-// later. Until then a channel keeps a logger of its own. A replacement is
+// later. Until then a channel keeps a logger of its own. A channel whose
+// SetLogger panics keeps its own logger, the panic is written as a
+// warning, and every other channel is still handed. A replacement is
 // one atomic store that every channel sees; no channel's SetLogger runs
 // under the manager's lock, so one that calls back into the manager
 // cannot deadlock it.
@@ -93,9 +95,7 @@ func (m *Manager) SetLogger(l contract.Logger) {
 	}
 	m.mu.RUnlock()
 	for _, ch := range channels {
-		if la, ok := ch.(contract.LoggerAware); ok {
-			la.SetLogger(&m.logger)
-		}
+		m.handTo(ch)
 	}
 }
 
@@ -116,8 +116,15 @@ func (m *Manager) handLogger(ch Channel) {
 	if !m.handing.Load() {
 		return
 	}
+	m.handTo(ch)
+}
+
+// handTo hands ch the manager's forwarding logger when ch takes one. A
+// channel's SetLogger is user code: a panic in it is contained and written
+// as a warning, so the channels after it are still handed the logger.
+func (m *Manager) handTo(ch Channel) {
 	if la, ok := ch.(contract.LoggerAware); ok {
-		la.SetLogger(&m.logger)
+		m.logger.Hand(la, "velocity/notification: a channel's SetLogger panicked; it keeps its own logger")
 	}
 }
 
