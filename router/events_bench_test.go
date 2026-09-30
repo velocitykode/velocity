@@ -28,7 +28,7 @@ func BenchmarkServeHTTP_Events(b *testing.B) {
 				r := New()
 				r.Get("/users/{id}", func(c *Context) error { c.Response.WriteHeader(http.StatusOK); return nil })
 				if withDisp {
-					r.SetEventDispatcher(func(context.Context, interface{}) error { return nil })
+					r.SetEventDispatcher(func(context.Context, any) error { return nil })
 				}
 				r.Freeze()
 				req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -56,7 +56,7 @@ func BenchmarkServeHTTP_EventsParallel(b *testing.B) {
 			r := New()
 			r.Get("/users/{id}", func(c *Context) error { c.Response.WriteHeader(http.StatusOK); return nil })
 			if withDisp {
-				r.SetEventDispatcher(func(context.Context, interface{}) error { return nil })
+				r.SetEventDispatcher(func(context.Context, any) error { return nil })
 			}
 			r.Freeze()
 			b.ReportAllocs()

@@ -18,7 +18,7 @@ func BenchmarkCacheHitEvent(b *testing.B) {
 	})
 	b.Run("dispatcher", func(b *testing.B) {
 		m := &Manager{}
-		m.SetEventDispatcher(func(context.Context, interface{}) error { return nil })
+		m.SetEventDispatcher(func(context.Context, any) error { return nil })
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			m.dispatchCacheHit(ctx, "k", "memory")
@@ -37,7 +37,7 @@ func BenchmarkCacheHitEventParallel(b *testing.B) {
 		b.Run(name, func(b *testing.B) {
 			m := &Manager{}
 			if withDisp {
-				m.SetEventDispatcher(func(context.Context, interface{}) error { return nil })
+				m.SetEventDispatcher(func(context.Context, any) error { return nil })
 			}
 			b.ReportAllocs()
 			b.RunParallel(func(pb *testing.PB) {

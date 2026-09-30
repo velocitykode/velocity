@@ -32,7 +32,7 @@ func BenchmarkLegacyDecryptEvent(b *testing.B) {
 			}
 			d.SetLogger(quietLogger{})
 			if withDisp {
-				d.SetEventDispatcher(func(context.Context, interface{}) error { return nil })
+				d.SetEventDispatcher(func(context.Context, any) error { return nil })
 			}
 			d.noteLegacyIfV0(0)
 			b.ReportAllocs()

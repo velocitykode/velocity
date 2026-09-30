@@ -19,6 +19,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/trace"
@@ -662,13 +663,15 @@ func (r *RedisDriver) moveDelayedJobs(ctx context.Context, queueName string) err
 		// the delayed set.
 		member, ok := result[0].Member.(string)
 		if !ok {
-			r.DispatchJobFailed(
-				ctx,
-				"unknown",
-				queueName,
-				fmt.Errorf("velocity/queue: delayed ZSET member has unexpected type %T", result[0].Member),
-				0,
-			)
+			bad := result[0].Member
+			r.DispatchBuilt(ctx, func() any {
+				return &queue.JobFailed{
+					EventMeta: eventmeta.Current(ctx),
+					JobType:   "unknown",
+					Queue:     queueName,
+					Err:       fmt.Errorf("velocity/queue: delayed ZSET member has unexpected type %T", bad),
+				}
+			})
 			continue
 		}
 

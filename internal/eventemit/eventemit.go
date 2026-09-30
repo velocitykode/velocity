@@ -397,8 +397,6 @@ func (e *Emitter) Installed() bool {
 // it). The failure goes to the Failures and logger bound with the
 // dispatcher it read.
 func (e *Emitter) EmitBuilt(ctx context.Context, build func() any) bool {
-	// Kept within the inlining budget, so the no-dispatcher path costs
-	// the caller one atomic load and no call.
 	return e != nil && e.Installed() && e.emitBuilt(ctx, build)
 }
 

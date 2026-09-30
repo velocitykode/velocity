@@ -46,3 +46,14 @@ func (c *DriverCore) DispatchJobQueued(ctx context.Context, jobType, queue strin
 func (c *DriverCore) DispatchJobFailed(ctx context.Context, jobType, queue string, err error, duration time.Duration) {
 	dispatchJobFailed(&c.events, ctx, jobType, queue, "", err, duration)
 }
+
+// DispatchBuilt hands the event build returns to the installed dispatcher
+// under ctx (context.Background when nil). build runs only when a
+// dispatcher is installed, so a driver builds no event, and no field of
+// one, for no listener. It reports whether a dispatcher was installed, not
+// whether a listener received the event. It is the one path an embedding
+// driver has to its dispatcher for an event of its own; a failed dispatch
+// goes to the same failure policy as DispatchJobQueued's.
+func (c *DriverCore) DispatchBuilt(ctx context.Context, build func() any) bool {
+	return c.events.EmitBuilt(ctx, build)
+}

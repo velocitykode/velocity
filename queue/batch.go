@@ -484,7 +484,7 @@ func (b *Batch) fireTerminalCallbacks(ctx context.Context, updated *Batch) {
 // build returns the event for the envelope of work running under ctx. It
 // is called at most once, and only when one of the two dispatchers
 // receives the event, so no event is built for no listener.
-func dispatchBatchEvent(ctx context.Context, dispatch func(context.Context, interface{}), build func(contract.EventMeta) contract.Event) {
+func dispatchBatchEvent(ctx context.Context, dispatch func(context.Context, any), build func(contract.EventMeta) contract.Event) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
