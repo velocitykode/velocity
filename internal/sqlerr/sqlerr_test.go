@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 type codedError struct{ text string }
@@ -160,8 +162,8 @@ type wideJoin struct{}
 
 func (wideJoin) Error() string { return "wide" }
 func (wideJoin) Unwrap() []error {
-	errs := make([]error, 0, 2*maxChain)
-	for i := 0; i < 2*maxChain; i++ {
+	errs := make([]error, 0, 2*errchain.Max)
+	for i := 0; i < 2*errchain.Max; i++ {
 		errs = append(errs, &selfLoop{})
 	}
 	return append(errs, sql.ErrNoRows)
