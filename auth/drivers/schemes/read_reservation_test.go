@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -345,6 +347,57 @@ func TestSessionScheme_ResolveSessionRefusedWhileAnOperationRuns(t *testing.T) {
 	}
 }
 
+// A standalone Login (outside the session middleware) on a request that
+// carries a WithSessionContext holder reserves that holder: a store that
+// calls Login for the same request from the Login's save is refused, and
+// the session is saved once.
+func TestSessionScheme_StandaloneLoginReservesTheRequestHolder(t *testing.T) {
+	s := newHookSession()
+	g, _ := newHookScheme(t, s)
+	r := WithSessionContext(httptest.NewRequest(http.MethodPost, "/", nil))
+	w := httptest.NewRecorder()
+
+	var (
+		first     atomic.Bool
+		nestedErr error
+		readErr   error
+	)
+	store := g.store.(*hookSessionStore)
+	store.s = &saveHookSession{hookSession: s, onSave: func() {
+		if first.CompareAndSwap(false, true) {
+			nestedErr = g.Login(w, r, &revokeTestUser{id: "u2"})
+			_, readErr = g.CheckWithError(r)
+		}
+	}}
+
+	if err := g.Login(w, r, &revokeTestUser{id: "u1"}); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if !first.Load() {
+		t.Fatal("premise: the Login saved no session")
+	}
+	if !errors.Is(nestedErr, auth.ErrOperationInProgress) {
+		t.Errorf("Login from the save of a standalone Login = %v, want auth.ErrOperationInProgress", nestedErr)
+	}
+	if !errors.Is(readErr, auth.ErrOperationInProgress) {
+		t.Errorf("a read of the request from the save of a standalone Login = %v, want auth.ErrOperationInProgress", readErr)
+	}
+	if n := s.saves.Load(); n != 1 {
+		t.Errorf("the session was saved %d time(s), want 1", n)
+	}
+}
+
+// saveHookSession is a hookSession that runs onSave as it is saved.
+type saveHookSession struct {
+	*hookSession
+	onSave func()
+}
+
+func (s *saveHookSession) Save(w http.ResponseWriter) error {
+	s.onSave()
+	return s.hookSession.Save(w)
+}
+
 // Readers on many goroutines of one request race Logins and Logouts of
 // the same request: every read returns a whole identity (a user the
 // request was signed in as, or none) and nothing races.
@@ -385,4 +438,25 @@ func TestSessionScheme_ReadsRaceOperations(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+}
+
+// A standalone Login that panics after it began changing the session tears
+// the request holder it reserved as its anchor: reads of the request then
+// read signed out instead of the half-changed session.
+func TestSessionScheme_StandaloneLoginPanicTearsTheRequestHolder(t *testing.T) {
+	s := newHookSession()
+	s.data[auth.UserIDSessionKey] = "u1"
+	g, _ := newHookScheme(t, s)
+	r := WithSessionContext(httptest.NewRequest(http.MethodPost, "/", nil))
+	r.Context().Value(sessionCtxKey{}).(*sessionHolder).setSession(s)
+	w := httptest.NewRecorder()
+	if u := g.User(r); u == nil {
+		t.Fatal("premise: the request is not signed in")
+	}
+	s.onRegenerate = func(s *hookSession) { s.id = "half-regenerated"; panic("regenerate") }
+	mustPanic(t, func() { _ = g.Login(w, r, &revokeTestUser{id: "u2"}) })
+	s.onRegenerate = nil
+	if u := g.User(r); u != nil {
+		t.Errorf("a read after the torn standalone Login returned %v, want signed out", u.GetAuthIdentifier())
+	}
 }

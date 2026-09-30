@@ -53,6 +53,13 @@ import (
 // after it began changing the session), until a later sign-in or logout
 // of the request publishes a whole state again. A handler reading the raw
 // session object concurrently with its own Login is outside this.
+//
+// A Login or Logout outside the session middleware commits on a holder of
+// its own; when the request carries a holder WithSessionContext attached,
+// the operation also reserves that holder (its anchor), so reads and
+// operations on the request see it in flight. Without either, nothing
+// per-request exists to reserve, and a store that calls back into the
+// scheme for the same request is not detected.
 
 // errOperationTorn is what the commit returns when an authentication
 // operation of the request was unwound by a panic after it began changing
@@ -85,6 +92,9 @@ type resolution struct {
 // with no session context), whose steps apply to nothing.
 type gateOp struct {
 	h *sessionHolder
+	// anchor is the request's own holder a standalone operation reserves
+	// besides h, the holder it commits on (see reserveOperation).
+	anchor *sessionHolder
 	// read marks the gate's resolver: a read of the signed-in user (or
 	// ResolveSession), which other reads of the request wait for.
 	read bool
@@ -151,11 +161,21 @@ func (h *sessionHolder) reserve(op *gateOp) error {
 // reserveOperation takes the request's reservation for an operation that
 // may change the session (Login, LoginByID, Attempt, Logout) and returns
 // the holder it stages and commits on, and whether that holder is the
-// operation's own (standalone: r runs outside the session middleware).
-// Refused, it returns auth.ErrOperationInProgress before any work.
+// operation's own (standalone: r runs outside the session middleware). A
+// standalone operation whose r carries a holder WithSessionContext
+// attached reserves that holder first, as its anchor: the request's reads
+// and operations see the operation in flight. Refused, it returns
+// auth.ErrOperationInProgress before any work.
 func reserveOperation(r *http.Request, op *gateOp) (holder *sessionHolder, standalone bool, err error) {
-	holder, standalone = seamHolder(r)
+	holder, standalone, anchor := seamHolder(r)
+	if anchor != nil {
+		if err := anchor.take(); err != nil {
+			return nil, false, err
+		}
+		op.anchor = anchor
+	}
 	if err := holder.reserve(op); err != nil {
+		op.releaseAnchor(false)
 		return nil, false, err
 	}
 	return holder, standalone, nil
@@ -377,20 +397,27 @@ func (op *gateOp) apply(refuseSealed bool) bool {
 		h.resolution.ident = op.identity
 	}
 	h.mu.Unlock()
+	if a := op.anchor; a != nil && op.bumps > 0 {
+		a.mu.Lock()
+		a.torn = false
+		a.mu.Unlock()
+	}
 	return true
 }
 
-// release frees the gate op holds. A resolver's waiters are woken. A later
-// release or abort is a no-op.
+// release frees the gate op holds, then its anchor's. A resolver's waiters
+// are woken. A later release or abort is a no-op.
 func (op *gateOp) release() {
 	h := op.h
 	if h == nil || op.ended {
+		op.releaseAnchor(false)
 		return
 	}
 	op.ended = true
 	h.mu.Lock()
 	h.freeLocked(op)
 	h.mu.Unlock()
+	op.releaseAnchor(false)
 }
 
 // freeLocked frees the gate op holds; h.mu is held.
@@ -403,17 +430,34 @@ func (h *sessionHolder) freeLocked(op *gateOp) {
 	}
 }
 
+// releaseAnchor frees the anchor op reserved, marking it torn when torn is
+// set. A later call is a no-op.
+func (op *gateOp) releaseAnchor(torn bool) {
+	a := op.anchor
+	if a == nil {
+		return
+	}
+	op.anchor = nil
+	a.mu.Lock()
+	if torn {
+		a.torn = true
+	}
+	a.busy = false
+	a.mu.Unlock()
+}
+
 // abort ends op unwound by a panic. Before op applied its changes, nothing
 // op staged is applied and, when op had begun changing the session (see
-// beginMutation), the request is marked torn, so no scheme read uses the
-// session and the commit does not save it; the undo steps of the writes op
-// queued run, each contained, so the panic goes on unchanged. After op
-// applied its changes the session is whole, so abort only frees the gate.
-// Either way the published identity is cleared.
+// beginMutation), the request is marked torn (its anchor too), so no scheme
+// read uses the session and the commit does not save it; the undo steps of
+// the writes op queued run, each contained, so the panic goes on
+// unchanged. After op applied its changes the session is whole, so abort
+// only frees the gate. Either way the published identity is cleared.
 // Deferred by every operation, it is a no-op once op released the gate.
 func (op *gateOp) abort() {
 	h := op.h
 	if h == nil || op.ended {
+		op.releaseAnchor(op.mutated && !op.applied)
 		return
 	}
 	if op.applied {
@@ -428,6 +472,7 @@ func (op *gateOp) abort() {
 	h.ident = nil
 	h.freeLocked(op)
 	h.mu.Unlock()
+	op.releaseAnchor(op.mutated)
 	for _, e := range op.staged {
 		if e.undo != nil {
 			runContained(e.undo)

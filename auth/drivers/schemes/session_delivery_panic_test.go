@@ -101,7 +101,7 @@ func TestCommitStandalone_PanicDuringDeliveryStillEndsADeletedSession(t *testing
 				r.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value})
 			}
 			w := httptest.NewRecorder()
-			holder, standalone := seamHolder(r)
+			holder, standalone, _ := seamHolder(r)
 			if !standalone {
 				t.Fatal("premise: a request outside the middleware is not its own save scope")
 			}

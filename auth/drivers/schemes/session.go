@@ -381,13 +381,15 @@ func queueBehindSave(r *http.Request, write func(w http.ResponseWriter), session
 // no middleware around it) it returns a fresh holder for the one scheme
 // operation and standalone true: the operation is its own save scope and
 // commits through the same seam body when it ends, so its write is
-// neither lost nor saved twice.
-func seamHolder(r *http.Request) (holder *sessionHolder, standalone bool) {
-	holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
-	if ok && holder != nil && holder.getResponseWriter() != nil {
-		return holder, false
+// neither lost nor saved twice. anchor is then the holder
+// WithSessionContext attached to r, if any, which the operation reserves
+// too (see reserveOperation).
+func seamHolder(r *http.Request) (holder *sessionHolder, standalone bool, anchor *sessionHolder) {
+	holder, _ = r.Context().Value(sessionCtxKey{}).(*sessionHolder)
+	if holder != nil && holder.getResponseWriter() != nil {
+		return holder, false, nil
 	}
-	return &sessionHolder{saveScope: true}, true
+	return &sessionHolder{saveScope: true}, true, holder
 }
 
 // isTorn reports whether an operation of the request was torn (see
@@ -1468,7 +1470,9 @@ func (g *SessionScheme) ID(r *http.Request) interface{} {
 // while Login runs saves nothing, so Login then returns the sign-in
 // refused error and the queued credential writes are dropped. The server
 // record Login wrote for the new id names an id no client received and
-// ends with its TTL.
+// ends with its TTL. Outside the session middleware and WithSessionContext,
+// a store that calls back into the scheme for the same request is not
+// detected: the request carries nothing to reserve.
 //
 // A failed Login may leave side effects, depending on where it fails:
 //
@@ -1785,7 +1789,9 @@ type sessionRevoker interface {
 // store the Logout calls, the server-side teardown after the session is
 // invalidated included (the cookie store's revocation, the server record
 // deletes, a standalone Logout's save), gets the same answer when it asks
-// the scheme about the request.
+// the scheme about the request. Outside the session middleware and
+// WithSessionContext, a store that calls back into the scheme for the same
+// request is not detected: the request carries nothing to reserve.
 func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	// The session middleware writes the delete cookie for the
 	// invalidated session. Outside it, this logout is its own save scope
