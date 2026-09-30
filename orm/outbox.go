@@ -41,8 +41,8 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
-	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/internal/sqlerr"
 	"github.com/velocitykode/velocity/trace"
@@ -568,23 +568,33 @@ type Relay struct {
 	// atomically by the relay loop and its workers.
 	logger atomic.Value // holds relayLoggerHolder
 
-	mu       sync.Mutex
-	running  bool
-	cancelFn context.CancelFunc
-	// shutdownCtx is the relay's lifetime context. It mirrors loopCtx for
-	// cancellation but is the ctx threaded into worker DB writes
-	// (recordSuccess / recordFailure) and into dispatch callbacks. Stop
-	// keeps it alive for cfg.ShutdownGrace before cancelling so in-flight
-	// workers can finish their writebacks instead of hanging forever.
-	shutdownCtx      context.Context
-	shutdownCancelFn context.CancelFunc
-	doneCh           chan struct{}
-	inFlight         sync.WaitGroup
-	activePart       sync.Map // partition_key (string) -> struct{} for ordering claim
-	// own holds the relay's loop and worker goroutines, each entered
-	// before it runs user code (a callback, a logger), so a Stop from one
-	// of them, which would wait on itself, is refused at once.
-	own goroutine.Set
+	// mu guards run.
+	mu sync.Mutex
+	// run is the current run, or the last one once it stopped; nil before
+	// the first Start.
+	run        *relayRun
+	activePart sync.Map // partition_key (string) -> struct{} for ordering claim
+	// own holds the relay's loop and worker goroutines, of every run, each
+	// entered before it runs user code (a callback, a logger), so a Stop
+	// from one of them, which would wait on itself, is refused at once.
+	own drain.Owner
+}
+
+// relayRun is one run of the relay, from Start to the end of the Stop
+// that drains it. Its loop and dispatch workers are the run's admitted
+// units, and they read the run's contexts from it, never from the Relay,
+// so a later run never changes what an older run's goroutines act on.
+type relayRun struct {
+	run *drain.Run
+	// cancelLoop ends the polling loop.
+	cancelLoop context.CancelFunc
+	// shutdownCtx is threaded into dispatch callbacks and the worker DB
+	// writes (recordSuccess / recordFailure). It is detached from the loop
+	// ctx and stays live for cfg.ShutdownGrace after the stop began, so
+	// in-flight workers can finish their writebacks, then it is cancelled
+	// so they cannot hang the stop forever.
+	shutdownCtx    context.Context
+	cancelShutdown context.CancelFunc
 }
 
 // NewRelay constructs a Relay. The relay does not start until Start is called.
@@ -666,40 +676,33 @@ var _ contract.LoggerAware = (*Relay)(nil)
 // ID returns the relay's RelayID, useful for tests and observability.
 func (r *Relay) ID() string { return r.cfg.RelayID }
 
-// Start launches the relay loop. Returns an error if the relay is already
-// running or the database is not configured.
+// Start launches the relay loop. It returns an error if the relay is
+// already running or the database is not configured. While the run a
+// timed-out Stop left draining still has dispatches in flight, Start waits
+// for them, or returns ctx's error when ctx ends first, so two runs never
+// overlap; called from one of those dispatches it would wait on itself,
+// and returns an error wrapping contract.ErrStopFromOwnWork at once.
+//
+// ctx is the run's lifetime: when it ends the loop stops polling. Start
+// derives the run's context from it before taking the relay's lock, so a
+// ctx that calls back into the relay cannot deadlock it.
 func (r *Relay) Start(ctx context.Context) error {
-	r.mu.Lock()
-	if r.running {
-		r.mu.Unlock()
-		return errors.New("velocity/orm: relay already running")
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if r.mgr == nil {
-		r.mu.Unlock()
-		return errors.New("velocity/orm: relay needs a connected manager")
-	}
-	if _, err := r.mgr.liveDriver(); err != nil {
-		r.mu.Unlock()
+	loopCtx, cancelLoop := context.WithCancel(ctx)
+	rr, err := r.beginRun(ctx, cancelLoop)
+	if err != nil {
+		cancelLoop()
 		return err
 	}
-	r.running = true
-	loopCtx, cancel := context.WithCancel(ctx)
-	r.cancelFn = cancel
-	// shutdownCtx is detached from the loop ctx so we can cancel it on a
-	// grace timer in Stop, independent of when the polling loop exits.
-	// Workers' DB writebacks and dispatch callbacks derive from this ctx,
-	// guaranteeing they cannot hang past Stop + ShutdownGrace.
-	r.shutdownCtx, r.shutdownCancelFn = context.WithCancel(context.Background())
-	r.doneCh = make(chan struct{})
-	r.mu.Unlock()
 
-	// Not async.Go: must close(r.doneCh) on panic so Stop's wait on doneCh
-	// never blocks shutdown waiting on a goroutine that already died, and
-	// the panic is logged with the relay's own structured logger.
-	go func() { //safe-goroutine: close(r.doneCh) on panic + relay-scoped logger, see comment above
-		defer close(r.doneCh)
-		id := goroutine.ID()
-		r.own.Enter(id)
+	// Not async.Go: the run's unit must be released on panic so a Stop's
+	// drain never waits on a goroutine that already died, and the panic
+	// is logged with the relay's own structured logger.
+	go func() { //safe-goroutine: releases the run's unit on panic + relay-scoped logger, see comment above
+		defer rr.run.Release()
+		id := r.own.Enter()
 		defer r.own.Leave(id)
 		defer func() {
 			if rec := recover(); rec != nil {
@@ -708,91 +711,109 @@ func (r *Relay) Start(ctx context.Context) error {
 				})
 			}
 		}()
-		r.loop(loopCtx)
+		r.loop(loopCtx, rr)
 	}()
 	return nil
 }
 
+// beginRun publishes a new run whose loop cancellation is cancelLoop, the
+// loop already admitted. It waits, unlocked, for a previous run still
+// draining.
+func (r *Relay) beginRun(ctx context.Context, cancelLoop context.CancelFunc) (*relayRun, error) {
+	for {
+		r.mu.Lock()
+		prev := r.run
+		switch {
+		case prev != nil && !prev.run.Stopping():
+			r.mu.Unlock()
+			return nil, errors.New("velocity/orm: relay already running")
+		case prev != nil && !drain.Closed(prev.run.Finished()):
+			r.mu.Unlock()
+			if r.own.Nested() {
+				return nil, fmt.Errorf("velocity/orm: relay Start called from a dispatch of the run it would wait for: %w", contract.ErrStopFromOwnWork)
+			}
+			select {
+			case <-prev.run.Finished():
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			continue
+		}
+		if r.mgr == nil {
+			r.mu.Unlock()
+			return nil, errors.New("velocity/orm: relay needs a connected manager")
+		}
+		if _, err := r.mgr.liveDriver(); err != nil {
+			r.mu.Unlock()
+			return nil, err
+		}
+		rr := r.newRun()
+		rr.cancelLoop = cancelLoop
+		rr.run.Admit() // the loop
+		r.run = rr
+		r.mu.Unlock()
+		return rr, nil
+	}
+}
+
+// newRun returns a run whose shutdown context is live.
+func (r *Relay) newRun() *relayRun {
+	rr := &relayRun{run: r.own.NewRun()}
+	rr.shutdownCtx, rr.cancelShutdown = context.WithCancel(context.Background())
+	return rr
+}
+
 // Stop signals the relay to stop and waits for in-flight dispatches to finish
 // (bounded by ctx). After cfg.ShutdownGrace elapses (or ctx is cancelled),
-// the relay-scoped shutdownCtx is also cancelled, which interrupts any
+// the run's shutdown context is also cancelled, which interrupts any
 // dispatch callbacks and recordSuccess / recordFailure DB writes still in
-// flight so Stop cannot hang indefinitely.
+// flight so the drain cannot hang indefinitely.
 //
-// Stop honours ctx on every path: when ctx ends before the loop and every
-// in-flight dispatch have finished, it cancels the shutdown ctx and returns
-// ctx's error without waiting further, so a nil return means they all
-// finished. Called from the relay's own goroutines (a dispatch callback, or
-// a logger writing a relay line), which Stop would wait for, it returns an
-// error at once and changes nothing: stop the relay from another goroutine.
+// The first Stop of a run owns its drain; a Stop that overlaps or follows
+// it waits for the same drain, or its own ctx. Stop honours ctx on every
+// path: when ctx ends before the loop and every in-flight dispatch have
+// finished, it cancels the shutdown context and returns ctx's error, and
+// the drain goes on; a nil return means they all finished. Called from the
+// relay's own goroutines (a dispatch callback, or a logger writing a relay
+// line), which Stop would wait for, it returns an error at once and
+// changes nothing: stop the relay from another goroutine.
 func (r *Relay) Stop(ctx context.Context) error {
-	if r.own.Contains(goroutine.ID()) {
+	if r.own.Nested() {
 		return fmt.Errorf("velocity/orm: relay Stop called from a relay callback or logger; stop the relay from another goroutine: %w", contract.ErrStopFromOwnWork)
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	r.mu.Lock()
-	if !r.running {
-		r.mu.Unlock()
+	rr := r.run
+	r.mu.Unlock()
+	if rr == nil {
 		return nil
 	}
-	cancel := r.cancelFn
-	shutdownCancel := r.shutdownCancelFn
-	done := r.doneCh
-	grace := r.cfg.ShutdownGrace
-	r.running = false
-	r.mu.Unlock()
+	return r.own.Stop(ctx, rr.run, func() error { return r.drainRun(rr) }, rr.cancelShutdown)
+}
 
-	if cancel != nil {
-		cancel()
+// drainRun ends rr: it stops the loop, then waits for the loop and every
+// dispatch it admitted, cancelling the shutdown context once the grace
+// window elapses.
+func (r *Relay) drainRun(rr *relayRun) error {
+	if rr.cancelLoop != nil { // nil for a run a test drives without Start
+		rr.cancelLoop()
 	}
-	// Always cancel the shutdown ctx eventually so workers cannot pin the
-	// relay open beyond grace, even if the caller hands us a Background ctx.
-	graceTimer := time.NewTimer(grace)
-	defer graceTimer.Stop()
-	graceC := graceTimer.C
-	// A context.CancelFunc may be called any number of times.
-	cancelShutdown := func() {
-		if shutdownCancel != nil {
-			shutdownCancel()
-		}
+	grace := time.NewTimer(r.cfg.ShutdownGrace)
+	defer grace.Stop()
+	defer rr.cancelShutdown()
+	select {
+	case <-rr.run.Idle():
+	case <-grace.C:
+		rr.cancelShutdown()
+		<-rr.run.Idle()
 	}
-	defer cancelShutdown()
-
-	// await waits for ch, cancelling the shutdown ctx once grace elapses,
-	// and gives up with ctx's error when ctx ends first.
-	await := func(ch <-chan struct{}) error {
-		for {
-			select {
-			case <-ch:
-				return nil
-			case <-ctx.Done():
-				cancelShutdown()
-				return ctx.Err()
-			case <-graceC:
-				cancelShutdown()
-				graceC = nil
-			}
-		}
-	}
-
-	// Wait for the loop goroutine to exit: it adds to inFlight, so the
-	// wait below starts only once it can add no more.
-	if done != nil {
-		if err := await(done); err != nil {
-			return err
-		}
-	}
-	// Wait for any in-flight dispatch goroutines.
-	// Not async.Go: trivial WaitGroup waiter, no user code runs here.
-	wait := make(chan struct{})
-	go func() { //safe-goroutine: trivial WaitGroup waiter, no user code runs here
-		r.inFlight.Wait()
-		close(wait)
-	}()
-	return await(wait)
+	return nil
 }
 
 // loop is the polling driver.
-func (r *Relay) loop(ctx context.Context) {
+func (r *Relay) loop(ctx context.Context, rr *relayRun) {
 	ticker := time.NewTicker(r.cfg.PollInterval)
 	defer ticker.Stop()
 
@@ -800,19 +821,20 @@ func (r *Relay) loop(ctx context.Context) {
 
 	// Tick once immediately so callers don't have to wait a full interval
 	// for the first scan.
-	r.tick(ctx, sem)
+	r.tick(ctx, rr, sem)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			r.tick(ctx, sem)
+			r.tick(ctx, rr, sem)
 		}
 	}
 }
 
-// tick claims a batch and dispatches each row with bounded concurrency.
-func (r *Relay) tick(ctx context.Context, sem chan struct{}) {
+// tick claims a batch and dispatches each row with bounded concurrency,
+// each dispatch a unit admitted into rr.
+func (r *Relay) tick(ctx context.Context, rr *relayRun, sem chan struct{}) {
 	rows, err := r.claimBatch(ctx)
 	if err != nil {
 		r.writeLine(func(l contract.Logger) {
@@ -836,39 +858,43 @@ func (r *Relay) tick(ctx context.Context, sem chan struct{}) {
 			r.releasePartitions(rows[i:])
 			return
 		}
-		r.inFlight.Add(1)
+		if !rr.run.Admit() {
+			// The run is stopping: its drain no longer waits for new work.
+			<-sem
+			r.releasePartitions(rows[i:])
+			return
+		}
 		row := row
-		// Not async.Go: must release the semaphore, decrement inFlight,
-		// and record per-row failure / clear partition reservation on
-		// panic, none of which generic recovery can do.
+		// Not async.Go: must release the semaphore, release the run's
+		// unit, and record per-row failure / clear partition reservation
+		// on panic, none of which generic recovery can do.
 		go func() { //safe-goroutine: per-row resource release on panic, see comment above
-			defer r.inFlight.Done()
+			defer rr.run.Release()
 			defer func() { <-sem }()
-			id := goroutine.ID()
-			r.own.Enter(id)
+			id := r.own.Enter()
 			defer r.own.Leave(id)
 			// The partition is released in a defer of its own, so it is
 			// released whatever the failure recording below does.
 			defer r.releasePartition(row)
 			defer func() {
 				if rec := recover(); rec != nil {
-					r.failPanicked(row, rec)
+					r.failPanicked(rr.shutdownCtx, row, rec)
 				}
 			}()
-			// Hand the worker the relay-scoped shutdown ctx. This survives
-			// the polling-loop ctx cancellation so we don't yank the rug
-			// out from under workers mid-callback, but Stop will cancel
-			// it after cfg.ShutdownGrace to bound the wait.
-			r.dispatch(r.shutdownCtx, row)
+			// Hand the worker the run's shutdown ctx. This survives the
+			// polling-loop ctx cancellation so we don't yank the rug out
+			// from under workers mid-callback, but the drain cancels it
+			// after cfg.ShutdownGrace to bound the wait.
+			r.dispatch(rr.shutdownCtx, row)
 		}()
 	}
 }
 
 // failPanicked records a dispatch that panicked with rec as a failure of
-// row. The line is contained (writeLine), and so is the failure write, whose
-// driver is user code: a panic there is written as a line, not left to kill
-// the process.
-func (r *Relay) failPanicked(row outboxRow, rec any) {
+// row, the write bounded by ctx, the run's shutdown context. The line is
+// contained (writeLine), and so is the failure write, whose driver is user
+// code: a panic there is written as a line, not left to kill the process.
+func (r *Relay) failPanicked(ctx context.Context, row outboxRow, rec any) {
 	r.writeLine(func(l contract.Logger) {
 		l.Error("velocity/orm: relay worker panic", "panic", fmt.Sprint(rec), "row_id", row.ID)
 	})
@@ -880,7 +906,7 @@ func (r *Relay) failPanicked(row outboxRow, rec any) {
 			})
 		}
 	}()
-	_ = r.recordFailure(r.writebackCtx(), row, fmt.Errorf("panic: %v", rec))
+	_ = r.recordFailure(ctx, row, fmt.Errorf("panic: %v", rec))
 }
 
 // releasePartitions clears the activePart reservations for rows that were
@@ -1092,22 +1118,7 @@ func (r *Relay) dispatch(ctx context.Context, row outboxRow) {
 	}
 }
 
-// writebackCtx returns the relay-scoped ctx workers should use for DB
-// writebacks (recordSuccess / recordFailure) and callback dispatch. It
-// follows the relay's shutdown lifecycle: live until Stop's grace window
-// elapses, then cancelled. Falls back to a fresh background ctx if the
-// relay was never started (defensive: tests call recordSuccess directly).
-func (r *Relay) writebackCtx() context.Context {
-	r.mu.Lock()
-	c := r.shutdownCtx
-	r.mu.Unlock()
-	if c == nil {
-		return context.Background()
-	}
-	return c
-}
-
-// recordSuccess deletes the row. Uses the relay-scoped shutdown ctx so an
+// recordSuccess deletes the row. Uses the run's shutdown ctx so an
 // in-flight DELETE can be cancelled when Stop's grace window elapses,
 // preventing relay shutdown from hanging on DB pressure.
 func (r *Relay) recordSuccess(ctx context.Context, row outboxRow) error {

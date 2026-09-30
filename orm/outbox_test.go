@@ -1017,8 +1017,11 @@ func TestRelay_ShutdownCancels_RecordSuccess(t *testing.T) {
 	if cbCtx.Err() == nil {
 		t.Fatalf("callback ctx not cancelled after Stop")
 	}
-	if relay.writebackCtx().Err() == nil {
-		t.Fatalf("writebackCtx not cancelled after Stop")
+	relay.mu.Lock()
+	writeback := relay.run.shutdownCtx
+	relay.mu.Unlock()
+	if writeback.Err() == nil {
+		t.Fatalf("the run's writeback ctx not cancelled after Stop")
 	}
 	select {
 	case <-cbReleased:
@@ -1103,9 +1106,10 @@ func TestRelay_ActivePart_NoLeak_OnEarlyCtxCancel(t *testing.T) {
 		BatchSize:    n,
 		WorkerCount:  1,
 	})
-	// Ensure the writebackCtx is wired even though we don't Start.
-	relay.shutdownCtx, relay.shutdownCancelFn = context.WithCancel(context.Background())
-	t.Cleanup(relay.shutdownCancelFn)
+	// A run of its own, so its shutdown ctx is wired even though we don't
+	// Start.
+	rr := relay.newRun()
+	t.Cleanup(rr.cancelShutdown)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -1115,7 +1119,7 @@ func TestRelay_ActivePart_NoLeak_OnEarlyCtxCancel(t *testing.T) {
 
 	tickDone := make(chan struct{})
 	go func() {
-		relay.tick(ctx, sem)
+		relay.tick(ctx, rr, sem)
 		close(tickDone)
 	}()
 
@@ -1141,13 +1145,9 @@ func TestRelay_ActivePart_NoLeak_OnEarlyCtxCancel(t *testing.T) {
 
 	// No goroutines should have been spawned (sem is empty / zero-cap and
 	// nothing read from it), but wait defensively.
-	doneCh := make(chan struct{})
-	go func() {
-		relay.inFlight.Wait()
-		close(doneCh)
-	}()
+	rr.run.Close()
 	select {
-	case <-doneCh:
+	case <-rr.run.Idle():
 	case <-time.After(time.Second):
 		t.Fatalf("inFlight workers did not exit")
 	}

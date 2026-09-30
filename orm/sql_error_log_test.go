@@ -180,7 +180,7 @@ func TestRelay_ClaimFailureLogsErrorKindOnly(t *testing.T) {
 	r := NewRelay(m, RelayCallbacks{}, RelayConfig{})
 	r.SetLogger(logs)
 
-	r.tick(context.Background(), make(chan struct{}, 1))
+	r.tick(context.Background(), r.newRun(), make(chan struct{}, 1))
 
 	lines := logs.find("velocity/orm: relay claim batch failed")
 	if len(lines) != 1 {
