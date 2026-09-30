@@ -86,6 +86,10 @@ type Gateway struct {
 
 	// configErr holds any error from transport configuration, surfaced at Build() time
 	configErr error
+
+	// providedListener is the caller's listener (GatewayWithListener) a
+	// Start serves on instead of binding the port, nil when there is none.
+	providedListener net.Listener
 }
 
 // GatewayRegistrationFunc is called to register handlers with the gateway
@@ -214,6 +218,19 @@ func GatewayWithTransportConfig(cfg GatewayTransportConfig) GatewayOption {
 func GatewayWithPort(port string) GatewayOption {
 	return func(g *Gateway) {
 		g.port = port
+	}
+}
+
+// GatewayWithListener makes the gateway serve on a caller-supplied
+// net.Listener instead of binding its port: a Start serves on lis, and the
+// gateway reports lis's address (read once, when the Start takes it). It
+// takes precedence over GatewayWithPort for the bind target. From the
+// Start that serves on it the listener is the gateway's, closed when the
+// gateway stops as it would close its own; a gateway stopped before any
+// Start never took it and leaves it open.
+func GatewayWithListener(lis net.Listener) GatewayOption {
+	return func(g *Gateway) {
+		g.providedListener = lis
 	}
 }
 
@@ -793,10 +810,13 @@ func (g *Gateway) admitServe(ctx context.Context) (*gatewayLife, error) {
 		return nil, http.ErrServerClosed
 	}
 	c.served = true
-	addr := c.srv.Addr
+	addr, raw := c.srv.Addr, g.providedListener
 	g.mu.Unlock()
 
-	raw, err := net.Listen("tcp", addr)
+	var err error
+	if raw == nil {
+		raw, err = net.Listen("tcp", addr)
+	}
 	if err != nil {
 		g.mu.Lock()
 		c.served = false
@@ -846,7 +866,7 @@ func (g *Gateway) serving(c *gatewayLife) {
 	defer close(c.started)
 	g.mu.Lock()
 	c.running = true
-	addr, endpoint := c.srv.Addr, g.grpcEndpoint
+	addr, endpoint := g.addressLocked(c), g.grpcEndpoint
 	g.mu.Unlock()
 	g.logLine(func(l contract.Logger) {
 		l.Info("HTTP gateway starting",
@@ -1024,9 +1044,19 @@ func (g *Gateway) Address() string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	if c := g.publishedLocked(); c != nil {
-		return c.srv.Addr
+		return g.addressLocked(c)
 	}
 	return ""
+}
+
+// addressLocked returns the address of c: its server's bind address, or
+// for a caller's listener the address the listener reported when a Start
+// took it. Caller holds g.mu.
+func (g *Gateway) addressLocked(c *gatewayLife) string {
+	if g.providedListener != nil && c.lis != nil {
+		return c.lis.text
+	}
+	return c.srv.Addr
 }
 
 // Port returns the configured port
