@@ -39,8 +39,10 @@ func TestWorker_PanickingFailedDispatchIsContained(t *testing.T) {
 	var recorded atomic.Int64
 	var lastErr atomic.Pointer[error]
 	failures.SetHook(func(err error, _ any) {
-		recorded.Add(1)
+		// The error is stored before the count: a test that sees the count
+		// must see the error it counts.
 		lastErr.Store(&err)
+		recorded.Add(1)
 	})
 	w.events.Share(failures)
 
