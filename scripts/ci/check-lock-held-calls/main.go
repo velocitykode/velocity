@@ -68,6 +68,17 @@
 //     context still reach its Value), or given a value that kept one
 //     (a *sql.Tx begun with it); and an interface method given any
 //     context, which is a pluggable store, driver or backend;
+//   - statement: a database/sql call that runs a statement or closes a
+//     result set (Exec*, Query*, QueryRow*, Prepare* on a DB, Conn, Tx or
+//     Stmt; Row.Scan; Rows.Next, NextResultSet, Close), whose context is
+//     not one internal/ownctx Hold or HoldDetached built: a pool the ORM's
+//     drivers package opened runs its statement observer and query logger
+//     inside it, unless the context holds them until the lock is released
+//     (statement.go); and a method called on an interface declared in
+//     database/sql/driver or on the module's orm/drivers.StatementObserver;
+//   - hold (not a call under a lock): an internal/ownctx Hold or
+//     HoldDetached whose Held no `defer h.Release()` in the same function
+//     releases (statement.go);
 //   - reach: a call to a function of the module whose body makes one of the
 //     calls above, directly or through other module functions. Only code
 //     that runs during the call counts: the body itself, func literals it
@@ -92,7 +103,8 @@
 //
 // Known limits: an error argument to fmt.Errorf is not flagged (wrapping is
 // everywhere, and a framework error formats framework text); a plain
-// interface method call is not flagged (io.Writer, hash.Hash, drivers), so
+// interface method call is not flagged (io.Writer, hash.Hash; a driver's
+// and a statement observer's are, see statement), so
 // r.Read on an io.Reader is not either, while io.Copy of it is; a lock
 // that is not a sync.Mutex or sync.RWMutex (a file lock) is not tracked;
 // a stdlib value keeping a caller's context is known only from the keeper
@@ -180,6 +192,8 @@ var fixes = []struct{ kind, fix string }{
 	{kindReach, "reach: call the function after unlocking, or take the user-code call out of it (the chain after the name shows where it is)"},
 	{kindStale, "stale: remove the //lock-held-ok: marker; nothing on its line runs user code under a lock any more"},
 	{kindCallback, "callback: encode, decode or copy before taking the lock or after releasing it (json, gob, xml and io calls run methods of the values they are given)"},
+	{kindStmt, "statement: run the statement on an ownctx.Hold context and release the Held after unlocking (the pool's statement observer and query logger then run off the lock); call a driver or observer method after unlocking"},
+	{kindHold, "hold: release the Held on a defer registered right after the Hold (before the lock's deferred unlock), so a panic or early return still delivers its statement reports after the lock is released"},
 	{kindCtx, "ctx: read the caller's context before taking the lock, and hand code under the lock a context the framework owns (built from context.Background)"},
 }
 
@@ -294,6 +308,7 @@ func check(dir string, patterns []string, all bool) ([]string, error) {
 		u.resolve(pkg, imp, mod.Path)
 		u.indexZeroVars()
 		u.indexCtxVars()
+		u.indexSQLVars()
 		a.units = append(a.units, u)
 	}
 	return a.run(), nil
@@ -359,6 +374,12 @@ type unit struct {
 	// ctxCarriers maps each local variable holding a value that keeps a
 	// caller's context (ctx.go) to the call that built it.
 	ctxCarriers map[*types.Var]string
+	// sqlAssigns maps each local variable to every value assigned to it,
+	// for heldResult (statement.go).
+	sqlAssigns map[*types.Var][]ast.Expr
+	// ctxParamArgs maps each closed context parameter (statement.go) to the
+	// arguments its call sites pass.
+	ctxParamArgs map[*types.Var][]ast.Expr
 }
 
 var (
@@ -438,6 +459,7 @@ func (a *analysis) run() []string {
 		}
 	}
 	a.staleMarkers()
+	a.unreleasedHolds()
 	out := make([]string, 0, len(a.hits))
 	for h := range a.hits {
 		out = append(out, h)
@@ -451,6 +473,9 @@ func (a *analysis) run() []string {
 func (a *analysis) summarize() {
 	for _, u := range a.units {
 		a.closeParams(u)
+	}
+	for _, u := range a.units {
+		u.indexCarriers()
 	}
 	a.lockEffects()
 	for _, u := range a.units {
@@ -568,6 +593,7 @@ func summarizeBody(a *analysis, u *unit, body *ast.BlockStmt) *funcSummary {
 // by position.
 func (a *analysis) closeParams(u *unit) {
 	u.closed = map[*types.Var][]string{}
+	u.ctxParamArgs = map[*types.Var][]ast.Expr{}
 	decls := map[*types.Func]*ast.FuncDecl{}
 	ifaceMethods := map[string]bool{}
 	for _, f := range u.files {
@@ -639,6 +665,7 @@ func (a *analysis) closeParams(u *unit) {
 			continue
 		}
 		sig := fn.Type().(*types.Signature)
+		u.indexCtxParamArgs(fd, sig, calls[fn])
 		if sig.Variadic() {
 			// Keep it simple: a variadic function's arguments may not map
 			// one to one onto its parameters.
@@ -781,6 +808,8 @@ const (
 	kindCallback = "callback"
 	kindStale    = "stale"
 	kindCtx      = "ctx"
+	kindStmt     = "statement"
+	kindHold     = "hold"
 	kindIface    = "iface" // interface method call: listed by -all only
 )
 
@@ -796,6 +825,9 @@ func classify(u *unit, call *ast.CallExpr, body *ast.BlockStmt) (kind, desc stri
 	}
 	if cc := u.ctxCall(call); cc.open != "" {
 		return kindCtx, types.ExprString(fun) + " " + cc.open
+	}
+	if why := u.statementCall(call); why != "" {
+		return kindStmt, types.ExprString(fun) + " " + why
 	}
 	switch f := fun.(type) {
 	case *ast.FuncLit:
@@ -822,6 +854,9 @@ func classify(u *unit, call *ast.CallExpr, body *ast.BlockStmt) (kind, desc stri
 					return kindCtx, types.ExprString(f)
 				}
 				if types.IsInterface(recv) {
+					if u.observerIface(recv) {
+						return kindStmt, types.ExprString(f) + " (a database driver or statement observer method: any code)"
+					}
 					if formatCall(recv, name) {
 						return kindFormat, types.ExprString(f)
 					}

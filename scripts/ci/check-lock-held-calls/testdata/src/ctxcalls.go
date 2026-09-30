@@ -37,13 +37,13 @@ func (s *CtxStore) Methods(ctx context.Context) {
 func (s *CtxStore) HandedOn(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, _ = s.db.ExecContext(ctx, "x")                        // want ctx
-	_, _ = s.db.ExecContext(context.WithoutCancel(ctx), "x") // want ctx
-	c, cancel := context.WithTimeout(ctx, time.Second)       // want ctx
+	_ = s.db.PingContext(ctx)                          // want ctx
+	_ = s.db.PingContext(context.WithoutCancel(ctx))   // want ctx
+	c, cancel := context.WithTimeout(ctx, time.Second) // want ctx
 	_ = cancel
 	_ = context.WithoutCancel(ctx)                             // building a wrapper calls nothing
 	_ = context.WithValue(ctx, "k", 1)                         // nor does WithValue
-	_, _ = s.db.ExecContext(c, "x")                            // want ctx
+	_ = s.db.PingContext(c)                                    // want ctx
 	_, _ = s.be.Get(ctx, "k")                                  // want ctx
 	_, _ = s.be.Get(context.Background(), "k")                 // want ctx
 	req, _ := http.NewRequestWithContext(ctx, "GET", "/", nil) // storing the context calls nothing
@@ -62,10 +62,10 @@ func (s *CtxStore) Owned(parent context.Context) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, "x"); err != nil {
+	if _, err := tx.ExecContext(ctx, "x"); err != nil { // want statement
 		return err
 	}
-	_, _ = s.db.ExecContext(context.TODO(), "x")
+	_ = s.db.PingContext(context.TODO())
 	return tx.Commit()
 }
 
@@ -91,7 +91,7 @@ func (s *CtxStore) Reassigned(parent context.Context, detach bool) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, _ = s.db.ExecContext(ctx, "x") // want ctx
+	_ = s.db.PingContext(ctx) // want ctx
 }
 
 // checkCtx calls the context it is given: reach under a lock.
@@ -114,13 +114,13 @@ func (c ownCtx) Value(key any) any           { return c.parent.Value(key) }
 func (s *CtxStore) ModuleContext(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, _ = s.db.ExecContext(ownCtx{ctx}, "x") // want reach
+	_ = s.db.PingContext(ownCtx{ctx}) // want reach
 }
 
 // Unlocked: nothing is held.
 func (s *CtxStore) Unlocked(ctx context.Context) {
 	_ = ctx.Err()
-	_, _ = s.db.ExecContext(ctx, "x")
+	_ = s.db.PingContext(ctx)
 	_, _ = s.be.Get(ctx, "k")
 }
 
@@ -132,7 +132,7 @@ func (s *CtxStore) OwnedByOwnctx(ctx context.Context) {
 	defer cancel()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, _ = s.db.ExecContext(owned, "x")
-	_, _ = s.db.ExecContext(bounded, "x")
-	_, _ = s.db.ExecContext(ownctx.Bridge(ctx), "x") // want reach
+	_ = s.db.PingContext(owned)
+	_ = s.db.PingContext(bounded)
+	_ = s.db.PingContext(ownctx.Bridge(ctx)) // want reach
 }

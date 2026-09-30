@@ -3,7 +3,10 @@
 // read the caller's context, so calling one under a lock is reach.
 package ownctx
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 func Bridge(ctx context.Context) context.Context {
 	_ = ctx.Done()
@@ -13,4 +16,20 @@ func Bridge(ctx context.Context) context.Context {
 func Detached(ctx context.Context) context.Context {
 	_ = ctx.Value("id")
 	return context.Background()
+}
+
+// Held stands in for the module's ownctx.Held.
+type Held struct{}
+
+func (h *Held) Release() {}
+
+func Hold(ctx context.Context) (context.Context, *Held) {
+	_ = ctx.Done()
+	return context.Background(), &Held{}
+}
+
+func HoldDetached(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc, *Held) {
+	_ = ctx.Value("id")
+	c, cancel := context.WithTimeout(context.Background(), d)
+	return c, cancel, &Held{}
 }

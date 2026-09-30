@@ -159,7 +159,8 @@ jobs:
           fi
 
   # Reports calls to user code (loggers, func values, values formatted
-  # through their own String/Error) made while framework code holds a lock
+  # through their own String/Error, statements whose pool runs a statement
+  # observer, driver methods) made while framework code holds a lock
   # or runs inside a sync.Once. A go/types walker, stdlib only; see the
   # package comment of scripts/ci/check-lock-held-calls for the rules and
   # the //lock-held-ok: <rationale> marker.

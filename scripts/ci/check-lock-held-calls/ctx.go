@@ -16,11 +16,14 @@ import (
 //
 // A context is framework-owned, and its methods fixed code, when it is
 // built from context.Background or context.TODO, or by the module's
-// internal/ownctx (Bridge, Detached: read before the lock, framework code
-// after), through the context package's With* functions: a local variable
-// counts when every value assigned to it is such an expression. context.WithoutCancel and the
-// other With* functions of a caller's context still reach the caller's
-// Value, so they are not owned.
+// internal/ownctx (Bridge, Detached, Hold, HoldDetached: read before the
+// lock, framework code after), through the context package's With*
+// functions: a local variable counts when every value assigned to it is
+// such an expression, and a context parameter of an unexported function,
+// never assigned, counts when every call site in the package passes one
+// (statement.go). context.WithoutCancel and the other With* functions of
+// a caller's context still reach the caller's Value, so they are not
+// owned.
 
 // A stdlib value that keeps the context it was built with calls it later
 // from its own methods: a *sql.Tx begun with a caller's context calls its
@@ -48,7 +51,7 @@ var ctxMethods = []string{"Deadline", "Done", "Err", "Value"}
 var (
 	ctxRoots = map[string]bool{"Background": true, "TODO": true}
 	// ownctxRoots are the module's internal/ownctx builders.
-	ownctxRoots = map[string]bool{"Bridge": true, "Detached": true}
+	ownctxRoots = map[string]bool{"Bridge": true, "Detached": true, "Hold": true, "HoldDetached": true}
 	// ctxWrap only store their parent: building one calls none of its
 	// methods (the result still reaches them, so it is not owned).
 	ctxWrap   = map[string]bool{"WithoutCancel": true, "WithValue": true}
@@ -178,14 +181,24 @@ func (u *unit) ownedCtx(e ast.Expr, seen map[*types.Var]bool) bool {
 		return ctxDerive[fn.Name()] && len(x.Args) > 0 && u.ownedCtx(x.Args[0], seen)
 	case *ast.Ident:
 		v, ok := u.info.Uses[x].(*types.Var)
-		if !ok || seen[v] || u.ctxParams[v] || u.ctxAddr[v] {
+		if !ok || seen[v] || u.ctxAddr[v] {
 			return false
 		}
 		values := u.ctxAssigns[v]
+		if u.ctxParams[v] {
+			var closed bool
+			if values, closed = u.ctxParamArgs[v]; !closed || len(u.ctxAssigns[v]) > 0 {
+				return false
+			}
+		}
 		if len(values) == 0 {
 			return false
 		}
+		// seen holds the variables being resolved, not those resolved: a
+		// variable reached twice (two call sites passing the same
+		// parameter) is resolved twice, and only a cycle stops.
 		seen[v] = true
+		defer delete(seen, v)
 		for _, val := range values {
 			if !u.ownedCtx(val, seen) {
 				return false
@@ -208,7 +221,6 @@ func (u *unit) indexCtxVars() {
 	if u.ctxIface == nil {
 		return
 	}
-	defer u.indexCarriers()
 	local := func(id *ast.Ident) *types.Var {
 		obj := u.info.Defs[id]
 		if obj == nil {
@@ -303,7 +315,8 @@ func (u *unit) indexCtxVars() {
 }
 
 // indexCarriers records the local variables assigned a value built by a
-// ctxKeepers call from a context that is not owned.
+// ctxKeepers call from a context that is not owned. It runs after
+// closeParams, whose closed context parameters ownedCtx reads.
 func (u *unit) indexCarriers() {
 	mark := func(lhs ast.Expr, rhs ast.Expr) {
 		id, ok := ast.Unparen(lhs).(*ast.Ident)
