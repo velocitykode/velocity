@@ -3,10 +3,9 @@ package schemes
 import (
 	"errors"
 	"net/http"
-	"reflect"
-	"runtime"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/internal/goroutine"
 )
 
 // Every access the scheme makes, for a request, to the request's session
@@ -491,13 +490,9 @@ func runContained(fn func()) {
 // (awaitResolver). They run the user code a read calls: user and session
 // stores, remember-token swaps, the request context's Done.
 var resolveFrames = [...]string{
-	funcName((*SessionScheme).resolveReserved),
-	funcName((*SessionScheme).resolveSessionTurn),
-	funcName((*sessionHolder).awaitResolver),
-}
-
-func funcName(fn any) string {
-	return runtime.FuncForPC(reflect.ValueOf(fn).Pointer()).Name()
+	goroutine.FuncName((*SessionScheme).resolveReserved),
+	goroutine.FuncName((*SessionScheme).resolveSessionTurn),
+	goroutine.FuncName((*sessionHolder).awaitResolver),
 }
 
 // onResolvePath reports whether the calling goroutine is inside a read's
@@ -509,30 +504,8 @@ func funcName(fn any) string {
 // instead. A read on another goroutine carries none of these frames and
 // waits.
 //
-// It scans the whole stack, growing its buffer until the stack fits, so
-// the answer is never cut short by depth. It costs a stack walk and runs
-// only on that contended path; an uncontended read never calls it.
+// It scans the whole stack (goroutine.Inside). It costs a stack walk and
+// runs only on that contended path; an uncontended read never calls it.
 func onResolvePath() bool {
-	var buf [64]uintptr
-	pcs := buf[:]
-	for {
-		n := runtime.Callers(2, pcs)
-		if n < len(pcs) {
-			pcs = pcs[:n]
-			break
-		}
-		pcs = make([]uintptr, 2*len(pcs))
-	}
-	frames := runtime.CallersFrames(pcs)
-	for {
-		f, more := frames.Next()
-		for _, name := range resolveFrames {
-			if f.Function == name {
-				return true
-			}
-		}
-		if !more {
-			return false
-		}
-	}
+	return goroutine.Inside(resolveFrames[:]...)
 }

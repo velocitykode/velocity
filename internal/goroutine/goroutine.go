@@ -1,11 +1,13 @@
-// Package goroutine identifies the running goroutine, for the framework's
-// re-entry guards: a hook that must not be handed a failure it caused, a
-// drain that must refuse to wait on the goroutine asking for it. Those
-// guards cannot be built from a context, which a re-entrant call need not
-// carry. It imports only the standard library.
+// Package goroutine identifies the running goroutine, and the functions it
+// is inside, for the framework's re-entry guards: a hook that must not be
+// handed a failure it caused, a drain that must refuse to wait on the
+// goroutine asking for it, a wait that must refuse to wait on work its own
+// goroutine is doing. Those guards cannot be built from a context, which a
+// re-entrant call need not carry. It imports only the standard library.
 package goroutine
 
 import (
+	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -94,4 +96,46 @@ func (s *Set) Contains(id uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.ids[id] > 0
+}
+
+// FuncName returns the name a stack frame of fn carries, for Inside: the
+// name runtime.CallersFrames reports for a call of fn, which a method
+// value or a method expression names by its method.
+func FuncName(fn any) string {
+	return runtime.FuncForPC(reflect.ValueOf(fn).Pointer()).Name()
+}
+
+// Inside reports whether the calling goroutine is inside a call of one of
+// the functions named (by FuncName): whether one of them is on its stack.
+// A guard asks it on its contended path only, when a caller would wait on
+// work in progress: a caller inside that work's own function is waiting
+// on itself, and must be refused instead.
+//
+// It scans the whole stack, growing its buffer until the stack fits, so
+// the answer is never cut short by depth, and it matches the frames
+// runtime.CallersFrames reports, so an inlined call is found too. It costs
+// a stack walk, about a microsecond, more on a deep stack.
+func Inside(names ...string) bool {
+	var buf [64]uintptr
+	pcs := buf[:]
+	for {
+		n := runtime.Callers(2, pcs)
+		if n < len(pcs) {
+			pcs = pcs[:n]
+			break
+		}
+		pcs = make([]uintptr, 2*len(pcs))
+	}
+	frames := runtime.CallersFrames(pcs)
+	for {
+		f, more := frames.Next()
+		for _, name := range names {
+			if f.Function == name {
+				return true
+			}
+		}
+		if !more {
+			return false
+		}
+	}
 }
