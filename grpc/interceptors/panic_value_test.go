@@ -15,7 +15,8 @@ type panickingError struct{}
 func (panickingError) Error() string { panic("Error called") }
 
 // PanicRecovered carries the panic's text; a panic value whose own Error
-// panics is contained and the event carries the fixed unreadable text.
+// panics is contained and the event carries the panic prefix with the
+// fixed unreadable text.
 func TestCallLifecycle_PanicRecoveredCarriesThePanicText(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -25,7 +26,7 @@ func TestCallLifecycle_PanicRecoveredCarriesThePanicText(t *testing.T) {
 		{"string", "boom", "panic: boom"},
 		{"error", context.Canceled, "panic: context canceled"},
 		{"struct", struct{ Code int }{7}, "panic: {7}"},
-		{"hostile error", panickingError{}, errchain.Unreadable},
+		{"hostile error", panickingError{}, "panic: " + errchain.Unreadable},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
