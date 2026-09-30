@@ -258,6 +258,10 @@ func RunDriverContractTests(t *testing.T, factory DriverFactory) {
 		}
 	})
 
+	t.Run("Push_NilJob_Refused", func(t *testing.T) {
+		runNilPushContract(t, factory)
+	})
+
 	t.Run("PopCtx_UnrebuildableJob_IsPoison", func(t *testing.T) {
 		runPoisonContract(t, factory, func(d queue.Driver, q string) (queue.Job, queue.ReservationToken, error) {
 			job, err := d.PopCtx(context.Background(), q)
