@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"container/list"
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -320,12 +321,44 @@ func (m *MemoryDriver) PopCtxWithTrace(ctx context.Context, queueName string) (J
 	// Same-process pop: wrapper.Job is non-nil and is returned directly via
 	// the fast path inside getJobFromWrapper. A wrapper rebuilt from bytes
 	// runs the registered factory, user code, so this runs after the lock
-	// is released.
+	// is released. A job that cannot be rebuilt is poison.
 	job, err := getJobFromWrapper(wrapper)
 	if err != nil {
-		return nil, tc, fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err)
+		return nil, tc, m.quarantine(queueName, ReservationToken{}, wrapper, err)
 	}
 	return job, tc, nil
+}
+
+// quarantine records a popped wrapper whose job cannot be rebuilt (the
+// factory failed or panicked; the registry contains both) in the failed
+// collection, with no job, the same poison contract as the database
+// driver: the job never ran, so no Failed hook runs and no
+// queue.job.failed event is dispatched, and the pop returns ErrPoisonJob
+// joined with the cause so the worker moves on to the next job.
+//
+// For a reserved pop the reservation is dropped in the same section as the
+// record is added. A reservation already gone (Clear ran while the job was
+// being rebuilt) means the job was removed on purpose: nothing is recorded
+// and the pop returns ErrLeaseLost, as the database driver does when its
+// lease no longer covers the row.
+func (m *MemoryDriver) quarantine(queueName string, token ReservationToken, wrapper *jobWrapper, cause error) error {
+	poisonErr := fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", cause)
+	exception := poisonErr.Error()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !token.IsZero() {
+		if _, ok := m.reservations[token.ID]; !ok {
+			return ErrLeaseLost
+		}
+		delete(m.reservations, token.ID)
+	}
+	m.failed[queueName] = append(m.failed[queueName], &failedJob{
+		wrapper:  wrapper,
+		error:    exception,
+		failedAt: time.Now(),
+	})
+	return errors.Join(ErrPoisonJob, poisonErr)
 }
 
 // popWrapper removes the next wrapper from the queue under the lock and
@@ -399,22 +432,13 @@ func (m *MemoryDriver) PopCtxReserved(ctx context.Context, queueName string) (Jo
 		return wrapper.Job, token, tc, nil
 	}
 	// Rebuilding the job may run the registered factory, user code, so it
-	// runs after the lock is released. A job that cannot be rebuilt (an
-	// error, or a panic that goes on to the caller) is dropped with its
-	// reservation, so no reservation is left pinning its dedupe key.
-	kept := false
-	defer func() {
-		if !kept {
-			m.mu.Lock()
-			delete(m.reservations, token.ID)
-			m.mu.Unlock()
-		}
-	}()
+	// runs after the lock is released. A job that cannot be rebuilt is
+	// poison: it moves to the failed collection with its reservation
+	// dropped, so no reservation is left pinning its dedupe key.
 	job, err := getJobFromWrapper(wrapper)
 	if err != nil {
-		return nil, ReservationToken{}, tc, fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", err)
+		return nil, ReservationToken{}, tc, m.quarantine(queueName, token, wrapper, err)
 	}
-	kept = true
 	return job, token, tc, nil
 }
 

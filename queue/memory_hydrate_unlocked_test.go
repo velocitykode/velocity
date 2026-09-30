@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // hydrateHostileJob is a job whose registered factory runs hydrateHook,
@@ -121,50 +123,85 @@ func TestMemoryDriver_HydratesPoppedJobsWithoutTheLock(t *testing.T) {
 	}
 }
 
-// A reserved pop whose job cannot be rebuilt, because the factory returns
-// an error or panics, drops the job and leaves no reservation behind (a
-// leftover one would pin the job's dedupe key until Clear). The error is
-// returned, and the panic reaches the caller.
-func TestMemoryDriver_PopCtxReservedHydrateFailureLeavesNoReservation(t *testing.T) {
+// A pop whose job cannot be rebuilt, because the factory returns an error
+// or panics, treats the job as poison, on both pop paths: the panic never
+// reaches the caller, the wrapper is kept in the failed collection with the
+// cause's text, no reservation is left behind (it would pin the job's
+// dedupe key until Clear), and the pop returns no job, a zero token and an
+// error wrapping ErrPoisonJob with the cause.
+func TestMemoryDriver_PopOfAJobThatCannotBeRebuiltIsPoison(t *testing.T) {
 	registerHydrateHostileJob()
 	boom := errors.New("factory failed")
+	pops := []struct {
+		name string
+		pop  func(d *MemoryDriver, q string) (Job, ReservationToken, error)
+	}{
+		{"PopCtxWithTrace", func(d *MemoryDriver, q string) (Job, ReservationToken, error) {
+			j, _, err := d.PopCtxWithTrace(context.Background(), q)
+			return j, ReservationToken{}, err
+		}},
+		{"PopCtxReserved", func(d *MemoryDriver, q string) (Job, ReservationToken, error) {
+			j, token, _, err := d.PopCtxReserved(context.Background(), q)
+			return j, token, err
+		}},
+	}
 	for _, c := range []struct {
 		name string
 		hook func() error
+		text string
 	}{
-		{"error", func() error { return boom }},
-		{"panic", func() error { panic(hostile.PanicValue) }},
+		{"error", func() error { return boom }, boom.Error()},
+		{"panic", func() error { panic(hostile.PanicValue) }, errHydrationPanicked},
 	} {
-		t.Run(c.name, func(t *testing.T) {
-			const q = "hydrate-failure"
-			d := NewMemoryDriver()
-			t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
-			hook := c.hook
-			hydrateHook.Store(&hook)
-			t.Cleanup(func() { hydrateHook.Store(nil) })
-			pushBytesOnly(t, d, q)
+		for _, p := range pops {
+			t.Run(c.name+"/"+p.name, func(t *testing.T) {
+				const q = "hydrate-failure"
+				d := NewMemoryDriver()
+				t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
+				hook := c.hook
+				hydrateHook.Store(&hook)
+				t.Cleanup(func() { hydrateHook.Store(nil) })
+				pushBytesOnly(t, d, q)
 
-			var job Job
-			var token ReservationToken
-			var err error
-			p := hostile.Within(t, hostile.Deadline, func() {
-				job, token, _, err = d.PopCtxReserved(context.Background(), q)
-			})
-			if c.name == "panic" {
-				if p != hostile.PanicValue {
-					t.Fatalf("PopCtxReserved panic = %v, want the factory's panic", p)
+				var (
+					job   Job
+					token ReservationToken
+					err   error
+				)
+				if escaped := hostile.Within(t, hostile.Deadline, func() {
+					job, token, err = p.pop(d, q)
+				}); escaped != nil {
+					t.Fatalf("pop let the factory's panic reach the caller: %v", escaped)
 				}
-			} else if !errors.Is(err, boom) || job != nil || !token.IsZero() {
-				t.Fatalf("PopCtxReserved = %v, %+v, %v; want nil, zero token, the factory's error", job, token, err)
-			}
-			d.mu.Lock()
-			defer d.mu.Unlock()
-			if n := len(d.reservations); n != 0 {
-				t.Errorf("reservations = %d, want 0", n)
-			}
-			if n := d.queues[q].Len(); n != 0 {
-				t.Errorf("queued jobs = %d, want the job dropped", n)
-			}
-		})
+				if job != nil || !token.IsZero() || !errors.Is(err, ErrPoisonJob) {
+					t.Fatalf("pop = %v, %+v, %v; want nil, a zero token and ErrPoisonJob", job, token, err)
+				}
+				switch c.name {
+				case "error":
+					if !errors.Is(err, boom) {
+						t.Errorf("pop error = %v; want it to wrap the factory's error", err)
+					}
+				case "panic":
+					if pe := panicerr.AsTyped(err); pe == nil || pe.Recovered() != hostile.PanicValue {
+						t.Errorf("pop error = %v; want the factory's panic as *panicerr.Error", err)
+					}
+				}
+				failed, _ := d.GetFailed(q)
+				if len(failed) != 1 {
+					t.Fatalf("failed jobs = %d, want the poison job kept", len(failed))
+				}
+				if !strings.Contains(failed[0].error, c.text) || failed[0].wrapper == nil {
+					t.Errorf("failed record = %+v; want the wrapper and a text containing %q", failed[0], c.text)
+				}
+				d.mu.Lock()
+				defer d.mu.Unlock()
+				if n := len(d.reservations); n != 0 {
+					t.Errorf("reservations = %d, want 0", n)
+				}
+				if n := d.queues[q].Len(); n != 0 {
+					t.Errorf("queued jobs = %d, want the job moved out of the queue", n)
+				}
+			})
+		}
 	}
 }

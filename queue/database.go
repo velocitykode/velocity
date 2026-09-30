@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -475,9 +474,9 @@ func (d *DatabaseDriver) popSelect(ctx context.Context, queueName string, mode p
 		return nil, ReservationToken{}, tc, err
 	}
 
-	job, tc, exception, poisonErr := hydrateContained(rec)
+	job, tc, poisonErr := hydrateRecord(rec)
 	if poisonErr != nil {
-		return nil, ReservationToken{}, tc, d.quarantineReserved(ctx, token, rec, queueName, poisonErr, exception)
+		return nil, ReservationToken{}, tc, d.quarantineReserved(ctx, token, rec, queueName, poisonErr, poisonErr.Error())
 	}
 
 	if mode == popModeDelete {
@@ -586,44 +585,13 @@ func (d *DatabaseDriver) reserveNext(ctx context.Context, queueName string) (Job
 	}, nil
 }
 
-// errHydrationPanicked is the text recorded for a job whose rebuilding
-// panicked. It is fixed: the panic value is never formatted into it.
-const errHydrationPanicked = "velocity/queue: rebuilding the job panicked"
-
-// hydrationPanic is the poison error of a job whose rebuilding panicked. Its
-// text is fixed; the recovered value is reachable through errors.As as a
-// *panicerr.Error, and is never formatted here.
-type hydrationPanic struct{ cause *panicerr.Error }
-
-func (e hydrationPanic) Error() string { return errHydrationPanicked }
-func (e hydrationPanic) Unwrap() error { return e.cause }
-
-// hydrateContained runs hydrateRecord, and reads the text of the poison
-// error it returns, inside one contained boundary: the factory, the job's
-// UnmarshalJSON and the error's Error method are user code, and a panic in
-// any of them makes the row poison with a fixed text instead of unwinding
-// the pop and leaving the row to panic every later pop. exception is the
-// text failed_jobs records.
-func hydrateContained(rec JobRecord) (job Job, tc TraceContext, exception string, poisonErr error) {
-	defer func() {
-		if r := recover(); r != nil {
-			job = nil
-			poisonErr = hydrationPanic{cause: panicerr.New(r)}
-			exception = errHydrationPanicked
-		}
-	}()
-	job, tc, poisonErr = hydrateRecord(rec)
-	if poisonErr != nil {
-		exception = poisonErr.Error()
-	}
-	return job, tc, exception, poisonErr
-}
-
 // hydrateRecord verifies a row's payload and rebuilds its job. poisonErr
 // is non-nil when the row can never run (malformed JSON, integrity
-// mismatch, unregistered job type, factory error): the caller quarantines
-// it. The factory and the job's UnmarshalJSON are user code, so the
-// caller holds no lock and no transaction.
+// mismatch, unregistered job type, a factory that fails or panics): the
+// caller quarantines it. The factory and the job's UnmarshalJSON are user
+// code, so the caller holds no lock and no transaction; the registry
+// contains them (see rebuildContained), so a panic comes back as poisonErr
+// and poisonErr's text runs no user code.
 func hydrateRecord(rec JobRecord) (job Job, tc TraceContext, poisonErr error) {
 	var wrapper jobWrapper
 	if err := json.Unmarshal([]byte(rec.Payload), &wrapper); err != nil {

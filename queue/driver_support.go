@@ -78,6 +78,10 @@ func OpenQuarantineBlob(blob string) ([]byte, error) {
 // Deserialize converts a payload back into a Job using the shared default
 // job registry (the same registry queue.Register / queue.RegisterJob
 // populate) so leaf drivers resolve the identical handler set.
+// The registered factory runs contained: a factory that panics comes back
+// as an error, with the recovered value reachable as the panic's cause, so
+// a leaf driver quarantines the payload as poison as it does for a factory
+// error.
 func Deserialize(payload *Payload) (Job, error) {
 	return registry.Deserialize(payload)
 }

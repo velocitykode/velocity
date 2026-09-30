@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // Queue is an alias for Driver interface for backward compatibility
@@ -104,7 +106,7 @@ func (r *JobRegistry) Deserialize(payload *Payload) (Job, error) {
 		return nil, fmt.Errorf("velocity/queue: no handler registered for job type %s: %w", payload.Type, ErrJobNotFound)
 	}
 
-	job, err := handler(payload.Data)
+	job, err := rebuildContained(handler, payload.Data)
 	if err != nil {
 		return nil, err
 	}
@@ -117,6 +119,49 @@ func (r *JobRegistry) Deserialize(payload *Payload) (Job, error) {
 	}
 	return job, nil
 }
+
+// rebuildContained runs a registered factory, user code, inside one
+// contained boundary, together with the Error method of the error it
+// returns, which is user code too. A panic in either becomes a
+// hydrationPanic; a factory error comes back as a factoryError whose text
+// was read here, so no later Error call on it runs user code. Every
+// driver's pop rebuilds jobs through the registry, so this is where a job
+// that cannot be rebuilt becomes an error the driver quarantines as poison
+// instead of a panic that unwinds the pop and loses the job.
+func rebuildContained(handler func([]byte) (Job, error), data []byte) (job Job, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			job, err = nil, hydrationPanic{cause: panicerr.New(r)}
+		}
+	}()
+	job, err = handler(data)
+	if err != nil {
+		return nil, factoryError{text: err.Error(), cause: err}
+	}
+	return job, nil
+}
+
+// errHydrationPanicked is the text recorded for a job whose rebuilding
+// panicked. It is fixed: the panic value is never formatted into it.
+const errHydrationPanicked = "velocity/queue: rebuilding the job panicked"
+
+// hydrationPanic is the error of a job whose rebuilding panicked. Its text
+// is fixed; the recovered value is reachable through errors.As as a
+// *panicerr.Error, and is never formatted here.
+type hydrationPanic struct{ cause *panicerr.Error }
+
+func (e hydrationPanic) Error() string { return errHydrationPanicked }
+func (e hydrationPanic) Unwrap() error { return e.cause }
+
+// factoryError is the error a factory returned, with its text read inside
+// rebuildContained. The factory's error stays reachable through Unwrap.
+type factoryError struct {
+	text  string
+	cause error
+}
+
+func (e factoryError) Error() string { return e.text }
+func (e factoryError) Unwrap() error { return e.cause }
 
 // isNilJob reports whether job is nil, as an interface or as a nil value
 // of a nillable type (a typed nil pointer).

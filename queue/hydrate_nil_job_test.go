@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -69,8 +70,11 @@ func TestHydrate_FactoryReturningNoJobIsAnError(t *testing.T) {
 			pushRebuiltOnly(t, d, q, c.job)
 
 			job, token, _, err := d.PopCtxReserved(context.Background(), q)
-			if err == nil || !strings.Contains(err.Error(), c.typ) || job != nil || !token.IsZero() {
-				t.Fatalf("PopCtxReserved = %v, %+v, %v; want nil, zero token and an error naming %s", job, token, err, c.typ)
+			if !errors.Is(err, ErrPoisonJob) || !strings.Contains(err.Error(), c.typ) || job != nil || !token.IsZero() {
+				t.Fatalf("PopCtxReserved = %v, %+v, %v; want nil, zero token and ErrPoisonJob naming %s", job, token, err, c.typ)
+			}
+			if failed, _ := d.GetFailed(q); len(failed) != 1 || !strings.Contains(failed[0].error, c.typ) {
+				t.Errorf("failed jobs = %+v; want the poison job kept with an error naming %s", failed, c.typ)
 			}
 			d.mu.Lock()
 			defer d.mu.Unlock()
