@@ -23,8 +23,12 @@ func (debouncedFailure) FailureSource() contract.ErrorSource { return contract.E
 
 // detachedScenario delivers one failing event detached, the way its name
 // says, with a failure recorder and a failure reporter that panic as the
-// name says, and returns how many times the recorder ran.
-func detachedScenario(t *testing.T, name string) (recorded int32) {
+// name says, and returns how many times the recorder ran. It returns once
+// the delivery has ended: the recorder ran (it is the delivery's last
+// step) and the contained panic's fallback line was written to out (the
+// recovery finished), and it fails the test if the panicking code never
+// ran.
+func detachedScenario(t *testing.T, name string, out interface{ String() string }) (recorded int32) {
 	var calls atomic.Int32
 	panics := hostile.New(t, hostile.Panic, nil)
 	recorderPanics := strings.HasPrefix(name, "recorder/")
@@ -71,10 +75,12 @@ func detachedScenario(t *testing.T, name string) (recorded int32) {
 		_ = d.Dispatch(ctx, "evt")
 		stop = d.Stop
 	}
-	waitFor(func() bool { return calls.Load() > 0 })
-	// Give an escaped panic time to end the process; a slow machine can
-	// only make this pass falsely.
-	time.Sleep(50 * time.Millisecond)
+	hostile.Eventually(t, hostile.Deadline, "the recorder ran and the contained panic was written", func() bool {
+		return calls.Load() > 0 && strings.Contains(out.String(), detachedPanicMessage)
+	})
+	if panics.Calls() == 0 {
+		t.Fatal("the panicking recorder or reporter never ran")
+	}
 	if stop != nil {
 		stop()
 	}
@@ -97,7 +103,7 @@ func TestDetachedDelivery_PanickingRecorderOrReporterIsContained(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			hostile.Isolated(t, func() {
 				out := fallbacklogtest.Capture(t)
-				if got := detachedScenario(t, name); got != 1 {
+				if got := detachedScenario(t, name, out); got != 1 {
 					t.Errorf("recorder runs = %d, want 1", got)
 				}
 				if !strings.Contains(out.String(), detachedPanicMessage) {

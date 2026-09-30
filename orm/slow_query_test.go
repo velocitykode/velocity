@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"modernc.org/sqlite"
+
+	"github.com/velocitykode/velocity/internal/latency"
 )
 
 var registerSleepOnce sync.Once
@@ -24,12 +26,15 @@ func registerSleep() {
 	})
 }
 
-// With a 100ms slow threshold, a 150ms statement writes one warn line
-// through the manager's logger and its QueryExecuted says Slow; a 50ms one
-// writes nothing and is not Slow. Inside Manager.Transaction too.
+// With a 100ms slow threshold, a statement is Slow exactly when its own
+// measured Duration exceeds the threshold, and each Slow statement writes
+// one warn line through the manager's logger. A 150ms statement is always
+// Slow, in the pool and inside Manager.Transaction; a 50ms one is classified
+// by the time it actually took, so a scheduler pause cannot fail the test.
 func TestManagerSlowThreshold_WarnsAndMarksQueryExecuted(t *testing.T) {
 	registerSleep()
-	m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:", MaxOpenConns: 1, SlowThreshold: 100 * time.Millisecond})
+	const threshold = 100 * time.Millisecond
+	m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:", MaxOpenConns: 1, SlowThreshold: threshold})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -39,12 +44,12 @@ func TestManagerSlowThreshold_WarnsAndMarksQueryExecuted(t *testing.T) {
 
 	var (
 		mu   sync.Mutex
-		seen = map[string]bool{}
+		seen = map[string]*QueryExecuted{}
 	)
 	m.SetEventDispatcher(func(_ context.Context, ev any) error {
 		if q, ok := ev.(*QueryExecuted); ok {
 			mu.Lock()
-			seen[q.SQL] = q.Slow
+			seen[q.SQL] = q
 			mu.Unlock()
 		}
 		return nil
@@ -67,26 +72,33 @@ func TestManagerSlowThreshold_WarnsAndMarksQueryExecuted(t *testing.T) {
 		t.Fatalf("FlushQueryEvents: %v", err)
 	}
 
-	if got := logs.count("WARN velocity/orm: slow query"); got != 2 {
-		t.Errorf("slow query warn lines = %d, want 2 (pool and transaction): %v", got, logs.entries)
-	}
-	if got := len(logs.entries); got != 2 {
-		t.Errorf("lines = %d, want only the two warn lines: %v", got, logs.entries)
-	}
 	mu.Lock()
 	defer mu.Unlock()
-	for query, want := range map[string]bool{
+	slow := 0
+	for query, alwaysSlow := range map[string]bool{
 		"SELECT sleep_ms(150)": true,
 		"SELECT sleep_ms(50)":  false,
 		"SELECT sleep_ms(151)": true,
 	} {
-		slow, ok := seen[query]
+		q, ok := seen[query]
 		if !ok {
 			t.Errorf("no QueryExecuted for %q", query)
 			continue
 		}
-		if slow != want {
-			t.Errorf("QueryExecuted{%q}.Slow = %v, want %v", query, slow, want)
+		if want := latency.Slow(q.Duration, threshold); q.Slow != want {
+			t.Errorf("QueryExecuted{%q}.Slow = %v for Duration %v, want %v", query, q.Slow, q.Duration, want)
 		}
+		if alwaysSlow && !q.Slow {
+			t.Errorf("QueryExecuted{%q}.Slow = false, want true", query)
+		}
+		if q.Slow {
+			slow++
+		}
+	}
+	if got := logs.count("WARN velocity/orm: slow query"); got != slow {
+		t.Errorf("slow query warn lines = %d, want one per Slow statement (%d): %v", got, slow, logs.entries)
+	}
+	if got := len(logs.entries); got != slow {
+		t.Errorf("lines = %d, want only the %d warn lines: %v", got, slow, logs.entries)
 	}
 }

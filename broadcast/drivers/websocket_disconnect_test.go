@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -278,8 +279,10 @@ func TestServer_AddOnDisconnect_FiresOnUnregister(t *testing.T) {
 }
 
 // A broadcast whose ctx ends while a blocking send waits on a full queue
-// returns ctx's error: the waiting message counts as dropped, and the
-// caller's cancellation is not mistaken for the send's own timeout.
+// returns ctx's error: the waiting message counts as the one drop, and the
+// caller's cancellation is not mistaken for the send's own timeout. The
+// ctx is cancelled only once the send is waiting: its first Done call is
+// the blocking send deriving its own timeout from it.
 func TestBroadcastCtx_CancellationEndsABlockingSend(t *testing.T) {
 	t.Parallel()
 
@@ -290,17 +293,30 @@ func TestBroadcastCtx_CancellationEndsABlockingSend(t *testing.T) {
 	c, _ := newClientHost(t).full(t)
 	d.channels["c"] = map[string]*websocket.Client{c.ID: c}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	parent, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var err error
-	hostile.Within(t, hostile.Deadline, func() {
-		err = d.BroadcastCtx(ctx, []string{"c"}, "evt", "data")
-	})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("BroadcastCtx = %v, want the caller's deadline", err)
+	ctx := &doneProbe{Context: parent, waiting: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() { done <- d.BroadcastCtx(ctx, []string{"c"}, "evt", "data") }()
+	select {
+	case <-ctx.waiting:
+	case err := <-done:
+		t.Fatalf("BroadcastCtx returned %v before its send waited", err)
+	case <-time.After(hostile.Deadline):
+		t.Fatal("the blocking send never waited on the ctx")
 	}
-	if got := d.DroppedCount(); got > 1 {
-		t.Errorf("DroppedCount = %d, want at most the one waiting message", got)
+	cancel()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(hostile.Deadline):
+		t.Fatal("BroadcastCtx did not return after its ctx was cancelled")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("BroadcastCtx = %v, want the caller's cancellation", err)
+	}
+	if got := d.DroppedCount(); got != 1 {
+		t.Errorf("DroppedCount = %d, want exactly the one waiting message", got)
 	}
 	d.mu.RLock()
 	_, registered := d.channels["c"][c.ID]
@@ -308,6 +324,18 @@ func TestBroadcastCtx_CancellationEndsABlockingSend(t *testing.T) {
 	if !registered {
 		t.Error("a client whose send was cancelled was purged")
 	}
+}
+
+// doneProbe is a context that closes waiting at its first Done call.
+type doneProbe struct {
+	context.Context
+	once    sync.Once
+	waiting chan struct{}
+}
+
+func (p *doneProbe) Done() <-chan struct{} {
+	p.once.Do(func() { close(p.waiting) })
+	return p.Context.Done()
 }
 
 // --- helpers ---
