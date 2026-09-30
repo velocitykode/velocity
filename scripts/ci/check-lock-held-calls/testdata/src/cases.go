@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"example.com/lockheld/contract"
+	"example.com/lockheld/internal/errchain"
 	"example.com/lockheld/sub"
 )
 
@@ -55,6 +56,23 @@ func (c *C) Format() string {
 	_ = err.Error()                   // want format
 	return fmt.Sprintf("%v", c.value) // want format
 }
+
+// errchain's formatting entries count as the fmt calls they stand for:
+// flagged by their operands, not followed into their bodies.
+func (c *C) FormatEntries() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	err := fmt.Errorf("e")
+	_ = errchain.Errorf("wrap: %w", err) // error arguments are not flagged
+	_ = errchain.Sprintf("%s", c.name)   // a string is not flagged
+	_ = errchain.Errorf("%v", c.value)   // want format
+	_ = errchain.Sprintf("%v", c.value)  // want format
+	_ = errchain.Sprint(c.value)         // want format
+	_ = wrapLater(err)                   // a caller of an entry is not reach through it
+	_ = errchain.Text(err)               // want reach
+}
+
+func wrapLater(err error) error { return errchain.Errorf("later: %w", err) }
 
 func (c *C) Once() {
 	c.once.Do(func() {

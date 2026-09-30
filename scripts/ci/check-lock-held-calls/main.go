@@ -44,9 +44,10 @@
 //   - func: a call through a func-typed variable, field, parameter, map or
 //     slice element, or call result (not a declared function or method,
 //     not a literal, not the release func of a lock-returning helper);
-//   - format: an fmt call with an interface-typed argument other than
-//     error, and the error or fmt.Stringer method called on an interface
-//     value;
+//   - format: an fmt call, or a call to internal/errchain's Errorf,
+//     Sprintf or Sprint (the contained forms, whose bodies are not
+//     followed), with an interface-typed argument other than error, and
+//     the error or fmt.Stringer method called on an interface value;
 //   - callback: a call to encoding/json, encoding/xml, encoding/gob or io
 //     that calls methods of a value it is given (Marshal, Unmarshal,
 //     Encoder.Encode, Decoder.Decode, io.Copy, io.ReadAll, io.ReadFull and
@@ -497,6 +498,17 @@ func (a *analysis) summarize() {
 			}
 		}
 	}
+	// A format entry's body formats its caller's operands, which the call
+	// site is flagged for instead (formatEntry).
+	for _, u := range a.units {
+		for _, obj := range u.info.Defs {
+			if fn, ok := obj.(*types.Func); ok && formatEntry(u.module, fn) {
+				if s := a.funcs[funcKey(fn)]; s != nil {
+					s.reach, s.callees = "", nil
+				}
+			}
+		}
+	}
 	// Walk the functions in a fixed order so the chain each reports is the
 	// same on every run.
 	keys := make([]string, 0, len(a.funcs))
@@ -870,7 +882,7 @@ func classify(u *unit, call *ast.CallExpr, body *ast.BlockStmt) (kind, desc stri
 		}
 		switch obj := u.info.Uses[f.Sel].(type) {
 		case *types.Func:
-			if obj.Pkg() != nil && obj.Pkg().Path() == "fmt" && formatsInterface(u, call) {
+			if (obj.Pkg() != nil && obj.Pkg().Path() == "fmt" || formatEntry(u.module, obj)) && formatsInterface(u, call) {
 				return kindFormat, types.ExprString(f)
 			}
 		case *types.Var:
@@ -930,6 +942,18 @@ func hasMethod(iface *types.Interface, name string) bool {
 
 // formatsInterface reports whether an fmt call has an interface-typed
 // argument other than error.
+// formatEntries are internal/errchain's contained forms of fmt's
+// formatting. A call to one counts as the fmt call it stands for: flagged
+// by its operands (formatsInterface), and never followed as reach into
+// its body, whose interface calls format those same operands.
+var formatEntries = map[string]bool{"Errorf": true, "Sprintf": true, "Sprint": true}
+
+// formatEntry reports whether fn is one of the module's formatEntries.
+func formatEntry(module string, fn *types.Func) bool {
+	return fn.Pkg() != nil && fn.Pkg().Path() == module+"/internal/errchain" && formatEntries[fn.Name()] &&
+		fn.Type().(*types.Signature).Recv() == nil
+}
+
 func formatsInterface(u *unit, call *ast.CallExpr) bool {
 	errType := types.Universe.Lookup("error").Type()
 	for _, arg := range call.Args {
