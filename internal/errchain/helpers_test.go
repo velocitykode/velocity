@@ -300,3 +300,91 @@ func TestWalk_BoundSpansWrapsAndJoins(t *testing.T) {
 		t.Error("a target past the bound was found")
 	}
 }
+
+// stringerFunc is a Stringer whose String runs f.
+type stringerFunc func() string
+
+func (f stringerFunc) String() string { return f() }
+
+// formatterFunc is a Formatter whose Format writes what f returns.
+type formatterFunc func() string
+
+func (f formatterFunc) Format(s fmt.State, _ rune) { _, _ = s.Write([]byte(f())) }
+
+// hostileStringer runs its Code in String.
+type hostileStringer struct{ code *hostile.Code }
+
+func (h hostileStringer) String() string { h.code.Run(); return "hostile stringer" }
+
+// nestedPanic panics with a value whose own String panics: fmt re-raises
+// that panic instead of containing it.
+type nestedPanic struct{}
+
+func (nestedPanic) String() string { panic(stringerFunc(func() string { panic("again") })) }
+
+func TestSprint(t *testing.T) {
+	var nilPtr *codeErr
+	for _, tc := range []struct {
+		name string
+		v    any
+		want string
+	}{
+		{"nil", nil, "<nil>"},
+		{"plain value", 42, "42"},
+		{"struct", struct{ A int }{1}, "{1}"},
+		{"error", io.EOF, "EOF"},
+		{"stringer", stringerFunc(func() string { return "s" }), "s"},
+		{"formatter", formatterFunc(func() string { return "f" }), "f"},
+		{"panicking Error", panicky{}, Unreadable},
+		{"panicking String", stringerFunc(func() string { panic("broke") }), Unreadable},
+		{"panicking Format", formatterFunc(func() string { panic("broke") }), Unreadable},
+		{"nil pointer receiver", nilPtr, Unreadable},
+		{"nested panic fmt re-raises", []any{nestedPanic{}}, Unreadable},
+		{"panic fmt contains inside a value", []any{stringerFunc(func() string { panic("x") })}, "[%!v(PANIC=String method: x)]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Sprint(tc.v); got != tc.want {
+				t.Fatalf("Sprint = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The hostile sweep for Sprint: a String method that panics, blocks or
+// calls back into Sprint.
+func TestSprint_HostileSweep(t *testing.T) {
+	for _, mode := range hostile.Modes() {
+		t.Run(mode.String(), func(t *testing.T) {
+			var inner string
+			code := hostile.New(t, mode, func() { inner = Sprint(io.EOF) })
+			done := make(chan string, 1)
+			go func() { done <- Sprint(hostileStringer{code: code}) }()
+			switch mode {
+			case hostile.Panic:
+				if got := <-done; got != Unreadable {
+					t.Fatalf("Sprint after a panic = %q, want Unreadable", got)
+				}
+			case hostile.Block:
+				if !code.AwaitEntered(t) {
+					return
+				}
+				var other string
+				hostile.Within(t, hostile.Deadline, func() { other = Sprint(io.EOF) })
+				if other != "EOF" {
+					t.Fatalf("a concurrent Sprint = %q while another was blocked", other)
+				}
+				code.Release()
+				if got := <-done; got != "hostile stringer" {
+					t.Fatalf("Sprint once released = %q", got)
+				}
+			case hostile.Reenter:
+				if got := <-done; got != "hostile stringer" {
+					t.Fatalf("Sprint after a re-entry = %q", got)
+				}
+				if inner != "EOF" {
+					t.Fatalf("the re-entered Sprint = %q, want EOF", inner)
+				}
+			}
+		})
+	}
+}

@@ -16,7 +16,10 @@
 // enforces it).
 package errchain
 
-import "reflect"
+import (
+	"fmt"
+	"reflect"
+)
 
 // Max bounds how many errors of one chain a walk looks at, so a chain that
 // loops back on itself still ends.
@@ -201,10 +204,10 @@ func Unwrap(err error) (next error) {
 	return u.Unwrap()
 }
 
-// Unreadable is the text Text returns for an error whose Error method
-// panics. It is fixed: formatting the panic value would call user code
-// again.
-const Unreadable = "error text unavailable: its Error method panicked"
+// Unreadable is the text Text and Sprint return for a value whose Error,
+// String or Format method panics. It is fixed: formatting the panic value
+// would call user code again.
+const Unreadable = "text unavailable: its Error, String or Format method panicked"
 
 // Text returns err's text, "" for a nil err, and Unreadable when err's
 // Error method panics. It does not bound how long Error runs or how long
@@ -221,3 +224,42 @@ func Text(err error) (text string) {
 	}()
 	return err.Error()
 }
+
+// Sprint returns fmt.Sprint(v) with v's own formatting method called
+// contained: when v is a fmt.Formatter, an error or a fmt.Stringer (the
+// order fmt consults them for %v), that method is called directly, and a
+// panic in it yields Unreadable. A panic fmt raises formatting what v
+// holds (a field's String method whose panic value's formatting panics
+// too) yields Unreadable as well; one fmt contains itself stays fmt's own
+// "%!v(PANIC=...)" text. A nil pointer whose method panics yields
+// Unreadable too, where fmt writes "<nil>". Like Text it does not bound how long the method
+// runs or how long its text is.
+func Sprint(v any) (text string) {
+	defer func() {
+		if recover() != nil {
+			text = Unreadable
+		}
+	}()
+	switch x := v.(type) {
+	case nil:
+		return fmt.Sprint(nil)
+	case fmt.Formatter:
+		var s state
+		x.Format(&s, 'v')
+		return string(s.buf)
+	case error:
+		return x.Error()
+	case fmt.Stringer:
+		return x.String()
+	}
+	return fmt.Sprint(v)
+}
+
+// state is the fmt.State Sprint hands a Formatter: the plain %v verb, no
+// width, precision or flags.
+type state struct{ buf []byte }
+
+func (s *state) Write(b []byte) (int, error) { s.buf = append(s.buf, b...); return len(b), nil }
+func (s *state) Width() (int, bool)          { return 0, false }
+func (s *state) Precision() (int, bool)      { return 0, false }
+func (s *state) Flag(int) bool               { return false }

@@ -8,15 +8,15 @@ import (
 )
 
 var (
-	benchWrapped = fmt.Errorf("a: %w", fmt.Errorf("b: %w", fmt.Errorf("c: %w", &codeErr{1})))
-	benchSink    bool
+	errBenchWrapped = fmt.Errorf("a: %w", fmt.Errorf("b: %w", fmt.Errorf("c: %w", &codeErr{1})))
+	benchSink       bool
 )
 
 func BenchmarkIs(b *testing.B) {
 	for _, c := range []struct {
 		name string
 		err  error
-	}{{"identical", io.EOF}, {"miss", benchWrapped}, {"wrapped", fmt.Errorf("w: %w", io.EOF)}} {
+	}{{"identical", io.EOF}, {"miss", errBenchWrapped}, {"wrapped", fmt.Errorf("w: %w", io.EOF)}} {
 		b.Run("errchain/"+c.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
@@ -36,7 +36,7 @@ func BenchmarkAs(b *testing.B) {
 	for _, c := range []struct {
 		name string
 		err  error
-	}{{"itself", &codeErr{1}}, {"3 deep", benchWrapped}, {"miss", io.EOF}} {
+	}{{"itself", &codeErr{1}}, {"3 deep", errBenchWrapped}, {"miss", io.EOF}} {
 		b.Run("errchain/"+c.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
