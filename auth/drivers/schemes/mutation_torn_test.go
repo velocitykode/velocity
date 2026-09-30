@@ -324,3 +324,48 @@ func TestCommitSession_DeletionAfterSaveEndsTheSessionUnderTheReservation(t *tes
 		})
 	}
 }
+
+// freshSessionStore hands out a new session on every load, after both of
+// two concurrent loads entered it.
+type freshSessionStore struct {
+	hookSessionStore
+	arrived chan struct{}
+	both    chan struct{}
+	n       atomic.Int32
+}
+
+func (st *freshSessionStore) Get(*http.Request, string) (auth.Session, error) {
+	st.arrived <- struct{}{}
+	<-st.both
+	s := newHookSession()
+	s.id = "load-" + string(rune('0'+st.n.Add(1)))
+	return s, nil
+}
+
+// Two goroutines of one request that load its session at the same time
+// get the same session object: the first load cached on the request wins
+// and the other load's session is dropped, so no operation changes a
+// session the request no longer holds.
+func TestSessionScheme_ConcurrentFirstLoadsShareOneSession(t *testing.T) {
+	st := &freshSessionStore{arrived: make(chan struct{}), both: make(chan struct{})}
+	g, err := NewSessionScheme(&revokeTestStore{users: map[string]*revokeTestUser{}}, auth.SessionConfig{Name: "vel_session"}, nil, WithSessionStore(st))
+	if err != nil {
+		t.Fatalf("NewSessionScheme: %v", err)
+	}
+	r := WithSessionContext(httptest.NewRequest(http.MethodGet, "/", nil))
+	r.AddCookie(&http.Cookie{Name: "vel_session", Value: "presented"})
+	got := make(chan auth.Session, 2)
+	for range 2 {
+		go func() { got <- g.Session(r) }()
+	}
+	<-st.arrived
+	<-st.arrived
+	close(st.both)
+	a, b := <-got, <-got
+	if a == nil || a != b {
+		t.Fatalf("concurrent first loads returned different sessions: %v and %v", a, b)
+	}
+	if cached := sessionFromHolder(r); cached != a {
+		t.Fatalf("the request caches %v, not the session both loads returned", cached)
+	}
+}

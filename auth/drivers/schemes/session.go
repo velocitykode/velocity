@@ -395,6 +395,19 @@ func (h *sessionHolder) getSession() auth.Session {
 	return h.session
 }
 
+// installLoaded caches s, a session just loaded or created for the
+// request, unless another goroutine of the request cached one first, and
+// returns the cached session: the first load wins, so every goroutine of
+// the request, and every operation, works on one session object.
+func (h *sessionHolder) installLoaded(s auth.Session) auth.Session {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.session == nil {
+		h.session = s
+	}
+	return h.session
+}
+
 // setSession installs s as the cached session under a write lock.
 func (h *sessionHolder) setSession(s auth.Session) {
 	h.mu.Lock()
@@ -1540,9 +1553,10 @@ func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, us
 		if err != nil {
 			return nil, err
 		}
-		// Cache in request context if available
+		// Cache in request context if available; a session a concurrent
+		// load of the request cached first wins.
 		if cached, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && cached != nil {
-			cached.setSession(session)
+			session = cached.installLoaded(session)
 		}
 	case holder.isEnded():
 		// A Logout of this request ended the holder's session: its id is
@@ -2006,9 +2020,10 @@ func (g *SessionScheme) getSession(r *http.Request) auth.Session {
 		return nil
 	}
 
-	// Cache in request context if available
-	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok {
-		holder.setSession(session)
+	// Cache in request context if available; a concurrent first load of
+	// the request that cached its session first wins.
+	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil {
+		return holder.installLoaded(session)
 	}
 
 	return session
