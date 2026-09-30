@@ -109,11 +109,12 @@ func TestEventEmitterImportsOnlyItsLeaves(t *testing.T) {
 		module + "/internal/fallbacklog": true,
 		module + "/internal/goroutine":   true,
 		module + "/internal/panicerr":    true,
+		module + "/internal/tracekeys":   true,
 		module + "/trace":                true,
 	}
 	for _, dep := range strings.Fields(string(out)) {
 		if !allowed[dep] {
-			t.Errorf("internal/eventemit links %s; it may import only the standard library, contract, internal/errchain, internal/fallbacklog, internal/goroutine, internal/panicerr and trace", dep)
+			t.Errorf("internal/eventemit links %s; it may import only the standard library, contract, internal/errchain, internal/fallbacklog, internal/goroutine, internal/panicerr, internal/tracekeys and trace", dep)
 		}
 	}
 }
@@ -173,5 +174,20 @@ func TestLeafPackagesImportOnlyStdlibAndErrchain(t *testing.T) {
 				t.Errorf("%s depends on %s; it may import only the standard library and %v", pkg, dep, allow)
 			}
 		}
+	}
+}
+
+// internal/tracekeys holds the trace package's context keys, and sits
+// under router and eventemit through trace: it imports nothing.
+func TestTraceKeysImportsNothing(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go tool not on PATH")
+	}
+	out, err := exec.Command("go", "list", "-f", "{{join .Imports \" \"}}", "./internal/tracekeys").Output()
+	if err != nil {
+		t.Fatalf("go list ./internal/tracekeys: %v", err)
+	}
+	if imports := strings.TrimSpace(string(out)); imports != "" {
+		t.Errorf("internal/tracekeys imports %s; it may import nothing", imports)
 	}
 }

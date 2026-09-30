@@ -805,14 +805,20 @@ func (s *Scheduler) tick(run *drain.Run, runCtx context.Context) {
 		// embeds the scheduled minute and the next tick gets a fresh
 		// contest naturally. Releasing on completion would let a fast
 		// host A let host B re-acquire the same minute's slot.
-		var releaseOnce sync.Once
+		//
+		// The first call claims the release and runs it with nothing held:
+		// Lock.Release is the Locker backend's code, user code, which must
+		// not run inside a sync.Once that other callers would wait on.
+		// Later calls return at once.
+		var released atomic.Bool
 		release := func() {
-			releaseOnce.Do(func() {
-				if overlapLock != nil {
-					_ = releaseLockSafely(overlapLock)
-				}
-				run.Release()
-			})
+			if !released.CompareAndSwap(false, true) {
+				return
+			}
+			if overlapLock != nil {
+				_ = releaseLockSafely(overlapLock)
+			}
+			run.Release()
 		}
 
 		// Not async.Go: must call release() on panic so the

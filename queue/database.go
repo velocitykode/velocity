@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/ownctx"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -264,6 +265,9 @@ func (d *DatabaseDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupe
 // transaction under d.mu, and reports whether the job was queued (false
 // when the key was already held).
 func (d *DatabaseDriver) claimAndInsert(ctx context.Context, db *sql.DB, dedupeKey, name string, payload []byte) (bool, error) {
+	// The statements run on a context the driver owns, read from ctx
+	// before the lock: ctx's own methods are user code (see ownctx).
+	owned := ownctx.Bridge(ctx)
 	// Hold d.mu across the whole claim+insert transaction so a concurrent
 	// Clear cannot interleave between the jobs and job_dedupe deletes and
 	// strand a dedupe-less jobs row (which would let a later same-key push
@@ -271,7 +275,7 @@ func (d *DatabaseDriver) claimAndInsert(ctx context.Context, db *sql.DB, dedupeK
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := db.BeginTx(owned, nil)
 	if err != nil {
 		return false, fmt.Errorf("velocity/queue: PushIfNotExistsCtx begin: %w", err)
 	}
@@ -289,7 +293,7 @@ func (d *DatabaseDriver) claimAndInsert(ctx context.Context, db *sql.DB, dedupeK
 	default: // sqlite + fallback
 		dedupeQuery = `INSERT OR IGNORE INTO job_dedupe (dedupe_key, queue) VALUES ($1, $2)`
 	}
-	res, err := tx.ExecContext(ctx, d.rewriteQuery(dedupeQuery), dedupeKey, name)
+	res, err := tx.ExecContext(owned, d.rewriteQuery(dedupeQuery), dedupeKey, name)
 	if err != nil {
 		return false, fmt.Errorf("velocity/queue: dedupe insert: %w", err)
 	}
@@ -306,7 +310,7 @@ func (d *DatabaseDriver) claimAndInsert(ctx context.Context, db *sql.DB, dedupeK
 	now := time.Now().UTC()
 	insertQ := d.rewriteQuery(`INSERT INTO jobs (queue, payload, attempts, scheduled_at, created_at, updated_at)
 	          VALUES ($1, $2, $3, $4, $5, $6)`)
-	if _, err := tx.ExecContext(ctx, insertQ, name, string(payload), 0, now, now, now); err != nil {
+	if _, err := tx.ExecContext(owned, insertQ, name, string(payload), 0, now, now, now); err != nil {
 		return false, fmt.Errorf("velocity/queue: failed to insert job: %w", err)
 	}
 
@@ -499,6 +503,7 @@ func (d *DatabaseDriver) popSelect(ctx context.Context, queueName string, mode p
 // under d.mu only on single-writer backends; on postgres/mysql concurrent
 // pops isolate via FOR UPDATE SKIP LOCKED (see lockWorkerPath).
 func (d *DatabaseDriver) reserveNext(ctx context.Context, queueName string) (JobRecord, ReservationToken, error) {
+	owned := ownctx.Bridge(ctx)
 	unlock := d.lockWorkerPath()
 	defer unlock()
 
@@ -508,7 +513,7 @@ func (d *DatabaseDriver) reserveNext(ctx context.Context, queueName string) (Job
 	if d.dbDriver == "sqlite" || d.dbDriver == "sqlite3" {
 		txOpts = &sql.TxOptions{Isolation: sql.LevelSerializable}
 	}
-	tx, err := d.db.BeginTx(ctx, txOpts)
+	tx, err := d.db.BeginTx(owned, txOpts)
 	if err != nil {
 		return JobRecord{}, ReservationToken{}, fmt.Errorf("velocity/queue: failed to begin transaction: %w", err)
 	}
@@ -556,7 +561,7 @@ func (d *DatabaseDriver) reserveNext(ctx context.Context, queueName string) (Job
 	}
 
 	var rec JobRecord
-	row := tx.QueryRowContext(ctx, selectQuery, queueName, now, reclaimCutoff)
+	row := tx.QueryRowContext(owned, selectQuery, queueName, now, reclaimCutoff)
 	if err := scanJobRecord(row, &rec); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return JobRecord{}, ReservationToken{}, nil // No jobs available
@@ -573,7 +578,7 @@ func (d *DatabaseDriver) reserveNext(ctx context.Context, queueName string) (Job
 	updateQuery := d.rewriteQuery(`UPDATE jobs
 		SET reserved_at = $1, reserved_by = $2, attempts = $3, updated_at = $4
 		WHERE id = $5`)
-	if _, err := tx.ExecContext(ctx, updateQuery, now, d.workerID, persistedAttempts, now, rec.ID); err != nil {
+	if _, err := tx.ExecContext(owned, updateQuery, now, d.workerID, persistedAttempts, now, rec.ID); err != nil {
 		return JobRecord{}, ReservationToken{}, fmt.Errorf("velocity/queue: failed to reserve job: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -632,11 +637,12 @@ func hydrateRecord(rec JobRecord) (job Job, tc TraceContext, poisonErr error) {
 // row whose lease was reclaimed, or that was cleared, is left alone and
 // the call returns ErrLeaseLost. op names the step in errors.
 func (d *DatabaseDriver) deleteReserved(ctx context.Context, token ReservationToken, op string) error {
+	owned := ownctx.Bridge(ctx)
 	unlock := d.lockWorkerPath()
 	defer unlock()
 
 	query := d.rewriteQuery("DELETE FROM jobs WHERE id = $1 AND attempts = $2 AND reserved_by = $3")
-	res, err := d.db.ExecContext(ctx, query, token.ID, token.Attempts, token.ReservedBy)
+	res, err := d.db.ExecContext(owned, query, token.ID, token.Attempts, token.ReservedBy)
 	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to %s job: %w", op, err)
 	}
@@ -679,6 +685,7 @@ func (d *DatabaseDriver) ReleaseCtx(ctx context.Context, token ReservationToken,
 	if delay < 0 {
 		delay = 0
 	}
+	owned := ownctx.Bridge(ctx)
 	unlock := d.lockWorkerPath()
 	defer unlock()
 
@@ -687,7 +694,7 @@ func (d *DatabaseDriver) ReleaseCtx(ctx context.Context, token ReservationToken,
 	query := d.rewriteQuery(`UPDATE jobs
 		SET reserved_at = NULL, reserved_by = NULL, scheduled_at = $1, updated_at = $2
 		WHERE id = $3 AND attempts = $4 AND reserved_by = $5`)
-	res, err := d.db.ExecContext(ctx, query, scheduledAt, now, token.ID, token.Attempts, token.ReservedBy)
+	res, err := d.db.ExecContext(owned, query, scheduledAt, now, token.ID, token.Attempts, token.ReservedBy)
 	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to release job: %w", err)
 	}
@@ -728,7 +735,9 @@ func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationT
 		return fmt.Errorf("velocity/queue: failed to serialize job: %w", serErr)
 	}
 
-	if err := d.commitFailedReservation(ctx, token, jobErr, queueName, payload); err != nil {
+	// The handler error's text is user code: read it, contained, before
+	// the worker-path lock.
+	if err := d.commitFailedReservation(ctx, token, errchain.Text(jobErr), queueName, payload); err != nil {
 		return err
 	}
 	// The job's Failed hook runs once the failure is committed and outside
@@ -741,13 +750,14 @@ func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationT
 }
 
 // commitFailedReservation deletes the reserved row and inserts its
-// failed_jobs row in one transaction under the worker-path lock (see
-// FailReservedCtx for the fencing).
-func (d *DatabaseDriver) commitFailedReservation(ctx context.Context, token ReservationToken, jobErr error, queueName string, payload []byte) error {
+// failed_jobs row, recording exception, in one transaction under the
+// worker-path lock (see FailReservedCtx for the fencing).
+func (d *DatabaseDriver) commitFailedReservation(ctx context.Context, token ReservationToken, exception string, queueName string, payload []byte) error {
+	owned := ownctx.Bridge(ctx)
 	unlock := d.lockWorkerPath()
 	defer unlock()
 
-	tx, err := d.db.BeginTx(ctx, nil)
+	tx, err := d.db.BeginTx(owned, nil)
 	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to begin failure transaction: %w", err)
 	}
@@ -758,7 +768,7 @@ func (d *DatabaseDriver) commitFailedReservation(ctx context.Context, token Rese
 	// delete affects zero rows, we bail with ErrLeaseLost, and the
 	// rollback discards the (unwritten) failed_jobs insert.
 	deleteQuery := d.rewriteQuery("DELETE FROM jobs WHERE id = $1 AND attempts = $2 AND reserved_by = $3")
-	res, err := tx.ExecContext(ctx, deleteQuery, token.ID, token.Attempts, token.ReservedBy)
+	res, err := tx.ExecContext(owned, deleteQuery, token.ID, token.Attempts, token.ReservedBy)
 	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to delete reserved job: %w", err)
 	}
@@ -770,7 +780,7 @@ func (d *DatabaseDriver) commitFailedReservation(ctx context.Context, token Rese
 	insertQuery := d.rewriteQuery(
 		"INSERT INTO failed_jobs (queue, payload, exception, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
 	)
-	if _, err := tx.ExecContext(ctx, insertQuery, queueName, string(payload), jobErr.Error(), now, now); err != nil { //lock-held-ok: reads the handler error's text, user code, under the worker-path lock; the fix is filed
+	if _, err := tx.ExecContext(owned, insertQuery, queueName, string(payload), exception, now, now); err != nil {
 		return fmt.Errorf("velocity/queue: failed to record failed job: %w", err)
 	}
 
@@ -842,19 +852,24 @@ func (d *DatabaseDriver) Clear(queueName string) error {
 	// Serialize against PushIfNotExistsCtx (which holds d.mu for its full
 	// claim+insert transaction) so the two jobs/job_dedupe deletes below
 	// cannot straddle a concurrent dedupe push and orphan its jobs row.
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
+	// The dedupe delete's error is classified after the lock is released:
+	// its text is read through errchain.Text, never under d.mu.
 	query := d.rewriteQuery("DELETE FROM jobs WHERE queue = $1")
-	if _, err := d.db.Exec(query, queueName); err != nil {
+	dedupeQuery := d.rewriteQuery("DELETE FROM job_dedupe WHERE queue = $1")
+	d.mu.Lock()
+	_, err := d.db.Exec(query, queueName)
+	var dedupeErr error
+	if err == nil {
+		_, dedupeErr = d.db.Exec(dedupeQuery, queueName)
+	}
+	d.mu.Unlock()
+
+	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to clear queue: %w", err)
 	}
-
-	dedupeQuery := d.rewriteQuery("DELETE FROM job_dedupe WHERE queue = $1")
-	if _, err := d.db.Exec(dedupeQuery, queueName); err != nil && !dedupeTableMissing(err) { //lock-held-ok: err comes from the sql driver, and its Error text is read only to spot a missing table
-		return fmt.Errorf("velocity/queue: failed to clear queue dedupe keys: %w", err)
+	if dedupeErr != nil && !dedupeTableMissing(dedupeErr) {
+		return fmt.Errorf("velocity/queue: failed to clear queue dedupe keys: %w", dedupeErr)
 	}
-
 	return nil
 }
 
@@ -872,7 +887,7 @@ func dedupeTableMissing(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
+	msg := strings.ToLower(errchain.Text(err))
 	if !strings.Contains(msg, "job_dedupe") {
 		return false
 	}
@@ -909,7 +924,7 @@ func (d *DatabaseDriver) FailedCtx(ctx context.Context, job Job, err error, queu
 	failedJob := &FailedJobRecord{
 		Queue:     queueName,
 		Payload:   string(payload),
-		Exception: err.Error(),
+		Exception: errchain.Text(err),
 	}
 
 	// Insert into failed_jobs table
@@ -1000,10 +1015,12 @@ func setPopQuarantineCommitHookForTest(hook func()) (restore func()) {
 // exception is poisonErr's text, which may come from the job factory: the
 // caller reads it before this takes the worker-path lock.
 //
-// The transaction keeps the caller's ctx values but not its cancellation,
-// and is bounded by quarantinePoisonTimeout: once hydration failed, the
-// move lands even when the caller's ctx ends, so a cancelled pop does not
-// leave a poison row reserved until its lease expires. A lease no longer
+// The transaction runs on a context the driver owns (ownctx.Detached): it
+// carries the caller's correlation ids but not its cancellation, and no
+// method of the caller's ctx runs under the lock. It is bounded by
+// quarantinePoisonTimeout: once hydration failed, the move lands even when
+// the caller's ctx ends, so a cancelled pop does not leave a poison row
+// reserved until its lease expires. A lease no longer
 // held returns ErrLeaseLost: the row belongs to another pop. Any other
 // failure (a database error, the timeout) returns that failure. Neither
 // carries ErrPoisonJob: the row is still in jobs, and the pop that
@@ -1018,21 +1035,21 @@ func setPopQuarantineCommitHookForTest(hook func()) (restore func()) {
 // them verbatim into the long-lived failed_jobs table would bypass the
 // at-rest confidentiality QUEUE_ENCRYPT promises.
 func (d *DatabaseDriver) quarantineReserved(ctx context.Context, token ReservationToken, rec JobRecord, queueName string, poisonErr error, exception string) error {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), quarantinePoisonTimeout)
+	owned, cancel := context.WithTimeout(ownctx.Detached(ctx), quarantinePoisonTimeout)
 	defer cancel()
 	storedPayload, _ := sealQuarantineBlob(rec.Payload)
 
 	unlock := d.lockWorkerPath()
 	defer unlock()
 
-	tx, err := d.db.BeginTx(ctx, nil)
+	tx, err := d.db.BeginTx(owned, nil)
 	if err != nil {
 		return errors.Join(poisonErr, fmt.Errorf("velocity/queue: failed to begin poison-job quarantine: %w", err))
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	deleteQuery := d.rewriteQuery("DELETE FROM jobs WHERE id = $1 AND attempts = $2 AND reserved_by = $3")
-	res, err := tx.ExecContext(ctx, deleteQuery, token.ID, token.Attempts, token.ReservedBy)
+	res, err := tx.ExecContext(owned, deleteQuery, token.ID, token.Attempts, token.ReservedBy)
 	if err != nil {
 		return errors.Join(poisonErr, fmt.Errorf("velocity/queue: failed to delete poison row %d: %w", rec.ID, err))
 	}
@@ -1043,7 +1060,7 @@ func (d *DatabaseDriver) quarantineReserved(ctx context.Context, token Reservati
 	insertQuery := d.rewriteQuery(
 		"INSERT INTO failed_jobs (queue, payload, exception, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
 	)
-	if _, err := tx.ExecContext(ctx, insertQuery, queueName, storedPayload, exception, now, now); err != nil {
+	if _, err := tx.ExecContext(owned, insertQuery, queueName, storedPayload, exception, now, now); err != nil {
 		return errors.Join(poisonErr, fmt.Errorf("velocity/queue: failed to record poison row %d in failed_jobs: %w", rec.ID, err))
 	}
 	if hookPtr := popQuarantineCommitHook.Load(); hookPtr != nil {

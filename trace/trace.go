@@ -28,15 +28,15 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/tracekeys"
 )
 
-// Context keys for trace information
-type contextKey string
-
+// Context keys for trace information (internal/tracekeys, shared with
+// internal/ownctx).
 const (
-	traceIDKey  contextKey = "velocity_trace_id"
-	spanIDKey   contextKey = "velocity_span_id"
-	parentIDKey contextKey = "velocity_parent_id"
+	traceIDKey  = tracekeys.TraceID
+	spanIDKey   = tracekeys.SpanID
+	parentIDKey = tracekeys.ParentID
 )
 
 // FallbackTraceIDPrefix is the prefix used by per-call fallback trace

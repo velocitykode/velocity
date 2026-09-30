@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # check-lock-held-calls.sh - reports calls to user code (a logger, a func
 # value, a value formatted through its own String or Error, a value a json,
-# gob, xml or io call calls into) made while framework code holds a lock or
+# gob, xml or io call calls into, a caller's context and the code it is
+# handed to) made while framework code holds a lock or
 # runs inside a sync.Once. User code can call back into the component that
 # called it; under the component's lock that deadlocks for good.
 #

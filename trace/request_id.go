@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/tracekeys"
 )
 
 // RequestIDHeader is the header, and the gRPC metadata key in lowercase,
@@ -19,7 +21,7 @@ const maxRequestIDLen = 128
 // requestIDKey is the one context key for the request id. The router's
 // per-request holder, the gRPC interceptors and the HTTP gateway all store
 // the id under it, and httpclient and the gRPC client read it from here.
-const requestIDKey contextKey = "velocity_request_id"
+const requestIDKey = tracekeys.RequestID
 
 // requestCounter distinguishes request ids generated within the same second.
 var requestCounter atomic.Uint64

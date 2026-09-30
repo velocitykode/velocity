@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"sync"
+
+	"github.com/velocitykode/velocity/internal/buildonce"
 )
 
 // tokenStateKey is the unexported context key under which the
@@ -53,43 +55,88 @@ type requestTokenState struct {
 	sessionID string
 	token     string
 	err       error
+	// gen counts changes to the cached pair; a load publishes its result
+	// only when gen is still what it was when the load began, so a
+	// rotation that landed meanwhile is never overwritten.
+	gen uint64
+
+	// loads runs one store load per session id at a time, with no lock
+	// held (see tokenFor).
+	loads buildonce.Group[string]
 }
 
 // tokenFor returns the masked token for sessionID, from the cache when it
 // was loaded for sessionID, else loaded through c.GetToken under ctx and
 // cached. An empty sessionID caches the "no session, no token" answer.
+//
+// The load runs the store (Store.Get, and Store.Set on a miss), user code,
+// with no lock held: s.mu guards the cached pair only. Concurrent first
+// reads of one session id share one load (buildonce), so a store miss is
+// minted once and every reader gets the same bytes; a read from inside
+// that load (a store calling back into TokenForRequest) is refused with an
+// error instead of waiting on itself. A load that a rotation overtook
+// publishes nothing (see gen). A store failure is cached, as before; a
+// refused, cancelled or panicking load is not.
 func (s *requestTokenState) tokenFor(ctx context.Context, sessionID string) (string, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.loaded && s.sessionID == sessionID {
-		return s.token, s.err
-	}
-	s.loaded, s.sessionID, s.token, s.err = true, sessionID, "", nil
-
-	if sessionID == "" {
-		return "", nil
+		token, err := s.token, s.err
+		s.mu.Unlock()
+		return token, err
 	}
 	c := s.csrf
-	if c == nil || c.config == nil {
-		s.err = ErrNoStore
-		return "", s.err
+	switch {
+	case sessionID == "":
+		s.loaded, s.sessionID, s.token, s.err = true, "", "", nil
+		s.gen++
+		s.mu.Unlock()
+		return "", nil
+	case c == nil || c.config == nil:
+		s.loaded, s.sessionID, s.token, s.err = true, sessionID, "", ErrNoStore
+		s.gen++
+		s.mu.Unlock()
+		return "", ErrNoStore
 	}
-	token, err := c.GetToken(ctx, sessionID) //lock-held-ok: token store read under s.mu, removed by the single-flight token load
-	if err != nil {
-		s.err = err
-		return "", err
-	}
-	// Cache the masked emission form, not the raw stored token: every
-	// reader on this request (cookie write, meta tag, props) must emit
-	// the same bytes, and those bytes must differ from every other
-	// response's emission of the same stored token.
-	masked, err := MaskToken(token)
-	if err != nil {
-		s.err = err
-		return "", err
-	}
-	s.token = masked
-	return masked, nil
+	s.mu.Unlock()
+
+	return s.loads.Do(ctx, sessionID, func() (string, error) {
+		s.mu.Lock()
+		if s.loaded && s.sessionID == sessionID {
+			// Published while this load waited for its turn.
+			token, err := s.token, s.err
+			s.mu.Unlock()
+			return token, err
+		}
+		gen := s.gen
+		s.mu.Unlock()
+
+		token, err := c.GetToken(ctx, sessionID)
+		// Cache the masked emission form, not the raw stored token: every
+		// reader on this request (cookie write, meta tag, props) must emit
+		// the same bytes, and those bytes must differ from every other
+		// response's emission of the same stored token.
+		if err == nil {
+			token, err = MaskToken(token)
+		}
+		if err != nil {
+			token = ""
+		}
+
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.gen != gen {
+			// A rotation (or a load of another session) changed the cache
+			// meanwhile: the token this load read may be the one the
+			// rotation replaced. Keep what is there.
+			if s.loaded && s.sessionID == sessionID {
+				return s.token, s.err
+			}
+			return token, err
+		}
+		s.loaded, s.sessionID, s.token, s.err = true, sessionID, token, err
+		s.gen++
+		return token, err
+	})
 }
 
 // cachedFor returns the cached emission-form token when the cache holds a
@@ -119,6 +166,7 @@ func (s *requestTokenState) replaceAfterRotation(oldID, newID, token string) {
 	if s.loaded && s.sessionID != oldID && s.sessionID != newID {
 		return
 	}
+	s.gen++
 	masked, err := MaskToken(token)
 	if err != nil {
 		// Drop the entry: the next read loads the stored token again.

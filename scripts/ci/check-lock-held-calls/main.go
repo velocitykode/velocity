@@ -60,6 +60,14 @@
 //     MarshalJSON (or MarshalText, UnmarshalJSON, GobEncode, Read, Write
 //     and the rest) declared in the module is followed as reach; one
 //     declared in the standard library or a dependency is fixed code;
+//   - ctx: a context the caller supplied, used under the lock (ctx.go): a
+//     Done, Err, Value or Deadline call on a context of interface type; a
+//     call outside the module given such a context that is not owned
+//     (built from context.Background or TODO through the context
+//     package's With functions; WithoutCancel and WithValue of a caller's
+//     context still reach its Value), or given a value that kept one
+//     (a *sql.Tx begun with it); and an interface method given any
+//     context, which is a pluggable store, driver or backend;
 //   - reach: a call to a function of the module whose body makes one of the
 //     calls above, directly or through other module functions. Only code
 //     that runs during the call counts: the body itself, func literals it
@@ -87,6 +95,9 @@
 // interface method call is not flagged (io.Writer, hash.Hash, drivers), so
 // r.Read on an io.Reader is not either, while io.Copy of it is; a lock
 // that is not a sync.Mutex or sync.RWMutex (a file lock) is not tracked;
+// a stdlib value keeping a caller's context is known only from the keeper
+// table in ctx.go (sql BeginTx, the http request builders); a context kept
+// in a field is not owned, so passing one under a lock is reported;
 // a panic that is not an explicit panic call is not a return point for
 // deferred statements; a stdlib reader built by the framework (an HKDF
 // reader, crypto/rand.Reader) looks like any io.Reader and needs a marker;
@@ -169,6 +180,7 @@ var fixes = []struct{ kind, fix string }{
 	{kindReach, "reach: call the function after unlocking, or take the user-code call out of it (the chain after the name shows where it is)"},
 	{kindStale, "stale: remove the //lock-held-ok: marker; nothing on its line runs user code under a lock any more"},
 	{kindCallback, "callback: encode, decode or copy before taking the lock or after releasing it (json, gob, xml and io calls run methods of the values they are given)"},
+	{kindCtx, "ctx: read the caller's context before taking the lock, and hand code under the lock a context the framework owns (built from context.Background)"},
 }
 
 // hints returns the fix lines for the kinds in hits, and the marker
@@ -281,6 +293,7 @@ func check(dir string, patterns []string, all bool) ([]string, error) {
 		}
 		u.resolve(pkg, imp, mod.Path)
 		u.indexZeroVars()
+		u.indexCtxVars()
 		a.units = append(a.units, u)
 	}
 	return a.run(), nil
@@ -335,6 +348,17 @@ type unit struct {
 	// closed maps each closed func parameter (see the package comment) to
 	// the keys of the bodies its call sites pass, in a.funcs.
 	closed map[*types.Var][]string
+
+	// ctxIface is context.Context as this unit sees it, nil when absent.
+	// ctxAssigns, ctxParams and ctxAddr describe the unit's local context
+	// variables, for ownedCtx (ctx.go).
+	ctxIface   *types.Interface
+	ctxAssigns map[*types.Var][]ast.Expr
+	ctxParams  map[*types.Var]bool
+	ctxAddr    map[*types.Var]bool
+	// ctxCarriers maps each local variable holding a value that keeps a
+	// caller's context (ctx.go) to the call that built it.
+	ctxCarriers map[*types.Var]string
 }
 
 var (
@@ -362,6 +386,9 @@ func (u *unit) resolve(pkg *types.Package, imp types.Importer, module string) {
 		u.logger, _ = t.Underlying().(*types.Interface)
 	}
 	u.fallback = lookup(module+"/internal/fallbacklog", "Logger")
+	if t := lookup("context", "Context"); t != nil {
+		u.ctxIface, _ = t.Underlying().(*types.Interface)
+	}
 }
 
 // funcSummary is what one declared function does that counts as user code.
@@ -524,6 +551,9 @@ func summarizeBody(a *analysis, u *unit, body *ast.BlockStmt) *funcSummary {
 			s.callees = append(s.callees, funcKey(c))
 		}
 		for _, m := range u.callback(call, body).methods {
+			s.callees = append(s.callees, funcKey(m))
+		}
+		for _, m := range u.ctxCall(call).methods {
 			s.callees = append(s.callees, funcKey(m))
 		}
 		s.callees = append(s.callees, u.closedCall(call)...)
@@ -750,6 +780,7 @@ const (
 	kindReach    = "reach"
 	kindCallback = "callback"
 	kindStale    = "stale"
+	kindCtx      = "ctx"
 	kindIface    = "iface" // interface method call: listed by -all only
 )
 
@@ -762,6 +793,9 @@ func classify(u *unit, call *ast.CallExpr, body *ast.BlockStmt) (kind, desc stri
 	}
 	if cb := u.callback(call, body); cb.open != "" {
 		return kindCallback, types.ExprString(fun) + " " + cb.open
+	}
+	if cc := u.ctxCall(call); cc.open != "" {
+		return kindCtx, types.ExprString(fun) + " " + cc.open
 	}
 	switch f := fun.(type) {
 	case *ast.FuncLit:
@@ -784,9 +818,15 @@ func classify(u *unit, call *ast.CallExpr, body *ast.BlockStmt) (kind, desc stri
 				if u.loggerCall(recv, name) {
 					return kindLogger, types.ExprString(f)
 				}
+				if u.ctxMethodCall(recv, name) {
+					return kindCtx, types.ExprString(f)
+				}
 				if types.IsInterface(recv) {
 					if formatCall(recv, name) {
 						return kindFormat, types.ExprString(f)
+					}
+					if u.takesCtx(call) {
+						return kindCtx, types.ExprString(f) + " (an interface method given a context: a store, driver or backend, any code)"
 					}
 					return kindIface, types.ExprString(f)
 				}
@@ -1414,7 +1454,8 @@ func (w *walker) call(call *ast.CallExpr, h held) {
 	if len(h) == 0 {
 		return
 	}
-	for _, m := range w.u.callback(call, w.scope.body).methods {
+	methods := append(w.u.callback(call, w.scope.body).methods, w.u.ctxCall(call).methods...)
+	for _, m := range methods {
 		if s, ok := w.a.funcs[funcKey(m)]; ok && s.reach != "" {
 			w.report(call.Pos(), h, kindReach, types.ExprString(call.Fun)+": "+shortName(funcKey(m))+" -> "+s.reach)
 			return
