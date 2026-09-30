@@ -14,6 +14,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
+	"github.com/velocitykode/velocity/internal/latency"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -237,7 +238,10 @@ func TestStatementLog_FailedStatementWritesNoValues(t *testing.T) {
 // The slow rule: a completed statement slower than the threshold writes
 // one warn line (statement, duration, argument count, request ids; no
 // values), in place of its debug line; a faster one, a failed one and any
-// statement under a zero threshold write none.
+// statement under a zero threshold write none. Whether a statement is slow
+// is read from its own measured Duration (the observer's event), never
+// from the sleep it runs: a 150ms statement is always slow, a 50ms one is
+// slow only when a scheduler pause made it so, and the line must follow.
 func TestSlowStatement_WarnsOnceWithoutValues(t *testing.T) {
 	ctx := trace.WithRequestID(trace.WithFullContext(context.Background(), "4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7", ""), "req-slow-1")
 	tests := []struct {
@@ -245,18 +249,22 @@ func TestSlowStatement_WarnsOnceWithoutValues(t *testing.T) {
 		logQueries bool
 		threshold  time.Duration
 		query      string
-		wantLevel  string
+		// alwaysSlow marks a statement that sleeps past the threshold.
+		alwaysSlow bool
+		failing    bool
 	}{
-		{name: "slow", threshold: 100 * time.Millisecond, query: "SELECT sleep_ms(150), ?", wantLevel: "warn"},
-		{name: "slow with query log on", logQueries: true, threshold: 100 * time.Millisecond, query: "SELECT sleep_ms(150), ?", wantLevel: "warn"},
+		{name: "slow", threshold: 100 * time.Millisecond, query: "SELECT sleep_ms(150), ?", alwaysSlow: true},
+		{name: "slow with query log on", logQueries: true, threshold: 100 * time.Millisecond, query: "SELECT sleep_ms(150), ?", alwaysSlow: true},
 		{name: "fast", threshold: 100 * time.Millisecond, query: "SELECT sleep_ms(50), ?"},
-		{name: "fast with query log on", logQueries: true, threshold: 100 * time.Millisecond, query: "SELECT sleep_ms(50), ?", wantLevel: "debug"},
+		{name: "fast with query log on", logQueries: true, threshold: 100 * time.Millisecond, query: "SELECT sleep_ms(50), ?"},
 		{name: "zero threshold", query: "SELECT sleep_ms(150), ?"},
-		{name: "slow failure", threshold: 100 * time.Millisecond, query: "SELECT sleep_ms(150), fail_with(?)"},
+		{name: "slow failure", threshold: 100 * time.Millisecond, query: "SELECT sleep_ms(150), fail_with(?)", failing: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d, log := connectStatementSQLite(t, tt.logQueries, tt.threshold)
+			rec := &statementRecorder{}
+			d.(StatementObservable).SetStatementObserver(rec)
 			rows, err := d.QueryContext(ctx, tt.query, secretArg)
 			if err == nil {
 				for rows.Next() {
@@ -264,10 +272,26 @@ func TestSlowStatement_WarnsOnceWithoutValues(t *testing.T) {
 				_ = rows.Close()
 			}
 
+			evs := rec.all()
+			if len(evs) != 1 {
+				t.Fatalf("events = %d, want 1", len(evs))
+			}
+			slow := !tt.failing && latency.Slow(evs[0].Duration, tt.threshold)
+			if tt.alwaysSlow && !slow {
+				t.Fatalf("a statement sleeping past the threshold was not slow (duration %v)", evs[0].Duration)
+			}
+			wantLevel := ""
+			switch {
+			case slow:
+				wantLevel = "warn"
+			case tt.logQueries:
+				wantLevel = "debug"
+			}
+
 			got := log.all()
-			if tt.wantLevel == "" {
+			if wantLevel == "" {
 				if len(got) != 0 {
-					t.Fatalf("lines = %+v, want none", got)
+					t.Fatalf("lines = %+v, want none (duration %v)", got, evs[0].Duration)
 				}
 				return
 			}
@@ -275,15 +299,15 @@ func TestSlowStatement_WarnsOnceWithoutValues(t *testing.T) {
 				t.Fatalf("lines = %d, want 1: %+v", len(got), got)
 			}
 			e := got[0]
-			if e.level != tt.wantLevel {
-				t.Errorf("level = %s, want %s", e.level, tt.wantLevel)
+			if e.level != wantLevel {
+				t.Errorf("level = %s, want %s (duration %v)", e.level, wantLevel, evs[0].Duration)
 			}
-			if tt.wantLevel == "warn" {
+			if wantLevel == "warn" {
 				if e.msg != "velocity/orm: slow query" {
 					t.Errorf("msg = %q, want %q", e.msg, "velocity/orm: slow query")
 				}
-				if ms, _ := kv(e.kvs, "duration_ms").(int64); ms < 150 {
-					t.Errorf("duration_ms = %v, want at least 150", kv(e.kvs, "duration_ms"))
+				if ms, _ := kv(e.kvs, "duration_ms").(int64); ms < tt.threshold.Milliseconds() {
+					t.Errorf("duration_ms = %v, want at least %d", kv(e.kvs, "duration_ms"), tt.threshold.Milliseconds())
 				}
 				for key, want := range map[string]any{
 					"query":      tt.query,
@@ -348,8 +372,14 @@ func TestSlowStatement_MarksTheStatementEvent(t *testing.T) {
 			if len(evs) != 1 {
 				t.Fatalf("events = %d, want 1", len(evs))
 			}
-			if evs[0].Slow != tt.want {
-				t.Errorf("Slow = %v, want %v (duration %v)", evs[0].Slow, tt.want, evs[0].Duration)
+			// Slow follows the statement's own measured Duration; a
+			// statement sleeping past the threshold is always slow.
+			want := latency.Slow(evs[0].Duration, tt.threshold)
+			if tt.want && !want {
+				t.Fatalf("a statement sleeping past the threshold was not slow (duration %v)", evs[0].Duration)
+			}
+			if evs[0].Slow != want {
+				t.Errorf("Slow = %v, want %v (duration %v)", evs[0].Slow, want, evs[0].Duration)
 			}
 		})
 	}
