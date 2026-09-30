@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // RegistrationError is a typed error for registration-time failures.
@@ -170,7 +172,7 @@ func (e *HTTPError) Error() string {
 		msg = statusText(e.StatusCode())
 	}
 	if e.Cause != nil {
-		return msg + ": " + e.Cause.Error()
+		return msg + ": " + errchain.Text(e.Cause)
 	}
 	return msg
 }
@@ -369,106 +371,40 @@ type ExitCoder interface {
 // still resolves. A status outside 100-999 resolves to 500. StatusOf(nil)
 // returns 0, nil, false.
 //
-// The chain is walked by hand in the order errors.As visits it, so the
-// common case (no node with an As method) allocates nothing; a node that
-// has an As method, or one deeper than the walk's limit, is handed to
-// errors.As, which keeps the answer identical to errors.As for any chain.
+// The chain is walked once by errchain.Walk, breadth first and bounded,
+// with the StatusCode and Headers of what it finds read inside the walk: a
+// chain whose methods panic, or one longer than errchain.Max, answers the
+// fixed 500, nil, false, since its status cannot be known.
 func StatusOf(err error) (status int, headers http.Header, ok bool) {
 	if err == nil {
 		return 0, nil, false
 	}
-	var f statusFinder
-	f.walk(err, 0)
+	var (
+		haveStatus, haveHeader bool
+		code                   int
+		found                  http.Header
+	)
+	walked := errchain.Walk(err, func(e error) bool {
+		if !haveStatus {
+			if se, is := errchain.MatchesAs[StatusError](e); is && se != nil {
+				code, haveStatus = se.StatusCode(), true
+			}
+		}
+		if !haveHeader {
+			if he, is := errchain.MatchesAs[HeaderError](e); is && he != nil {
+				found, haveHeader = he.Headers(), true
+			}
+		}
+		return haveStatus && haveHeader
+	})
+	if walked == errchain.Panicked || walked == errchain.Truncated {
+		return http.StatusInternalServerError, nil, false
+	}
 	status = http.StatusInternalServerError
-	if f.haveStatus {
-		status = validStatus(f.status.StatusCode())
-		ok = true
+	if haveStatus {
+		status, ok = validStatus(code), true
 	}
-	if f.haveHeader {
-		headers = f.header.Headers()
-	}
-	return status, headers, ok
-}
-
-// chainWalkLimit bounds how many nodes deep a hand walk of an error chain
-// goes before it hands the rest of that branch to the errors package, whose
-// answer is the same at any depth.
-const chainWalkLimit = 64
-
-// statusFinder collects the first StatusError and the first HeaderError of
-// an error chain in one walk.
-type statusFinder struct {
-	status     StatusError
-	header     HeaderError
-	haveStatus bool
-	haveHeader bool
-}
-
-// done reports whether both targets were found.
-func (f *statusFinder) done() bool {
-	return f.haveStatus && f.haveHeader
-}
-
-// walk visits err's chain depth-first in errors.As order (the node, its
-// As method, then Unwrap() error or each Unwrap() []error branch) and
-// records the first match for each target. It returns true once both
-// targets are found.
-func (f *statusFinder) walk(err error, depth int) bool {
-	for err != nil {
-		if depth >= chainWalkLimit {
-			f.fallback(err)
-			return f.done()
-		}
-		if !f.haveStatus {
-			if se, ok := err.(StatusError); ok {
-				f.status, f.haveStatus = se, true
-			}
-		}
-		if !f.haveHeader {
-			if he, ok := err.(HeaderError); ok {
-				f.header, f.haveHeader = he, true
-			}
-		}
-		if f.done() {
-			return true
-		}
-		if _, ok := err.(interface{ As(any) bool }); ok {
-			f.fallback(err)
-			return f.done()
-		}
-		switch x := err.(type) {
-		case interface{ Unwrap() error }:
-			err = x.Unwrap()
-			depth++
-		case interface{ Unwrap() []error }:
-			for _, e := range x.Unwrap() {
-				if e != nil && f.walk(e, depth+1) {
-					return true
-				}
-			}
-			return false
-		default:
-			return false
-		}
-	}
-	return false
-}
-
-// fallback resolves the targets still missing over err's whole branch
-// through errors.As.
-func (f *statusFinder) fallback(err error) {
-	if !f.haveStatus {
-		var se StatusError
-		if errors.As(err, &se) {
-			f.status, f.haveStatus = se, true
-		}
-	}
-	if !f.haveHeader {
-		var he HeaderError
-		if errors.As(err, &he) {
-			f.header, f.haveHeader = he, true
-		}
-	}
+	return status, found, ok
 }
 
 // ErrResponseWritten reports that the response was already written, so the
@@ -506,7 +442,7 @@ type handledError struct {
 }
 
 func (h *handledError) Error() string {
-	return ErrResponseWritten.Error() + ": " + h.cause.Error()
+	return errchain.Text(ErrResponseWritten) + ": " + errchain.Text(h.cause)
 }
 
 func (h *handledError) Is(target error) bool {
@@ -541,8 +477,8 @@ func IsResponseWritten(err error) bool {
 // ErrResponseWritten, and for a Handled value inside a recovered panic's
 // value).
 func HandledCause(err error) error {
-	if h := findMarker(err, markHandled); h != nil {
-		return errors.Unwrap(h)
+	if h, ok := findMarker(err, markHandled).(*handledError); ok {
+		return h.cause
 	}
 	return nil
 }
@@ -554,7 +490,7 @@ type reportedError struct {
 }
 
 func (r *reportedError) Error() string {
-	return r.err.Error()
+	return errchain.Text(r.err)
 }
 
 func (r *reportedError) Unwrap() error {
@@ -595,99 +531,45 @@ const (
 	markHandled
 )
 
-// markerWalkCap bounds how many nodes of an error chain findMarker visits.
-// Past the cap the answer is "no marker", the safe side: an error whose
-// marker lies deeper is reported and rendered.
-const markerWalkCap = 1024
-
-// joinFrame is one Unwrap() []error node findMarker is part way through:
-// its branches and the index of the next one to visit.
-type joinFrame struct {
-	errs []error
-	next int
-}
-
-// findMarker walks err's chain depth-first in the order errors.As and
-// errors.Is visit it (the node, then Unwrap() error or each Unwrap()
-// []error branch) and returns the first node matching kind, or nil. It
-// never looks at a RecoveredPanic node or below it, at any depth. A node
+// findMarker walks err's chain through errchain.WalkSteps (breadth first,
+// bounded by errchain.Max, contained) and returns the first node matching
+// kind, or nil. It never looks at a RecoveredPanic node or below it. A node
 // with an As method is asked for the marker type the way errors.As would
-// ask it. The walk is iterative and visits at most markerWalkCap nodes;
-// a marker past the cap is not found. Matching uses type assertions only
-// and the pending joins live in a stack buffer, so the walk allocates
-// nothing unless a node's As method does or joins nest deeper than the
-// buffer.
+// ask it. A chain whose methods panic, or one longer than errchain.Max,
+// has no marker: the safe side, an error whose marker cannot be read is
+// reported and rendered.
 func findMarker(err error, kind markerKind) error {
-	var buf [8]joinFrame
-	joins := buf[:0]
-	visited := 0
-	for {
-		for err != nil {
-			if visited >= markerWalkCap {
-				return nil
-			}
-			visited++
-			if _, ok := err.(RecoveredPanic); ok {
-				err = nil
-				continue
-			}
-			if m := markerNode(err, kind); m != nil {
-				return m
-			}
-			switch x := err.(type) {
-			case interface{ Unwrap() error }:
-				err = x.Unwrap()
-			case interface{ Unwrap() []error }:
-				joins = append(joins, joinFrame{errs: x.Unwrap()})
-				err = nil
-			default:
-				err = nil
-			}
+	var found error
+	walked := errchain.WalkSteps(err, func(e error) errchain.Step {
+		if _, ok := e.(RecoveredPanic); ok {
+			return errchain.Skip
 		}
-		for err == nil {
-			if len(joins) == 0 {
-				return nil
-			}
-			top := &joins[len(joins)-1]
-			if top.next >= len(top.errs) {
-				joins = joins[:len(joins)-1]
-				continue
-			}
-			err = top.errs[top.next]
-			top.next++
+		if m := markerNode(e, kind); m != nil {
+			found = m
+			return errchain.Stop
 		}
+		return errchain.Descend
+	})
+	if walked != errchain.Stopped {
+		return nil
 	}
+	return found
 }
 
 // markerNode returns the marker of kind err itself carries, or nil.
 func markerNode(err error, kind markerKind) error {
 	switch kind {
 	case markReported:
-		if r, ok := err.(*reportedError); ok {
+		if r, ok := errchain.MatchesAs[*reportedError](err); ok && r != nil {
 			return r
 		}
-		if x, ok := err.(interface{ As(any) bool }); ok {
-			var r *reportedError
-			if x.As(&r) && r != nil {
-				return r
-			}
-		}
 	case markWritten:
-		if err == ErrResponseWritten {
-			return err
-		}
-		if x, ok := err.(interface{ Is(error) bool }); ok && x.Is(ErrResponseWritten) {
+		if errchain.Matches(err, ErrResponseWritten) {
 			return err
 		}
 	case markHandled:
-		if h, ok := err.(*handledError); ok {
+		if h, ok := errchain.MatchesAs[*handledError](err); ok && h != nil {
 			return h
-		}
-		if x, ok := err.(interface{ As(any) bool }); ok {
-			var h *handledError
-			if x.As(&h) && h != nil {
-				return h
-			}
 		}
 	}
 	return nil

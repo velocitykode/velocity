@@ -419,7 +419,7 @@ func TestBoundary_DeepChainMarkers(t *testing.T) {
 		// flagged recovered, whatever it carries.
 		{name: "PanicCarryingSentinelPastWalkBound", err: wrap(&PanicError{Err: contract.ErrResponseWritten, Stack: "stack"}, errchain.Max), wantStatus: http.StatusInternalServerError},
 		{name: "SentinelPastWalkBound", err: wrap(contract.ErrResponseWritten, errchain.Max), wantStatus: http.StatusInternalServerError},
-		{name: "SentinelPastMarkerCap", err: wrap(contract.ErrResponseWritten, 1025), wantStatus: http.StatusInternalServerError},
+		{name: "SentinelFarPastWalkBound", err: wrap(contract.ErrResponseWritten, 1025), wantStatus: http.StatusInternalServerError},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

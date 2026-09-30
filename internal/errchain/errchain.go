@@ -53,7 +53,34 @@ const (
 // Unwrap method or in visit is recovered and ends the walk with Panicked;
 // visit's side effects up to the panic stay. Walk of a nil err calls
 // nothing and returns Ended.
-func Walk(err error, visit func(e error) (stop bool)) (result Result) {
+func Walk(err error, visit func(e error) (stop bool)) Result {
+	return WalkSteps(err, func(e error) Step {
+		if visit(e) {
+			return Stop
+		}
+		return Descend
+	})
+}
+
+// Step is what a WalkSteps visit tells the walk to do after an error.
+type Step uint8
+
+const (
+	// Descend goes on, into the error's own chain.
+	Descend Step = iota
+	// Stop ends the walk with Stopped.
+	Stop
+	// Skip goes on without the error's own chain: nothing it unwraps
+	// to is visited through it.
+	Skip
+)
+
+// WalkSteps is Walk whose visit can also leave out an error's own chain
+// (Skip), for a classification that must not look below a node (the
+// value a recovered panic carries). Order, bound and containment are
+// Walk's; an error reached only through a skipped one is not visited and
+// does not count toward Max.
+func WalkSteps(err error, visit func(e error) Step) (result Result) {
 	if err == nil {
 		return Ended
 	}
@@ -69,8 +96,11 @@ func Walk(err error, visit func(e error) (stop bool)) (result Result) {
 		if e == nil {
 			return Ended
 		}
-		if visit(e) {
+		switch visit(e) {
+		case Stop:
 			return Stopped
+		case Skip:
+			return Ended
 		}
 		switch u := e.(type) {
 		case interface{ Unwrap() error }:
@@ -88,8 +118,8 @@ func Walk(err error, visit func(e error) (stop bool)) (result Result) {
 }
 
 // walkQueue walks the branches of a join breadth first, counted errors
-// already looked at toward Max. Walk contains its panics.
-func walkQueue(branches []error, counted int, visit func(e error) (stop bool)) Result {
+// already looked at toward Max. WalkSteps contains its panics.
+func walkQueue(branches []error, counted int, visit func(e error) Step) Result {
 	var buf [Max]error
 	queue := buf[:0]
 	truncated := false
@@ -106,8 +136,11 @@ func walkQueue(branches []error, counted int, visit func(e error) (stop bool)) R
 		if e == nil {
 			continue
 		}
-		if visit(e) {
+		switch visit(e) {
+		case Stop:
 			return Stopped
+		case Skip:
+			continue
 		}
 		switch u := e.(type) {
 		case interface{ Unwrap() error }:

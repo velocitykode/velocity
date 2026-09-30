@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // headerOnlyError carries headers but names no status, optionally wrapping
@@ -79,33 +81,37 @@ func TestStatusOf_ParityWithErrorsAs(t *testing.T) {
 		err        error
 		wantStatus int
 		wantNode   string
+		// notParity marks a chain whose answer differs from errors.As on
+		// purpose: the walk is breadth first and bounded.
+		notParity bool
 	}{
-		{"plain", errors.New("boom"), 500, ""},
-		{"direct", node(404, "a"), 404, "a"},
-		{"wrapped", fmt.Errorf("ctx: %w", node(403, "a")), 403, "a"},
-		{"double wrapped", fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", node(409, "a"))), 409, "a"},
-		{"typed nil", fmt.Errorf("ctx: %w", (*HTTPError)(nil)), 500, ""},
-		{"status and header on different nodes", &statusOnlyError{status: 422, inner: &headerOnlyError{header: http.Header{"X-Node": {"b"}}}}, 422, "b"},
-		{"joined first wins", errors.Join(errors.New("x"), node(404, "a"), node(409, "b")), 404, "a"},
-		{"joined split targets", errors.Join(&statusOnlyError{status: 418}, &headerOnlyError{header: http.Header{"X-Node": {"b"}}}), 418, "b"},
-		{"joined nested depth first", errors.Join(fmt.Errorf("w: %w", errors.Join(errors.New("x"), node(401, "a"))), node(402, "b")), 401, "a"},
-		{"multi %w", fmt.Errorf("%w and %w", errors.New("x"), node(410, "a")), 410, "a"},
-		{"multi with nil entry", multiError{nil, node(411, "a")}, 411, "a"},
-		{"as method answers status", &asMethodError{status: node(418, "as"), inner: node(429, "inner")}, 418, "inner"},
-		{"as method declines, child answers", &asMethodError{inner: node(429, "inner")}, 429, "inner"},
-		{"as method inside join after header sibling", errors.Join(&headerOnlyError{header: http.Header{"X-Node": {"b"}}}, &asMethodError{status: node(451, "as")}), 451, "b"},
-		{"wrapped as method", fmt.Errorf("w: %w", &asMethodError{status: &statusOnlyError{status: 423}}), 423, ""},
-		{"beyond walk limit", deepWrap(node(503, "deep"), chainWalkLimit+10), 503, "deep"},
-		{"joined beyond walk limit", deepWrap(errors.Join(errors.New("x"), node(502, "deep")), chainWalkLimit+1), 502, "deep"},
+		{"plain", errors.New("boom"), 500, "", false},
+		{"direct", node(404, "a"), 404, "a", false},
+		{"wrapped", fmt.Errorf("ctx: %w", node(403, "a")), 403, "a", false},
+		{"double wrapped", fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", node(409, "a"))), 409, "a", false},
+		{"typed nil", fmt.Errorf("ctx: %w", (*HTTPError)(nil)), 500, "", false},
+		{"status and header on different nodes", &statusOnlyError{status: 422, inner: &headerOnlyError{header: http.Header{"X-Node": {"b"}}}}, 422, "b", false},
+		{"joined first wins", errors.Join(errors.New("x"), node(404, "a"), node(409, "b")), 404, "a", false},
+		{"joined split targets", errors.Join(&statusOnlyError{status: 418}, &headerOnlyError{header: http.Header{"X-Node": {"b"}}}), 418, "b", false},
+		{"joined nested breadth first", errors.Join(fmt.Errorf("w: %w", errors.Join(errors.New("x"), node(401, "a"))), node(402, "b")), 402, "b", true},
+		{"multi %w", fmt.Errorf("%w and %w", errors.New("x"), node(410, "a")), 410, "a", false},
+		{"multi with nil entry", multiError{nil, node(411, "a")}, 411, "a", false},
+		{"as method answers status", &asMethodError{status: node(418, "as"), inner: node(429, "inner")}, 418, "inner", false},
+		{"as method declines, child answers", &asMethodError{inner: node(429, "inner")}, 429, "inner", false},
+		{"as method inside join after header sibling", errors.Join(&headerOnlyError{header: http.Header{"X-Node": {"b"}}}, &asMethodError{status: node(451, "as")}), 451, "b", false},
+		{"wrapped as method", fmt.Errorf("w: %w", &asMethodError{status: &statusOnlyError{status: 423}}), 423, "", false},
+		{"at the walk bound", deepWrap(node(503, "deep"), errchain.Max-1), 503, "deep", false},
+		{"past the walk bound", deepWrap(node(503, "deep"), errchain.Max), 500, "", true},
+		{"joined at the walk bound", deepWrap(errors.Join(errors.New("x"), node(502, "deep")), errchain.Max-3), 502, "deep", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			status, headers, ok := StatusOf(tt.err)
 			refStatus, refHeaders, refOK := statusOfReference(tt.err)
-			if status != refStatus || ok != refOK {
+			if !tt.notParity && (status != refStatus || ok != refOK) {
 				t.Errorf("StatusOf() = (%d, %v), errors.As gives (%d, %v)", status, ok, refStatus, refOK)
 			}
-			if got, ref := headers.Get("X-Node"), refHeaders.Get("X-Node"); got != ref {
+			if got, ref := headers.Get("X-Node"), refHeaders.Get("X-Node"); !tt.notParity && got != ref {
 				t.Errorf("X-Node = %q, errors.As gives %q", got, ref)
 			}
 			if status != tt.wantStatus {

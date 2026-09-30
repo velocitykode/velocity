@@ -1,9 +1,10 @@
-package errchain
+package errchain_test
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	. "github.com/velocitykode/velocity/internal/errchain"
 	"io"
 	"testing"
 

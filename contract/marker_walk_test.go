@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // testPanic stands for a recovered panic: it implements RecoveredPanic and
@@ -65,16 +67,16 @@ func TestMarkerPredicates_OutsidePanicOnly(t *testing.T) {
 		{name: "JoinMarkersOnlyInsidePanic", err: errors.Join(panicOf(MarkReported(Handled(base))), other)},
 		{name: "AsMethodReported", err: &asMarkedError{hidden: MarkReported(base)}, wantReported: true},
 		{name: "AsMethodHandled", err: &asMarkedError{hidden: Handled(base)}, wantCause: base},
-		{name: "PastWalkLimit", err: deepWrap(MarkReported(Handled(base)), chainWalkLimit+6), wantReported: true, wantWritten: true, wantCause: base},
-		{name: "SentinelPastWalkLimit", err: deepWrap(ErrResponseWritten, chainWalkLimit+1), wantWritten: true},
-		{name: "SentinelInsidePanicPastWalkLimit", err: deepWrap(panicOf(ErrResponseWritten), chainWalkLimit+1)},
-		{name: "MarkersInsidePanicPastWalkLimit", err: deepWrap(panicOf(MarkReported(Handled(base))), chainWalkLimit+1)},
-		{name: "JoinedPanicPastWalkLimit", err: deepWrap(errors.Join(other, panicOf(ErrResponseWritten)), chainWalkLimit+1)},
-		{name: "SentinelAtMarkerCap", err: deepWrap(ErrResponseWritten, markerWalkCap-1), wantWritten: true},
-		{name: "MarkersPastMarkerCap", err: deepWrap(MarkReported(Handled(base)), markerWalkCap+1)},
-		{name: "SentinelPastMarkerCap", err: deepWrap(ErrResponseWritten, markerWalkCap)},
-		{name: "WideJoinPastMarkerCap", err: wideJoin(MarkReported(Handled(base)), markerWalkCap)},
-		{name: "WideJoinWithinMarkerCap", err: wideJoin(MarkReported(base), 100), wantReported: true},
+		{name: "MarkersAtWalkBound", err: deepWrap(MarkReported(Handled(base)), errchain.Max-3), wantReported: true, wantWritten: true, wantCause: base},
+		{name: "SentinelAtWalkBound", err: deepWrap(ErrResponseWritten, errchain.Max-1), wantWritten: true},
+		{name: "SentinelInsidePanicAtWalkBound", err: deepWrap(panicOf(ErrResponseWritten), errchain.Max-2)},
+		{name: "MarkersInsidePanicAtWalkBound", err: deepWrap(panicOf(MarkReported(Handled(base))), errchain.Max-4)},
+		{name: "JoinedPanicAtWalkBound", err: deepWrap(errors.Join(other, panicOf(ErrResponseWritten)), errchain.Max-4)},
+		// Past errchain.Max the chain cannot be read: no marker, the safe side.
+		{name: "MarkersPastWalkBound", err: deepWrap(MarkReported(Handled(base)), errchain.Max)},
+		{name: "SentinelPastWalkBound", err: deepWrap(ErrResponseWritten, errchain.Max)},
+		{name: "WideJoinPastWalkBound", err: wideJoin(MarkReported(Handled(base)), errchain.Max-1)},
+		{name: "WideJoinWithinWalkBound", err: wideJoin(MarkReported(base), errchain.Max-2), wantReported: true},
 		{name: "Unmarked", err: base},
 		{name: "Nil", err: nil},
 	}
@@ -150,8 +152,8 @@ func BenchmarkMarkerPredicates(b *testing.B) {
 		{"joined", errors.Join(&testPanic{value: "boom"}, MarkReported(base))},
 		{"nested joins", errors.Join(base, errors.Join(base, errors.Join(base, MarkReported(base))))},
 		{"wide join", wideJoin(MarkReported(base), 40)},
-		{"deep chain", deepWrap(Handled(base), chainWalkLimit*4)},
-		{"deep panic", deepWrap(&testPanic{value: MarkReported(Handled(base))}, chainWalkLimit+1)},
+		{"deep chain", deepWrap(Handled(base), errchain.Max*4)},
+		{"deep panic", deepWrap(&testPanic{value: MarkReported(Handled(base))}, errchain.Max+1)},
 		{"unmarked", fmt.Errorf("x: %w", base)},
 	}
 	for _, tt := range tests {

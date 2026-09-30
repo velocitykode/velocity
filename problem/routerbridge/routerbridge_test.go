@@ -17,6 +17,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/csrf/stores"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/router"
@@ -741,11 +742,10 @@ func TestInstall_ProblemBodyMatchesStandalone(t *testing.T) {
 }
 
 // TestInstall_DeepChainMarkers asserts the pipeline finds a marker by its
-// position at any depth: a *router.PanicError carrying the response-written
-// sentinel under more wrappers than a depth-limited walk visits is a
-// reported 500, a plain sentinel that deep still ends the request, and a
-// marker past the marker walk's cap is not found, so the error is
-// reported and rendered.
+// position within the walk's bound: a *router.PanicError carrying the
+// response-written sentinel is a reported 500 at any depth, a plain
+// sentinel at the bound still ends the request, and a marker past the
+// bound is not found, so the error is reported and rendered.
 func TestInstall_DeepChainMarkers(t *testing.T) {
 	wrap := func(err error, n int) error {
 		for i := 0; i < n; i++ {
@@ -759,11 +759,14 @@ func TestInstall_DeepChainMarkers(t *testing.T) {
 		wantStatus  int // 0: nothing written
 		wantReports int
 	}{
-		{name: "PanicCarryingSentinelPastWalkLimit", err: wrap(&router.PanicError{Err: contract.ErrResponseWritten, Stack: "stack"}, 65), wantStatus: http.StatusInternalServerError, wantReports: 1},
-		{name: "PanicCarryingReportedPastWalkLimit", err: wrap(&router.PanicError{Err: contract.MarkReported(errors.New("x")), Stack: "stack"}, 65), wantStatus: http.StatusInternalServerError, wantReports: 1},
-		{name: "SentinelPastWalkLimit", err: wrap(contract.ErrResponseWritten, 65)},
-		{name: "SentinelPastMarkerCap", err: wrap(contract.ErrResponseWritten, 1025), wantStatus: http.StatusInternalServerError, wantReports: 1},
-		{name: "ReportedPastMarkerCap", err: wrap(contract.MarkReported(errors.New("x")), 1025), wantStatus: http.StatusInternalServerError, wantReports: 1},
+		{name: "PanicCarryingSentinelPastWalkBound", err: wrap(&router.PanicError{Err: contract.ErrResponseWritten, Stack: "stack"}, 65), wantStatus: http.StatusInternalServerError, wantReports: 1},
+		{name: "PanicCarryingReportedPastWalkBound", err: wrap(&router.PanicError{Err: contract.MarkReported(errors.New("x")), Stack: "stack"}, 65), wantStatus: http.StatusInternalServerError, wantReports: 1},
+		{name: "SentinelAtWalkBound", err: wrap(contract.ErrResponseWritten, errchain.Max-1)},
+		// Past errchain.Max the chain cannot be read: no marker, so the
+		// error is reported and rendered.
+		{name: "SentinelPastWalkBound", err: wrap(contract.ErrResponseWritten, errchain.Max), wantStatus: http.StatusInternalServerError, wantReports: 1},
+		{name: "SentinelFarPastWalkBound", err: wrap(contract.ErrResponseWritten, 1025), wantStatus: http.StatusInternalServerError, wantReports: 1},
+		{name: "ReportedFarPastWalkBound", err: wrap(contract.MarkReported(errors.New("x")), 1025), wantStatus: http.StatusInternalServerError, wantReports: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

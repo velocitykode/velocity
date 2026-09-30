@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Mail sentinel errors. These are owned by the contract leaf because the
@@ -630,7 +632,7 @@ func (m *Message) AttachFile(path string) (*Message, error) {
 	// both disappear in a single call.
 	f, err := root.Open(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errchain.Is(err, os.ErrNotExist) {
 			wrapped := fmt.Errorf("mail: failed to open attachment %q: %w", path, err)
 			m.setErr(wrapped)
 			return m, wrapped
@@ -906,10 +908,10 @@ func validateSingleAddrSpec(field, email string) error {
 }
 
 // IsErrAttachmentTooLarge is a convenience for errors.Is(err, ErrAttachmentTooLarge).
-func IsErrAttachmentTooLarge(err error) bool { return errors.Is(err, ErrAttachmentTooLarge) }
+func IsErrAttachmentTooLarge(err error) bool { return errchain.Is(err, ErrAttachmentTooLarge) }
 
 // IsErrInvalidHeader is a convenience for errors.Is(err, ErrInvalidHeader).
-func IsErrInvalidHeader(err error) bool { return errors.Is(err, ErrInvalidHeader) }
+func IsErrInvalidHeader(err error) bool { return errchain.Is(err, ErrInvalidHeader) }
 
 // Getters for driver access
 

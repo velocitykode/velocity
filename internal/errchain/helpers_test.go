@@ -1,9 +1,10 @@
-package errchain
+package errchain_test
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	. "github.com/velocitykode/velocity/internal/errchain"
 	"io"
 	"testing"
 
@@ -481,5 +482,37 @@ func TestReadValue_HostileSweep(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Skip leaves out an error's own chain and nothing else: the join's other
+// branches, and errors reached another way, are still visited.
+func TestWalkSteps_Skip(t *testing.T) {
+	below := errors.New("below")
+	skipped := fmt.Errorf("skipped: %w", below)
+	beside := errors.New("beside")
+	var visited []error
+	r := WalkSteps(errors.Join(skipped, beside), func(e error) Step {
+		visited = append(visited, e)
+		if e == skipped {
+			return Skip
+		}
+		return Descend
+	})
+	if r != Ended {
+		t.Fatalf("WalkSteps = %v, want Ended", r)
+	}
+	for _, e := range visited {
+		if e == below {
+			t.Fatal("an error below a skipped one was visited")
+		}
+	}
+	if len(visited) != 3 || visited[2] != beside {
+		t.Fatalf("visited %v, want the join, the skipped error and the one beside it", visited)
+	}
+	// A skipped root ends a chain without a join.
+	n := 0
+	if r := WalkSteps(fmt.Errorf("w: %w", io.EOF), func(error) Step { n++; return Skip }); r != Ended || n != 1 {
+		t.Fatalf("WalkSteps = %v after %d visits, want Ended after 1", r, n)
 	}
 }

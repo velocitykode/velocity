@@ -89,10 +89,10 @@ func TestEventEnvelopeHelperOutsideRouterGraph(t *testing.T) {
 
 // TestEventEmitterImportsOnlyItsLeaves pins that internal/eventemit, which
 // the router and every event-dispatching package link, imports only the
-// standard library, contract, internal/fallbacklog, internal/goroutine,
-// internal/panicerr and trace (each stdlib-only or built from those, all
-// already in the router's graph), so it adds itself to the router's
-// dependency graph and nothing heavy.
+// standard library, contract, internal/errchain, internal/fallbacklog,
+// internal/goroutine, internal/panicerr and trace (each stdlib-only or
+// built from those, all already in the router's graph), so it adds itself
+// to the router's dependency graph and nothing heavy.
 func TestEventEmitterImportsOnlyItsLeaves(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go tool not on PATH")
@@ -105,6 +105,7 @@ func TestEventEmitterImportsOnlyItsLeaves(t *testing.T) {
 	allowed := map[string]bool{
 		module + "/internal/eventemit":   true,
 		module + "/contract":             true,
+		module + "/internal/errchain":    true,
 		module + "/internal/fallbacklog": true,
 		module + "/internal/goroutine":   true,
 		module + "/internal/panicerr":    true,
@@ -112,7 +113,7 @@ func TestEventEmitterImportsOnlyItsLeaves(t *testing.T) {
 	}
 	for _, dep := range strings.Fields(string(out)) {
 		if !allowed[dep] {
-			t.Errorf("internal/eventemit links %s; it may import only the standard library, contract, internal/fallbacklog, internal/goroutine, internal/panicerr and trace", dep)
+			t.Errorf("internal/eventemit links %s; it may import only the standard library, contract, internal/errchain, internal/fallbacklog, internal/goroutine, internal/panicerr and trace", dep)
 		}
 	}
 }
@@ -130,6 +131,47 @@ func TestGoroutineImportsOnlyTheStandardLibrary(t *testing.T) {
 	for _, dep := range strings.Fields(string(out)) {
 		if dep != "github.com/velocitykode/velocity/internal/goroutine" {
 			t.Errorf("internal/goroutine links %s; it may import only the standard library", dep)
+		}
+	}
+}
+
+// TestLeafPackagesImportOnlyStdlibAndErrchain pins the leaf rule: contract
+// and resource import the standard library and, of the module, only
+// internal/errchain (the bounded, contained error walk contract's
+// predicates run on); errchain itself imports the standard library alone.
+// Every package below router stays free of the framework's own graph.
+func TestLeafPackagesImportOnlyStdlibAndErrchain(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go tool not on PATH")
+	}
+	const (
+		module   = "github.com/velocitykode/velocity"
+		errchain = module + "/internal/errchain"
+	)
+	allowed := map[string][]string{
+		"./contract":          {module + "/contract", errchain},
+		"./resource":          {module + "/resource", errchain},
+		"./internal/errchain": {errchain},
+	}
+	for pkg, allow := range allowed {
+		out, err := exec.Command("go", "list", "-deps", pkg).Output()
+		if err != nil {
+			t.Fatalf("go list -deps %s: %v", pkg, err)
+		}
+		for _, dep := range strings.Fields(string(out)) {
+			if !strings.HasPrefix(dep, module) {
+				if strings.Contains(strings.SplitN(dep, "/", 2)[0], ".") {
+					t.Errorf("%s depends on %s, outside the standard library", pkg, dep)
+				}
+				continue
+			}
+			ok := false
+			for _, a := range allow {
+				ok = ok || dep == a
+			}
+			if !ok {
+				t.Errorf("%s depends on %s; it may import only the standard library and %v", pkg, dep, allow)
+			}
 		}
 	}
 }
