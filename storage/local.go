@@ -105,6 +105,10 @@ func NewLocalDriver(config DiskConfig) *LocalDriver {
 }
 
 // Shutdown releases the *os.Root file descriptor. Idempotent.
+//
+// It does not wait for a PutStream still reading its stream: that write
+// fails with ErrInvalidPath once its stream ends, removes its temp file,
+// and holds a descriptor of its target directory until then.
 func (d *LocalDriver) Shutdown(ctx context.Context) error {
 	d.rootMu.Lock()
 	defer d.rootMu.Unlock()
@@ -203,39 +207,69 @@ func (d *LocalDriver) Put(path string, contents []byte) error {
 	})
 }
 
-// PutStream stores a stream at the given path
+// PutStream stores a stream at the given path.
+//
+// The stream is user code: its Read can block, panic, or call back into
+// the driver, Shutdown included. So the driver's lock is held only to
+// create the write's temp file and, after the copy, to rename it into
+// place; the copy runs without it. A write whose driver is shut down
+// before the rename fails with ErrInvalidPath and leaves nothing behind.
 func (d *LocalDriver) PutStream(path string, stream io.Reader) error {
 	rel, err := normalizeRelative(path)
 	if err != nil {
 		return err
 	}
-	return d.withRoot(func(root *os.Root) error {
-		if err := mkdirAllIn(root, filepath.Dir(rel)); err != nil {
+	dir, base := filepath.Dir(rel), filepath.Base(rel)
+
+	// The temp file is created and later renamed through a root of its
+	// own directory, not the driver's: it stays usable to remove the temp
+	// file after a Shutdown closed the driver's root.
+	var dirRoot *os.Root
+	var file *os.File
+	var tmp string
+	err = d.withRoot(func(root *os.Root) error {
+		if err := mkdirAllIn(root, dir); err != nil {
 			return fmt.Errorf("velocity/storage: create directory: %w", err)
 		}
-		file, tmp, err := createTemp(root, rel)
+		r, err := root.OpenRoot(dir)
 		if err != nil {
+			return fmt.Errorf("velocity/storage: open directory: %w", mapOpenError(err))
+		}
+		f, name, err := createTemp(r, base)
+		if err != nil {
+			_ = r.Close()
 			return fmt.Errorf("velocity/storage: create file: %w", mapOpenError(err))
 		}
-		committed := false
-		defer func() {
-			if !committed {
-				_ = file.Close()
-				_ = root.Remove(tmp)
-			}
-		}()
-		limited := io.LimitReader(stream, d.maxFileSize+1)
-		written, err := io.Copy(file, limited)
-		if err != nil {
-			return fmt.Errorf("velocity/storage: write stream: %w", err)
+		dirRoot, file, tmp = r, f, name
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = file.Close()
+			_ = dirRoot.Remove(tmp)
 		}
-		if err := file.Close(); err != nil {
-			return fmt.Errorf("velocity/storage: close file: %w", err)
-		}
-		if written > d.maxFileSize {
-			return fmt.Errorf("velocity/storage: stream exceeds maximum size of %d bytes: %w", d.maxFileSize, ErrQuotaExceeded)
-		}
-		if err := root.Rename(tmp, rel); err != nil {
+		_ = dirRoot.Close()
+	}()
+
+	limited := io.LimitReader(stream, d.maxFileSize+1)
+	written, err := io.Copy(file, limited)
+	if err != nil {
+		return fmt.Errorf("velocity/storage: write stream: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("velocity/storage: close file: %w", err)
+	}
+	if written > d.maxFileSize {
+		return fmt.Errorf("velocity/storage: stream exceeds maximum size of %d bytes: %w", d.maxFileSize, ErrQuotaExceeded)
+	}
+	// Under the lock, so the object lands before a Shutdown closes the
+	// root, or not at all.
+	return d.withRoot(func(*os.Root) error {
+		if err := dirRoot.Rename(tmp, base); err != nil {
 			return fmt.Errorf("velocity/storage: move file: %w", mapOpenError(err))
 		}
 		committed = true

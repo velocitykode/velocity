@@ -53,7 +53,11 @@ func newTestLocalDriver(t *testing.T) (*LocalDriver, string) {
 	t.Helper()
 	dir := t.TempDir()
 	d := NewLocalDriver(DiskConfig{Driver: "local", Root: dir})
-	t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
+	// Bounded: a write stuck under the driver's lock would otherwise hang
+	// the cleanup, and the test binary, instead of failing the test.
+	t.Cleanup(func() {
+		hostile.Within(t, hostile.Deadline, func() { _ = d.Shutdown(context.Background()) })
+	})
 	return d, dir
 }
 
