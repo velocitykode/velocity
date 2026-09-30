@@ -2,7 +2,6 @@ package interceptors
 
 import (
 	"context"
-	"errors"
 	"runtime/debug"
 	"strconv"
 	"sync/atomic"
@@ -533,10 +532,14 @@ func (c *call) recoverDownstream(ctx context.Context, p interface{}) error {
 }
 
 // end ends the call once the chain returned err or panicked with p (nil
-// when it did not), and returns the error the call ends with: it handles
-// the panic, marks the call ended, then writes the request line,
-// dispatches the terminal events and reports an internal error, when the
-// panic did not claim the report already.
+// when it did not), and returns the error grpc-go gets: it handles the
+// panic, classifies the call's error once (see classify), marks the call
+// ended, then writes the request line, dispatches the terminal events and
+// reports an internal error, when the panic did not claim the report
+// already. The line, the events and the report take the code from that
+// one classification; the events and the report carry err itself, and
+// grpc-go gets the classified error, so no method of err runs after the
+// call ended.
 func (c *call) end(p interface{}, err error) error {
 	if p != nil {
 		stack := c.stack()
@@ -546,18 +549,19 @@ func (c *call) end(p interface{}, err error) error {
 		c.panicRecovered(p, stack)
 		err = c.panicResult(c.ctx, p)
 	}
+	o := classify(c.ctx, err)
 	c.state.Or(callEnded)
 	if c.observed {
 		user := c.userContext()
 		if c.cfg.RequestLine {
-			logRequest(c.ctx, user, c.userClaims(), c.method, c.start, err, c.cfg)
+			logRequest(c.ctx, user, c.userClaims(), c.method, c.start, o, c.cfg)
 		}
-		c.completed(err)
+		c.completed(err, o.code)
 	}
-	if reportable(c.ctx, err) && c.claimReport() {
-		c.report(err, false, "", false)
+	if o.reportable() && c.claimReport() {
+		c.report(err, false, "", false, o.reason)
 	}
-	return err
+	return o.wire
 }
 
 // stack returns the calling goroutine's stack when the config captures
@@ -569,31 +573,11 @@ func (c *call) stack() string {
 	return string(debug.Stack())
 }
 
-// reportable reports whether err, which a call under ctx ended with, is
-// an internal error to report: its gRPC code is Internal or Unknown (an
-// error that is neither a gRPC status nor a context error is Unknown; see
-// statusCodeOf), the codes the request line writes at error level. A call
-// its own context ended (the client cancelled, or the deadline passed) is
-// not reported.
-func reportable(ctx context.Context, err error) bool {
-	if err == nil {
-		return false
-	}
-	if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
-		return false
-	}
-	switch statusCodeOf(err) {
-	case codes.Internal, codes.Unknown:
-		return true
-	}
-	return false
-}
-
 // reportPanic reports panic p, with stack, to the Reporter under the
 // call's effective context, or logs it when there is no Reporter (or it
 // panicked): one entry. late marks a panic after the call ended.
 func (c *call) reportPanic(p interface{}, stack string, late bool) {
-	if c.cfg.Reporter != nil && c.report(panicerr.FromRecovered(p), true, stack, late) {
+	if c.cfg.Reporter != nil && c.report(panicerr.FromRecovered(p), true, stack, late, "") {
 		return
 	}
 	fields := []interface{}{"method", c.method, "panic", p}
@@ -643,10 +627,12 @@ func (c *call) panicResult(ctx context.Context, p interface{}) (err error) {
 // carrying the call's identity from its claims snapshot: the user id as
 // UserID and the team id as Extra "team_id", each only when non-zero.
 // recovered marks a recovered panic, with its stack, and late one that
-// happened after the call ended. It returns whether the reporter returned
+// happened after the call ended, and reason, when set, is written as Extra
+// "reason": why the call's error could not be classified. It returns
+// whether the reporter returned
 // normally: a reporter that panics is contained, since reporting must
 // never fail the call or crash the server.
-func (c *call) report(err error, recovered bool, stack string, late bool) (reported bool) {
+func (c *call) report(err error, recovered bool, stack string, late bool, reason string) (reported bool) {
 	if c.cfg.Reporter == nil {
 		return false
 	}
@@ -667,6 +653,9 @@ func (c *call) report(err error, recovered bool, stack string, late bool) (repor
 	}
 	if late {
 		ec.Extra["late"] = true
+	}
+	if reason != "" {
+		ec.Extra[reasonKey] = reason
 	}
 	c.cfg.Reporter.Report(err, ec)
 	return true
@@ -693,15 +682,15 @@ func (c *call) started() {
 
 // completed dispatches the end of the call: the failed event when it
 // ended with err, then the completed event, the terminal event of every
-// call. The user fields come from the call's claims snapshot.
-func (c *call) completed(err error) {
+// call, each with code, the call's status code. The user fields come from
+// the call's claims snapshot.
+func (c *call) completed(err error, code codes.Code) {
 	if !eventsInstalled(c.cfg.events) {
 		return
 	}
 	meta := eventmeta.Current(c.ctx)
 	duration := meta.At.Sub(c.start)
 	protocol := detectProtocol(c.ctx)
-	code := statusCodeOf(err)
 	claims := c.userClaims()
 	userID, teamID := claims.userID, claims.teamID
 	if err != nil {

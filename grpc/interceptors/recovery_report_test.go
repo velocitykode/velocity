@@ -111,9 +111,10 @@ func TestCallLifecycle_ReportsPanicOnce(t *testing.T) {
 
 // TestCallLifecycle_ReportsInternalHandlerErrors asserts an internal error a
 // handler returns (codes.Internal or codes.Unknown, a plain Go error
-// included) is reported once with the method named, the client getting the
-// same error, while a client-outcome status and a call ended by its own
-// context are not reported.
+// included) is reported once, as the handler's own error, with the method
+// named, the client getting the status grpc-go derives from that error,
+// while a client-outcome status and a call ended by its own context are not
+// reported.
 func TestCallLifecycle_ReportsInternalHandlerErrors(t *testing.T) {
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -138,8 +139,8 @@ func TestCallLifecycle_ReportsInternalHandlerErrors(t *testing.T) {
 			pair := CallLifecycle(WithReporter(reports))
 			handler := func(context.Context, interface{}) (interface{}, error) { return nil, tt.err }
 			_, err := pair.Unary(tt.ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/svc.Orders/Get"}, handler)
-			if err != tt.err {
-				t.Fatalf("returned %v, want the handler's error unchanged", err)
+			if !sameStatus(err, tt.err) {
+				t.Fatalf("returned %v, want the status of the handler's error %v", err, tt.err)
 			}
 			want := 0
 			if tt.wantReport {
@@ -158,8 +159,8 @@ func TestCallLifecycle_ReportsInternalHandlerErrors(t *testing.T) {
 			}
 
 			streamHandler := func(interface{}, grpc.ServerStream) error { return tt.err }
-			if serr := pair.Stream(nil, &fakeStream{ctx: tt.ctx}, &grpc.StreamServerInfo{FullMethod: "/svc.Orders/Watch"}, streamHandler); serr != tt.err {
-				t.Fatalf("stream returned %v, want the handler's error unchanged", serr)
+			if serr := pair.Stream(nil, &fakeStream{ctx: tt.ctx}, &grpc.StreamServerInfo{FullMethod: "/svc.Orders/Watch"}, streamHandler); !sameStatus(serr, tt.err) {
+				t.Fatalf("stream returned %v, want the status of the handler's error %v", serr, tt.err)
 			}
 			if reports.count() != 2*want {
 				t.Errorf("stream reports = %d, want %d", reports.count()-want, want)
@@ -175,7 +176,7 @@ func (panickingReporter) Report(error, *contract.ErrorContext) { panic("reporter
 
 // TestCallLifecycle_PanickingReporterContained asserts a reporter that panics
 // cannot crash the call: the client still gets codes.Internal for a panic
-// and the handler's own error otherwise.
+// and the status of the handler's own error otherwise.
 func TestCallLifecycle_PanickingReporterContained(t *testing.T) {
 	pair := CallLifecycle(WithReporter(panickingReporter{}))
 	info := &grpc.UnaryServerInfo{FullMethod: "/svc.Orders/Ship"}
@@ -185,9 +186,25 @@ func TestCallLifecycle_PanickingReporterContained(t *testing.T) {
 	}
 	plain := errors.New("database unreachable")
 	_, err = pair.Unary(context.Background(), nil, info, func(context.Context, interface{}) (interface{}, error) { return nil, plain })
-	if err != plain {
-		t.Errorf("returned %v, want the handler's error", err)
+	if !sameStatus(err, plain) {
+		t.Errorf("returned %v, want the status of the handler's error", err)
 	}
+}
+
+// sameStatus reports whether got, the error a call returned to grpc-go,
+// gives the client the status grpc-go derives from want, the handler's
+// error: status.FromError, then status.FromContextError when want carries
+// no status. Both nil is the same.
+func sameStatus(got, want error) bool {
+	if got == nil || want == nil {
+		return got == want
+	}
+	w, ok := status.FromError(want)
+	if !ok {
+		w = status.FromContextError(want)
+	}
+	g, ok := status.FromError(got)
+	return ok && g.Code() == w.Code() && g.Message() == w.Message()
 }
 
 // fakeStream is a grpc.ServerStream carrying ctx.

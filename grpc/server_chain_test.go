@@ -78,6 +78,8 @@ func (c *chainServer) run(ctx context.Context) error {
 	switch c.outcome {
 	case "panic":
 		panic("handler broke")
+	case "poisoned error":
+		return poisonedError{}
 	case "interceptor panic":
 		return nil
 	}

@@ -7,7 +7,6 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
@@ -43,10 +42,11 @@ func isHealthCheck(method string) bool {
 // come from claims, the call's claims snapshot, and ExtraFields is read
 // from user (see call.userContext). A panicking ExtraFields is contained
 // and its fields omitted; a panicking logger is contained as well (see
-// eventemit.WriteLine).
-func logRequest(ctx, user context.Context, claims *callClaims, method string, start time.Time, err error, cfg *CallConfig) {
+// eventemit.WriteLine). o is the classification of the call's error (see
+// classify): its code, and the reason when it could not be classified.
+func logRequest(ctx, user context.Context, claims *callClaims, method string, start time.Time, o outcome, cfg *CallConfig) {
 	duration := time.Since(start)
-	code := statusCodeOf(err)
+	failed, code := o.wire != nil, o.code
 	fields := []interface{}{
 		"method", method,
 		"code", code.String(),
@@ -58,10 +58,13 @@ func logRequest(ctx, user context.Context, claims *callClaims, method string, st
 			"team_id", claims.teamID,
 		)
 	}
+	if o.reason != "" {
+		fields = append(fields, reasonKey, o.reason)
+	}
 	fields = append(fields, extraFields(user, cfg)...)
 	eventemit.WriteLine(ctx, cfg.Logger, func(logger contract.Logger) {
 		switch {
-		case err != nil && code != codes.Canceled && code != codes.NotFound:
+		case failed && code != codes.Canceled && code != codes.NotFound:
 			if code == codes.Internal || code == codes.Unknown {
 				logger.Error("gRPC request", fields...)
 			} else {
@@ -87,21 +90,6 @@ func extraFields(user context.Context, cfg *CallConfig) (fields []interface{}) {
 		}
 	}()
 	return cfg.ExtraFields(user)
-}
-
-// statusCodeOf returns the gRPC status code a handler's error ends the call
-// with, as grpc-go derives the status it sends: OK for nil, the error's own
-// status when it carries one (wrapped included), else the status of a
-// context error (Canceled, DeadlineExceeded, wrapped included), else
-// Unknown.
-func statusCodeOf(err error) codes.Code {
-	if err == nil {
-		return codes.OK
-	}
-	if s, ok := status.FromError(err); ok {
-		return s.Code()
-	}
-	return status.FromContextError(err).Code()
 }
 
 // Event dispatching helpers, shared between unary and stream variants.

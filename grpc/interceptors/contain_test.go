@@ -57,7 +57,9 @@ func TestContain_UpstreamSeesThePanicAsAnError(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		handler func(context.Context, any) error
-		want    func(error) bool
+		// want holds for the error upstream saw; wantEnd, when set, for
+		// the error the call ended with, else want does.
+		want, wantEnd func(error) bool
 	}{
 		{name: "internal", want: func(err error) bool { return status.Code(err) == codes.Internal }},
 		{name: "panic handler", handler: func(ctx context.Context, _ any) error {
@@ -65,7 +67,11 @@ func TestContain_UpstreamSeesThePanicAsAnError(t *testing.T) {
 				return errors.New("panic handler got another context")
 			}
 			return custom
-		}, want: func(err error) bool { return errors.Is(err, custom) }},
+		}, want: func(err error) bool { return errors.Is(err, custom) }, wantEnd: func(err error) bool {
+			// grpc-go gets the status the PanicHandler's error gives the client.
+			st, ok := status.FromError(err)
+			return ok && st.Code() == codes.Unknown && st.Message() == custom.Error()
+		}},
 	} {
 		for _, kind := range []string{"unary", "stream"} {
 			t.Run(tc.name+"/"+kind, func(t *testing.T) {
@@ -100,7 +106,11 @@ func TestContain_UpstreamSeesThePanicAsAnError(t *testing.T) {
 					err = chainStream(&mockServerStream{ctx: context.Background()}, func(any, grpc.ServerStream) error { return nil },
 						calls.Stream, interceptors.ContainStream(upstream), interceptors.ContainStream(panickingStream), calls.Stream)
 				}()
-				if !tc.want(seen) || !tc.want(err) {
+				wantEnd := tc.wantEnd
+				if wantEnd == nil {
+					wantEnd = tc.want
+				}
+				if !tc.want(seen) || !wantEnd(err) {
 					t.Errorf("upstream saw %v, call ended %v", seen, err)
 				}
 				if reports.count() != 1 {
