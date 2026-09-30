@@ -311,9 +311,10 @@ func TestManagerShutdown(t *testing.T) {
 		if _, cerr := manager.Channel("a"); cerr == nil {
 			t.Error("expected Channel(a) to fail after shutdown")
 		}
-		// Second call is a no-op returning nil without re-calling children.
-		if err := manager.Shutdown(context.Background()); err != nil {
-			t.Fatalf("second Shutdown should be nil, got %v", err)
+		// A second call returns the first run's retained result, not nil,
+		// without re-calling children.
+		if err2 := manager.Shutdown(context.Background()); !errors.Is(err2, errA) || !errors.Is(err2, errB) {
+			t.Fatalf("second Shutdown = %v, want the first run's retained result", err2)
 		}
 		if a.shutdownCalls != 1 || b.shutdownCalls != 1 || ok.shutdownCalls != 1 {
 			t.Fatalf("second Shutdown re-called children: a=%d b=%d ok=%d", a.shutdownCalls, b.shutdownCalls, ok.shutdownCalls)

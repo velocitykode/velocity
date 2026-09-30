@@ -862,14 +862,14 @@ func TestManager_Shutdown_ReturnsStoreErrors(t *testing.T) {
 		t.Error("okStore.Shutdown was not called")
 	}
 
-	// A second Shutdown with no intervening Store() must be an idempotent
-	// nil no-op: the map is already empty, so it returns nil and does not
-	// re-invoke any of the original children.
+	// A second Shutdown with no intervening Store() returns the first
+	// run's retained result, not nil, and does not re-invoke any of the
+	// original children.
 	failStore.called.Store(false)
 	failStore2.called.Store(false)
 	okStore.called.Store(false)
-	if err := m.Shutdown(context.Background()); err != nil {
-		t.Errorf("second Manager.Shutdown returned %v; want nil no-op", err)
+	if err2 := m.Shutdown(context.Background()); !errors.Is(err2, errBoom) || !errors.Is(err2, errKaboom) {
+		t.Errorf("second Manager.Shutdown returned %v; want the first run's retained result", err2)
 	}
 	if failStore.called.Load() || failStore2.called.Load() || okStore.called.Load() {
 		t.Error("second Shutdown re-invoked original children; map was not cleared")

@@ -56,9 +56,10 @@ func TestManagerShutdown_JoinsErrorsAndClears(t *testing.T) {
 		t.Errorf("expected ErrDiskNotFound after shutdown, got %v", derr)
 	}
 
-	// Second call is a no-op that returns nil and does not re-call children.
-	if err := m.Shutdown(context.Background()); err != nil {
-		t.Fatalf("second Shutdown should be nil, got %v", err)
+	// A second call returns the first run's retained result, not nil,
+	// without re-calling children.
+	if err2 := m.Shutdown(context.Background()); !errors.Is(err2, errA) || !errors.Is(err2, errB) {
+		t.Fatalf("second Shutdown = %v, want the first run's retained result", err2)
 	}
 	if a.calls != 1 || b.calls != 1 || ok.calls != 1 {
 		t.Fatalf("second Shutdown re-called children: a=%d b=%d ok=%d", a.calls, b.calls, ok.calls)

@@ -91,7 +91,7 @@ func TestStep_GoexitEndsTheGoroutine(t *testing.T) {
 }
 
 // teardown sits under every manager, so it imports only the standard
-// library and internal/panicerr.
+// library, internal/panicerr and internal/drain.
 func TestTeardownImportsOnlyItsLeaves(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go tool not on PATH")
@@ -101,8 +101,8 @@ func TestTeardownImportsOnlyItsLeaves(t *testing.T) {
 		t.Fatalf("go list: %v", err)
 	}
 	for _, imp := range strings.Fields(string(out)) {
-		if strings.Contains(imp, ".") && imp != "github.com/velocitykode/velocity/internal/panicerr" {
-			t.Errorf("internal/teardown imports %s; it may import only the standard library and internal/panicerr", imp)
+		if strings.Contains(imp, ".") && imp != "github.com/velocitykode/velocity/internal/panicerr" && imp != "github.com/velocitykode/velocity/internal/drain" {
+			t.Errorf("internal/teardown imports %s; it may import only the standard library, internal/panicerr and internal/drain", imp)
 		}
 	}
 }

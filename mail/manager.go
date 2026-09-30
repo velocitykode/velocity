@@ -2,7 +2,6 @@ package mail
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -21,6 +20,9 @@ type Manager struct {
 	mu       sync.RWMutex
 	// events holds the event dispatcher and handles a failed dispatch.
 	events eventemit.Emitter
+	// shutdowns shuts the detached channels down, one run at a time (see
+	// Shutdown). Detach is called under mu.
+	shutdowns teardown.Children[Mailer]
 }
 
 // Manager must satisfy the contract mail manager interface. The assertion
@@ -249,25 +251,27 @@ type ShutdownableMailer = contract.ShutdownAware
 
 // Shutdown tears down per-channel mailers that opt into ShutdownableMailer and
 // clears the channel registry. Every opted-in channel gets a Shutdown attempt
-// even if an earlier one fails or panics (a panic is that channel's error); the errors are aggregated via errors.Join so
-// the caller sees every partial failure without any being masked. Clearing the
-// registry up front makes a second call a no-op that returns nil.
+// even if an earlier one fails or panics (a panic is that channel's error);
+// the errors are aggregated via errors.Join so the caller sees every partial
+// failure without any being masked. The registry is cleared up front, so
+// in-flight Send lookups surface ErrChannelNotFound.
+//
+// The children are shut down on a goroutine of the manager's own, as one
+// run; Shutdown waits for it or for ctx, whichever ends first, and at ctx
+// the run goes on. A Shutdown that overlaps a run waits for the same run,
+// and one that finds nothing new returns that run's retained result
+// instead of nil, also when a child was published and removed again since.
+// A Shutdown's result covers every child published before the call,
+// including those an earlier Shutdown was still closing. A Shutdown called
+// from a child's Shutdown returns an error wrapping
+// contract.ErrStopFromOwnWork at once: it would wait on itself.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
-	channels := make(map[string]Mailer, len(m.channels))
-	for k, v := range m.channels {
-		channels[k] = v
-	}
-	// Clear up front so any in-flight Send() lookups surface ErrChannelNotFound
-	// rather than racing with teardown.
+	children := m.channels
 	m.channels = make(map[string]Mailer)
+	wait := m.shutdowns.Detach(children, func(name string, err error) error {
+		return fmt.Errorf("velocity/mail: shutdown channel %q: %w", name, err)
+	})
 	m.mu.Unlock()
-
-	var errs []error
-	for name, mailer := range channels {
-		if err := teardown.Close(ctx, mailer); err != nil {
-			errs = append(errs, fmt.Errorf("velocity/mail: shutdown channel %q: %w", name, err))
-		}
-	}
-	return errors.Join(errs...)
+	return wait(ctx)
 }

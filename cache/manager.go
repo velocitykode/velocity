@@ -55,6 +55,9 @@ type Manager struct {
 	// generation counts Shutdowns, so a store built across one is not
 	// published into the emptied manager. Guarded by mu.
 	generation uint64
+	// shutdowns shuts the detached stores down, one run at a time (see
+	// Shutdown). Detach is called under mu.
+	shutdowns teardown.Children[Store]
 }
 
 // SetLogger installs the logger the manager hands to every store it builds
@@ -313,24 +316,28 @@ func (m *Manager) DefaultStoreWithContext(ctx context.Context) (Store, error) {
 // Shutdown closes all cache stores, honoring the context deadline. All
 // built-in stores implement ShutdownAware; unknown types are ignored.
 // Each ShutdownAware store gets a Shutdown attempt even if a previous one
-// fails or panics (a panic is that store's error); errors are collected per-store and returned joined via
-// errors.Join. The internal store map is cleared regardless of errors so
-// callers cannot accidentally reuse a half-torn-down Manager.
+// fails or panics (a panic is that store's error); errors are collected
+// per-store and returned joined via errors.Join. The internal store map is
+// cleared regardless of errors so callers cannot accidentally reuse a
+// half-torn-down Manager.
+//
+// The children are shut down on a goroutine of the manager's own, as one
+// run; Shutdown waits for it or for ctx, whichever ends first, and at ctx
+// the run goes on. A Shutdown that overlaps a run waits for the same run,
+// and one that finds nothing new returns that run's retained result
+// instead of nil, also when a child was published and removed again since.
+// A Shutdown's result covers every child published before the call,
+// including those an earlier Shutdown was still closing. A Shutdown called
+// from a child's Shutdown returns an error wrapping
+// contract.ErrStopFromOwnWork at once: it would wait on itself.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
-	stores := m.stores
+	children := m.stores
 	m.stores = make(map[string]Store)
+	wait := m.shutdowns.Detach(children, func(name string, err error) error { return fmt.Errorf("cache store %q shutdown: %w", name, err) })
 	m.generation++
 	m.mu.Unlock()
-
-	var errs []error
-	for name, store := range stores {
-		if err := teardown.Close(ctx, store); err != nil {
-			errs = append(errs, fmt.Errorf("cache store %q shutdown: %w", name, err))
-		}
-	}
-
-	return errors.Join(errs...)
+	return wait(ctx)
 }
 
 // Implementation of Cache interface for default store

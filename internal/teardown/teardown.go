@@ -3,7 +3,11 @@
 // a store, a channel, a disk) cannot abort the shutdown of the ones after
 // it. The caller runs every step and joins the errors.
 //
-// It imports the standard library and internal/panicerr only.
+// Children is a manager's shutdown of the children it holds, one run at a
+// time, on internal/drain.
+//
+// It imports the standard library, internal/panicerr and internal/drain
+// only.
 package teardown
 
 import (

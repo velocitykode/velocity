@@ -47,6 +47,9 @@ type Manager struct {
 	// generation counts Shutdowns, so a channel created across one is not
 	// registered into the emptied manager. Guarded by mu.
 	generation uint64
+	// shutdowns shuts the detached channels down, one run at a time (see
+	// Shutdown). Detach is called under mu.
+	shutdowns teardown.Children[Channel]
 }
 
 // NewManager creates a new notification manager.
@@ -140,25 +143,28 @@ func (m *Manager) dispatchEvent(ctx context.Context, event interface{}) {
 // clears the channel registry. Channels that hold no long-lived resources do
 // not implement the interface and are skipped. Every opted-in channel gets a
 // Shutdown attempt even if an earlier one fails or panics (a panic is that
-// channel's error), and the errors are aggregated via errors.Join so no partial failure is masked. Clearing the registry makes
-// a second call a no-op returning nil.
+// channel's error), and the errors are aggregated via errors.Join so no
+// partial failure is masked. The registry is cleared up front.
+//
+// The children are shut down on a goroutine of the manager's own, as one
+// run; Shutdown waits for it or for ctx, whichever ends first, and at ctx
+// the run goes on. A Shutdown that overlaps a run waits for the same run,
+// and one that finds nothing new returns that run's retained result
+// instead of nil, also when a child was published and removed again since.
+// A Shutdown's result covers every child published before the call,
+// including those an earlier Shutdown was still closing. A Shutdown called
+// from a child's Shutdown returns an error wrapping
+// contract.ErrStopFromOwnWork at once: it would wait on itself.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
-	channels := make(map[string]Channel, len(m.channels))
-	for k, v := range m.channels {
-		channels[k] = v
-	}
+	children := m.channels
 	m.channels = make(map[string]Channel)
+	wait := m.shutdowns.Detach(children, func(name string, err error) error {
+		return fmt.Errorf("velocity/notification: shutdown channel %q: %w", name, err)
+	})
 	m.generation++
 	m.mu.Unlock()
-
-	var errs []error
-	for name, ch := range channels {
-		if err := teardown.Close(ctx, ch); err != nil {
-			errs = append(errs, fmt.Errorf("velocity/notification: shutdown channel %q: %w", name, err))
-		}
-	}
-	return errors.Join(errs...)
+	return wait(ctx)
 }
 
 // Channel returns a registered channel driver by name, creating it from the

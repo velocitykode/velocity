@@ -17,6 +17,9 @@ type Manager struct {
 	config   LoggingConfig
 	channels map[string]Logger
 	mu       sync.RWMutex
+	// shutdowns shuts the detached channels down, one run at a time (see
+	// Shutdown). Detach is called under mu.
+	shutdowns teardown.Children[Logger]
 }
 
 // NewManager creates a new logger manager with the given configuration.
@@ -98,28 +101,30 @@ func (m *Manager) Default() (Logger, error) {
 // interface and are skipped. Every opted-in channel gets a Shutdown attempt
 // even if an earlier one fails or panics (a panic is that channel's error),
 // and the errors are aggregated via errors.Join so no partial failure is
-// masked. Clearing the registry makes a second call a
-// no-op returning nil.
+// masked. The registry is cleared up front.
+//
+// The children are shut down on a goroutine of the manager's own, as one
+// run; Shutdown waits for it or for ctx, whichever ends first, and at ctx
+// the run goes on. A Shutdown that overlaps a run waits for the same run,
+// and one that finds nothing new returns that run's retained result
+// instead of nil, also when a child was published and removed again since.
+// A Shutdown's result covers every child published before the call,
+// including those an earlier Shutdown was still closing. A Shutdown called
+// from a child's Shutdown returns an error wrapping
+// contract.ErrStopFromOwnWork at once: it would wait on itself.
 //
 // A Manager-built stack channel references shared, manager-owned children, so
 // its non-destructive Shutdown will not close those children out from under
 // their own channel entries (see newManagerStackLogger / StackLogger.Shutdown).
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
-	channels := make(map[string]Logger, len(m.channels))
-	for k, v := range m.channels {
-		channels[k] = v
-	}
+	children := m.channels
 	m.channels = make(map[string]Logger)
+	wait := m.shutdowns.Detach(children, func(name string, err error) error {
+		return fmt.Errorf("velocity/log: shutdown channel %q: %w", name, err)
+	})
 	m.mu.Unlock()
-
-	var errs []error
-	for name, logger := range channels {
-		if err := teardown.Close(ctx, logger); err != nil {
-			errs = append(errs, fmt.Errorf("velocity/log: shutdown channel %q: %w", name, err))
-		}
-	}
-	return errors.Join(errs...)
+	return wait(ctx)
 }
 
 // createLogger creates a logger instance based on the channel configuration.

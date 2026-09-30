@@ -49,6 +49,9 @@ type Manager struct {
 	// generation counts Shutdowns, so a Configure whose drivers are built
 	// across one publishes nothing into the emptied manager. Guarded by mu.
 	generation uint64
+	// shutdowns shuts the detached disks down, one run at a time (see
+	// Shutdown). Detach is called under mu.
+	shutdowns teardown.Children[Driver]
 }
 
 // NewManager creates a new storage manager
@@ -174,23 +177,29 @@ func (m *Manager) SetDefault(name string) error {
 // file descriptor) get their Shutdown called; drivers that don't are
 // skipped. Every driver's Shutdown is attempted even if an earlier one
 // fails or panics (a panic is that driver's error), and the errors are
-// aggregated via errors.Join so no partial failure is masked. The disk registry is cleared regardless of errors
-// so a closed driver is no longer resolvable via Disk() and a second
-// call is a no-op returning nil.
+// aggregated via errors.Join so no partial failure is masked. The disk
+// registry is cleared regardless of errors so a closed driver is no longer
+// resolvable via Disk().
+//
+// The children are shut down on a goroutine of the manager's own, as one
+// run; Shutdown waits for it or for ctx, whichever ends first, and at ctx
+// the run goes on. A Shutdown that overlaps a run waits for the same run,
+// and one that finds nothing new returns that run's retained result
+// instead of nil, also when a child was published and removed again since.
+// A Shutdown's result covers every child published before the call,
+// including those an earlier Shutdown was still closing. A Shutdown called
+// from a child's Shutdown returns an error wrapping
+// contract.ErrStopFromOwnWork at once: it would wait on itself.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
-	disks := m.disks
+	children := m.disks
 	m.disks = make(map[string]Driver)
+	wait := m.shutdowns.Detach(children, func(name string, err error) error {
+		return fmt.Errorf("velocity/storage: shutdown disk %q: %w", name, err)
+	})
 	m.generation++
 	m.mu.Unlock()
-
-	var errs []error
-	for name, driver := range disks {
-		if err := teardown.Close(ctx, driver); err != nil {
-			errs = append(errs, fmt.Errorf("velocity/storage: shutdown disk %q: %w", name, err))
-		}
-	}
-	return errors.Join(errs...)
+	return wait(ctx)
 }
 
 // createDriverWithContext creates a driver using the provided context for

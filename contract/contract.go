@@ -28,9 +28,10 @@ type EventDispatcherAware interface {
 //
 // Implementations MUST:
 //   - honour the context deadline and return promptly when ctx is cancelled;
-//   - be safe to call more than once (idempotent);
-//   - return a non-nil error only when cleanup actually failed — a
-//     no-op Shutdown returns nil.
+//   - be safe to call more than once: a repeated Shutdown does not shut
+//     down again and returns the retained result of the first;
+//   - return a non-nil error only when cleanup actually failed; a
+//     Shutdown with nothing to shut down returns nil.
 //
 // The module registry and App.Shutdown call Shutdown in reverse
 // registration order; see serve.go and app/module.go.
