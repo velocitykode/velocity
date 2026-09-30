@@ -466,7 +466,9 @@ func (b *Batch) fireTerminalCallbacks(ctx context.Context, updated *Batch) {
 
 // dispatchBatchEvent dispatches a batch event through the batch's local
 // dispatcher when one is bound and ALWAYS through the process-wide
-// events dispatcher when one is wired via SetGlobalEventDispatcher.
+// events dispatcher when one is wired via SetGlobalEventDispatcher. A
+// panic in the batch's local dispatcher is recorded in the failure counter
+// installed with it (the app's, in an app).
 //
 // Pre-C-03-fb2 this helper silently dropped events when no local
 // dispatcher was bound, which meant a remote worker observing terminal
@@ -505,21 +507,32 @@ func dispatchBatchEvent(ctx context.Context, dispatch func(context.Context, inte
 	globalBatchEvents.Emit(ctx, event)
 }
 
-// globalBatchEvents holds the process-wide event dispatcher
-// SetGlobalEventDispatcher installs and handles a failed dispatch.
+// globalBatchEvents holds the process-wide event dispatcher, failure
+// counter and logger SetGlobalEventDispatcher installs, and handles a
+// failed dispatch.
 var globalBatchEvents eventemit.Emitter
 
 // SetGlobalEventDispatcher installs a process-wide event dispatcher
 // that the batch lifecycle helpers will invoke for every batch event
-// (Created / JobCompleted / JobFailed / Completed / Cancelled).
+// (Created / JobCompleted / JobFailed / Completed / Cancelled), together
+// with the Failures a failed batch event dispatch is recorded in (a
+// batch's own dispatcher that panics) and the logger that failure's first
+// line is written through. The three are replaced in one step, so a
+// failure is never counted against the previous owner.
 //
 // The framework's wireInstanceEvents calls this with the App's events
-// dispatcher. The hook is exposed publicly so test harnesses (and
-// embedded apps that bring their own dispatcher) can wire it directly.
-//
-// Pass nil to clear.
-func SetGlobalEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	globalBatchEvents.Set(fn)
+// dispatcher, failure counter and logger, so such a failure counts in
+// App.FailedEventCount like any other failed dispatch. The Failures type
+// is internal: a caller outside the framework (a test harness, an embedded
+// app bringing its own dispatcher) passes nil, and the batch events then
+// record into Failures of their own; a nil logger means the fallback
+// logger. SetGlobalEventDispatcher(nil, nil, nil) clears all three.
+func SetGlobalEventDispatcher(fn func(ctx context.Context, event interface{}) error, failures *eventemit.Failures, logger contract.Logger) {
+	var source func() contract.Logger
+	if logger != nil {
+		source = func() contract.Logger { return logger }
+	}
+	globalBatchEvents.SetShared(fn, failures, source)
 }
 
 // PendingBatch is a fluent builder for creating and dispatching a batch
@@ -615,7 +628,8 @@ func (pb *PendingBatch) OnQueue(queue string) *PendingBatch {
 // This sets the batch's LOCAL dispatcher (per-batch listener). Apps that
 // want cross-process notification should also call
 // queue.SetGlobalEventDispatcher (typically wired by the framework's
-// bootstrap).
+// bootstrap). A panic in fn is contained and counted as a failed event
+// dispatch in the failure counter SetGlobalEventDispatcher installed.
 func (pb *PendingBatch) WithEventDispatcher(fn func(ctx context.Context, event interface{})) *PendingBatch {
 	pb.dispatchEvent = fn
 	return pb

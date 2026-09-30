@@ -51,8 +51,8 @@ func (l *batchEventLog) has(match func(any) bool) bool {
 func globalBatchLog(t *testing.T) *batchEventLog {
 	t.Helper()
 	log := &batchEventLog{}
-	SetGlobalEventDispatcher(log.dispatch)
-	t.Cleanup(func() { SetGlobalEventDispatcher(nil) })
+	SetGlobalEventDispatcher(log.dispatch, nil, nil)
+	t.Cleanup(func() { SetGlobalEventDispatcher(nil, nil, nil) })
 	return log
 }
 

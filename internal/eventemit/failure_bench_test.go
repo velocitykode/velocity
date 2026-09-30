@@ -43,3 +43,46 @@ func BenchmarkEmitterEmit(b *testing.B) {
 		e.Emit(ctx, ev)
 	}
 }
+
+// BenchmarkEmitterEmitParallel is BenchmarkEmitterEmit from every P at
+// once: the binding load is shared, read-only state.
+func BenchmarkEmitterEmitParallel(b *testing.B) {
+	var e Emitter
+	e.Set(func(context.Context, any) error { return nil })
+	ev := &struct{}{}
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		ctx := context.Background()
+		for pb.Next() {
+			e.Emit(ctx, ev)
+		}
+	})
+}
+
+// BenchmarkEmitterInstalled measures the check a component makes before
+// building an event.
+func BenchmarkEmitterInstalled(b *testing.B) {
+	var e Emitter
+	e.Set(func(context.Context, any) error { return nil })
+	b.ReportAllocs()
+	for b.Loop() {
+		if !e.Installed() {
+			b.Fatal("not installed")
+		}
+	}
+}
+
+// BenchmarkEmitterEmitFailing measures Emit through a dispatcher whose
+// failure the app's dispatch function already recorded: the failure path
+// every emitter in an app takes.
+func BenchmarkEmitterEmitFailing(b *testing.B) {
+	var e Emitter
+	var app Failures
+	e.SetShared(app.Recording(failing, benchLogger{}), &app, nil)
+	ctx := context.Background()
+	ev := namedEvent{"bench.event"}
+	b.ReportAllocs()
+	for b.Loop() {
+		e.Emit(ctx, ev)
+	}
+}

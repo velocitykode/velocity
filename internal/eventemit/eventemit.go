@@ -29,11 +29,14 @@
 // # Concurrency
 //
 // Every field is safe for concurrent use: the dispatcher, the shared
-// Failures and the logger source are atomic pointers, so Set, Share and
-// UseLogger may race with Emit on any goroutine, and Emit never takes a lock
-// (queue drivers dispatch while holding their own mutex). A dispatch reads
-// the dispatcher once, so it completes against the dispatcher it read even
-// when Set replaces it meanwhile. Failures keeps its count and hook in
+// Failures and the logger source are one binding behind one atomic
+// pointer, so Set, Share, UseLogger and SetShared may race with Emit on any
+// goroutine, and Emit never takes a lock (queue drivers dispatch while
+// holding their own mutex). A dispatch reads the binding once, so it
+// completes against the dispatcher it read, and records its failure in
+// the Failures bound with it, even when the binding is replaced meanwhile.
+// SetShared replaces the three together: the handover of a process-wide
+// emitter (the queue's batch events) from one app to the next. Failures keeps its count and hook in
 // atomics, and its set of already-logged event names and its set of
 // goroutines running the hook under a mutex that is held only to test,
 // insert or remove an entry, never while logging or calling the hook.
@@ -321,27 +324,58 @@ func contractName(event any) (name string) {
 // policy to what a dispatch returns. The zero value has no dispatcher, logs
 // through the framework's standalone fallback logger and records into
 // Failures of its own.
+//
+// The dispatcher, the shared Failures and the logger source are one
+// binding, read with one atomic load: a dispatch and the failure it causes
+// go to the binding in place when the dispatch started, and SetShared
+// replaces all three at once, so a failure is never counted in one owner's
+// Failures and logged through another's logger.
 type Emitter struct {
-	dispatch atomic.Pointer[dispatchFunc]
-	shared   atomic.Pointer[Failures]
-	logger   atomic.Pointer[loggerSource]
-	own      Failures
+	binding atomic.Pointer[binding]
+	own     Failures
+}
+
+// binding is what an Emitter holds: never mutated after it is stored.
+type binding struct {
+	dispatch dispatchFunc
+	shared   *Failures
+	logger   loggerSource
+}
+
+// update replaces the binding with change applied to a copy of the
+// current one, retrying when another update raced it.
+func (e *Emitter) update(change func(b *binding)) {
+	for {
+		old := e.binding.Load()
+		next := &binding{}
+		if old != nil {
+			*next = *old
+		}
+		change(next)
+		if e.binding.CompareAndSwap(old, next) {
+			return
+		}
+	}
 }
 
 // Set installs fn as the dispatcher; nil removes it.
 func (e *Emitter) Set(fn func(ctx context.Context, event any) error) {
-	if fn == nil {
-		e.dispatch.Store(nil)
-		return
-	}
-	d := dispatchFunc(fn)
-	e.dispatch.Store(&d)
+	e.update(func(b *binding) { b.dispatch = fn })
+}
+
+// SetShared installs fn as the dispatcher, f as the Failures the emitter
+// records into (nil for its own) and logger as the logger it writes
+// through (nil for the fallback logger), in one step: the handover of a
+// process-wide emitter from one app to another, where no failure may land
+// in one app's Failures between the two.
+func (e *Emitter) SetShared(fn func(ctx context.Context, event any) error, f *Failures, logger func() contract.Logger) {
+	e.binding.Store(&binding{dispatch: fn, shared: f, logger: logger})
 }
 
 // Dispatcher returns the installed dispatcher, or nil.
 func (e *Emitter) Dispatcher() func(ctx context.Context, event any) error {
-	if p := e.dispatch.Load(); p != nil {
-		return *p
+	if b := e.binding.Load(); b != nil && b.dispatch != nil {
+		return b.dispatch
 	}
 	return nil
 }
@@ -349,7 +383,8 @@ func (e *Emitter) Dispatcher() func(ctx context.Context, event any) error {
 // Installed reports whether a dispatcher is installed: one atomic load, so a
 // component can check it before building an event nobody would receive.
 func (e *Emitter) Installed() bool {
-	return e.dispatch.Load() != nil
+	b := e.binding.Load()
+	return b != nil && b.dispatch != nil
 }
 
 // Emit hands event to the installed dispatcher under ctx (context.Background
@@ -358,13 +393,14 @@ func (e *Emitter) Installed() bool {
 // is recovered here and is such a failure, as the typed panic error
 // (panicerr.FromRecovered): the component that emitted survives it, and it
 // is recorded once (in an app, the dispatch function Recording built has
-// already recovered and recorded it, so Fail skips it).
+// already recovered and recorded it, so Fail skips it). The failure goes to
+// the Failures and logger bound with the dispatcher it read.
 func (e *Emitter) Emit(ctx context.Context, event any) bool {
-	p := e.dispatch.Load()
-	if p == nil {
+	b := e.binding.Load()
+	if b == nil || b.dispatch == nil {
 		return false
 	}
-	e.emit(ctx, *p, event)
+	e.emit(b, ctx, event)
 	return true
 }
 
@@ -376,43 +412,50 @@ func (e *Emitter) Emit(ctx context.Context, event any) bool {
 func (e *Emitter) EmitBuilt(ctx context.Context, build func() any) bool {
 	// Kept within the inlining budget, so the no-dispatcher path costs
 	// the caller one atomic load and no call.
-	return e != nil && e.dispatch.Load() != nil && e.emitBuilt(ctx, build)
+	return e != nil && e.Installed() && e.emitBuilt(ctx, build)
 }
 
-// emitBuilt is EmitBuilt past its fast check. It reads the dispatcher
-// again: one removed meanwhile builds nothing.
+// emitBuilt is EmitBuilt past its fast check. It reads the binding again:
+// a dispatcher removed meanwhile builds nothing, and the event goes to the
+// dispatcher, Failures and logger of the binding it read.
 func (e *Emitter) emitBuilt(ctx context.Context, build func() any) bool {
-	p := e.dispatch.Load()
-	if p == nil {
+	b := e.binding.Load()
+	if b == nil || b.dispatch == nil {
 		return false
 	}
-	e.emit(ctx, *p, build())
+	e.emit(b, ctx, build())
 	return true
 }
 
-// emit hands event to dispatch under ctx (context.Background when nil) and
-// applies the failure policy to a failed dispatch.
-func (e *Emitter) emit(ctx context.Context, dispatch dispatchFunc, event any) {
+// emit hands event to b's dispatcher under ctx (context.Background when
+// nil) and applies the failure policy to a failed dispatch against the
+// same binding.
+func (e *Emitter) emit(b *binding, ctx context.Context, event any) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := DispatchContained(ctx, dispatch, event); err != nil {
-		e.Fail(ctx, err, event)
+	if err := DispatchContained(ctx, b.dispatch, event); err != nil {
+		e.fail(b, ctx, err, event)
 	}
 }
 
 // Fail applies the failure policy to err, a failed dispatch of event: unless
 // the dispatch function already recorded it (Recorded), it is recorded in
-// the Failures the emitter shares (see Share), or its own, logging through
-// the component's logger (see UseLogger). A nil err is ignored.
+// the Failures the emitter shares (see Share and SetShared), or its own,
+// logging through the component's logger (see UseLogger). A nil err is
+// ignored.
 func (e *Emitter) Fail(ctx context.Context, err error, event any) {
+	e.fail(e.binding.Load(), ctx, err, event)
+}
+
+func (e *Emitter) fail(b *binding, ctx context.Context, err error, event any) {
 	if err == nil || Recorded(err) {
 		return
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	e.failures().Record(ctx, e.log(), err, event)
+	e.failuresOf(b).Record(ctx, logOf(b), err, event)
 }
 
 // FailLater applies the failure policy to err, a failed dispatch of event,
@@ -431,16 +474,17 @@ func (e *Emitter) FailLater(ctx context.Context, err error, event any) func() {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	f := e.failures()
+	b := e.binding.Load()
+	f := e.failuresOf(b)
 	f.count.Add(1)
 	nested := f.hookRunningHere()
-	return func() { f.report(ctx, e.log(), err, event, nested) }
+	return func() { f.report(ctx, logOf(b), err, event, nested) }
 }
 
 // Share makes the emitter record its failures in f, the app's Failures;
 // nil returns it to its own.
 func (e *Emitter) Share(f *Failures) {
-	e.shared.Store(f)
+	e.update(func(b *binding) { b.shared = f })
 }
 
 // FailureCount returns the count of the Failures the emitter records into.
@@ -448,10 +492,16 @@ func (e *Emitter) FailureCount() uint64 {
 	return e.failures().Count()
 }
 
-// failures returns the Failures the emitter records into.
+// failures returns the Failures the emitter records into now.
 func (e *Emitter) failures() *Failures {
-	if f := e.shared.Load(); f != nil {
-		return f
+	return e.failuresOf(e.binding.Load())
+}
+
+// failuresOf returns the Failures b records into: its shared one, or the
+// emitter's own.
+func (e *Emitter) failuresOf(b *binding) *Failures {
+	if b != nil && b.shared != nil {
+		return b.shared
 	}
 	return &e.own
 }
@@ -460,18 +510,13 @@ func (e *Emitter) failures() *Failures {
 // time of a failure: the component's logger. A nil source, or a source that
 // returns nil, means the framework's standalone fallback logger.
 func (e *Emitter) UseLogger(source func() contract.Logger) {
-	if source == nil {
-		e.logger.Store(nil)
-		return
-	}
-	s := loggerSource(source)
-	e.logger.Store(&s)
+	e.update(func(b *binding) { b.logger = source })
 }
 
-// log returns the component's logger now, or nil.
-func (e *Emitter) log() contract.Logger {
-	if p := e.logger.Load(); p != nil {
-		return (*p)()
+// logOf returns the logger b's source returns now, or nil.
+func logOf(b *binding) contract.Logger {
+	if b != nil && b.logger != nil {
+		return b.logger()
 	}
 	return nil
 }

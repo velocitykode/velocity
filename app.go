@@ -522,7 +522,7 @@ func New(opts ...Option) (*App, error) {
 		// so a partial New() failure does not leave a dangling repo
 		// for the next attempt.
 		queue.ResetAutoInstalledBatchRepository()
-		queue.SetGlobalEventDispatcher(nil)
+		queue.SetGlobalEventDispatcher(nil, nil, nil)
 		queue.SetBatchCallbackQueue(nil, "")
 		// H-22: clear the queued-listener failure reporter so a new
 		// app instance does not inherit a stale callback bound to the

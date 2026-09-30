@@ -293,7 +293,10 @@ func wireInstanceEvents(a *App) {
 	// WithEventDispatcher, silently dropped). Routing through the
 	// app-wide events dispatcher ensures subscribers via events.Listen
 	// see the notification regardless of which host fired the CAS.
-	queue.SetGlobalEventDispatcher(dispatch)
+	// A batch's own dispatcher that panics counts in the app's failed
+	// event count and logs through the app logger, like the failures the
+	// dispatch closure records.
+	queue.SetGlobalEventDispatcher(dispatch, &a.eventFailures, a.Services.Log)
 
 	for _, svc := range eventWiringCandidates(a) {
 		if svc == nil {

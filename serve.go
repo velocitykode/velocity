@@ -354,7 +354,7 @@ func (a *App) teardownSteps(ctx context.Context) error {
 	// signal.
 	do(func() {
 		queue.ResetAutoInstalledBatchRepository()
-		queue.SetGlobalEventDispatcher(nil)
+		queue.SetGlobalEventDispatcher(nil, nil, nil)
 		queue.SetBatchCallbackQueue(nil, "")
 	})
 	// H-22: clear the queued-listener failure reporter so a new app

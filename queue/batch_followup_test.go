@@ -195,8 +195,8 @@ func TestBatch_CrossProcess_BatchCompletedEventDispatched(t *testing.T) {
 			}
 		}
 		return nil
-	})
-	t.Cleanup(func() { SetGlobalEventDispatcher(nil) })
+	}, nil, nil)
+	t.Cleanup(func() { SetGlobalEventDispatcher(nil, nil, nil) })
 
 	jobsDriver := newMemoryDriver()
 	// Note: no WithEventDispatcher, no Then/Catch/Finally - the global
@@ -457,7 +457,7 @@ func TestPendingBatch_NoWithRepositoryMethod(t *testing.T) {
 func TestBatch_GlobalEventDispatcher_RoutesAllBatchEvents(t *testing.T) {
 	resetBatchStoreForTest(t)
 	ResetBatchCallbacksForTest()
-	t.Cleanup(func() { SetGlobalEventDispatcher(nil) })
+	t.Cleanup(func() { SetGlobalEventDispatcher(nil, nil, nil) })
 
 	var seen sync.Map
 	SetGlobalEventDispatcher(func(ctx context.Context, event interface{}) error {
@@ -466,7 +466,7 @@ func TestBatch_GlobalEventDispatcher_RoutesAllBatchEvents(t *testing.T) {
 			seen.Store(e.Name(), true)
 		}
 		return nil
-	})
+	}, nil, nil)
 
 	driver := newMemoryDriver()
 	batch, err := NewBatch(&testBatchJob{}, &testBatchJob{}).

@@ -47,13 +47,13 @@ func TestWorker_FailedEventDispatchLoggedOncePerEvent(t *testing.T) {
 
 func TestBatchEvents_FailedGlobalDispatchLoggedOncePerEvent(t *testing.T) {
 	out := fallbacklogtest.Capture(t)
-	SetGlobalEventDispatcher(failingDispatch)
+	SetGlobalEventDispatcher(failingDispatch, nil, nil)
 	// The emitter is process-wide, and so is the record of which event
 	// names already logged: record into a fresh one, so a rerun (-count)
 	// logs its first failure again.
 	globalBatchEvents.Share(&eventemit.Failures{})
 	t.Cleanup(func() {
-		SetGlobalEventDispatcher(nil)
+		SetGlobalEventDispatcher(nil, nil, nil)
 		globalBatchEvents.Share(nil)
 	})
 	for i := 0; i < 2; i++ {
