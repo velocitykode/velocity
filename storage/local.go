@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -176,15 +177,28 @@ func (d *LocalDriver) Put(path string, contents []byte) error {
 		if err := mkdirAllIn(root, filepath.Dir(rel)); err != nil {
 			return fmt.Errorf("velocity/storage: create directory: %w", err)
 		}
-		// Atomic write: temp in same directory, rename.
-		tmp := rel + ".tmp"
-		if err := root.WriteFile(tmp, contents, storageFileMode); err != nil {
-			return fmt.Errorf("velocity/storage: write file: %w", mapOpenError(err))
+		// Atomic write: a temp file of this write's own, then rename.
+		file, tmp, err := createTemp(root, rel)
+		if err != nil {
+			return fmt.Errorf("velocity/storage: create file: %w", mapOpenError(err))
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = file.Close()
+				_ = root.Remove(tmp)
+			}
+		}()
+		if _, err := file.Write(contents); err != nil {
+			return fmt.Errorf("velocity/storage: write file: %w", err)
+		}
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("velocity/storage: close file: %w", err)
 		}
 		if err := root.Rename(tmp, rel); err != nil {
-			_ = root.Remove(tmp)
 			return fmt.Errorf("velocity/storage: move file: %w", mapOpenError(err))
 		}
+		committed = true
 		return nil
 	})
 }
@@ -199,40 +213,32 @@ func (d *LocalDriver) PutStream(path string, stream io.Reader) error {
 		if err := mkdirAllIn(root, filepath.Dir(rel)); err != nil {
 			return fmt.Errorf("velocity/storage: create directory: %w", err)
 		}
-		tmp := rel + ".tmp"
-		file, err := root.Create(tmp)
+		file, tmp, err := createTemp(root, rel)
 		if err != nil {
 			return fmt.Errorf("velocity/storage: create file: %w", mapOpenError(err))
 		}
-		// root.Create resolves the file's mode through the process
-		// umask (typically yielding 0o644 / 0o664). Tighten to 0o600
-		// before any bytes are written so request bodies, uploads,
-		// and any incidental PII landing on disk are owner-only by
-		// default, matching the invariant Put already maintains.
-		if chmodErr := file.Chmod(storageFileMode); chmodErr != nil {
-			_ = file.Close()
-			_ = root.Remove(tmp)
-			return fmt.Errorf("velocity/storage: chmod file: %w", chmodErr)
-		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = file.Close()
+				_ = root.Remove(tmp)
+			}
+		}()
 		limited := io.LimitReader(stream, d.maxFileSize+1)
-		written, copyErr := io.Copy(file, limited)
-		closeErr := file.Close()
-		if copyErr != nil {
-			_ = root.Remove(tmp)
-			return fmt.Errorf("velocity/storage: write stream: %w", copyErr)
+		written, err := io.Copy(file, limited)
+		if err != nil {
+			return fmt.Errorf("velocity/storage: write stream: %w", err)
 		}
-		if closeErr != nil {
-			_ = root.Remove(tmp)
-			return fmt.Errorf("velocity/storage: close file: %w", closeErr)
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("velocity/storage: close file: %w", err)
 		}
 		if written > d.maxFileSize {
-			_ = root.Remove(tmp)
 			return fmt.Errorf("velocity/storage: stream exceeds maximum size of %d bytes: %w", d.maxFileSize, ErrQuotaExceeded)
 		}
 		if err := root.Rename(tmp, rel); err != nil {
-			_ = root.Remove(tmp)
 			return fmt.Errorf("velocity/storage: move file: %w", mapOpenError(err))
 		}
+		committed = true
 		return nil
 	})
 }
@@ -593,6 +599,37 @@ func (d *LocalDriver) URL(path string) string {
 // receiving a permanent public URL.
 func (d *LocalDriver) TemporaryURL(path string, expiration time.Duration) (string, error) {
 	return "", ErrNotSupported
+}
+
+// tempMarker separates an object's name from the random suffix of a
+// write's temp file.
+const tempMarker = ".tmp-"
+
+// createTemp creates the temp file of one write beside name, inside root:
+// name + tempMarker + a random suffix, created exclusively, so no stored
+// object and no other write's temp file is ever opened or replaced by it.
+// The file is left at storageFileMode: the create mode passes through the
+// process umask, which can clear owner bits, so it is set again. The
+// caller removes the file on every path that does not rename it into
+// place.
+func createTemp(root *os.Root, name string) (*os.File, string, error) {
+	const attempts = 3
+	for i := 1; ; i++ {
+		tmp := name + tempMarker + rand.Text()
+		file, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, storageFileMode)
+		if errors.Is(err, fs.ErrExist) && i < attempts {
+			continue
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		if err := file.Chmod(storageFileMode); err != nil {
+			_ = file.Close()
+			_ = root.Remove(tmp)
+			return nil, "", fmt.Errorf("chmod temp file: %w", err)
+		}
+		return file, tmp, nil
+	}
 }
 
 // mkdirAllIn creates directory rel inside root, including intermediate
