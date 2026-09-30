@@ -19,11 +19,11 @@ func TestServer_FailedEventDispatchLoggedOncePerEvent(t *testing.T) {
 	s := &Server{}
 	s.SetEventDispatcher(func(context.Context, any) error { return errors.New("listener failed") })
 	for i := 0; i < 2; i++ {
-		s.events.Emit(context.Background(), &grpcevents.ServerStarted{})
+		s.events.EmitBuilt(context.Background(), func() any { return &grpcevents.ServerStarted{} })
 	}
 	s.SetEventDispatcher(func(context.Context, any) error { panic("listener broke") })
 	for i := 0; i < 2; i++ {
-		s.events.Emit(context.Background(), &grpcevents.ServerStopped{})
+		s.events.EmitBuilt(context.Background(), func() any { return &grpcevents.ServerStopped{} })
 	}
 	got := out.String()
 	if n := strings.Count(got, "WARN event dispatch failed"); n != 2 {

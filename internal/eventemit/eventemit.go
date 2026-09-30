@@ -387,28 +387,19 @@ func (e *Emitter) Installed() bool {
 	return b != nil && b.dispatch != nil
 }
 
-// Emit hands event to the installed dispatcher under ctx (context.Background
-// when nil) and applies the failure policy to a failed dispatch (see Fail).
-// It reports whether a dispatcher was installed. A panic in the dispatcher
-// is recovered here and is such a failure, as the typed panic error
-// (panicerr.FromRecovered): the component that emitted survives it, and it
-// is recorded once (in an app, the dispatch function Recording built has
-// already recovered and recorded it, so Fail skips it). The failure goes to
-// the Failures and logger bound with the dispatcher it read.
-func (e *Emitter) Emit(ctx context.Context, event any) bool {
-	b := e.binding.Load()
-	if b == nil || b.dispatch == nil {
-		return false
-	}
-	e.emit(b, ctx, event)
-	return true
-}
-
 // EmitBuilt calls build and hands the event it returns to the installed
-// dispatcher, as Emit does, only when a dispatcher is installed: with none,
-// build is never called, so an event nobody would receive is never built.
-// It reports whether a dispatcher was installed. A nil Emitter has no
-// dispatcher. build runs on the caller's goroutine and is not retained.
+// dispatcher under ctx (context.Background when nil), only when a
+// dispatcher is installed: with none, build is never called, so an event
+// nobody would receive is never built. It is the only way to hand an event
+// to an Emitter. It reports whether a dispatcher was installed. A nil
+// Emitter has no dispatcher. build runs on the caller's goroutine and is
+// not retained. A failed dispatch goes to the failure policy (see Fail): a
+// panic in the dispatcher is recovered here and is such a failure, as the
+// typed panic error (panicerr.FromRecovered), so the component that emitted
+// survives it, and it is recorded once (in an app, the dispatch function
+// Recording built has already recovered and recorded it, so Fail skips
+// it). The failure goes to the Failures and logger bound with the
+// dispatcher it read.
 func (e *Emitter) EmitBuilt(ctx context.Context, build func() any) bool {
 	// Kept within the inlining budget, so the no-dispatcher path costs
 	// the caller one atomic load and no call.

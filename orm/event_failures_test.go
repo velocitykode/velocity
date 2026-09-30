@@ -126,9 +126,9 @@ func TestManagerShareEventFailures_Nil(t *testing.T) {
 	m.SetEventDispatcher(func(context.Context, any) error { return errors.New("listener failed") })
 	shared := &eventemit.Failures{}
 	m.ShareEventFailures(shared)
-	m.dispatchEvent(context.Background(), &TxRecover{})
+	emitEvent(m, context.Background(), &TxRecover{})
 	m.ShareEventFailures(nil)
-	m.dispatchEvent(context.Background(), &TxRecover{})
+	emitEvent(m, context.Background(), &TxRecover{})
 	if shared.Count() != 1 || m.events.FailureCount() != 1 {
 		t.Errorf("shared = %d, own = %d; want 1 and 1", shared.Count(), m.events.FailureCount())
 	}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
@@ -155,73 +156,68 @@ func (e *JobRetrying) UnmarshalJSON(data []byte) error {
 }
 
 // dispatchJobQueued dispatches a JobQueued event
-func dispatchJobQueued(dispatch func(context.Context, interface{}), ctx context.Context, jobType, queue string, delayed bool, delay time.Duration) {
-	if dispatch == nil {
-		return
-	}
-	dispatch(ctx, &JobQueued{
-		EventMeta: eventmeta.Current(ctx),
-		JobType:   jobType,
-		Queue:     queue,
-		Delayed:   delayed,
-		Delay:     delay,
+func dispatchJobQueued(events *eventemit.Emitter, ctx context.Context, jobType, queue string, delayed bool, delay time.Duration) bool {
+	return events.EmitBuilt(ctx, func() any {
+		return &JobQueued{
+			EventMeta: eventmeta.Current(ctx),
+			JobType:   jobType,
+			Queue:     queue,
+			Delayed:   delayed,
+			Delay:     delay,
+		}
 	})
 }
 
 // dispatchJobProcessing dispatches a JobProcessing event
-func dispatchJobProcessing(dispatch func(context.Context, interface{}), ctx context.Context, jobType, queue string) {
-	if dispatch == nil {
-		return
-	}
-	dispatch(ctx, &JobProcessing{
-		EventMeta: eventmeta.Current(ctx),
-		JobType:   jobType,
-		Queue:     queue,
+func dispatchJobProcessing(events *eventemit.Emitter, ctx context.Context, jobType, queue string) bool {
+	return events.EmitBuilt(ctx, func() any {
+		return &JobProcessing{
+			EventMeta: eventmeta.Current(ctx),
+			JobType:   jobType,
+			Queue:     queue,
+		}
 	})
 }
 
 // dispatchJobProcessed dispatches a JobProcessed event
-func dispatchJobProcessed(dispatch func(context.Context, interface{}), ctx context.Context, jobType, queue string, duration time.Duration) {
-	if dispatch == nil {
-		return
-	}
-	dispatch(ctx, &JobProcessed{
-		EventMeta: eventmeta.Current(ctx),
-		JobType:   jobType,
-		Queue:     queue,
-		Duration:  duration,
+func dispatchJobProcessed(events *eventemit.Emitter, ctx context.Context, jobType, queue string, duration time.Duration) bool {
+	return events.EmitBuilt(ctx, func() any {
+		return &JobProcessed{
+			EventMeta: eventmeta.Current(ctx),
+			JobType:   jobType,
+			Queue:     queue,
+			Duration:  duration,
+		}
 	})
 }
 
 // dispatchJobFailed dispatches a JobFailed event; jobID is the job's id,
 // empty when it has none.
-func dispatchJobFailed(dispatch func(context.Context, interface{}), ctx context.Context, jobType, queue, jobID string, err error, duration time.Duration) {
-	if dispatch == nil {
-		return
-	}
-	dispatch(ctx, &JobFailed{
-		EventMeta: eventmeta.Current(ctx),
-		JobType:   jobType,
-		Queue:     queue,
-		JobID:     jobID,
-		Err:       err,
-		Duration:  duration,
+func dispatchJobFailed(events *eventemit.Emitter, ctx context.Context, jobType, queue, jobID string, err error, duration time.Duration) bool {
+	return events.EmitBuilt(ctx, func() any {
+		return &JobFailed{
+			EventMeta: eventmeta.Current(ctx),
+			JobType:   jobType,
+			Queue:     queue,
+			JobID:     jobID,
+			Err:       err,
+			Duration:  duration,
+		}
 	})
 }
 
 // dispatchJobRetrying dispatches a JobRetrying event
-func dispatchJobRetrying(dispatch func(context.Context, interface{}), ctx context.Context, jobType, queue string, attempt, maxAttempts int, err error, backoff time.Duration) {
-	if dispatch == nil {
-		return
-	}
-	dispatch(ctx, &JobRetrying{
-		EventMeta:   eventmeta.Current(ctx),
-		JobType:     jobType,
-		Queue:       queue,
-		Attempt:     attempt,
-		MaxAttempts: maxAttempts,
-		Err:         err,
-		Backoff:     backoff,
+func dispatchJobRetrying(events *eventemit.Emitter, ctx context.Context, jobType, queue string, attempt, maxAttempts int, err error, backoff time.Duration) bool {
+	return events.EmitBuilt(ctx, func() any {
+		return &JobRetrying{
+			EventMeta:   eventmeta.Current(ctx),
+			JobType:     jobType,
+			Queue:       queue,
+			Attempt:     attempt,
+			MaxAttempts: maxAttempts,
+			Err:         err,
+			Backoff:     backoff,
+		}
 	})
 }
 

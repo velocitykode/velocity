@@ -50,7 +50,7 @@ func TestHostileDispatcher_Emitter(t *testing.T) {
 			ev := namedEvent{name: "cache.hit"}
 			other := hostile.NewDispatcher(nil)
 			probe := func() {
-				e.Emit(context.Background(), ev)
+				e.EmitBuilt(context.Background(), func() any { return ev })
 				e.Fail(context.Background(), errSweep, ev)
 				_ = e.Installed()
 			}
@@ -59,7 +59,7 @@ func TestHostileDispatcher_Emitter(t *testing.T) {
 			e.Set(d.Dispatch)
 			// While the dispatcher blocks, the probe emits through another
 			// one, so it does not block on the same code.
-			runSwept(t, mode, c, func() { e.Emit(context.Background(), ev) }, func() {
+			runSwept(t, mode, c, func() { e.EmitBuilt(context.Background(), func() any { return ev }) }, func() {
 				e.Set(other.Dispatch)
 				probe()
 				e.Set(d.Dispatch)

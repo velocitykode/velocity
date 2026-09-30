@@ -1,10 +1,5 @@
 package queue
 
-import (
-	"context"
-	"time"
-)
-
 // This file exposes the queue-internal helpers that out-of-tree driver
 // packages (e.g. queue/redis) need to behave identically to the built-in
 // drivers. They are thin, exported wrappers over the package-private
@@ -84,17 +79,4 @@ func OpenQuarantineBlob(blob string) ([]byte, error) {
 // error.
 func Deserialize(payload *Payload) (Job, error) {
 	return registry.Deserialize(payload)
-}
-
-// DispatchJobQueued dispatches a JobQueued lifecycle event through the
-// supplied dispatcher (a no-op when dispatch is nil).
-func DispatchJobQueued(dispatch func(context.Context, interface{}), ctx context.Context, jobType, queue string, delayed bool, delay time.Duration) {
-	dispatchJobQueued(dispatch, ctx, jobType, queue, delayed, delay)
-}
-
-// DispatchJobFailed dispatches a JobFailed lifecycle event through the
-// supplied dispatcher (a no-op when dispatch is nil). The event carries no
-// job id: a driver calls it for a payload it could not hydrate into a job.
-func DispatchJobFailed(dispatch func(context.Context, interface{}), ctx context.Context, jobType, queue string, err error, duration time.Duration) {
-	dispatchJobFailed(dispatch, ctx, jobType, queue, "", err, duration)
 }

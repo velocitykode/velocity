@@ -110,25 +110,6 @@ func (w *Worker) SetEventDispatcher(fn func(ctx context.Context, event interface
 	w.events.Set(fn)
 }
 
-// dispatchEvent dispatches an event if a dispatcher is configured. The
-// caller-supplied ctx is propagated so listeners observe per-job scoped
-// values (deadline, trace ID). A failed dispatch is counted and its
-// event's first failure logged through the worker's logger (see
-// internal/eventemit); the job's outcome is unaffected.
-func (w *Worker) dispatchEvent(ctx context.Context, event interface{}) {
-	w.events.Emit(ctx, event)
-}
-
-// jobEventDispatch returns dispatchEvent when an event dispatcher is
-// installed and nil when none is, so the job event helpers build no event
-// for no listener.
-func (w *Worker) jobEventDispatch() func(ctx context.Context, event interface{}) {
-	if !w.events.Installed() {
-		return nil
-	}
-	return w.dispatchEvent
-}
-
 // Option configures a worker
 type Option func(*Worker)
 
@@ -418,7 +399,7 @@ func (w *Worker) processJob() error {
 	log := w.jobLogger(jobCtx, job, jobType)
 
 	// Dispatch queue.job.started event
-	dispatchJobProcessing(w.jobEventDispatch(), jobCtx, jobType, w.queueName)
+	dispatchJobProcessing(&w.events, jobCtx, jobType, w.queueName)
 	startTime := time.Now()
 
 	// Check if this is a cancelled batch job, skip processing.
@@ -531,7 +512,7 @@ func (w *Worker) processJob() error {
 				batch.recordSuccess(jobCtx)
 			}
 		}
-		dispatchJobProcessed(w.jobEventDispatch(), jobCtx, jobType, w.queueName, duration)
+		dispatchJobProcessed(&w.events, jobCtx, jobType, w.queueName, duration)
 		return nil
 	case <-jobCtx.Done():
 		duration := time.Since(startTime)
@@ -758,7 +739,7 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 			"backoff_ms", backoff.Milliseconds(),
 			"error", err,
 		)
-		dispatchJobRetrying(w.jobEventDispatch(), ctx, jobType, w.queueName, attempt, maxAttempts, err, backoff)
+		dispatchJobRetrying(&w.events, ctx, jobType, w.queueName, attempt, maxAttempts, err, backoff)
 		return
 	}
 
@@ -895,26 +876,19 @@ func (w *Worker) failJob(ctx context.Context, log contract.Logger, job Job, jobT
 		}
 	}
 	failure := failureForEvent(job, err)
-	// Read once: the line below is written exactly when no dispatcher
-	// receives the queue.job.failed event.
-	dispatch := w.events.Dispatcher()
-	if dispatch == nil {
-		if !contract.IsReported(failure) {
-			log.Error("Job failed",
-				"attempts", attempt,
-				"error", err,
-			)
-		}
-		return
-	}
 	// The dispatcher is user code: a panic in it comes back as a
 	// contract.RecoveredPanic and goes to the failure policy like a
-	// returned error, so the pump lives on.
-	dispatchJobFailed(func(ctx context.Context, event interface{}) {
-		if err := eventemit.DispatchContained(ctx, dispatch, event); err != nil {
-			w.events.Fail(ctx, err, event)
-		}
-	}, ctx, jobType, w.queueName, jobIDOf(job), failure, duration)
+	// returned error, so the pump lives on. The line below is written
+	// exactly when no dispatcher received the queue.job.failed event.
+	if dispatchJobFailed(&w.events, ctx, jobType, w.queueName, jobIDOf(job), failure, duration) {
+		return
+	}
+	if !contract.IsReported(failure) {
+		log.Error("Job failed",
+			"attempts", attempt,
+			"error", err,
+		)
+	}
 }
 
 // failureForEvent returns the error the queue.job.failed event carries for a job

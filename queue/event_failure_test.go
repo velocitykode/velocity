@@ -30,7 +30,7 @@ func TestDriverCore_FailedEventDispatchLoggedOncePerEvent(t *testing.T) {
 	var c DriverCore
 	c.SetEventDispatcher(failingDispatch)
 	for i := 0; i < 2; i++ {
-		c.DispatchEvent(context.Background(), &JobQueued{})
+		c.DispatchJobQueued(context.Background(), "t", "default", false, 0)
 	}
 	assertOneWarn(t, out.String(), "queue.job.queued")
 }
@@ -40,7 +40,7 @@ func TestWorker_FailedEventDispatchLoggedOncePerEvent(t *testing.T) {
 	w := NewWorker(NewMemoryDriver(), "default", func(Job) error { return nil })
 	w.SetEventDispatcher(failingDispatch)
 	for i := 0; i < 2; i++ {
-		w.dispatchEvent(context.Background(), &JobProcessed{})
+		dispatchJobProcessed(&w.events, context.Background(), "t", "default", 0)
 	}
 	assertOneWarn(t, out.String(), "queue.job.completed")
 }

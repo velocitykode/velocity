@@ -20,6 +20,6 @@ func BenchmarkEmitRecordingDispatch(b *testing.B) {
 	ev := &BaseEvent{EventName: "bench.event"}
 	b.ReportAllocs()
 	for b.Loop() {
-		e.Emit(ctx, ev)
+		e.EmitBuilt(ctx, func() any { return ev })
 	}
 }

@@ -1179,7 +1179,7 @@ func Save[T any](ctx context.Context, m *Manager, model *T) error {
 	// line identical to the in-Transaction path. Without this, a panic
 	// in an AfterCommit hook fired through the auto-commit branch would
 	// reach neither sink wired to the Manager.
-	ctx = withTxRecoverDispatcher(ctx, func(ev *TxRecover) { m.dispatchEvent(ctx, ev) })
+	ctx = withTxRecoverDispatcher(ctx, func(build func() *TxRecover) { m.events.EmitBuilt(ctx, func() any { return build() }) })
 	ctx = withModelHookLogger[T](ctx, m)
 	return saveWithDriver(ctx, drv, model)
 }

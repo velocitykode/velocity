@@ -19,7 +19,7 @@ func TestManager_FailedEventDispatchLoggedOncePerEvent(t *testing.T) {
 	m := NewManager()
 	m.SetEventDispatcher(func(context.Context, interface{}) error { return errors.New("listener failed") })
 	for i := 0; i < 2; i++ {
-		m.dispatchEvent(context.Background(), &NotificationSent{})
+		m.events.EmitBuilt(context.Background(), func() any { return &NotificationSent{} })
 	}
 	if n := strings.Count(out.String(), "WARN event dispatch failed"); n != 1 || !strings.Contains(out.String(), "event=notification.completed") {
 		t.Errorf("fallback output = %q, want one warn line naming notification.completed", out.String())

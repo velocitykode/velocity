@@ -263,7 +263,7 @@ func (m *MemoryDriver) PushCtx(ctx context.Context, job Job, queueName ...string
 
 	// Dispatch events outside the lock so listeners that call back into
 	// the driver (e.g. Push/Size) do not deadlock.
-	dispatchJobQueued(m.DispatchFunc(), ctx, jobType, name, false, 0)
+	m.DispatchJobQueued(ctx, jobType, name, false, 0)
 	return nil
 }
 
@@ -298,7 +298,7 @@ func (m *MemoryDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.D
 
 	// Dispatch events outside the lock so listeners that call back into
 	// the driver (e.g. Push/Size) do not deadlock.
-	dispatchJobQueued(m.DispatchFunc(), ctx, jobType, name, true, delay)
+	m.DispatchJobQueued(ctx, jobType, name, true, delay)
 	return nil
 }
 
@@ -628,7 +628,7 @@ func (m *MemoryDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKe
 	jobType := wrapper.Payload.Type
 	m.mu.Unlock()
 
-	dispatchJobQueued(m.DispatchFunc(), ctx, jobType, name, false, 0)
+	m.DispatchJobQueued(ctx, jobType, name, false, 0)
 	return nil
 }
 

@@ -257,7 +257,7 @@ func (d *DatabaseDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupe
 	}
 	// Dispatched after d.mu is released: a job.queued listener is user
 	// code and may push or clear through this driver.
-	dispatchJobQueued(d.DispatchFunc(), ctx, wrapper.Payload.Type, name, false, 0)
+	d.DispatchJobQueued(ctx, wrapper.Payload.Type, name, false, 0)
 	return nil
 }
 
@@ -379,7 +379,7 @@ func (d *DatabaseDriver) PushDelayedCtx(ctx context.Context, job Job, delay time
 	}
 	_ = jobID
 
-	dispatchJobQueued(d.DispatchFunc(), ctx, wrapper.Payload.Type, name, delay > 0, delay)
+	d.DispatchJobQueued(ctx, wrapper.Payload.Type, name, delay > 0, delay)
 	return nil
 }
 

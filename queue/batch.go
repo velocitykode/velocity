@@ -482,29 +482,33 @@ func (b *Batch) fireTerminalCallbacks(ctx context.Context, updated *Batch) {
 // The global dispatcher is what makes cross-process subscriptions work.
 //
 // build returns the event for the envelope of work running under ctx. It
-// is called only when at least one of the two dispatchers is installed,
-// so no event is built for no listener.
+// is called at most once, and only when one of the two dispatchers
+// receives the event, so no event is built for no listener.
 func dispatchBatchEvent(ctx context.Context, dispatch func(context.Context, interface{}), build func(contract.EventMeta) contract.Event) {
-	if dispatch == nil && !globalBatchEvents.Installed() {
-		return
-	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	event := build(eventmeta.Current(ctx))
+	var event contract.Event
+	built := func() any {
+		if event == nil {
+			event = build(eventmeta.Current(ctx))
+		}
+		return event
+	}
 	if dispatch != nil {
 		// The batch's own dispatcher is user code: a panic in it is
 		// contained and goes to the batch events' failure policy, and the
 		// process-wide delivery and the caller's work (the terminal
 		// callbacks, the worker's own events) still run.
+		ev := built()
 		if err := eventemit.DispatchContained(ctx, func(ctx context.Context, event any) error {
 			dispatch(ctx, event)
 			return nil
-		}, event); err != nil {
-			globalBatchEvents.Fail(ctx, err, event)
+		}, ev); err != nil {
+			globalBatchEvents.Fail(ctx, err, ev)
 		}
 	}
-	globalBatchEvents.Emit(ctx, event)
+	globalBatchEvents.EmitBuilt(ctx, built)
 }
 
 // globalBatchEvents holds the process-wide event dispatcher, failure

@@ -250,9 +250,10 @@ func recordAttemptSuccess(r *http.Request, keys []string, throttler contract.Log
 
 // maybeEmitRehashEvent fires auth.PasswordNeedsRehashEvent through events
 // when hasher.NeedsRehash reports the stored hash is out of date (M-08).
-// No-op when no dispatcher has been wired. A failed dispatch never blocks
-// the already-successful login: it goes to the failure policy (counted,
-// its event's first failure logged; see internal/eventemit).
+// No-op when no dispatcher has been wired: the hasher is not even asked.
+// A failed dispatch never blocks the already-successful login: it goes to
+// the failure policy (counted, its event's first failure logged; see
+// internal/eventemit).
 func maybeEmitRehashEvent(
 	ctx context.Context,
 	events *eventemit.Emitter,
@@ -266,9 +267,11 @@ func maybeEmitRehashEvent(
 	if !hasher.NeedsRehash(user.GetAuthPassword()) {
 		return
 	}
-	events.Emit(ctx, auth.PasswordNeedsRehashEvent{
-		EventMeta:  eventmeta.Current(ctx),
-		UserID:     errchain.Sprint(user.GetAuthIdentifier()),
-		SchemeName: schemeName,
+	events.EmitBuilt(ctx, func() any {
+		return auth.PasswordNeedsRehashEvent{
+			EventMeta:  eventmeta.Current(ctx),
+			UserID:     errchain.Sprint(user.GetAuthIdentifier()),
+			SchemeName: schemeName,
+		}
 	})
 }

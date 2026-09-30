@@ -41,7 +41,7 @@ func TestManager_SetEventDispatcher_ReceivesEvent(t *testing.T) {
 		return nil
 	})
 
-	m.dispatchEvent(context.Background(), &QueryExecuted{
+	emitEvent(m, context.Background(), &QueryExecuted{
 		EventMeta:  contract.EventMeta{Context: context.Background()},
 		SQL:        "SELECT 1",
 		Connection: "sqlite",
@@ -68,5 +68,5 @@ func TestManager_SetEventDispatcher_NilClears(t *testing.T) {
 	m.SetEventDispatcher(func(context.Context, any) error { return nil })
 	m.SetEventDispatcher(nil)
 	// Must not panic.
-	m.dispatchEvent(context.Background(), &QueryExecuted{SQL: "SELECT 1"})
+	emitEvent(m, context.Background(), &QueryExecuted{SQL: "SELECT 1"})
 }

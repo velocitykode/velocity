@@ -46,7 +46,7 @@ func TestFailures_Recording_RecoversADispatcherPanic(t *testing.T) {
 	var e Emitter
 	e.Share(&f)
 	e.Set(dispatch)
-	e.Emit(context.Background(), namedEvent{name: "cache.hit"})
+	e.EmitBuilt(context.Background(), func() any { return namedEvent{name: "cache.hit"} })
 	if got := f.Count(); got != 2 {
 		t.Errorf("Count after an emit = %d, want 2 (one per dispatch)", got)
 	}
@@ -68,7 +68,7 @@ func TestEmitter_Emit_ContainsADispatcherPanic(t *testing.T) {
 				t.Fatalf("dispatcher panic escaped Emit: %v", p)
 			}
 		}()
-		if !e.Emit(context.Background(), namedEvent{name: "cache.hit"}) {
+		if !e.EmitBuilt(context.Background(), func() any { return namedEvent{name: "cache.hit"} }) {
 			t.Fatalf("Emit reported no dispatcher")
 		}
 	}()
@@ -85,7 +85,7 @@ func TestEmitter_Emit_ContainsADispatcherPanic(t *testing.T) {
 
 	delivered := 0
 	e.Set(func(context.Context, any) error { delivered++; return nil })
-	e.Emit(context.Background(), namedEvent{name: "cache.hit"})
+	e.EmitBuilt(context.Background(), func() any { return namedEvent{name: "cache.hit"} })
 	if delivered != 1 || e.FailureCount() != 1 {
 		t.Errorf("after recovery: delivered = %d, FailureCount = %d, want 1 and 1", delivered, e.FailureCount())
 	}
@@ -100,11 +100,11 @@ func TestEmitter_Emit_ReentrantPanicsAreEachRecordedOnce(t *testing.T) {
 	e.Set(func(ctx context.Context, ev any) error {
 		depth++
 		if depth == 1 {
-			e.Emit(ctx, ev)
+			e.EmitBuilt(ctx, func() any { return ev })
 		}
 		panic("dispatcher broke")
 	})
-	e.Emit(context.Background(), namedEvent{name: "cache.hit"})
+	e.EmitBuilt(context.Background(), func() any { return namedEvent{name: "cache.hit"} })
 	if got := e.FailureCount(); got != 2 {
 		t.Errorf("FailureCount = %d, want 2", got)
 	}
@@ -129,7 +129,7 @@ func TestEmitter_FailedErrorWithPanickingUnwrapIsRecorded(t *testing.T) {
 				t.Fatalf("panic escaped Emit: %v", p)
 			}
 		}()
-		e.Emit(context.Background(), namedEvent{name: "cache.hit"})
+		e.EmitBuilt(context.Background(), func() any { return namedEvent{name: "cache.hit"} })
 		e.Fail(context.Background(), unwrap, namedEvent{name: "cache.hit"})
 	}()
 	if got := e.FailureCount(); got != 2 {

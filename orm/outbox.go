@@ -262,10 +262,12 @@ func (m *Manager) TransactionWithOutbox(ctx context.Context, fn func(tx *sql.Tx,
 				fallbacklog.Write(logger, func(l contract.Logger) {
 					l.With(fields...).Error("velocity/orm: rollback failed after panic in outbox tx", sqlerr.Key, sqlerr.Kind(rbErr), "panic", fmt.Sprint(r))
 				})
-				m.dispatchTxRecover(ctx, &TxRecover{
-					Cause:       "panic",
-					PanicValue:  fmt.Sprint(r),
-					RollbackErr: rbErr,
+				m.dispatchTxRecover(ctx, func() *TxRecover {
+					return &TxRecover{
+						Cause:       "panic",
+						PanicValue:  fmt.Sprint(r),
+						RollbackErr: rbErr,
+					}
 				})
 			}
 			// Honour the docstring: convert the panic into an error and
@@ -282,10 +284,12 @@ func (m *Manager) TransactionWithOutbox(ctx context.Context, fn func(tx *sql.Tx,
 			fallbacklog.Write(logger, func(l contract.Logger) {
 				l.With(fields...).Error("velocity/orm: rollback failed in outbox tx", sqlerr.Key, sqlerr.Kind(rbErr), "original_"+sqlerr.Key, sqlerr.Kind(err))
 			})
-			m.dispatchTxRecover(ctx, &TxRecover{
-				Cause:       "error",
-				OriginalErr: err,
-				RollbackErr: rbErr,
+			m.dispatchTxRecover(ctx, func() *TxRecover {
+				return &TxRecover{
+					Cause:       "error",
+					OriginalErr: err,
+					RollbackErr: rbErr,
+				}
 			})
 		}
 		return err

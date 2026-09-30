@@ -56,7 +56,7 @@ func TestManager_SetLogger_StoresLogger(t *testing.T) {
 		captured = e.(contract.Event)
 		return nil
 	})
-	m.dispatchEvent(context.Background(), &TxRecover{
+	emitEvent(m, context.Background(), &TxRecover{
 		Cause:       "error",
 		OriginalErr: errors.New("boom"),
 		RollbackErr: errors.New("rollback failed"),

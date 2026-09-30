@@ -26,7 +26,7 @@ func TestEmitter_SetShared_InFlightFailureStaysWithItsOwner(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.Emit(context.Background(), namedEvent{"a"})
+		e.EmitBuilt(context.Background(), func() any { return namedEvent{"a"} })
 	}()
 	<-entered
 	e.SetShared(failing, newF, func() contract.Logger { return newLog })
@@ -81,7 +81,7 @@ func TestEmitter_SetShared_ConcurrentHandoverKeepsThePair(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 500; i++ {
-				e.Emit(context.Background(), namedEvent{"a"})
+				e.EmitBuilt(context.Background(), func() any { return namedEvent{"a"} })
 			}
 		}()
 	}
@@ -110,7 +110,7 @@ func TestEmitter_SetShared_NilAndPartialUpdates(t *testing.T) {
 	if !e.Installed() {
 		t.Error("Share(nil) removed the dispatcher")
 	}
-	e.Emit(context.Background(), namedEvent{"a"})
+	e.EmitBuilt(context.Background(), func() any { return namedEvent{"a"} })
 	if f.Count() != 0 || e.FailureCount() != 1 {
 		t.Errorf("after Share(nil): shared = %d, own = %d; want 0 and 1", f.Count(), e.FailureCount())
 	}
@@ -127,7 +127,7 @@ func TestEmitter_SetShared_NilAndPartialUpdates(t *testing.T) {
 	if e.Installed() {
 		t.Error("SetShared(nil, nil, nil) left a dispatcher")
 	}
-	if e.Emit(context.Background(), namedEvent{"a"}) {
+	if e.EmitBuilt(context.Background(), func() any { return namedEvent{"a"} }) {
 		t.Error("Emit reported a dispatcher after SetShared(nil, nil, nil)")
 	}
 	e.Fail(context.Background(), errListener, namedEvent{"a"})

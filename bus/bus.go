@@ -261,17 +261,9 @@ func (b *Bus) Dispatch(cmd Command) error {
 	b.mu.RLock()
 	handler := b.resolveHandler(cmd)
 	b.mu.RUnlock()
-	emit := b.events.Installed()
 
 	if handler == nil {
 		return fmt.Errorf("bus: no handler registered for %T", cmd)
-	}
-
-	// The command type name is only needed to label the bus.command.* events, so
-	// only pay for the reflect+String allocation when a dispatcher is set.
-	var cmdType string
-	if emit {
-		cmdType = reflect.TypeOf(cmd).String()
 	}
 
 	// Dispatch has no caller-supplied context (the public signature is
@@ -280,12 +272,21 @@ func (b *Bus) Dispatch(cmd Command) error {
 
 	// A failed event dispatch goes to the failure policy (counted, its
 	// event's first failure logged) and never affects command execution.
-	var start time.Time
-	if emit {
+	// The command type name only labels the bus.command.* events, so the
+	// reflect+String allocation is paid only when the dispatching event is
+	// built; the end event follows only a built dispatching event.
+	var (
+		started bool
+		cmdType string
+		start   time.Time
+	)
+	b.events.EmitBuilt(ctx, func() any {
+		started = true
+		cmdType = reflect.TypeOf(cmd).String()
 		meta := eventmeta.Current(ctx)
 		start = meta.At
-		b.events.Emit(ctx, &CommandDispatching{EventMeta: meta, CommandType: cmdType})
-	}
+		return &CommandDispatching{EventMeta: meta, CommandType: cmdType}
+	})
 
 	var err error
 	if pipe.composed != nil {
@@ -296,14 +297,15 @@ func (b *Bus) Dispatch(cmd Command) error {
 		err = b.safeExecuteCmd(handler, cmd)
 	}
 
-	if emit {
-		meta := eventmeta.Current(ctx)
-		duration := meta.At.Sub(start)
-		if err != nil {
-			b.events.Emit(ctx, &CommandFailed{EventMeta: meta, CommandType: cmdType, Err: err, Duration: duration})
-		} else {
-			b.events.Emit(ctx, &CommandCompleted{EventMeta: meta, CommandType: cmdType, Duration: duration})
-		}
+	if started {
+		b.events.EmitBuilt(ctx, func() any {
+			meta := eventmeta.Current(ctx)
+			duration := meta.At.Sub(start)
+			if err != nil {
+				return &CommandFailed{EventMeta: meta, CommandType: cmdType, Err: err, Duration: duration}
+			}
+			return &CommandCompleted{EventMeta: meta, CommandType: cmdType, Duration: duration}
+		})
 	}
 
 	return err
@@ -379,9 +381,9 @@ func (b *Bus) DispatchAsyncCtx(ctx context.Context, cmd Command) error {
 		return fmt.Errorf("bus: failed to push command to queue: %w", err)
 	}
 
-	if b.events.Installed() {
-		b.events.Emit(ctx, &CommandQueued{EventMeta: eventmeta.Current(ctx), CommandType: cmdType.String()})
-	}
+	b.events.EmitBuilt(ctx, func() any {
+		return &CommandQueued{EventMeta: eventmeta.Current(ctx), CommandType: cmdType.String()}
+	})
 
 	return nil
 }
@@ -619,15 +621,15 @@ func (j *commandJob) FailedCtx(ctx context.Context, err error) {
 		return
 	}
 
-	if b.events.Installed() {
+	// A failed event dispatch goes to the failure policy and never
+	// interferes with queue worker error handling.
+	b.events.EmitBuilt(ctx, func() any {
 		cmdType := j.Type
 		if cmdType == "" && j.cmd != nil {
 			cmdType = reflect.TypeOf(j.cmd).String()
 		}
-		// A failed event dispatch goes to the failure policy and never
-		// interferes with queue worker error handling.
-		b.events.Emit(ctx, &CommandFailed{EventMeta: eventmeta.Current(ctx), CommandType: cmdType, Err: err})
-	}
+		return &CommandFailed{EventMeta: eventmeta.Current(ctx), CommandType: cmdType, Err: err}
+	})
 }
 
 // --- package-level bus registry -----------------------------------------

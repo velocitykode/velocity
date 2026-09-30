@@ -652,7 +652,7 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 	// even when no logger is configured. Only the owner sets this:
 	// the outer Transaction owns the drain and therefore owns the
 	// dispatcher binding for the entire callback list lifecycle.
-	dispatcher := func(ev *TxRecover) { m.dispatchEvent(ctx, ev) }
+	dispatcher := func(build func() *TxRecover) { m.events.EmitBuilt(ctx, func() any { return build() }) }
 	if owner {
 		callbacks.setDispatcher(dispatcher)
 	}
@@ -725,24 +725,23 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 		return contract.EventMeta{Context: ctx, TraceID: txTrace, SpanID: txSpanID, ParentID: parentSpanID, At: time.Now()}
 	}
 	dispatchTxExecuted := func(txErr error) {
-		if !m.events.Installed() {
-			return
-		}
-		meta := txMeta()
-		m.dispatchEvent(ctx, &TransactionExecuted{
-			EventMeta:  meta,
-			Connection: connName,
-			Duration:   meta.At.Sub(txStart),
-			Statements: int(txStmtCounter.Load()),
-			Err:        txErr,
+		m.events.EmitBuilt(ctx, func() any {
+			meta := txMeta()
+			return &TransactionExecuted{
+				EventMeta:  meta,
+				Connection: connName,
+				Duration:   meta.At.Sub(txStart),
+				Statements: int(txStmtCounter.Load()),
+				Err:        txErr,
+			}
 		})
 	}
-	dispatchTxRecover := func(ev *TxRecover) {
-		if !m.events.Installed() {
-			return
-		}
-		ev.EventMeta = txMeta()
-		m.dispatchEvent(ctx, ev)
+	dispatchTxRecover := func(build func() *TxRecover) {
+		m.events.EmitBuilt(ctx, func() any {
+			ev := build()
+			ev.EventMeta = txMeta()
+			return ev
+		})
 	}
 
 	defer func() {
@@ -764,10 +763,12 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 				fallbacklog.Write(logger, func(l contract.Logger) {
 					l.With(fields...).Error("velocity/orm: rollback failed after panic", sqlerr.Key, sqlerr.Kind(rbErr), "panic", fmt.Sprint(p))
 				})
-				dispatchTxRecover(&TxRecover{
-					Cause:       "panic",
-					PanicValue:  fmt.Sprint(p),
-					RollbackErr: rbErr,
+				dispatchTxRecover(func() *TxRecover {
+					return &TxRecover{
+						Cause:       "panic",
+						PanicValue:  fmt.Sprint(p),
+						RollbackErr: rbErr,
+					}
 				})
 			}
 			dispatchTxExecuted(panicerr.FromRecovered(p))
@@ -788,10 +789,12 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 			fallbacklog.Write(logger, func(l contract.Logger) {
 				l.With(fields...).Error("velocity/orm: rollback failed", sqlerr.Key, sqlerr.Kind(rbErr), "original_"+sqlerr.Key, sqlerr.Kind(err))
 			})
-			dispatchTxRecover(&TxRecover{
-				Cause:       "error",
-				OriginalErr: err,
-				RollbackErr: rbErr,
+			dispatchTxRecover(func() *TxRecover {
+				return &TxRecover{
+					Cause:       "error",
+					OriginalErr: err,
+					RollbackErr: rbErr,
+				}
 			})
 		}
 		dispatchTxExecuted(err)
@@ -1103,7 +1106,12 @@ func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event any) err
 	// return.
 	if m.pump.Load() == nil {
 		p := newEventPump(m.events.Fail, m.events.FailLater)
-		p.start(m.dispatchEvent)
+		// The observer built each queued event while a dispatcher was
+		// installed (hasDispatcher); the pump hands it over later, off the
+		// driver callback.
+		p.start(func(ctx context.Context, ev contract.Event) {
+			m.events.EmitBuilt(ctx, func() any { return ev })
+		})
 		m.pump.Store(p)
 	}
 	m.hasDispatcher.Store(true)
@@ -1212,23 +1220,17 @@ func (m *Manager) Logger() contract.Logger {
 
 var _ contract.LoggerAware = (*Manager)(nil)
 
-// dispatchTxRecover dispatches ev for work running under ctx's span. The
-// event is built only when a dispatcher is installed.
-func (m *Manager) dispatchTxRecover(ctx context.Context, ev *TxRecover) {
-	if !m.events.Installed() {
-		return
-	}
-	ev.EventMeta = eventmeta.Current(ctx)
-	m.dispatchEvent(ctx, ev)
-}
-
-// dispatchEvent dispatches an event if a dispatcher is configured. ctx
-// reaches every listener so trace IDs and request-scoped values flow
-// through; cancellation/deadline behavior depends on the dispatcher. A
-// failed dispatch is counted and its event's first failure logged through
-// the manager's logger (see internal/eventemit).
-func (m *Manager) dispatchEvent(ctx context.Context, event contract.Event) {
-	m.events.Emit(ctx, event)
+// dispatchTxRecover dispatches the TxRecover build returns, for work
+// running under ctx's span. The event is built only when a dispatcher is
+// installed. ctx reaches every listener so trace IDs and request-scoped
+// values flow through; a failed dispatch is counted and its event's first
+// failure logged through the manager's logger (see internal/eventemit).
+func (m *Manager) dispatchTxRecover(ctx context.Context, build func() *TxRecover) {
+	m.events.EmitBuilt(ctx, func() any {
+		ev := build()
+		ev.EventMeta = eventmeta.Current(ctx)
+		return ev
+	})
 }
 
 // ShareEventFailures is the app's wiring seam for the failure policy: the

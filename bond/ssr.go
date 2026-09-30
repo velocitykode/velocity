@@ -366,11 +366,8 @@ func (g *HTTPGateway) handleFailure(ctx context.Context, page Page, payload ssrS
 // failure (the SSR server's own message) and ThrowOnError returns as err,
 // which wraps it.
 func (g *HTTPGateway) handleFailureWrapped(ctx context.Context, page Page, payload ssrServerError, failure, err error) (*SSRResponse, error) {
-	if g.events.Installed() {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		g.events.Emit(ctx, SSRRenderFailed{
+	g.events.EmitBuilt(ctx, func() any {
+		return SSRRenderFailed{
 			EventMeta:      eventmeta.Current(ctx),
 			Component:      page.Component,
 			URL:            page.URL,
@@ -380,8 +377,8 @@ func (g *HTTPGateway) handleFailureWrapped(ctx context.Context, page Page, paylo
 			BrowserAPI:     payload.BrowserAPI,
 			Stack:          payload.Stack,
 			SourceLocation: payload.SourceLocation,
-		})
-	}
+		}
+	})
 
 	if g.ThrowOnError {
 		if err == nil {

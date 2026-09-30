@@ -81,7 +81,7 @@ type TxCallbacks struct {
 	// callback so observability pipelines see the failure even when
 	// no logger is wired. Set by Manager.Transaction at install time.
 	// May be nil; see runCallbackSafe for the fallback path.
-	dispatcher func(*TxRecover)
+	dispatcher func(build func() *TxRecover)
 }
 
 // OnCommit appends fn to the commit callback list. fn fires after
@@ -176,7 +176,7 @@ func (c *TxCallbacks) CommitFailureCount() int {
 // list. Manager.Transaction calls this immediately after install so
 // runCallbackSafe can route hook panics to the same TxRecover event
 // stream the tx body uses.
-func (c *TxCallbacks) setDispatcher(fn func(*TxRecover)) {
+func (c *TxCallbacks) setDispatcher(fn func(build func() *TxRecover)) {
 	if c == nil {
 		return
 	}
@@ -248,7 +248,7 @@ func lookupTxRecoverLogger(ctx context.Context) contract.Logger {
 // same TxRecover dispatcher Manager.Transaction uses for its own
 // callback list. Idempotent: re-wrapping with a non-nil dispatch
 // overrides the previous value.
-func withTxRecoverDispatcher(ctx context.Context, dispatch func(*TxRecover)) context.Context {
+func withTxRecoverDispatcher(ctx context.Context, dispatch func(build func() *TxRecover)) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -261,11 +261,11 @@ func withTxRecoverDispatcher(ctx context.Context, dispatch func(*TxRecover)) con
 // lookupTxRecoverDispatcher returns the dispatcher attached to ctx by
 // withTxRecoverDispatcher, or nil when no Manager has stamped one
 // (e.g. tests using saveWithDriverCtx directly with a bare ctx).
-func lookupTxRecoverDispatcher(ctx context.Context) func(*TxRecover) {
+func lookupTxRecoverDispatcher(ctx context.Context) func(build func() *TxRecover) {
 	if ctx == nil {
 		return nil
 	}
-	if fn, ok := ctx.Value(txRecoverDispatcherKey{}).(func(*TxRecover)); ok {
+	if fn, ok := ctx.Value(txRecoverDispatcherKey{}).(func(build func() *TxRecover)); ok {
 		return fn
 	}
 	return nil
@@ -411,7 +411,7 @@ func (c *TxCallbacks) runCommitFailure(ctx context.Context, logger contract.Logg
 // adapter (carrying the original value plus a stack frame). This
 // keeps callback panic logs symmetric with goroutine panic logs
 // elsewhere in the framework.
-func runCallbackSafe(ctx context.Context, fn TxCallback, phase string, logger contract.Logger, dispatcher func(*TxRecover)) {
+func runCallbackSafe(ctx context.Context, fn TxCallback, phase string, logger contract.Logger, dispatcher func(build func() *TxRecover)) {
 	cause, p, err := callCallback(ctx, fn)
 	if cause == nil && err == nil {
 		return
@@ -427,10 +427,12 @@ func runCallbackSafe(ctx context.Context, fn TxCallback, phase string, logger co
 			l.With(fields...).Error("velocity/orm: tx callback panicked", "phase", phase, "error", cause)
 		})
 		if dispatcher != nil {
-			dispatcher(&TxRecover{
-				EventMeta:  eventmeta.Current(ctx),
-				Cause:      "callback_panic",
-				PanicValue: fmt.Sprintf("%s: %v", phase, p),
+			dispatcher(func() *TxRecover {
+				return &TxRecover{
+					EventMeta:  eventmeta.Current(ctx),
+					Cause:      "callback_panic",
+					PanicValue: fmt.Sprintf("%s: %v", phase, p),
+				}
 			})
 		}
 	case err != nil:

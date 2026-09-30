@@ -102,10 +102,10 @@ func TestTransaction_RollbackFailureAfterPanicIsOneLine(t *testing.T) {
 func TestRunCallbackSafe_WithoutLoggerWritesThroughTheFallback(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
-		dispatch func(*TxRecover)
+		dispatch func(build func() *TxRecover)
 	}{
 		{"no dispatcher", nil},
-		{"dispatcher", func(*TxRecover) {}},
+		{"dispatcher", func(func() *TxRecover) {}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fallback := fallbacklogtest.Capture(t)

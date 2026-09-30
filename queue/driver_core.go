@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"time"
 
 	"github.com/velocitykode/velocity/internal/eventemit"
 )
@@ -15,7 +16,7 @@ import (
 // contract.EventDispatcherAware through the promoted SetEventDispatcher.
 type DriverCore struct {
 	// events holds the dispatcher and handles a failed dispatch. It takes
-	// no lock, because the drivers' push paths call DispatchEvent while
+	// no lock, because the drivers' push paths call DispatchJobQueued while
 	// holding their own mutex.
 	events eventemit.Emitter
 }
@@ -27,25 +28,21 @@ func (c *DriverCore) SetEventDispatcher(fn func(ctx context.Context, event inter
 	c.events.Set(fn)
 }
 
-// DispatchFunc returns DispatchEvent when an event dispatcher is installed
-// and nil when none is. The lifecycle event helpers (DispatchJobQueued,
-// DispatchJobFailed) build no event for a nil function, so a driver hands
-// them DispatchFunc() and builds no event for no listener.
-func (c *DriverCore) DispatchFunc() func(ctx context.Context, event interface{}) {
-	if !c.events.Installed() {
-		return nil
-	}
-	return c.DispatchEvent
-}
-
-// DispatchEvent dispatches an event if a dispatcher is configured. The
-// caller-supplied ctx is propagated so listeners observe request-scoped values;
-// a nil ctx falls back to context.Background. The dispatcher is loaded
-// atomically, so this is safe to invoke from paths that already hold a driver
-// lock. A failed dispatch is counted and its event's first failure logged
-// through the framework's standalone fallback logger (see
+// DispatchJobQueued dispatches a JobQueued lifecycle event for a job
+// pushed onto queue under ctx (context.Background when nil). The event is
+// built only when a dispatcher is installed. The dispatcher is loaded
+// atomically, so this is safe to invoke from paths that already hold a
+// driver lock. A failed dispatch is counted and its event's first failure
+// logged through the framework's standalone fallback logger (see
 // internal/eventemit); in an app the dispatch function the framework hands
 // the driver has already recorded it through the app logger.
-func (c *DriverCore) DispatchEvent(ctx context.Context, event interface{}) {
-	c.events.Emit(ctx, event)
+func (c *DriverCore) DispatchJobQueued(ctx context.Context, jobType, queue string, delayed bool, delay time.Duration) {
+	dispatchJobQueued(&c.events, ctx, jobType, queue, delayed, delay)
+}
+
+// DispatchJobFailed dispatches a JobFailed lifecycle event, as
+// DispatchJobQueued does. The event carries no job id: a driver calls it
+// for a payload it could not hydrate into a job.
+func (c *DriverCore) DispatchJobFailed(ctx context.Context, jobType, queue string, err error, duration time.Duration) {
+	dispatchJobFailed(&c.events, ctx, jobType, queue, "", err, duration)
 }

@@ -40,7 +40,7 @@ func BenchmarkEmitterEmit(b *testing.B) {
 	ev := &struct{}{}
 	b.ReportAllocs()
 	for b.Loop() {
-		e.Emit(ctx, ev)
+		e.EmitBuilt(ctx, func() any { return ev })
 	}
 }
 
@@ -54,7 +54,7 @@ func BenchmarkEmitterEmitParallel(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		ctx := context.Background()
 		for pb.Next() {
-			e.Emit(ctx, ev)
+			e.EmitBuilt(ctx, func() any { return ev })
 		}
 	})
 }
@@ -83,6 +83,6 @@ func BenchmarkEmitterEmitFailing(b *testing.B) {
 	ev := namedEvent{"bench.event"}
 	b.ReportAllocs()
 	for b.Loop() {
-		e.Emit(ctx, ev)
+		e.EmitBuilt(ctx, func() any { return ev })
 	}
 }

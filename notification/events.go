@@ -105,39 +105,35 @@ func (e *NotificationFailed) UnmarshalJSON(data []byte) error {
 }
 
 // dispatchNotificationSent dispatches a NotificationSent event for the
-// delivery running under ctx's span. The event is built only when a
-// dispatcher is installed.
+// delivery running under ctx's span.
 func (m *Manager) dispatchNotificationSent(ctx context.Context, notifiable interface{}, n Notification, channel string, duration time.Duration) {
-	if !m.events.Installed() {
-		return
-	}
-	m.dispatchEvent(ctx, &NotificationSent{
-		EventMeta:        eventmeta.Current(ctx),
-		NotificationType: typeLabel(n),
-		NotificationID:   IDFromContext(ctx),
-		NotifiableType:   typeLabel(notifiable),
-		NotifiableID:     notifiableID(notifiable),
-		Channel:          channel,
-		Duration:         duration,
+	m.events.EmitBuilt(ctx, func() any {
+		return &NotificationSent{
+			EventMeta:        eventmeta.Current(ctx),
+			NotificationType: typeLabel(n),
+			NotificationID:   IDFromContext(ctx),
+			NotifiableType:   typeLabel(notifiable),
+			NotifiableID:     notifiableID(notifiable),
+			Channel:          channel,
+			Duration:         duration,
+		}
 	})
 }
 
 // dispatchNotificationFailed dispatches a NotificationFailed event for the
-// delivery running under ctx's span. The event is built only when a
-// dispatcher is installed.
+// delivery running under ctx's span.
 func (m *Manager) dispatchNotificationFailed(ctx context.Context, notifiable interface{}, n Notification, channel string, err error, duration time.Duration) {
-	if !m.events.Installed() {
-		return
-	}
-	m.dispatchEvent(ctx, &NotificationFailed{
-		EventMeta:        eventmeta.Current(ctx),
-		NotificationType: typeLabel(n),
-		NotificationID:   IDFromContext(ctx),
-		NotifiableType:   typeLabel(notifiable),
-		NotifiableID:     notifiableID(notifiable),
-		Channel:          channel,
-		Err:              err,
-		Duration:         duration,
+	m.events.EmitBuilt(ctx, func() any {
+		return &NotificationFailed{
+			EventMeta:        eventmeta.Current(ctx),
+			NotificationType: typeLabel(n),
+			NotificationID:   IDFromContext(ctx),
+			NotifiableType:   typeLabel(notifiable),
+			NotifiableID:     notifiableID(notifiable),
+			Channel:          channel,
+			Err:              err,
+			Duration:         duration,
+		}
 	})
 }
 

@@ -35,7 +35,7 @@ func TestServer_SetEventDispatcher_SafeToRecall(t *testing.T) {
 
 	// Emit with a nil-cleared dispatcher must be a no-op (no panic).
 	s.SetEventDispatcher(nil)
-	s.events.Emit(context.Background(), "noop")
+	s.events.EmitBuilt(context.Background(), func() any { return "noop" })
 
 	// Concurrent recalls + reads via Emit. The race detector
 	// catches a missing lock on either side.
@@ -62,7 +62,7 @@ func TestServer_SetEventDispatcher_SafeToRecall(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range iters {
-				s.events.Emit(context.Background(), "probe")
+				s.events.EmitBuilt(context.Background(), func() any { return "probe" })
 			}
 		}()
 	}
@@ -71,7 +71,7 @@ func TestServer_SetEventDispatcher_SafeToRecall(t *testing.T) {
 	// Final state: a non-nil dispatcher should still be able to fire.
 	s.SetEventDispatcher(dispatcher)
 	before := seen.Load()
-	s.events.Emit(context.Background(), "final")
+	s.events.EmitBuilt(context.Background(), func() any { return "final" })
 	if seen.Load() != before+1 {
 		t.Fatalf("Emit did not invoke dispatcher: before=%d after=%d", before, seen.Load())
 	}

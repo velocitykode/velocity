@@ -239,7 +239,7 @@ func TestFailures_Recording_RecordsOnceAndMarks(t *testing.T) {
 
 	var e Emitter
 	e.Set(dispatch)
-	e.Emit(context.Background(), namedEvent{"router.request.completed"})
+	e.EmitBuilt(context.Background(), func() any { return namedEvent{"router.request.completed"} })
 	e.Fail(context.Background(), fmt.Errorf("wrapped: %w", err), namedEvent{"router.request.completed"})
 	if app.Count() != 2 {
 		t.Errorf("app Count = %d, want 2 (one per dispatch, none from the emitter)", app.Count())
@@ -276,7 +276,7 @@ func TestEmitter_ZeroValue(t *testing.T) {
 	if e.Installed() || e.Dispatcher() != nil {
 		t.Error("zero Emitter reports a dispatcher")
 	}
-	if e.Emit(context.Background(), namedEvent{"x"}) {
+	if e.EmitBuilt(context.Background(), func() any { return namedEvent{"x"} }) {
 		t.Error("Emit on the zero Emitter reported a dispatcher")
 	}
 	e.Fail(context.Background(), nil, namedEvent{"x"})
@@ -303,14 +303,14 @@ func TestEmitter_SetEmitFail(t *testing.T) {
 	if !e.Installed() {
 		t.Fatal("Installed = false after Set")
 	}
-	if !e.Emit(nilCtx, namedEvent{"scheduler.task.completed"}) {
+	if !e.EmitBuilt(nilCtx, func() any { return namedEvent{"scheduler.task.completed"} }) {
 		t.Fatal("Emit reported no dispatcher")
 	}
 	if len(got) != 1 || e.FailureCount() != 1 || len(logger.at("warn")) != 1 {
 		t.Errorf("delivered %d, count %d, warn lines %d; want 1 each", len(got), e.FailureCount(), len(logger.at("warn")))
 	}
 	e.Set(nil)
-	if e.Installed() || e.Emit(context.Background(), namedEvent{"x"}) {
+	if e.Installed() || e.EmitBuilt(context.Background(), func() any { return namedEvent{"x"} }) {
 		t.Error("dispatcher still installed after Set(nil)")
 	}
 }
@@ -321,9 +321,9 @@ func TestEmitter_UseLoggerNil(t *testing.T) {
 	var e Emitter
 	e.Set(failing)
 	e.UseLogger(func() contract.Logger { return nil })
-	e.Emit(context.Background(), namedEvent{"a"})
+	e.EmitBuilt(context.Background(), func() any { return namedEvent{"a"} })
 	e.UseLogger(nil)
-	e.Emit(context.Background(), namedEvent{"b"})
+	e.EmitBuilt(context.Background(), func() any { return namedEvent{"b"} })
 	if got := strings.Count(out.String(), "WARN "+FailureMessage); got != 2 {
 		t.Errorf("fallback warn lines = %d, want 2: %q", got, out.String())
 	}
@@ -337,12 +337,12 @@ func TestEmitter_Share(t *testing.T) {
 	e.Set(failing)
 	shared := &Failures{}
 	e.Share(shared)
-	e.Emit(context.Background(), namedEvent{"a"})
+	e.EmitBuilt(context.Background(), func() any { return namedEvent{"a"} })
 	if shared.Count() != 1 || e.FailureCount() != 1 {
 		t.Errorf("shared = %d, emitter reads %d; want 1 and 1", shared.Count(), e.FailureCount())
 	}
 	e.Share(nil)
-	e.Emit(context.Background(), namedEvent{"a"})
+	e.EmitBuilt(context.Background(), func() any { return namedEvent{"a"} })
 	if shared.Count() != 1 || e.FailureCount() != 1 {
 		t.Errorf("after Share(nil): shared = %d, own = %d; want 1 and 1", shared.Count(), e.FailureCount())
 	}
@@ -387,7 +387,7 @@ func TestEmitter_ConcurrentConfigureAndEmit(t *testing.T) {
 		go func(g int) {
 			defer wg.Done()
 			for i := 0; i < perEmitter; i++ {
-				e.Emit(context.Background(), namedEvent{fmt.Sprintf("e%d", g%4)})
+				e.EmitBuilt(context.Background(), func() any { return namedEvent{fmt.Sprintf("e%d", g%4)} })
 				_ = e.Installed()
 			}
 		}(g)
@@ -420,7 +420,7 @@ func TestFailures_ConcurrentRecording(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 200; i++ {
-				e.Emit(context.Background(), namedEvent{"orm.query.completed"})
+				e.EmitBuilt(context.Background(), func() any { return namedEvent{"orm.query.completed"} })
 			}
 		}()
 	}

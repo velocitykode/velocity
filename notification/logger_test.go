@@ -199,7 +199,7 @@ func TestManager_SetLoggerEdgeInputs(t *testing.T) {
 		m.SetEventDispatcher(failingDispatch)
 		m.SetLogger(logdrivers.NewConsoleLoggerTo(out, 0))
 		m.SetLogger(nil)
-		m.dispatchEvent(context.Background(), struct{}{})
+		m.events.EmitBuilt(context.Background(), func() any { return struct{}{} })
 		if out.String() != "" {
 			t.Errorf("replaced logger got %q, want nothing", out.String())
 		}
@@ -213,7 +213,7 @@ func TestManager_SetLoggerEdgeInputs(t *testing.T) {
 		var m Manager
 		m.SetLogger(logdrivers.NewConsoleLoggerTo(out, 0))
 		m.SetEventDispatcher(failingDispatch)
-		m.dispatchEvent(context.Background(), struct{}{})
+		m.events.EmitBuilt(context.Background(), func() any { return struct{}{} })
 		if got := strings.Count(out.String(), "WARN: "+dispatchFailed); got != 1 {
 			t.Errorf("logger warn lines = %d, want 1 (%q)", got, out.String())
 		}
@@ -228,7 +228,7 @@ func TestManager_SetLoggerEdgeInputs(t *testing.T) {
 		}
 		m.SetEventDispatcher(failingDispatch)
 		m.SetLogger(logdrivers.NewConsoleLoggerTo(out, 0))
-		m.dispatchEvent(context.Background(), struct{}{})
+		m.events.EmitBuilt(context.Background(), func() any { return struct{}{} })
 		if got := strings.Count(out.String(), "WARN: "+dispatchFailed); got != 1 {
 			t.Errorf("logger warn lines = %d, want 1 (%q)", got, out.String())
 		}

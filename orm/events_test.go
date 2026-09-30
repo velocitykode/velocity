@@ -78,7 +78,7 @@ func TestManagerDispatchEvent(t *testing.T) {
 	sql := "SELECT * FROM users WHERE id = ?"
 	bindings := []QueryBinding{{Type: "int64", Value: "1"}}
 
-	m.dispatchEvent(context.Background(), &QueryExecuted{
+	emitEvent(m, context.Background(), &QueryExecuted{
 		EventMeta:    contract.EventMeta{Context: ctx},
 		SQL:          sql,
 		Bindings:     bindings,
@@ -112,7 +112,7 @@ func TestManagerDispatchEventWithContext(t *testing.T) {
 
 	ctx := context.WithValue(context.Background(), testCtxKey("request_id"), "test-123")
 
-	m.dispatchEvent(context.Background(), &QueryExecuted{
+	emitEvent(m, context.Background(), &QueryExecuted{
 		EventMeta:  contract.EventMeta{Context: ctx},
 		SQL:        "SELECT 1",
 		Connection: "sqlite",
@@ -140,7 +140,7 @@ func TestManagerDispatchEventBindings(t *testing.T) {
 	m.SetEventDispatcher(collector.dispatch)
 
 	bindings := []QueryBinding{{Type: "int64", Value: "1"}, {Type: "string", Value: "test"}, {Type: "bool", Value: "true"}, {Type: "float64", Value: "3.14"}}
-	m.dispatchEvent(context.Background(), &QueryExecuted{
+	emitEvent(m, context.Background(), &QueryExecuted{
 		EventMeta:  contract.EventMeta{Context: context.Background()},
 		SQL:        "INSERT INTO test",
 		Bindings:   bindings,
@@ -174,7 +174,7 @@ func TestManagerDispatchEventConnection(t *testing.T) {
 
 	for _, conn := range testCases {
 		collector.clear()
-		m.dispatchEvent(context.Background(), &QueryExecuted{
+		emitEvent(m, context.Background(), &QueryExecuted{
 			EventMeta:  contract.EventMeta{Context: context.Background()},
 			SQL:        "SELECT 1",
 			Connection: conn,
@@ -195,8 +195,14 @@ func TestManagerDispatchEventConnection(t *testing.T) {
 func TestManagerDispatchEventNilDispatcher(t *testing.T) {
 	m := &Manager{}
 	// No dispatcher set - should not panic
-	m.dispatchEvent(context.Background(), &QueryExecuted{
+	emitEvent(m, context.Background(), &QueryExecuted{
 		EventMeta: contract.EventMeta{Context: context.Background()},
 		SQL:       "SELECT 1",
 	})
+}
+
+// emitEvent hands the ready-built event to m's dispatcher, as the
+// manager's event pump does.
+func emitEvent(m *Manager, ctx context.Context, event contract.Event) {
+	m.events.EmitBuilt(ctx, func() any { return event })
 }
