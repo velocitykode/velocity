@@ -512,9 +512,9 @@ func TestStatementLog_EdgeInputs(t *testing.T) {
 
 	fallback := fallbacklogtest.Capture(t)
 	ownerless := &observerBinding{name: "sqlite", slowThreshold: time.Millisecond}
-	ownerless.record(nil, StatementEvent{Context: context.Background(), Connection: "sqlite", SQL: "SELECT ?", Duration: 2 * time.Millisecond}, 1)
-	ownerless.record(nil, StatementEvent{Context: context.Background(), Connection: "sqlite", SQL: "SELECT ?", Duration: time.Millisecond}, 1)
-	ownerless.record(nil, StatementEvent{Context: nil, Connection: "sqlite", SQL: "SELECT ?", Duration: time.Hour, Err: driver.ErrSkip}, 1)
+	ownerless.record(nil, nil, StatementEvent{Context: context.Background(), Connection: "sqlite", SQL: "SELECT ?", Duration: 2 * time.Millisecond}, 1)
+	ownerless.record(nil, nil, StatementEvent{Context: context.Background(), Connection: "sqlite", SQL: "SELECT ?", Duration: time.Millisecond}, 1)
+	ownerless.record(nil, nil, StatementEvent{Context: nil, Connection: "sqlite", SQL: "SELECT ?", Duration: time.Hour, Err: driver.ErrSkip}, 1)
 	out := fallback.String()
 	if strings.Count(out, "\n") != 1 || !strings.Contains(out, "WARN velocity/orm: slow query") || !strings.Contains(out, "duration_ms=2") {
 		t.Errorf("fallback = %q, want one slow query line for the 2ms statement only", out)

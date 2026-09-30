@@ -60,6 +60,9 @@ type owned struct {
 	deadline    time.Time
 	hasDeadline bool
 	ids         ids
+	// held is the Held of a context built by Hold or HoldDetached, nil
+	// otherwise.
+	held *Held
 }
 
 // readIDs reads the correlation ids from ctx, as ctx answers them (a

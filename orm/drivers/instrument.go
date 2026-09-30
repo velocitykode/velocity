@@ -15,6 +15,7 @@ import (
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/latency"
+	"github.com/velocitykode/velocity/internal/ownctx"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -80,6 +81,14 @@ type StatementEvent struct {
 // callback returns. Implementations are expected to capture what they need
 // (including any stack-derived data, which is only valid here) and hand the
 // event off for delivery elsewhere.
+//
+// Both methods are called contained: a panic in either is recovered and
+// written once to the pool's query logger, and the statement goes on (a
+// panicking Observing counts as not observing). A statement a framework
+// component runs under its own lock is given an internal/ownctx Hold
+// context: its observation, Observing included, then runs when the
+// component releases the lock, on the same goroutine, rather than inside
+// the statement.
 type StatementObserver interface {
 	// Observing reports whether the observer currently wants events. The
 	// instrumentation consults it before timing a statement or wrapping its
@@ -137,19 +146,44 @@ func (b *observerBinding) set(o StatementObserver) {
 	b.obs.Store(&o)
 }
 
-// active returns the attached observer when it currently wants events,
-// otherwise nil. This is the fast-path guard: no timing, no result-set
-// wrapping, and no argument copying happen when it returns nil.
-func (b *observerBinding) active() StatementObserver {
-	p := b.obs.Load()
-	if p == nil {
-		return nil
+// start reports what wants a statement starting under ctx. on is false on
+// the fast path, when neither an observer nor the statement log wants it:
+// then no timing, no result-set wrapping and no argument copying happen.
+// obs is the observer to report the statement to, nil when only the log
+// wants it. held is the Held a framework component's lock-held statement
+// is deferred to (ownctx.Hold), nil otherwise: under it the observer is
+// not asked whether it is observing now, since Observing is user code and
+// the component holds its lock; it is asked when the report runs.
+func (b *observerBinding) start(ctx context.Context) (obs StatementObserver, held *ownctx.Held, on bool) {
+	if p := b.obs.Load(); p != nil {
+		obs = *p
 	}
-	o := *p
-	if o == nil || !o.Observing() {
-		return nil
+	if obs == nil {
+		if !b.logging() {
+			return nil, nil, false
+		}
+		return nil, ownctx.HeldBy(ctx), true
 	}
-	return o
+	held = ownctx.HeldBy(ctx)
+	if held == nil && !b.observing(obs) {
+		if !b.logging() {
+			return nil, nil, false
+		}
+		return nil, nil, true
+	}
+	return obs, held, true
+}
+
+// observing asks obs whether it wants events, contained: a panic counts
+// as not observing and is written once through the query logger.
+func (b *observerBinding) observing(obs StatementObserver) (on bool) {
+	defer func() {
+		if p := recover(); p != nil {
+			on = false
+			b.userPanicked("velocity/orm: statement observer panicked", p)
+		}
+	}()
+	return obs.Observing()
 }
 
 // logging reports whether the pool's statement log wants statements timed:
@@ -163,6 +197,11 @@ func (b *observerBinding) logging() bool {
 // statement started) and writes the statement's log line. Control-flow
 // sentinels (see isControlErr) produce neither.
 //
+// With held non-nil (see start) all of it is deferred to held, and runs
+// when the component that holds a lock releases it: the observer is then
+// asked whether it is observing, and the rest runs as below. A held
+// already released runs it here.
+//
 // record never panics. It runs inside a database/sql driver callback, on
 // the caller's goroutine or on database/sql's own (a result set closed when
 // its context ends), and database/sql releases the connection after the
@@ -170,7 +209,10 @@ func (b *observerBinding) logging() bool {
 // goroutine, and skip that release on the caller's. The observer and the
 // logger are user code, so a panic in either is contained and written to
 // the fallback logger, and the other still runs.
-func (b *observerBinding) record(obs StatementObserver, ev StatementEvent, argCount int) {
+func (b *observerBinding) record(obs StatementObserver, held *ownctx.Held, ev StatementEvent, argCount int) {
+	if held != nil && held.Defer(func() { b.recordHeld(obs, ev, argCount) }) {
+		return
+	}
 	if ev.Err != nil && isControlErr(ev.Err) {
 		return
 	}
@@ -188,19 +230,31 @@ func (b *observerBinding) record(obs StatementObserver, ev StatementEvent, argCo
 	// either way.
 	defer func() {
 		if p := recover(); p != nil {
-			b.observerPanicked(p)
+			b.userPanicked("velocity/orm: statement observer panicked", p)
 		}
 		b.log(ev, argCount)
 	}()
 	obs.ObserveStatement(ev)
 }
 
-// observerPanicked writes a statement observer's panic p through the query
-// logger, contained (see log).
-func (b *observerBinding) observerPanicked(p any) {
+// recordHeld is a held statement's record, run at the held's release:
+// the observer is asked now whether it wants the event, since start did
+// not ask it under the lock.
+func (b *observerBinding) recordHeld(obs StatementObserver, ev StatementEvent, argCount int) {
+	if obs != nil && !b.observing(obs) {
+		obs = nil
+		ev.Args = nil
+	}
+	b.record(obs, nil, ev, argCount)
+}
+
+// userPanicked writes panic p of user code the instrumentation called (a
+// statement observer's method, a driver result's) through the query
+// logger, contained (see log): the one report of that panic.
+func (b *observerBinding) userPanicked(msg string, p any) {
 	err := panicerr.FromRecovered(p)
 	fallbacklog.Write(b.queryLogger(), func(l contract.Logger) {
-		l.Error("velocity/orm: statement observer panicked", "connection", b.name, "error", err)
+		l.Error(msg, "connection", b.name, "error", err)
 	})
 }
 
@@ -424,8 +478,8 @@ func (c *instrumentedConn) PrepareContext(ctx context.Context, query string) (dr
 // database/sql releases the connection between a declined execution and
 // its fallback prepare, so another operation's prepare can run in between.
 func (c *instrumentedConn) prepare(ctx context.Context, query string, prepareInner func() (driver.Stmt, error)) (driver.Stmt, error) {
-	obs := c.binding.active()
-	if obs == nil && !c.binding.logging() {
+	obs, held, on := c.binding.start(ctx)
+	if !on {
 		inner, err := prepareInner()
 		if err != nil {
 			return nil, err
@@ -435,7 +489,7 @@ func (c *instrumentedConn) prepare(ctx context.Context, query string, prepareInn
 	start := time.Now()
 	inner, err := prepareInner()
 	if err != nil {
-		reportFailure(c.binding, obs, ctx, query, unknownArgCount, start, err)
+		reportFailure(c.binding, obs, held, ctx, query, unknownArgCount, start, err)
 		return nil, err
 	}
 	return newInstrumentedStmt(inner, c, query), nil
@@ -511,17 +565,17 @@ func (c *instrumentedConn) Ping(ctx context.Context) error {
 // event fires when the result set closes, carrying the number of rows the
 // caller actually consumed.
 func (c *instrumentedConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	obs := c.binding.active()
-	if obs == nil && !c.binding.logging() {
+	obs, held, on := c.binding.start(ctx)
+	if !on {
 		return c.queryInner(ctx, query, args)
 	}
 	start := time.Now()
 	rows, err := c.queryInner(ctx, query, args)
 	if err != nil {
-		reportFailure(c.binding, obs, ctx, query, len(args), start, err)
+		reportFailure(c.binding, obs, held, ctx, query, len(args), start, err)
 		return nil, err
 	}
-	return newInstrumentedRows(rows, c.binding, obs, ctx, query, args, start), nil
+	return newInstrumentedRows(rows, c.binding, obs, held, ctx, query, args, start), nil
 }
 
 func (c *instrumentedConn) queryInner(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
@@ -549,17 +603,17 @@ func (c *instrumentedConn) queryInner(ctx context.Context, query string, args []
 // ExecContext runs a write and reports the event as soon as it completes; the
 // affected-row count comes straight from the driver result.
 func (c *instrumentedConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	obs := c.binding.active()
-	if obs == nil && !c.binding.logging() {
+	obs, held, on := c.binding.start(ctx)
+	if !on {
 		return c.execInner(ctx, query, args)
 	}
 	start := time.Now()
 	res, err := c.execInner(ctx, query, args)
 	if err != nil {
-		reportFailure(c.binding, obs, ctx, query, len(args), start, err)
+		reportFailure(c.binding, obs, held, ctx, query, len(args), start, err)
 		return nil, err
 	}
-	reportSuccess(c.binding, obs, ctx, query, args, start, resultRows(res))
+	reportSuccess(c.binding, obs, held, ctx, query, args, start, c.binding.resultRows(res))
 	return res, nil
 }
 
@@ -649,17 +703,17 @@ func (s *instrumentedStmt) Query(args []driver.Value) (driver.Rows, error) { //n
 
 func (s *instrumentedStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
 	b := s.conn.binding
-	obs := b.active()
-	if obs == nil && !b.logging() {
+	obs, held, on := b.start(ctx)
+	if !on {
 		return s.execInner(ctx, args)
 	}
 	start := time.Now()
 	res, err := s.execInner(ctx, args)
 	if err != nil {
-		reportFailure(b, obs, ctx, s.query, len(args), start, err)
+		reportFailure(b, obs, held, ctx, s.query, len(args), start, err)
 		return nil, err
 	}
-	reportSuccess(b, obs, ctx, s.query, args, start, resultRows(res))
+	reportSuccess(b, obs, held, ctx, s.query, args, start, b.resultRows(res))
 	return res, nil
 }
 
@@ -681,17 +735,17 @@ func (s *instrumentedStmt) execInner(ctx context.Context, args []driver.NamedVal
 
 func (s *instrumentedStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
 	b := s.conn.binding
-	obs := b.active()
-	if obs == nil && !b.logging() {
+	obs, held, on := b.start(ctx)
+	if !on {
 		return s.queryInner(ctx, args)
 	}
 	start := time.Now()
 	rows, err := s.queryInner(ctx, args)
 	if err != nil {
-		reportFailure(b, obs, ctx, s.query, len(args), start, err)
+		reportFailure(b, obs, held, ctx, s.query, len(args), start, err)
 		return nil, err
 	}
-	return newInstrumentedRows(rows, b, obs, ctx, s.query, args, start), nil
+	return newInstrumentedRows(rows, b, obs, held, ctx, s.query, args, start), nil
 }
 
 func (s *instrumentedStmt) queryInner(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
@@ -739,7 +793,9 @@ type instrumentedRows struct {
 	binding *observerBinding
 	// obs is the observer that wanted the statement when it started; nil
 	// when only the pool's statement log did.
-	obs      StatementObserver
+	obs StatementObserver
+	// held is the Held the statement's report is deferred to (see start).
+	held     *ownctx.Held
 	ev       StatementEvent
 	argCount int
 	start    time.Time
@@ -771,7 +827,7 @@ var (
 	_ driver.RowsColumnTypePrecisionScale   = (*instrumentedRows)(nil)
 )
 
-func newInstrumentedRows(inner driver.Rows, b *observerBinding, obs StatementObserver, ctx context.Context, query string, args []driver.NamedValue, start time.Time) *instrumentedRows {
+func newInstrumentedRows(inner driver.Rows, b *observerBinding, obs StatementObserver, held *ownctx.Held, ctx context.Context, query string, args []driver.NamedValue, start time.Time) *instrumentedRows {
 	ev := StatementEvent{
 		Context:    ctx,
 		Connection: b.name,
@@ -786,6 +842,7 @@ func newInstrumentedRows(inner driver.Rows, b *observerBinding, obs StatementObs
 		inner:    inner,
 		binding:  b,
 		obs:      obs,
+		held:     held,
 		ev:       ev,
 		argCount: len(args),
 		start:    start,
@@ -840,7 +897,7 @@ func (r *instrumentedRows) finish(closeErr error) {
 	} else {
 		ev.RowsAffected = r.count.Load()
 	}
-	r.binding.record(r.obs, ev, r.argCount)
+	r.binding.record(r.obs, r.held, ev, r.argCount)
 }
 
 func (r *instrumentedRows) HasNextResultSet() bool {
@@ -905,7 +962,7 @@ func (r *instrumentedRows) ColumnTypePrecisionScale(index int) (precision, scale
 
 // reportSuccess records a completed statement. obs is nil when only the
 // pool's statement log wanted it; bound values are then not copied.
-func reportSuccess(b *observerBinding, obs StatementObserver, ctx context.Context, query string, args []driver.NamedValue, start time.Time, rows int64) {
+func reportSuccess(b *observerBinding, obs StatementObserver, held *ownctx.Held, ctx context.Context, query string, args []driver.NamedValue, start time.Time, rows int64) {
 	ev := StatementEvent{
 		Context:      ctx,
 		Connection:   b.name,
@@ -916,13 +973,13 @@ func reportSuccess(b *observerBinding, obs StatementObserver, ctx context.Contex
 	if obs != nil {
 		ev.Args = namedValuesToAny(args)
 	}
-	b.record(obs, ev, len(args))
+	b.record(obs, held, ev, len(args))
 }
 
 // reportFailure records a failed statement, dropping control-flow sentinels
 // and never recording bound values.
-func reportFailure(b *observerBinding, obs StatementObserver, ctx context.Context, query string, argCount int, start time.Time, err error) {
-	b.record(obs, StatementEvent{
+func reportFailure(b *observerBinding, obs StatementObserver, held *ownctx.Held, ctx context.Context, query string, argCount int, start time.Time, err error) {
+	b.record(obs, held, StatementEvent{
 		Context:    ctx,
 		Connection: b.name,
 		SQL:        query,
@@ -933,10 +990,22 @@ func reportFailure(b *observerBinding, obs StatementObserver, ctx context.Contex
 
 // resultRows reads the affected-row count from a driver result, reporting zero
 // when the driver does not track one (driver.ResultNoRows and friends).
-func resultRows(res driver.Result) int64 {
+//
+// RowsAffected is the driver's code, called here on the statement's behalf
+// rather than by the caller, so it is called contained: a panic reports
+// zero and is written once through the query logger, and the statement,
+// which completed, still returns its result (a caller asking the result
+// itself meets the driver as it is).
+func (b *observerBinding) resultRows(res driver.Result) (rows int64) {
 	if res == nil {
 		return 0
 	}
+	defer func() {
+		if p := recover(); p != nil {
+			rows = 0
+			b.userPanicked("velocity/orm: driver result RowsAffected panicked", p)
+		}
+	}()
 	n, err := res.RowsAffected()
 	if err != nil {
 		return 0

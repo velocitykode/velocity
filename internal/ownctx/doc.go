@@ -21,5 +21,10 @@
 //     statement event or log line written under the lock carries them;
 //     every other key, a caller's own values included, answers nil.
 //
+// Hold and HoldDetached build the same contexts carrying a Held: the
+// statement observer and query logger an instrumented pool would run
+// inside a statement given the context are deferred to the Held, which
+// the component releases after unlocking (see Held).
+//
 // It imports the standard library and internal/tracekeys only.
 package ownctx

@@ -36,6 +36,8 @@ type script struct {
 	nextErr error
 	// closeErr fails every result set's Close.
 	closeErr error
+	// result, when set, is what every direct exec returns.
+	result driver.Result
 }
 
 var (
@@ -77,6 +79,9 @@ func (c *scriptConn) Begin() (driver.Tx, error) { return nil, errors.New("not su
 func (c *scriptConn) ExecContext(context.Context, string, []driver.NamedValue) (driver.Result, error) {
 	if c.s.skipDirect {
 		return nil, driver.ErrSkip
+	}
+	if c.s.result != nil {
+		return c.s.result, nil
 	}
 	return driver.RowsAffected(1), nil
 }
