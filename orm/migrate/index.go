@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // allowedPostgresIndexMethods enumerates the index access methods that
@@ -407,7 +409,7 @@ func (b *IndexBuilder) toPostgresSQL() (string, error) {
 	} else {
 		cols, err := quoteIdentifierList(b.columns, b.driver)
 		if err != nil {
-			return "", fmt.Errorf("invalid index column: %w", err)
+			return "", errchain.Errorf("invalid index column: %w", err)
 		}
 		sql.WriteString(" (")
 		sql.WriteString(cols)
@@ -418,7 +420,7 @@ func (b *IndexBuilder) toPostgresSQL() (string, error) {
 	if len(b.include) > 0 {
 		inc, err := quoteIdentifierList(b.include, b.driver)
 		if err != nil {
-			return "", fmt.Errorf("invalid include column: %w", err)
+			return "", errchain.Errorf("invalid include column: %w", err)
 		}
 		sql.WriteString(" INCLUDE (")
 		sql.WriteString(inc)
@@ -472,7 +474,7 @@ func (b *IndexBuilder) toMySQLSQL() (string, error) {
 	// Columns
 	cols, err := quoteIdentifierList(b.columns, b.driver)
 	if err != nil {
-		return "", fmt.Errorf("invalid index column: %w", err)
+		return "", errchain.Errorf("invalid index column: %w", err)
 	}
 	sql.WriteString(" (")
 	sql.WriteString(cols)
@@ -506,7 +508,7 @@ func (b *IndexBuilder) toSQLiteSQL() (string, error) {
 	// Columns
 	cols, err := quoteIdentifierList(b.columns, b.driver)
 	if err != nil {
-		return "", fmt.Errorf("invalid index column: %w", err)
+		return "", errchain.Errorf("invalid index column: %w", err)
 	}
 	sql.WriteString(" (")
 	sql.WriteString(cols)
@@ -543,7 +545,7 @@ func (m *Migrator) CreateIndex(name, table string, fn func(*IndexBuilder)) error
 
 	sql, err := builder.ToSQL()
 	if err != nil {
-		return fmt.Errorf("failed to build index SQL for %s: %w", name, err)
+		return errchain.Errorf("failed to build index SQL for %s: %w", name, err)
 	}
 
 	// Pretend mode collects the DDL instead of executing it, matching
@@ -556,7 +558,7 @@ func (m *Migrator) CreateIndex(name, table string, fn func(*IndexBuilder)) error
 
 	return m.withMigrationLock(func() error {
 		if _, err := m.execContext(context.Background(), sql); err != nil {
-			return fmt.Errorf("failed to create index %s: %w", name, err)
+			return errchain.Errorf("failed to create index %s: %w", name, err)
 		}
 		return nil
 	})
@@ -601,7 +603,7 @@ func (m *Migrator) DropIndex(name string, table ...string) error {
 
 	return m.withMigrationLock(func() error {
 		if _, err := m.execContext(context.Background(), sql); err != nil {
-			return fmt.Errorf("failed to drop index %s: %w", name, err)
+			return errchain.Errorf("failed to drop index %s: %w", name, err)
 		}
 		return nil
 	})

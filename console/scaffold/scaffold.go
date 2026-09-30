@@ -63,12 +63,12 @@ func (g Generator) Generate(name, dirOverride string, data map[string]any) (Resu
 
 func write(outputDir, filename, kind, stub string, data map[string]any) (string, error) {
 	if err := os.MkdirAll(outputDir, defaultDirMode); err != nil {
-		return "", fmt.Errorf("failed to create directory: %w", err)
+		return "", errchain.Errorf("failed to create directory: %w", err)
 	}
 
 	outputPath := filepath.Join(outputDir, filename)
 	if err := EnsureWithinRoot(outputDir, outputPath); err != nil {
-		return "", fmt.Errorf("invalid %s filename %q: %w", kind, filename, err)
+		return "", errchain.Errorf("invalid %s filename %q: %w", kind, filename, err)
 	}
 	if err := EnsureWritableTarget(outputPath, kind); err != nil {
 		return "", err
@@ -87,12 +87,12 @@ func write(outputDir, filename, kind, stub string, data map[string]any) (string,
 func render(name, stub string, data map[string]any) ([]byte, error) {
 	tmpl, err := template.New(name).Parse(stub)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse template: %w", err)
+		return nil, errchain.Errorf("failed to parse template: %w", err)
 	}
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		return nil, fmt.Errorf("failed to execute template: %w", err)
+		return nil, errchain.Errorf("failed to execute template: %w", err)
 	}
 	return buf.Bytes(), nil
 }
@@ -164,14 +164,14 @@ func ResolveDir(defaultDir, override string) (string, error) {
 		return defaultDir, nil
 	}
 	if err := ValidateNestedName(override); err != nil {
-		return "", fmt.Errorf("invalid --dir %q: %w", override, err)
+		return "", errchain.Errorf("invalid --dir %q: %w", override, err)
 	}
 	dir := filepath.Clean(override)
 	if err := EnsureWithinRoot(".", dir); err != nil {
-		return "", fmt.Errorf("invalid --dir %q: %w", override, err)
+		return "", errchain.Errorf("invalid --dir %q: %w", override, err)
 	}
 	if err := EnsureNoSymlinkComponents(dir); err != nil {
-		return "", fmt.Errorf("invalid --dir %q: %w", override, err)
+		return "", errchain.Errorf("invalid --dir %q: %w", override, err)
 	}
 	return dir, nil
 }
@@ -202,13 +202,13 @@ func writeNewFile(path, kind string, content []byte, write func(*os.File, []byte
 			}
 			return fmt.Errorf("%s already exists: %s", kind, path)
 		}
-		return fmt.Errorf("failed to write file: %w", err)
+		return errchain.Errorf("failed to write file: %w", err)
 	}
 
 	_, writeErr := write(f, content)
 	closeErr := f.Close()
 	if err := errors.Join(writeErr, closeErr); err != nil {
-		return fmt.Errorf("failed to write file (an incomplete %s may remain at %s): %w", kind, path, err)
+		return errchain.Errorf("failed to write file (an incomplete %s may remain at %s): %w", kind, path, err)
 	}
 	return nil
 }
@@ -222,7 +222,7 @@ func EnsureWritableTarget(path, kind string) error {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("inspect %s path %q: %w", kind, path, err)
+		return errchain.Errorf("inspect %s path %q: %w", kind, path, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("%s path %q is a symlink", kind, path)
@@ -240,7 +240,7 @@ func EnsureNoSymlinkComponents(dir string) error {
 			if os.IsNotExist(err) {
 				return nil
 			}
-			return fmt.Errorf("inspect path %q: %w", cur, err)
+			return errchain.Errorf("inspect path %q: %w", cur, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("path component %q is a symlink", cur)
@@ -253,11 +253,11 @@ func EnsureNoSymlinkComponents(dir string) error {
 func EnsureWithinRoot(root, path string) error {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
-		return fmt.Errorf("resolve root %q: %w", root, err)
+		return errchain.Errorf("resolve root %q: %w", root, err)
 	}
 	absPath, err := filepath.Abs(path)
 	if err != nil {
-		return fmt.Errorf("resolve path %q: %w", path, err)
+		return errchain.Errorf("resolve path %q: %w", path, err)
 	}
 	prefix := absRoot + string(os.PathSeparator)
 	if absPath != absRoot && !strings.HasPrefix(absPath, prefix) {

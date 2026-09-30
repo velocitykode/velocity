@@ -1,8 +1,6 @@
 package auth
 
-import (
-	"fmt"
-)
+import "github.com/velocitykode/velocity/internal/errchain"
 
 // NormalizeID converts numeric ID values from database drivers into uint
 // so that GetAuthIdentifier() always returns a consistent type regardless
@@ -69,5 +67,5 @@ func (u *AuthUser) SetRememberToken(token string) {
 
 // String returns string representation
 func (u *AuthUser) String() string {
-	return fmt.Sprintf("AuthUser<%v>", u.ID)
+	return errchain.Sprintf("AuthUser<%v>", u.ID)
 }

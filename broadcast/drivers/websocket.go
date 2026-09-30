@@ -556,7 +556,7 @@ func (d *WebSocketDriver) GetClients(channel string) []string {
 func (d *WebSocketDriver) getOpaqueSeed() [32]byte {
 	d.opaqueSeedOnce.Do(func() {
 		if _, err := rand.Read(d.opaqueSeed[:]); err != nil {
-			panic(fmt.Sprintf("velocity/broadcast: crypto/rand failed seeding opaque client IDs: %v", err))
+			panic(errchain.Sprintf("velocity/broadcast: crypto/rand failed seeding opaque client IDs: %v", err))
 		}
 	})
 	return d.opaqueSeed
@@ -708,7 +708,7 @@ func (d *WebSocketDriver) handleSubscribe(client *websocket.Client, msg websocke
 	// for nicer diagnostics. Wrap ErrChannelNameTooLong so callers can
 	// errors.Is the sentinel regardless of which seam rejected.
 	if d.maxChannelNameLength > 0 && len(channel) > d.maxChannelNameLength {
-		return fmt.Errorf("%w: %d characters", ErrChannelNameTooLong, d.maxChannelNameLength)
+		return errchain.Errorf("%w: %d characters", ErrChannelNameTooLong, d.maxChannelNameLength)
 	}
 
 	// Authorize private and presence channels. The default authorizer is

@@ -20,6 +20,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/drivers"
 )
@@ -138,7 +139,7 @@ func (d *MySQLDriver) Connect(config drivers.ConnectionConfig) error {
 	dsn += "?" + strings.Join(params, "&")
 
 	if err := d.OpenAndPing("mysql", dsn); err != nil {
-		return fmt.Errorf("velocity/orm: mysql connect failed (dsn=%q): %w", redactMySQLDSN(dsn), err)
+		return errchain.Errorf("velocity/orm: mysql connect failed (dsn=%q): %w", redactMySQLDSN(dsn), err)
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/scheduler"
 )
@@ -94,13 +95,13 @@ func (l *cacheLocker) Acquire(ctx context.Context, name string, ttl time.Duratio
 		// We wrap with a backend-error sentinel so the scheduler's
 		// runDueJobs can errors.Is(err, ErrLockHeld) == false and log a
 		// WARN naming the underlying cause.
-		return nil, fmt.Errorf("velocity: cache lock %q backend error: %w", name, err)
+		return nil, errchain.Errorf("velocity: cache lock %q backend error: %w", name, err)
 	}
 	if !acquired {
 		// (false, nil) -- healthy contention. Another holder owns the
 		// key (or this caller's previous holder still has it). Match
 		// the scheduler's quiet-contention contract.
-		return nil, fmt.Errorf("velocity: cache lock %q: %w", name, scheduler.ErrLockHeld)
+		return nil, errchain.Errorf("velocity: cache lock %q: %w", name, scheduler.ErrLockHeld)
 	}
 	return &cacheLockHandle{
 		name:  name,

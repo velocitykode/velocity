@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/queue"
 )
 
@@ -96,7 +97,7 @@ func (j *EventListenerJob) HandleCtx(ctx context.Context) error {
 	if j.listener == nil {
 		lfactory, ok := lookupListenerFactory(j.ListenerType)
 		if !ok {
-			return fmt.Errorf("velocity/events: no factory registered for listener type %q: %w", j.ListenerType, ErrListenerNotFound)
+			return errchain.Errorf("velocity/events: no factory registered for listener type %q: %w", j.ListenerType, ErrListenerNotFound)
 		}
 		j.listener = lfactory()
 		if j.listener == nil {
@@ -142,27 +143,27 @@ func (j *EventListenerJob) hydrateEvent() (interface{}, error) {
 		return nil, nil
 	}
 	if j.EventType == "" {
-		return nil, fmt.Errorf("velocity/events: event payload without event_type: %w", ErrEventTypeNotRegistered)
+		return nil, errchain.Errorf("velocity/events: event payload without event_type: %w", ErrEventTypeNotRegistered)
 	}
 
 	// Built-in scalar shortcut: no user registration required.
 	if value, ok := newScalarEventValue(j.EventType); ok {
 		if err := json.Unmarshal(j.Event, value); err != nil {
-			return nil, fmt.Errorf("velocity/events: failed to unmarshal scalar event payload into %q: %w", j.EventType, err)
+			return nil, errchain.Errorf("velocity/events: failed to unmarshal scalar event payload into %q: %w", j.EventType, err)
 		}
 		return derefScalarValue(value, j.EventType), nil
 	}
 
 	efactory, ok := lookupEventFactory(j.EventType)
 	if !ok {
-		return nil, fmt.Errorf("velocity/events: no factory registered for event type %q: %w", j.EventType, ErrEventTypeNotRegistered)
+		return nil, errchain.Errorf("velocity/events: no factory registered for event type %q: %w", j.EventType, ErrEventTypeNotRegistered)
 	}
 	value := efactory()
 	if value == nil {
 		return nil, fmt.Errorf("velocity/events: event factory for %q returned nil", j.EventType)
 	}
 	if err := json.Unmarshal(j.Event, value); err != nil {
-		return nil, fmt.Errorf("velocity/events: failed to unmarshal event payload into %q: %w", j.EventType, err)
+		return nil, errchain.Errorf("velocity/events: failed to unmarshal event payload into %q: %w", j.EventType, err)
 	}
 	return value, nil
 }
@@ -334,7 +335,7 @@ func (d *QueueIntegratedDispatcher) Dispatch(ctx context.Context, event interfac
 		if listener.Async() {
 			// Enhanced queue integration
 			if err := d.pushToQueue(ctx, event, listener); err != nil {
-				return fmt.Errorf("failed to queue listener: %w", err)
+				return errchain.Errorf("failed to queue listener: %w", err)
 			}
 			return nil
 		}
@@ -357,7 +358,7 @@ func (d *QueueIntegratedDispatcher) Dispatch(ctx context.Context, event interfac
 func (d *QueueIntegratedDispatcher) replayListener(ctx context.Context, event interface{}, listener Listener) error {
 	if listener.Async() {
 		if err := d.pushToQueue(ctx, event, listener); err != nil {
-			return fmt.Errorf("failed to queue listener: %w", err)
+			return errchain.Errorf("failed to queue listener: %w", err)
 		}
 		return nil
 	}
@@ -375,19 +376,19 @@ func (d *QueueIntegratedDispatcher) replayListener(ctx context.Context, event in
 func (d *QueueIntegratedDispatcher) pushToQueue(ctx context.Context, event interface{}, listener Listener) error {
 	listenerType := d.getListenerType(listener)
 	if _, ok := lookupListenerFactory(listenerType); !ok {
-		return fmt.Errorf("velocity/events: refusing to enqueue listener %q: no factory registered (call RegisterListenerFactory before Dispatch): %w", listenerType, ErrListenerNotFound)
+		return errchain.Errorf("velocity/events: refusing to enqueue listener %q: no factory registered (call RegisterListenerFactory before Dispatch): %w", listenerType, ErrListenerNotFound)
 	}
 
 	eventType := eventTypeKey(event)
 	if !isScalarEventType(eventType) {
 		if _, ok := lookupEventFactory(eventType); !ok {
-			return fmt.Errorf("velocity/events: refusing to enqueue event %q for listener %q: no event factory registered (call RegisterEventFactory before Dispatch): %w", eventType, listenerType, ErrEventTypeNotRegistered)
+			return errchain.Errorf("velocity/events: refusing to enqueue event %q for listener %q: no event factory registered (call RegisterEventFactory before Dispatch): %w", eventType, listenerType, ErrEventTypeNotRegistered)
 		}
 	}
 
 	payload, err := json.Marshal(event)
 	if err != nil {
-		return fmt.Errorf("velocity/events: failed to marshal event %q: %w", eventType, err)
+		return errchain.Errorf("velocity/events: failed to marshal event %q: %w", eventType, err)
 	}
 
 	// Create the job. The live event pointer is stashed on the unexported
@@ -579,7 +580,7 @@ func (d *QueueIntegratedDispatcher) ProcessEventListenerJob(ctx context.Context,
 	}
 	var job EventListenerJob
 	if err := json.Unmarshal(data, &job); err != nil {
-		return fmt.Errorf("failed to unmarshal event listener job: %w", err)
+		return errchain.Errorf("failed to unmarshal event listener job: %w", err)
 	}
 
 	// Read the factory under qmu so a concurrent RegisterListenerFactory
@@ -590,7 +591,7 @@ func (d *QueueIntegratedDispatcher) ProcessEventListenerJob(ctx context.Context,
 	factory, ok := d.listenerRegistry[job.ListenerType]
 	d.qmu.RUnlock()
 	if !ok {
-		return fmt.Errorf("velocity/events: no factory registered for listener type %s: %w", job.ListenerType, ErrListenerNotFound)
+		return errchain.Errorf("velocity/events: no factory registered for listener type %s: %w", job.ListenerType, ErrListenerNotFound)
 	}
 
 	// Create listener instance
@@ -608,7 +609,7 @@ func (d *QueueIntegratedDispatcher) ProcessEventListenerJob(ctx context.Context,
 func EventJobFactory(data []byte) (queue.Job, error) {
 	var job EventListenerJob
 	if err := json.Unmarshal(data, &job); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal event listener job: %w", err)
+		return nil, errchain.Errorf("failed to unmarshal event listener job: %w", err)
 	}
 	return &job, nil
 }
@@ -654,7 +655,7 @@ func InitializeQueueIntegration(dispatcher *QueueIntegratedDispatcher, driver qu
 	queue.RegisterJob(func(data []byte) (*EventListenerJob, error) {
 		var job EventListenerJob
 		if err := json.Unmarshal(data, &job); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal event listener job: %w", err)
+			return nil, errchain.Errorf("failed to unmarshal event listener job: %w", err)
 		}
 		return &job, nil
 	})
@@ -943,7 +944,7 @@ func (d *StoppablePropagationDispatcher) Dispatch(ctx context.Context, event int
 		if listener.Async() {
 			// For queued listeners, we don't stop propagation since they're async
 			if err := d.pushToQueue(ctx, event, listener); err != nil {
-				return fmt.Errorf("failed to queue listener: %w", err)
+				return errchain.Errorf("failed to queue listener: %w", err)
 			}
 			return nil
 		}
@@ -974,7 +975,7 @@ func (d *StoppablePropagationDispatcher) replayListener(ctx context.Context, eve
 	}
 	if listener.Async() {
 		if err := d.pushToQueue(ctx, event, listener); err != nil {
-			return fmt.Errorf("failed to queue listener: %w", err)
+			return errchain.Errorf("failed to queue listener: %w", err)
 		}
 		return nil
 	}

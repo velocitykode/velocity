@@ -101,12 +101,12 @@ func firstOrCreate[T any](ctx context.Context, conditions map[string]any, values
 func firstOrCreateWithDriver[T any](ctx context.Context, m *Manager, drv drivers.Driver, conditions map[string]any, values map[string]any) (*T, error) {
 	for key := range conditions {
 		if err := validateIdentifier(key); err != nil {
-			return nil, fmt.Errorf("velocity/orm: firstOrCreate: %w", err)
+			return nil, errchain.Errorf("velocity/orm: firstOrCreate: %w", err)
 		}
 	}
 	for key := range values {
 		if err := validateIdentifier(key); err != nil {
-			return nil, fmt.Errorf("velocity/orm: firstOrCreate: %w", err)
+			return nil, errchain.Errorf("velocity/orm: firstOrCreate: %w", err)
 		}
 	}
 	if err := denyUndeclaredMapKeys[T](conditions, values); err != nil {
@@ -157,12 +157,12 @@ func updateOrCreate[T any](ctx context.Context, conditions map[string]any, value
 func updateOrCreateWithDriver[T any](ctx context.Context, m *Manager, drv drivers.Driver, conditions map[string]any, values map[string]any) (*T, error) {
 	for key := range conditions {
 		if err := validateIdentifier(key); err != nil {
-			return nil, fmt.Errorf("velocity/orm: updateOrCreate: %w", err)
+			return nil, errchain.Errorf("velocity/orm: updateOrCreate: %w", err)
 		}
 	}
 	for key := range values {
 		if err := validateIdentifier(key); err != nil {
-			return nil, fmt.Errorf("velocity/orm: updateOrCreate: %w", err)
+			return nil, errchain.Errorf("velocity/orm: updateOrCreate: %w", err)
 		}
 	}
 	if err := denyUndeclaredMapKeys[T](conditions, values); err != nil {
@@ -216,7 +216,7 @@ func defaultManagerDriver(op string) (*Manager, drivers.Driver, error) {
 	}
 	drv, err := m.liveDriver()
 	if err != nil {
-		return nil, nil, fmt.Errorf("velocity/orm: %s: %w", op, err)
+		return nil, nil, errchain.Errorf("velocity/orm: %s: %w", op, err)
 	}
 	return m, drv, nil
 }

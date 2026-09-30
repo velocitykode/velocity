@@ -3,7 +3,6 @@ package velocity
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/drain"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventqueue"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/teardown"
@@ -149,7 +149,7 @@ func (a *App) serveHTTP() error {
 		// fully wired every subsystem before we got here, so tear it all
 		// down just like the bootstrap-failure path above; the shutdown
 		// error (if any) is joined onto the server error.
-		serveErr := fmt.Errorf("velocity: server error: %w", err)
+		serveErr := errchain.Errorf("velocity: server error: %w", err)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if sdErr := a.Shutdown(shutdownCtx); sdErr != nil {
@@ -230,7 +230,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// would wait for the caller. Each answer is read without a lock and
 	// before any ctx method is called.
 	if t.own.Nested() || a.childOwnsCaller() {
-		return fmt.Errorf("velocity: Shutdown called from work the app's teardown waits for: %w", contract.ErrStopFromOwnWork)
+		return errchain.Errorf("velocity: Shutdown called from work the app's teardown waits for: %w", contract.ErrStopFromOwnWork)
 	}
 	t.mu.Lock()
 	if t.run == nil {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm/drivers"
 )
 
@@ -58,13 +59,13 @@ func parseManyToManyTag(value string) (pivot, localFK, relatedFK string, err err
 		return "", "", "", fmt.Errorf("orm: manyToMany tag %q has empty parts", value)
 	}
 	if err := validateIdentifier(pivot); err != nil {
-		return "", "", "", fmt.Errorf("orm: invalid pivot table in manyToMany tag: %w", err)
+		return "", "", "", errchain.Errorf("orm: invalid pivot table in manyToMany tag: %w", err)
 	}
 	if err := validateIdentifier(localFK); err != nil {
-		return "", "", "", fmt.Errorf("orm: invalid local FK in manyToMany tag: %w", err)
+		return "", "", "", errchain.Errorf("orm: invalid local FK in manyToMany tag: %w", err)
 	}
 	if err := validateIdentifier(relatedFK); err != nil {
-		return "", "", "", fmt.Errorf("orm: invalid related FK in manyToMany tag: %w", err)
+		return "", "", "", errchain.Errorf("orm: invalid related FK in manyToMany tag: %w", err)
 	}
 	return pivot, localFK, relatedFK, nil
 }
@@ -121,7 +122,7 @@ func resolveManyToManyMeta(modelType reflect.Type, preloadName string) (*m2mMeta
 
 	tableName := resolveTableNameReflect(elemType)
 	if err := validateIdentifier(tableName); err != nil {
-		return nil, fmt.Errorf("orm: invalid table name for related type %s: %w", elemType.Name(), err)
+		return nil, errchain.Errorf("orm: invalid table name for related type %s: %w", elemType.Name(), err)
 	}
 
 	return &m2mMeta{
@@ -171,7 +172,7 @@ func (q *Query[T]) loadM2M(ctx context.Context, models *[]T, meta *m2mMeta) erro
 	// Discover pivot column names so we can group non-FK columns into Pivot maps.
 	pivotCols, err := discoverPivotColumns(q.driver, ctx, meta.pivotTable)
 	if err != nil {
-		return fmt.Errorf("orm: failed to inspect pivot table %q: %w", meta.pivotTable, err)
+		return errchain.Errorf("orm: failed to inspect pivot table %q: %w", meta.pivotTable, err)
 	}
 	pivotRows, relatedIDs, err := queryPivotRows(q.driver, ctx, meta, parentIDs, pivotCols)
 	if err != nil {
@@ -286,7 +287,7 @@ func queryPivotRows(driver drivers.Driver, ctx context.Context, meta *m2mMeta, p
 
 	rows, err := driver.QueryContext(ctx, pivotSQL, parentIDs...)
 	if err != nil {
-		return nil, nil, fmt.Errorf("orm: failed to query pivot %q: %w", meta.pivotTable, err)
+		return nil, nil, errchain.Errorf("orm: failed to query pivot %q: %w", meta.pivotTable, err)
 	}
 	defer rows.Close()
 
@@ -306,7 +307,7 @@ func queryPivotRows(driver drivers.Driver, ctx context.Context, meta *m2mMeta, p
 			ptrs[i] = &holders[i]
 		}
 		if err := rows.Scan(ptrs...); err != nil {
-			return nil, nil, fmt.Errorf("orm: failed to scan pivot row: %w", err)
+			return nil, nil, errchain.Errorf("orm: failed to scan pivot row: %w", err)
 		}
 
 		extras := make(map[string]any)
@@ -358,12 +359,12 @@ func queryPivotRows(driver drivers.Driver, ctx context.Context, meta *m2mMeta, p
 func queryRelatedRows(driver drivers.Driver, ctx context.Context, meta *m2mMeta, relatedIDs []any) ([]reflect.Value, error) {
 	relSQL, sqlArgs, scopeErr := buildScopedInSelect(ctx, driver, meta.relatedType, meta.relatedTable, "id", relatedIDs)
 	if scopeErr != nil {
-		return nil, fmt.Errorf("orm: failed to apply scopes for m2m related rows: %w", scopeErr)
+		return nil, errchain.Errorf("orm: failed to apply scopes for m2m related rows: %w", scopeErr)
 	}
 
 	rows, err := driver.QueryContext(ctx, relSQL, sqlArgs...)
 	if err != nil {
-		return nil, fmt.Errorf("orm: failed to load m2m related rows: %w", err)
+		return nil, errchain.Errorf("orm: failed to load m2m related rows: %w", err)
 	}
 	defer rows.Close()
 
@@ -375,12 +376,12 @@ func queryRelatedRows(driver drivers.Driver, ctx context.Context, meta *m2mMeta,
 		if plan == nil {
 			var perr error
 			if plan, perr = newScanPlan(rows, meta.relatedType); perr != nil {
-				return nil, fmt.Errorf("orm: failed to scan m2m related row: %w", perr)
+				return nil, errchain.Errorf("orm: failed to scan m2m related row: %w", perr)
 			}
 		}
 		ptr := reflect.New(meta.relatedType)
 		if err := plan.scanRow(rows, ptr.Elem()); err != nil {
-			return nil, fmt.Errorf("orm: failed to scan m2m related row: %w", err)
+			return nil, errchain.Errorf("orm: failed to scan m2m related row: %w", err)
 		}
 		elem := ptr.Elem()
 		markIsExisting(elem)
@@ -449,7 +450,7 @@ func LoadManyToManyWithPivot[T any, R any](parent *T, relationName string) ([]Pi
 	}
 	driver, err := mgr.liveDriver()
 	if err != nil {
-		return nil, fmt.Errorf("orm: LoadManyToManyWithPivot: %w", err)
+		return nil, errchain.Errorf("orm: LoadManyToManyWithPivot: %w", err)
 	}
 
 	parentType := reflect.TypeOf(*parent)
@@ -473,7 +474,7 @@ func LoadManyToManyWithPivot[T any, R any](parent *T, relationName string) ([]Pi
 	ctx := context.Background()
 	pivotCols, err := discoverPivotColumns(driver, ctx, meta.pivotTable)
 	if err != nil {
-		return nil, fmt.Errorf("orm: failed to inspect pivot table %q: %w", meta.pivotTable, err)
+		return nil, errchain.Errorf("orm: failed to inspect pivot table %q: %w", meta.pivotTable, err)
 	}
 	pivotRows, relatedIDs, err := queryPivotRows(driver, ctx, meta, []any{idVal}, pivotCols)
 	if err != nil {
@@ -534,7 +535,7 @@ func M2M[T any](parent *T, relationName string) (*M2MAccessor, error) {
 	}
 	driver, err := mgr.liveDriver()
 	if err != nil {
-		return nil, fmt.Errorf("orm: M2M: %w", err)
+		return nil, errchain.Errorf("orm: M2M: %w", err)
 	}
 	parentType := reflect.TypeOf(*parent)
 	meta, err := resolveManyToManyMeta(parentType, relationName)
@@ -602,7 +603,7 @@ func (a *M2MAccessor) Attach(ctx context.Context, ids ...any) error {
 	return a.runTx(ctx, func(tx *sql.Tx) error {
 		existing, err := a.existingRelatedIDs(ctx, tx)
 		if err != nil {
-			return fmt.Errorf("orm: M2M.Attach: failed to read existing pivot rows: %w", err)
+			return errchain.Errorf("orm: M2M.Attach: failed to read existing pivot rows: %w", err)
 		}
 		existingSet := make(map[any]bool, len(existing))
 		for _, e := range existing {
@@ -641,7 +642,7 @@ func (a *M2MAccessor) Sync(ctx context.Context, ids ...any) error {
 	return a.runTx(ctx, func(tx *sql.Tx) error {
 		existing, err := a.existingRelatedIDs(ctx, tx)
 		if err != nil {
-			return fmt.Errorf("orm: M2M.Sync: failed to read existing pivot rows: %w", err)
+			return errchain.Errorf("orm: M2M.Sync: failed to read existing pivot rows: %w", err)
 		}
 		existingSet := make(map[any]bool, len(existing))
 		for _, e := range existing {
@@ -697,7 +698,7 @@ func (a *M2MAccessor) insertPivotRows(ctx context.Context, tx queryRunner, ids [
 			grammar.Placeholder(2),
 		)
 		if _, err := tx.ExecContext(ctx, sqlStr, a.parentID, id); err != nil {
-			return fmt.Errorf("orm: M2M: insert pivot row failed: %w", err)
+			return errchain.Errorf("orm: M2M: insert pivot row failed: %w", err)
 		}
 	}
 	return nil
@@ -713,7 +714,7 @@ func (a *M2MAccessor) deleteRelated(ctx context.Context, tx queryRunner, ids []a
 			grammar.Placeholder(1),
 		)
 		if _, err := tx.ExecContext(ctx, sqlStr, a.parentID); err != nil {
-			return fmt.Errorf("orm: M2M: detach-all failed: %w", err)
+			return errchain.Errorf("orm: M2M: detach-all failed: %w", err)
 		}
 		return nil
 	}
@@ -732,7 +733,7 @@ func (a *M2MAccessor) deleteRelated(ctx context.Context, tx queryRunner, ids []a
 		strings.Join(placeholders, ", "),
 	)
 	if _, err := tx.ExecContext(ctx, sqlStr, args...); err != nil {
-		return fmt.Errorf("orm: M2M: detach failed: %w", err)
+		return errchain.Errorf("orm: M2M: detach failed: %w", err)
 	}
 	return nil
 }
@@ -745,7 +746,7 @@ func (a *M2MAccessor) deleteRelated(ctx context.Context, tx queryRunner, ids []a
 func (a *M2MAccessor) runTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	tx, err := a.driver.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("orm: M2M: begin tx failed: %w", err)
+		return errchain.Errorf("orm: M2M: begin tx failed: %w", err)
 	}
 	if err := fn(tx); err != nil {
 		_ = tx.Rollback()

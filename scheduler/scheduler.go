@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"fmt"
 	"reflect"
 	"runtime"
 	"strings"
@@ -462,7 +461,7 @@ func (s *Scheduler) beginRun(ctx, runCtx context.Context, cancel context.CancelF
 		}
 		s.mu.Unlock()
 		if s.own.Nested() {
-			return nil, fmt.Errorf("velocity/scheduler: Run called from inside a run it would wait for: %w", contract.ErrStopFromOwnWork)
+			return nil, errchain.Errorf("velocity/scheduler: Run called from inside a run it would wait for: %w", contract.ErrStopFromOwnWork)
 		}
 		select {
 		case <-prev.run.Finished():
@@ -572,7 +571,7 @@ func (s *Scheduler) OwnsCaller() bool {
 // AFTER Shutdown's caller believed shutdown completed.
 func (s *Scheduler) Shutdown(ctx context.Context) error {
 	if s.own.Nested() {
-		return fmt.Errorf("velocity/scheduler: shutdown called from inside a task or tick it would wait for: %w", contract.ErrStopFromOwnWork)
+		return errchain.Errorf("velocity/scheduler: shutdown called from inside a task or tick it would wait for: %w", contract.ErrStopFromOwnWork)
 	}
 	s.mu.Lock()
 	if !s.running && !s.started {

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // MarshalJob serializes a job into a durable [Payload]. The job's state is
@@ -32,11 +34,11 @@ func MarshalJob(job Job, queueName string) (*Payload, error) {
 	}
 	data, err := json.Marshal(job)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/queue: failed to marshal job %T: %w", job, err)
+		return nil, errchain.Errorf("velocity/queue: failed to marshal job %T: %w", job, err)
 	}
 
 	return &Payload{
-		Type:      normalizeJobType(fmt.Sprintf("%T", job)),
+		Type:      normalizeJobType(errchain.Sprintf("%T", job)),
 		Data:      data,
 		Queue:     queueName,
 		Attempts:  0,

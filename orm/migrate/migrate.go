@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"sort"
 	"sync"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Migration represents a database schema change
@@ -55,7 +57,7 @@ var (
 // Register adds a migration to the global registry
 func Register(migration *Migration) {
 	if err := migration.Validate(); err != nil {
-		panic(fmt.Sprintf("invalid migration: %v", err))
+		panic(errchain.Sprintf("invalid migration: %v", err))
 	}
 
 	globalRegistry.mu.Lock()

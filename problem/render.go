@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"html/template"
 	"net/http"
 	"reflect"
@@ -173,7 +172,7 @@ func debugContext(err error, ctx *ErrorContext) map[string]any {
 	}
 	for k, v := range out {
 		if _, encErr := json.Marshal(v); encErr != nil {
-			out[k] = fmt.Sprintf("%v", v)
+			out[k] = errchain.Sprintf("%v", v)
 		}
 	}
 	return out
@@ -249,7 +248,7 @@ var ErrInvalidTemplate = errors.New("problem: invalid error template registratio
 // (100-999).
 func (r *HTMLRenderer) RegisterStatusTemplate(status int, tmpl *template.Template) error {
 	if tmpl == nil || status < 100 || status > 999 {
-		return fmt.Errorf("%w: status %d", ErrInvalidTemplate, status)
+		return errchain.Errorf("%w: status %d", ErrInvalidTemplate, status)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -261,7 +260,7 @@ func (r *HTMLRenderer) RegisterStatusTemplate(status int, tmpl *template.Templat
 // 5 (5xx) that has no exact status template.
 func (r *HTMLRenderer) RegisterClassTemplate(class int, tmpl *template.Template) error {
 	if tmpl == nil || (class != 4 && class != 5) {
-		return fmt.Errorf("%w: class %d", ErrInvalidTemplate, class)
+		return errchain.Errorf("%w: class %d", ErrInvalidTemplate, class)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

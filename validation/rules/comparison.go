@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // SameRule validates that a field matches another field
@@ -62,7 +64,7 @@ func InRule(field string, value interface{}, params []string, data map[string]in
 		return fmt.Errorf("The in rule requires at least 1 parameter.")
 	}
 
-	valueStr := fmt.Sprintf("%v", value)
+	valueStr := errchain.Sprintf("%v", value)
 	for _, allowed := range params {
 		if valueStr == allowed {
 			return nil
@@ -82,7 +84,7 @@ func NotInRule(field string, value interface{}, params []string, data map[string
 		return fmt.Errorf("The not_in rule requires at least 1 parameter.")
 	}
 
-	valueStr := fmt.Sprintf("%v", value)
+	valueStr := errchain.Sprintf("%v", value)
 	for _, disallowed := range params {
 		if valueStr == disallowed {
 			return fmt.Errorf("The selected %s is invalid.", field)

@@ -3,9 +3,9 @@ package ormauth
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 	"reflect"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm"
 )
 
@@ -52,7 +52,7 @@ func implicitDeny(model any) bool {
 func stringFieldKind(meta *orm.ModelMeta, col orm.ColumnDef) error {
 	field := meta.Type.FieldByIndex(col.IndexPath)
 	if !stringCarrier(field.Type) {
-		return fmt.Errorf("%w (got %s)", errUnsupportedFieldType, field.Type)
+		return errchain.Errorf("%w (got %s)", errUnsupportedFieldType, field.Type)
 	}
 	return nil
 }
@@ -91,7 +91,7 @@ func readString(v reflect.Value) (string, error) {
 		}
 		return ns.String, nil
 	default:
-		return "", fmt.Errorf("%w (got %s)", errUnsupportedFieldType, v.Type())
+		return "", errchain.Errorf("%w (got %s)", errUnsupportedFieldType, v.Type())
 	}
 }
 

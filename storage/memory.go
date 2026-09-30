@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 func init() {
@@ -105,7 +107,7 @@ func (d *MemoryDriver) PutStream(path string, stream io.Reader) error {
 	limited := io.LimitReader(stream, limit+1)
 	buf := new(bytes.Buffer)
 	if _, err := io.Copy(buf, limited); err != nil {
-		return fmt.Errorf("failed to read stream: %w", err)
+		return errchain.Errorf("failed to read stream: %w", err)
 	}
 	if int64(buf.Len()) > limit {
 		return fmt.Errorf("stream exceeds maximum size of %d bytes", limit)

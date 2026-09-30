@@ -2,7 +2,6 @@ package markdown
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"math"
 	"path"
@@ -11,6 +10,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // excerptRunes bounds the plain-text excerpt of a search entry or llms.txt
@@ -124,7 +125,7 @@ func LoadFS(fsys fs.FS, root string, r *Renderer) (*Collection, error) {
 		}
 		doc, body, err := r.render(data)
 		if err != nil {
-			return fmt.Errorf("%s: %w", p, err)
+			return errchain.Errorf("%s: %w", p, err)
 		}
 		rel := p
 		if root != "." {
@@ -134,7 +135,7 @@ func LoadFS(fsys fs.FS, root string, r *Renderer) (*Collection, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("velocity/markdown: load %s: %w", root, err)
+		return nil, errchain.Errorf("velocity/markdown: load %s: %w", root, err)
 	}
 	return newCollection(pages), nil
 }

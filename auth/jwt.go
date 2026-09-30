@@ -12,6 +12,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/velocitykode/velocity/auth/internal/identity"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // ErrUnsupportedSigningMethod is returned when the configured JWT algorithm
@@ -693,7 +694,7 @@ func (j *JWTManager) RefreshToken(refreshTokenString string, userStore UserStore
 	// deployments propagating their counter via Redis see the bump.
 	userIDStr, _ := claims.UserID.(string)
 	if userIDStr == "" {
-		userIDStr = fmt.Sprintf("%v", claims.UserID)
+		userIDStr = errchain.Sprintf("%v", claims.UserID)
 	}
 	current, cgErr := j.refreshGenStore().Current(userIDStr)
 	if cgErr != nil {
@@ -773,7 +774,7 @@ func (j *JWTManager) getSigningMethod() (jwt.SigningMethod, error) {
 	case "RS512":
 		return jwt.SigningMethodRS512, nil
 	default:
-		return nil, fmt.Errorf("%w: %q", ErrUnsupportedSigningMethod, j.config.Algorithm)
+		return nil, errchain.Errorf("%w: %q", ErrUnsupportedSigningMethod, j.config.Algorithm)
 	}
 }
 
@@ -792,7 +793,7 @@ func generateJTI() (string, error) {
 func generateJTIWithReader(r io.Reader) (string, error) {
 	b := make([]byte, 16)
 	if _, err := io.ReadFull(r, b); err != nil {
-		return "", fmt.Errorf("velocity/auth: failed to generate jwt id: %w", err)
+		return "", errchain.Errorf("velocity/auth: failed to generate jwt id: %w", err)
 	}
 	return base64.URLEncoding.EncodeToString(b), nil
 }

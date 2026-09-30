@@ -173,7 +173,7 @@ func GatewayWithTransportConfig(cfg GatewayTransportConfig) GatewayOption {
 			// failure: silently dialling without a client cert is a regression.
 			clientCert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
 			if err != nil {
-				g.configErr = fmt.Errorf("velocity/grpc: failed to load gateway client cert/key (%s, %s): %w", cfg.TLSCert, cfg.TLSKey, err)
+				g.configErr = errchain.Errorf("velocity/grpc: failed to load gateway client cert/key (%s, %s): %w", cfg.TLSCert, cfg.TLSKey, err)
 				return
 			}
 			tlsConfig.Certificates = []tls.Certificate{clientCert}
@@ -184,7 +184,7 @@ func GatewayWithTransportConfig(cfg GatewayTransportConfig) GatewayOption {
 			if cfg.CACert != "" {
 				caCert, err := os.ReadFile(cfg.CACert)
 				if err != nil {
-					g.configErr = fmt.Errorf("velocity/grpc: failed to read gateway CA cert %q: %w", cfg.CACert, err)
+					g.configErr = errchain.Errorf("velocity/grpc: failed to read gateway CA cert %q: %w", cfg.CACert, err)
 					return
 				}
 				pool := x509.NewCertPool()
@@ -339,7 +339,7 @@ func GatewayWithTLS(certFile string) GatewayOption {
 		if certFile != "" {
 			caCert, err := os.ReadFile(certFile)
 			if err != nil {
-				g.configErr = fmt.Errorf("velocity/grpc: failed to read tls cert file for gateway: %w", err)
+				g.configErr = errchain.Errorf("velocity/grpc: failed to read tls cert file for gateway: %w", err)
 				return
 			}
 			pool := x509.NewCertPool()
@@ -438,7 +438,7 @@ func (g *Gateway) build(ctx context.Context) error {
 	)
 	for _, regFunc := range b.registrations {
 		if err := regFunc(ctx, mux, b.grpcEndpoint, dialOptions); err != nil {
-			return fmt.Errorf("velocity/grpc: failed to register gateway handler: %w", err)
+			return errchain.Errorf("velocity/grpc: failed to register gateway handler: %w", err)
 		}
 	}
 
@@ -568,7 +568,7 @@ func (g *Gateway) beginBuild() (*gatewayLife, *gatewayBuildPlan, error) {
 
 	// Validate endpoint format (must be host:port)
 	if _, _, err := net.SplitHostPort(g.grpcEndpoint); err != nil {
-		return nil, nil, fmt.Errorf("velocity/grpc: invalid grpc endpoint %q: expected host:port format: %w", g.grpcEndpoint, err)
+		return nil, nil, errchain.Errorf("velocity/grpc: invalid grpc endpoint %q: expected host:port format: %w", g.grpcEndpoint, err)
 	}
 
 	c := &gatewayLife{
@@ -822,7 +822,7 @@ func (g *Gateway) admitServe(ctx context.Context) (*gatewayLife, error) {
 		c.served = false
 		g.mu.Unlock()
 		c.run.Release()
-		return nil, fmt.Errorf("velocity/grpc: gateway failed to listen on %s: %w", addr, err)
+		return nil, errchain.Errorf("velocity/grpc: gateway failed to listen on %s: %w", addr, err)
 	}
 	lis := newServeListener(raw, func() { g.serving(c) }, g.logLine, "HTTP gateway")
 	g.mu.Lock()
@@ -840,7 +840,7 @@ func (g *Gateway) admitServe(ctx context.Context) (*gatewayLife, error) {
 func (g *Gateway) serve(c *gatewayLife, logFailure bool) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("velocity/grpc: gateway serve loop panicked: %w", panicerr.FromRecovered(p))
+			err = errchain.Errorf("velocity/grpc: gateway serve loop panicked: %w", panicerr.FromRecovered(p))
 		}
 		c.serveErr = err
 		close(c.serveDone)
@@ -940,7 +940,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 		g.own.Signal(c.run, work)
 		err := g.own.Stop(ctx, c.run, nil, nil)
 		if errchain.Is(err, contract.ErrStopFromOwnWork) {
-			err = fmt.Errorf("velocity/grpc: %w: %w", err, http.ErrServerClosed)
+			err = errchain.Errorf("velocity/grpc: %w: %w", err, http.ErrServerClosed)
 		}
 		return err
 	}

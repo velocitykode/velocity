@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Rule describes a single validation rule. Canonical declaration lives in
@@ -414,7 +415,7 @@ func Exists(table, column string) Rule {
 // has no unambiguous SQL comparison value and is reported.
 func exceptParam(id interface{}) (string, error) {
 	if id == nil {
-		return "", fmt.Errorf("%w: unique except value must be an integer, string, or fmt.Stringer, got nil", ErrInvalidRule)
+		return "", errchain.Errorf("%w: unique except value must be an integer, string, or fmt.Stringer, got nil", ErrInvalidRule)
 	}
 
 	v := reflect.ValueOf(id)
@@ -432,13 +433,13 @@ func exceptParam(id interface{}) (string, error) {
 		switch v.Kind() {
 		case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func:
 			if v.IsNil() {
-				return "", fmt.Errorf("%w: unique except value of type %T is nil", ErrInvalidRule, id)
+				return "", errchain.Errorf("%w: unique except value of type %T is nil", ErrInvalidRule, id)
 			}
 		}
 		return s.String(), nil
 	}
 
-	return "", fmt.Errorf("%w: unique except value of type %T must be an integer, string, or fmt.Stringer", ErrInvalidRule, id)
+	return "", errchain.Errorf("%w: unique except value of type %T must be an integer, string, or fmt.Stringer", ErrInvalidRule, id)
 }
 
 // customRule carries its own handler so it runs on any validator the rule

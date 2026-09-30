@@ -2,10 +2,10 @@ package validation
 
 import (
 	"errors"
-	"fmt"
 	"reflect"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // ErrInvalidRule is the sentinel wrapped by every rule-set normalization
@@ -104,20 +104,20 @@ func normalizeRuleSet(rs contract.ValidationRuleSet) (normalizedRuleSet, error) 
 		start := len(buf)
 		for i, r := range fieldRules {
 			if isNilRule(r) {
-				return normalizedRuleSet{}, fmt.Errorf("%w: field %q rule %d is nil", ErrInvalidRule, field, i)
+				return normalizedRuleSet{}, errchain.Errorf("%w: field %q rule %d is nil", ErrInvalidRule, field, i)
 			}
 			if sv, ok := r.(selfValidatingRule); ok {
 				if err := sv.validateRule(); err != nil {
-					return normalizedRuleSet{}, fmt.Errorf("field %q rule %d: %w", field, i, err)
+					return normalizedRuleSet{}, errchain.Errorf("field %q rule %d: %w", field, i, err)
 				}
 			}
 
 			spec := r.Rule()
 			if spec.Name == "" {
-				return normalizedRuleSet{}, fmt.Errorf("%w: field %q rule %d has an empty name", ErrInvalidRule, field, i)
+				return normalizedRuleSet{}, errchain.Errorf("%w: field %q rule %d has an empty name", ErrInvalidRule, field, i)
 			}
 			if _, carries := r.(handlerCarrier); carries && spec.Handler == nil {
-				return normalizedRuleSet{}, fmt.Errorf("%w: custom rule %q on field %q has a nil handler", ErrInvalidRule, spec.Name, field)
+				return normalizedRuleSet{}, errchain.Errorf("%w: custom rule %q on field %q has a nil handler", ErrInvalidRule, spec.Name, field)
 			}
 			if spec.Handler != nil {
 				if err := out.carry(field, r, spec); err != nil {
@@ -144,14 +144,14 @@ func normalizeRuleSet(rs contract.ValidationRuleSet) (normalizedRuleSet, error) 
 // handler identity.
 func (n *normalizedRuleSet) carry(field string, r contract.ValidationRule, spec contract.ValidationRuleSpec) error {
 	if isReservedRuleName(spec.Name) {
-		return fmt.Errorf("%w: custom rule %q on field %q shadows a built-in rule", ErrInvalidRule, spec.Name, field)
+		return errchain.Errorf("%w: custom rule %q on field %q shadows a built-in rule", ErrInvalidRule, spec.Name, field)
 	}
 	if n.custom == nil {
 		n.custom = make(map[string]carriedRule, 1)
 	}
 	if existing, ok := n.custom[spec.Name]; ok {
 		if !sameRuleValue(existing.source, r) {
-			return fmt.Errorf("%w: custom rule %q is declared by two different rule values", ErrInvalidRule, spec.Name)
+			return errchain.Errorf("%w: custom rule %q is declared by two different rule values", ErrInvalidRule, spec.Name)
 		}
 		return nil
 	}

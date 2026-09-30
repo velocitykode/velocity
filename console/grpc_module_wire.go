@@ -11,7 +11,9 @@ import (
 	"text/template"
 
 	"github.com/velocitykode/prism"
+
 	"github.com/velocitykode/velocity/console/stubs"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 const (
@@ -40,7 +42,7 @@ func preflightModuleWiring(sc grpcScaffold) error {
 		return nil // first service creates the module fresh
 	}
 	if err != nil {
-		return fmt.Errorf("read module: %w", err)
+		return errchain.Errorf("read module: %w", err)
 	}
 	return checkModuleServicesImport(string(raw), sc)
 }
@@ -69,7 +71,7 @@ func checkModuleServicesImport(content string, sc grpcScaffold) error {
 func wireGRPCModule(sc grpcScaffold) error {
 	path := grpcModulePath()
 	if err := os.MkdirAll(filepath.Dir(path), defaultDirMode); err != nil {
-		return fmt.Errorf("create module dir: %w", err)
+		return errchain.Errorf("create module dir: %w", err)
 	}
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -82,11 +84,11 @@ func wireGRPCModule(sc grpcScaffold) error {
 func writeNewGRPCModule(path string, sc grpcScaffold) error {
 	stub, err := stubs.Get("grpc/module.go.stub")
 	if err != nil {
-		return fmt.Errorf("load module stub: %w", err)
+		return errchain.Errorf("load module stub: %w", err)
 	}
 	tmpl, err := template.New("module").Parse(string(stub))
 	if err != nil {
-		return fmt.Errorf("parse module stub: %w", err)
+		return errchain.Errorf("parse module stub: %w", err)
 	}
 	data := map[string]string{
 		"Alias":          sc.Alias,
@@ -99,10 +101,10 @@ func writeNewGRPCModule(path string, sc grpcScaffold) error {
 	}
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("render module: %w", err)
+		return errchain.Errorf("render module: %w", err)
 	}
 	if err := writeFormattedGo(path, buf.Bytes()); err != nil {
-		return fmt.Errorf("write module: %w", err)
+		return errchain.Errorf("write module: %w", err)
 	}
 	prism.Success(fmt.Sprintf("Created: %s", path))
 	prism.Muted("  Register in internal/app/bootstrap.go: &modules.GRPCModule{}")
@@ -112,7 +114,7 @@ func writeNewGRPCModule(path string, sc grpcScaffold) error {
 func injectGRPCServiceRegistration(path string, sc grpcScaffold) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("read module: %w", err)
+		return errchain.Errorf("read module: %w", err)
 	}
 	content := string(raw)
 
@@ -168,7 +170,7 @@ func injectGRPCServiceRegistration(path string, sc grpcScaffold) error {
 	content = injectAfterMarker(content, grpcServicesMarker, regBlock)
 
 	if err := writeFormattedGo(path, []byte(content)); err != nil {
-		return fmt.Errorf("write module: %w", err)
+		return errchain.Errorf("write module: %w", err)
 	}
 	prism.Success(fmt.Sprintf("Wired: %s", path))
 	return nil
@@ -205,7 +207,7 @@ func existingImportAlias(content, importPath, genPkgName string) (string, bool) 
 func writeFormattedGo(path string, src []byte) error {
 	formatted, err := format.Source(src)
 	if err != nil {
-		return fmt.Errorf("generated Go is not parseable, refusing to write %s: %w", path, err)
+		return errchain.Errorf("generated Go is not parseable, refusing to write %s: %w", path, err)
 	}
 	return os.WriteFile(path, formatted, defaultFileMode)
 }

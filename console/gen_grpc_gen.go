@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 
 	"github.com/velocitykode/prism"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // GenGRPCGen runs `buf generate` inside api/proto. It surfaces buf's stdout
@@ -26,7 +28,7 @@ func GenGRPCGen() error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("buf generate failed: %w", err)
+		return errchain.Errorf("buf generate failed: %w", err)
 	}
 	prism.Success("Generated Go code in api/gen/go/")
 	return nil

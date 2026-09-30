@@ -52,10 +52,10 @@ func GenGRPCRPC(serviceArg, rpcArg string, opts GenGRPCRPCOptions) error {
 	}
 
 	if err := scaffold.ValidateName(serviceArg); err != nil {
-		return fmt.Errorf("service argument: %w", err)
+		return errchain.Errorf("service argument: %w", err)
 	}
 	if err := scaffold.ValidateName(rpcArg); err != nil {
-		return fmt.Errorf("rpc argument: %w", err)
+		return errchain.Errorf("rpc argument: %w", err)
 	}
 
 	serviceName := grpcServiceName(serviceArg)
@@ -68,13 +68,13 @@ func GenGRPCRPC(serviceArg, rpcArg string, opts GenGRPCRPCOptions) error {
 	// argument could still smuggle a traversal segment into the proto and
 	// impl paths constructed below.
 	if err := scaffold.ValidateName(packageName); err != nil {
-		return fmt.Errorf("derived package name %q from %q is unsafe: %w", packageName, serviceArg, err)
+		return errchain.Errorf("derived package name %q from %q is unsafe: %w", packageName, serviceArg, err)
 	}
 
 	protoRoot := filepath.Join("api", "proto")
 	protoPath := filepath.Join(protoRoot, packageName, "v1", packageName+".proto")
 	if err := scaffold.EnsureWithinRoot(protoRoot, protoPath); err != nil {
-		return fmt.Errorf("invalid service name %q: %w", serviceArg, err)
+		return errchain.Errorf("invalid service name %q: %w", serviceArg, err)
 	}
 	if _, err := os.Stat(protoPath); os.IsNotExist(err) {
 		return fmt.Errorf("proto not found: %s (run `vel gen grpc service %s` first)", protoPath, serviceName)
@@ -86,7 +86,7 @@ func GenGRPCRPC(serviceArg, rpcArg string, opts GenGRPCRPCOptions) error {
 	implRoot := filepath.Join("internal", "grpc", "services")
 	implPath := filepath.Join(implRoot, toSnakeCase(grpcBaseName(serviceArg))+".go")
 	if err := scaffold.EnsureWithinRoot(implRoot, implPath); err != nil {
-		return fmt.Errorf("invalid service name %q: %w", serviceArg, err)
+		return errchain.Errorf("invalid service name %q: %w", serviceArg, err)
 	}
 	if _, err := os.Stat(implPath); os.IsNotExist(err) {
 		return fmt.Errorf("service impl not found: looked for %s (an impl generated with a custom --impl-name must be renamed to match)", implPath)
@@ -107,7 +107,7 @@ func GenGRPCRPC(serviceArg, rpcArg string, opts GenGRPCRPCOptions) error {
 func appendRPCToProto(path, serviceName, rpcName string, kind grpcRPCKind) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("read proto: %w", err)
+		return errchain.Errorf("read proto: %w", err)
 	}
 	content := string(raw)
 
@@ -140,7 +140,7 @@ func appendRPCToProto(path, serviceName, rpcName string, kind grpcRPCKind) error
 	updated += msgBlock
 
 	if err := os.WriteFile(path, []byte(updated), defaultFileMode); err != nil {
-		return fmt.Errorf("write proto: %w", err)
+		return errchain.Errorf("write proto: %w", err)
 	}
 	prism.Success(fmt.Sprintf("Added rpc %s to %s", rpcName, path))
 	return nil
@@ -151,7 +151,7 @@ func appendRPCToProto(path, serviceName, rpcName string, kind grpcRPCKind) error
 func appendMethodToImpl(path, serviceName, rpcName, protoAlias string, kind grpcRPCKind) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("read impl: %w", err)
+		return errchain.Errorf("read impl: %w", err)
 	}
 	content := string(raw)
 
@@ -174,7 +174,7 @@ func appendMethodToImpl(path, serviceName, rpcName, protoAlias string, kind grpc
 	content += "\n" + signature + " {\n" + body + "\n}\n"
 
 	if err := os.WriteFile(path, []byte(content), defaultFileMode); err != nil {
-		return fmt.Errorf("write impl: %w", err)
+		return errchain.Errorf("write impl: %w", err)
 	}
 	prism.Success(fmt.Sprintf("Added method %s to %s", rpcName, path))
 	return nil

@@ -26,11 +26,12 @@ package maintpath
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // EnvVar is the env variable name an operator sets to override the default
@@ -158,14 +159,14 @@ func resolve() {
 // against traversal; this is the input gate for VELOCITY_MAINTENANCE_ROOT.
 func validateEnvRoot(raw string) (string, error) {
 	if !filepath.IsAbs(raw) {
-		return "", fmt.Errorf("%w: must be absolute, got %q", ErrInvalidRoot, raw)
+		return "", errchain.Errorf("%w: must be absolute, got %q", ErrInvalidRoot, raw)
 	}
 	// Reject any `..` segment up front. filepath.Clean would collapse them
 	// silently which is undesirable: operators should see their config
 	// fails, not silently get a path different from what they typed.
 	for _, seg := range strings.Split(filepath.ToSlash(raw), "/") {
 		if seg == ".." {
-			return "", fmt.Errorf("%w: must not contain .. segment, got %q", ErrInvalidRoot, raw)
+			return "", errchain.Errorf("%w: must not contain .. segment, got %q", ErrInvalidRoot, raw)
 		}
 	}
 	cleaned := filepath.Clean(raw)
@@ -173,7 +174,7 @@ func validateEnvRoot(raw string) (string, error) {
 	// belongs here, not at the syscall boundary, so operators see a clean
 	// error rather than a kernel ENOENT.
 	if strings.ContainsRune(cleaned, '\x00') {
-		return "", fmt.Errorf("%w: must not contain NUL byte", ErrInvalidRoot)
+		return "", errchain.Errorf("%w: must not contain NUL byte", ErrInvalidRoot)
 	}
 	return cleaned, nil
 }

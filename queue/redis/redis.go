@@ -115,7 +115,7 @@ func newRedisDriver(config queue.RedisConfig, logger contract.Logger) (*RedisDri
 
 	// Test connection
 	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("velocity/queue: failed to connect to redis: %w", err)
+		return nil, errchain.Errorf("velocity/queue: failed to connect to redis: %w", err)
 	}
 
 	// A non-loopback Redis without TLS sends every command (including the
@@ -194,7 +194,7 @@ func (r *RedisDriver) warnIfNonIdentifiable(ctx context.Context, job queue.Job) 
 	if _, ok := job.(queue.Identifiable); ok {
 		return
 	}
-	typ := fmt.Sprintf("%T", job)
+	typ := errchain.Sprintf("%T", job)
 	if _, loaded := r.nonIdentifiableWarned.LoadOrStore(typ, struct{}{}); loaded {
 		return
 	}
@@ -399,7 +399,7 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (qu
 	var payload queue.Payload
 	if err := json.Unmarshal([]byte(rawPayload), &payload); err != nil {
 		return r.quarantinePoisonedPayload(queueName, rawPayload,
-			fmt.Errorf("velocity/queue: failed to unmarshal payload: %w", err))
+			errchain.Errorf("velocity/queue: failed to unmarshal payload: %w", err))
 	}
 
 	// Verify payload integrity if signing is enabled.
@@ -408,11 +408,11 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (qu
 	verifyData, err := json.Marshal(payload)
 	if err != nil {
 		return r.quarantinePoisonedPayload(queueName, rawPayload,
-			fmt.Errorf("velocity/queue: failed to marshal payload for verification: %w", err))
+			errchain.Errorf("velocity/queue: failed to marshal payload for verification: %w", err))
 	}
 	if err := queue.VerifyPayload(verifyData, sig); err != nil {
 		return r.quarantinePoisonedPayload(queueName, rawPayload,
-			fmt.Errorf("velocity/queue: queue integrity check failed: %w", err))
+			errchain.Errorf("velocity/queue: queue integrity check failed: %w", err))
 	}
 
 	// Decrypt AFTER the signature check so verification never runs on
@@ -440,7 +440,7 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (qu
 	job, err := queue.Deserialize(&payload)
 	if err != nil {
 		j, qtc, qerr := r.quarantinePoisonedPayload(queueName, rawPayload,
-			fmt.Errorf("velocity/queue: failed to deserialize job: %w", err))
+			errchain.Errorf("velocity/queue: failed to deserialize job: %w", err))
 		// Preserve the trace context recovered from the verified payload
 		// even though the job itself could not be hydrated; observers
 		// correlating the failure to the producer span need it.
@@ -508,7 +508,7 @@ func (r *RedisDriver) quarantinePoisonedPayload(queueName, rawPayload string, po
 		// encoding/json, so this branch is essentially unreachable. We
 		// still surface the failure so a future change to the record
 		// shape cannot silently break quarantine bookkeeping.
-		writeErr = fmt.Errorf("velocity/queue: failed to marshal poison record: %w", merr)
+		writeErr = errchain.Errorf("velocity/queue: failed to marshal poison record: %w", merr)
 	default:
 		// Use a detached, bounded context for the recovery write: the
 		// caller's ctx may already be cancelled (worker shutdown is the
@@ -520,7 +520,7 @@ func (r *RedisDriver) quarantinePoisonedPayload(queueName, rawPayload string, po
 		recoveryCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := r.client.RPush(recoveryCtx, failedKey, data).Err(); err != nil {
-			writeErr = fmt.Errorf("velocity/queue: failed to record poison row to %s: %w", failedKey, err)
+			writeErr = errchain.Errorf("velocity/queue: failed to record poison row to %s: %w", failedKey, err)
 		}
 	}
 
@@ -607,7 +607,7 @@ func (r *RedisDriver) FailedCtx(ctx context.Context, job queue.Job, err error, q
 
 	data, merr := json.Marshal(failedData)
 	if merr != nil {
-		return fmt.Errorf("velocity/queue: failed to marshal failed job: %w", merr)
+		return errchain.Errorf("velocity/queue: failed to marshal failed job: %w", merr)
 	}
 
 	// Store in failed queue
@@ -669,7 +669,7 @@ func (r *RedisDriver) moveDelayedJobs(ctx context.Context, queueName string) err
 					EventMeta: eventmeta.Current(ctx),
 					JobType:   "unknown",
 					Queue:     queueName,
-					Err:       fmt.Errorf("velocity/queue: delayed ZSET member has unexpected type %T", bad),
+					Err:       errchain.Errorf("velocity/queue: delayed ZSET member has unexpected type %T", bad),
 				}
 			})
 			continue
@@ -846,7 +846,7 @@ func (r *RedisDriver) PushIfNotExistsCtx(ctx context.Context, job queue.Job, ded
 		ttlSeconds, data,
 	).Result()
 	if err != nil {
-		return fmt.Errorf("velocity/queue: redis dedupe push script: %w", err)
+		return errchain.Errorf("velocity/queue: redis dedupe push script: %w", err)
 	}
 
 	// The script returns an integer 0 or 1. go-redis types script
@@ -858,7 +858,7 @@ func (r *RedisDriver) PushIfNotExistsCtx(ctx context.Context, job queue.Job, ded
 	case int:
 		pushed = v == 1
 	default:
-		return fmt.Errorf("velocity/queue: redis dedupe push script: unexpected reply type %T", result)
+		return errchain.Errorf("velocity/queue: redis dedupe push script: unexpected reply type %T", result)
 	}
 
 	if !pushed {

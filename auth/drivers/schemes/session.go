@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -1520,7 +1519,7 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 	var op gateOp
 	holder, standalone, err := reserveOperation(r, &op)
 	if err != nil {
-		return fmt.Errorf("velocity/auth: login refused: %w", err)
+		return errchain.Errorf("velocity/auth: login refused: %w", err)
 	}
 	defer op.abort()
 	return g.signInReserved(w, r, holder, standalone, &op, user, nil, remember...)
@@ -1610,7 +1609,7 @@ func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, us
 	// login before anything changed; the cookie store's revocation follows
 	// the regenerate below.
 	if err := g.retireServerRecord(r, oldSessionID); err != nil {
-		return nil, fmt.Errorf("velocity/auth: login aborted: previous session not retired: %w", err)
+		return nil, errchain.Errorf("velocity/auth: login aborted: previous session not retired: %w", err)
 	}
 
 	// Regenerate session ID for security. A failure here must abort the
@@ -1618,7 +1617,7 @@ func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, us
 	// window (an attacker who planted the cookie keeps access).
 	op.beginMutation()
 	if err := session.Regenerate(); err != nil {
-		return nil, fmt.Errorf("velocity/auth: login aborted: session regenerate failed: %w", err)
+		return nil, errchain.Errorf("velocity/auth: login aborted: session regenerate failed: %w", err)
 	}
 	// The session is replaced: from here on this sign-in supersedes the
 	// credential writes an earlier transition of the request queued (an
@@ -1651,7 +1650,7 @@ func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, us
 	if rotator := g.getCSRFTokenRotator(); rotator != nil {
 		rotateCtx := sessionContext(r, session)
 		if err := rotator.RotateToken(rotateCtx, oldSessionID, sessionID); err != nil {
-			return nil, fmt.Errorf("velocity/auth: login aborted: csrf token rotate failed: %w", err)
+			return nil, errchain.Errorf("velocity/auth: login aborted: csrf token rotate failed: %w", err)
 		}
 		op.queueCredentialWrite(afterSaveWrite{write: func(w http.ResponseWriter) {
 			rotator.WriteXSRFCookie(rotateCtx, w, sessionID)
@@ -1713,7 +1712,7 @@ func (g *SessionScheme) LoginByID(w http.ResponseWriter, r *http.Request, id int
 	var op gateOp
 	holder, standalone, err := reserveOperation(r, &op)
 	if err != nil {
-		return fmt.Errorf("velocity/auth: login refused: %w", err)
+		return errchain.Errorf("velocity/auth: login refused: %w", err)
 	}
 	defer op.abort()
 	user, err := g.loadUserStore().FindByIDCtx(r.Context(), id)
@@ -1753,7 +1752,7 @@ func (g *SessionScheme) Attempt(w http.ResponseWriter, r *http.Request, credenti
 	var op gateOp
 	holder, standalone, err := reserveOperation(r, &op)
 	if err != nil {
-		return false, fmt.Errorf("velocity/auth: attempt refused: %w", err)
+		return false, errchain.Errorf("velocity/auth: attempt refused: %w", err)
 	}
 	defer op.abort()
 
@@ -1817,7 +1816,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	var op gateOp
 	holder, standalone, err := reserveOperation(r, &op)
 	if err != nil {
-		return fmt.Errorf("velocity/auth: logout refused: %w", err)
+		return errchain.Errorf("velocity/auth: logout refused: %w", err)
 	}
 	defer op.abort()
 	session := g.getSession(r)
@@ -2147,7 +2146,7 @@ func (g *SessionScheme) consultServerStore(r *http.Request, session auth.Session
 			resolved = auth.ErrSessionRevoked
 		} else {
 			g.logWarn("velocity/auth: server session store get failed", "session_id", sessionID, "error", err)
-			resolved = fmt.Errorf("velocity/auth: server session store get: %w", err)
+			resolved = errchain.Errorf("velocity/auth: server session store get: %w", err)
 		}
 		if holder != nil {
 			holder.setStoreCache(nil, resolved)
@@ -2294,7 +2293,7 @@ func (g *SessionScheme) ClearRememberTokensForUser(ctx context.Context, userID s
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("velocity/auth: remember token not cleared: user lookup failed: %w", err)
+		return errchain.Errorf("velocity/auth: remember token not cleared: user lookup failed: %w", err)
 	}
 	return userStore.UpdateRememberTokenCtx(ctx, user, "")
 }
@@ -2478,7 +2477,7 @@ func (g *SessionScheme) clearRememberCookie(w http.ResponseWriter) {
 func generateRememberToken() (string, error) {
 	token := make([]byte, 32)
 	if _, err := io.ReadFull(rememberRandReader, token); err != nil {
-		return "", fmt.Errorf("velocity/auth: failed to generate remember token: %w", err)
+		return "", errchain.Errorf("velocity/auth: failed to generate remember token: %w", err)
 	}
 	return base64.URLEncoding.EncodeToString(token), nil
 }

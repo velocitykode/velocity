@@ -3,7 +3,6 @@ package router
 import (
 	"context"
 	"errors"
-	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -11,6 +10,7 @@ import (
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/drain"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/goroutine"
 )
@@ -236,7 +236,7 @@ func (s *asyncEventStop) stop(ctx context.Context, joinWaits bool) error {
 	case drain.Closed(drained):
 		return nil
 	case nested:
-		return fmt.Errorf("velocity/router: event dispatcher stopped from its own listener; the pool drains without this call waiting for it: %w: %w", contract.ErrStopFromOwnWork, errEventDispatcherStopped)
+		return errchain.Errorf("velocity/router: event dispatcher stopped from its own listener; the pool drains without this call waiting for it: %w: %w", contract.ErrStopFromOwnWork, errEventDispatcherStopped)
 	case !owner && !joinWaits:
 		return nil
 	}

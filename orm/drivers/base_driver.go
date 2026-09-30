@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // BaseDriver provides shared implementations for common driver operations.
@@ -143,11 +144,11 @@ func (b *BaseDriver) ConfigurePool(db *sql.DB) {
 func (b *BaseDriver) OpenAndPing(driverName, dsn string) error {
 	db, err := b.OpenInstrumented(driverName, driverName, dsn)
 	if err != nil {
-		return fmt.Errorf("velocity/orm: failed to open database: %w", err)
+		return errchain.Errorf("velocity/orm: failed to open database: %w", err)
 	}
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
-		return fmt.Errorf("velocity/orm: failed to ping database: %w", err)
+		return errchain.Errorf("velocity/orm: failed to ping database: %w", err)
 	}
 	b.ConfigurePool(db)
 	b.db = db

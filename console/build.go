@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/velocitykode/prism"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // ldflagsValueRe is the allowlist for values interpolated into the -ldflags
@@ -113,7 +115,7 @@ func Build(opts BuildOptions) error {
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("build failed: %w", err)
+		return errchain.Errorf("build failed: %w", err)
 	}
 
 	prism.Success(fmt.Sprintf("Built: %s", output))

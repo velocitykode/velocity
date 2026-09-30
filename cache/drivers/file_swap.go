@@ -3,11 +3,12 @@ package drivers
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"reflect"
 	"sort"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // readLiveItemLocked reads the item stored at path. ok is false when the
@@ -33,7 +34,7 @@ func (s *FileStore) readLiveItemLocked(path string) (item fileCacheItem, ok bool
 func (s *FileStore) writeItemLocked(path string, item fileCacheItem) error {
 	data, err := json.Marshal(item)
 	if err != nil {
-		return fmt.Errorf("velocity/cache: failed to marshal cache item: %w", err)
+		return errchain.Errorf("velocity/cache: failed to marshal cache item: %w", err)
 	}
 	return replaceFile(path, data)
 }
@@ -72,7 +73,7 @@ func (s *FileStore) CompareAndSwapCtx(ctx context.Context, key string, expected,
 	want, wantErr := expectedShape(expected)
 	unlock, err := s.lockKeyForWrite(ctx, key)
 	if err != nil {
-		return false, fmt.Errorf("velocity/cache: FileStore.CompareAndSwap: %w", err)
+		return false, errchain.Errorf("velocity/cache: FileStore.CompareAndSwap: %w", err)
 	}
 	defer unlock()
 	s.mu.Lock()
@@ -95,7 +96,7 @@ func (s *FileStore) CompareAndSwapCtx(ctx context.Context, key string, expected,
 			return false, nil
 		}
 		if wantErr != nil {
-			return false, fmt.Errorf("velocity/cache: failed to compare expected value: %w", wantErr)
+			return false, errchain.Errorf("velocity/cache: failed to compare expected value: %w", wantErr)
 		}
 		if !reflect.DeepEqual(have, want) {
 			return false, nil
@@ -131,7 +132,7 @@ func (s *FileStore) SetAddCtx(ctx context.Context, key string, ttl time.Duration
 	}
 	unlock, err := s.lockKeyForWrite(ctx, key)
 	if err != nil {
-		return fmt.Errorf("velocity/cache: FileStore.SetAdd: %w", err)
+		return errchain.Errorf("velocity/cache: FileStore.SetAdd: %w", err)
 	}
 	defer unlock()
 	s.mu.Lock()
@@ -171,7 +172,7 @@ func (s *FileStore) SetRemoveCtx(ctx context.Context, key string, members ...str
 	}
 	unlock, err := s.lockKeyForWrite(ctx, key)
 	if err != nil {
-		return fmt.Errorf("velocity/cache: FileStore.SetRemove: %w", err)
+		return errchain.Errorf("velocity/cache: FileStore.SetRemove: %w", err)
 	}
 	defer unlock()
 	s.mu.Lock()
@@ -191,7 +192,7 @@ func (s *FileStore) SetRemoveCtx(ctx context.Context, key string, members ...str
 	}
 	if len(set) == 0 {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("velocity/cache: failed to remove cache file: %w", err)
+			return errchain.Errorf("velocity/cache: failed to remove cache file: %w", err)
 		}
 		return nil
 	}
@@ -210,7 +211,7 @@ func (s *FileStore) SetMembersCtx(ctx context.Context, key string) ([]string, er
 	}
 	unlock, err := s.lockKeyForWrite(ctx, key)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/cache: FileStore.SetMembers: %w", err)
+		return nil, errchain.Errorf("velocity/cache: FileStore.SetMembers: %w", err)
 	}
 	defer unlock()
 	s.mu.RLock()

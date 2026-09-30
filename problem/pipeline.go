@@ -2,7 +2,6 @@ package problem
 
 import (
 	"context"
-	"fmt"
 	"mime"
 	"net/http"
 	"runtime/debug"
@@ -167,7 +166,7 @@ func (h *Handler) applyMap(s *snapshot, err error, source contract.ErrorSource) 
 	out = err
 	defer func() {
 		if p := recover(); p != nil {
-			safeLog(s.logger, "problem: map rule panicked", "panic", fmt.Sprint(p))
+			safeLog(s.logger, "problem: map rule panicked", "panic", errchain.Sprint(p))
 			out = err
 		}
 	}()
@@ -312,7 +311,7 @@ func sourceOf(ctx *ErrorContext) contract.ErrorSource {
 func (h *Handler) report(s *snapshot, err error, ctx *ErrorContext, r *http.Request) (handled bool) {
 	defer func() {
 		if p := recover(); p != nil {
-			safeLog(s.logger, "problem: report failed", "panic", fmt.Sprint(p), "error", errchain.Text(err))
+			safeLog(s.logger, "problem: report failed", "panic", errchain.Sprint(p), "error", errchain.Text(err))
 		}
 	}()
 	if !h.passes(s, err, ctx, r, true) {
@@ -376,7 +375,7 @@ func selectLevel(s *snapshot, err error, current contract.LogLevel, source contr
 func callReporter(logger contract.Logger, reporter Reporter, err error, ctx *ErrorContext) {
 	defer func() {
 		if p := recover(); p != nil {
-			safeLog(logger, "problem: reporter panicked", "panic", fmt.Sprint(p), "error", errchain.Text(err))
+			safeLog(logger, "problem: reporter panicked", "panic", errchain.Sprint(p), "error", errchain.Text(err))
 		}
 	}()
 	reporter.Report(err, ctx)
@@ -902,7 +901,7 @@ func dropPageMarker(rc RenderContext) {
 func lastResort(logger contract.Logger, rc RenderContext) {
 	defer func() {
 		if p := recover(); p != nil {
-			safeLog(logger, "problem: last-resort response failed", "panic", fmt.Sprint(p))
+			safeLog(logger, "problem: last-resort response failed", "panic", errchain.Sprint(p))
 		}
 	}()
 	if rc.Written() {

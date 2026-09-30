@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/ownctx"
 )
 
@@ -230,7 +231,7 @@ func (m *Migrator) withMigrationLock(fn func() error) error {
 	reentrant, err := m.enterMigrationLock(owned)
 	held.Release()
 	if err != nil {
-		return fmt.Errorf("velocity/orm: failed to acquire migration lock: %w", err)
+		return errchain.Errorf("velocity/orm: failed to acquire migration lock: %w", err)
 	}
 	if reentrant {
 		defer func() {
@@ -362,7 +363,7 @@ func (m *Migrator) runMigrationUp(migration Migration, batch int) error {
 
 	tx, err := m.conn.BeginTx(context.Background(), nil)
 	if err != nil {
-		return fmt.Errorf("velocity/orm: begin migration %s tx: %w", migration.Version, err)
+		return errchain.Errorf("velocity/orm: begin migration %s tx: %w", migration.Version, err)
 	}
 	m.tx = tx
 	defer func() { m.tx = nil }()
@@ -376,7 +377,7 @@ func (m *Migrator) runMigrationUp(migration Migration, batch int) error {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("velocity/orm: commit migration %s: %w", migration.Version, err)
+		return errchain.Errorf("velocity/orm: commit migration %s: %w", migration.Version, err)
 	}
 	return nil
 }
@@ -412,11 +413,11 @@ func (m *Migrator) acquireMigrationLock(ctx context.Context) (release func(), er
 		// run and route every subsequent query through it.
 		conn, connErr := m.db.Conn(ctx)
 		if connErr != nil {
-			return nil, fmt.Errorf("velocity/orm: pin migration conn: %w", connErr)
+			return nil, errchain.Errorf("velocity/orm: pin migration conn: %w", connErr)
 		}
 		if _, lockErr := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", migrationLockKey); lockErr != nil {
 			_ = conn.Close()
-			return nil, fmt.Errorf("velocity/orm: pg_advisory_lock: %w", lockErr)
+			return nil, errchain.Errorf("velocity/orm: pg_advisory_lock: %w", lockErr)
 		}
 		m.conn = conn
 		return func() {
@@ -434,7 +435,7 @@ func (m *Migrator) acquireMigrationLock(ctx context.Context) (release func(), er
 		}
 		tx, err := m.db.BeginTx(ctx, nil)
 		if err != nil {
-			return nil, fmt.Errorf("velocity/orm: begin lock tx: %w", err)
+			return nil, errchain.Errorf("velocity/orm: begin lock tx: %w", err)
 		}
 		lockTable := quoteIdentifier(migrationsLockTableName, m.driver)
 		colID := quoteIdentifier("id", m.driver)
@@ -443,13 +444,13 @@ func (m *Migrator) acquireMigrationLock(ctx context.Context) (release func(), er
 			"INSERT IGNORE INTO "+lockTable+" ("+colID+", "+colLocked+") VALUES (1, 0)",
 		); err != nil {
 			_ = tx.Rollback()
-			return nil, fmt.Errorf("velocity/orm: seed lock row: %w", err)
+			return nil, errchain.Errorf("velocity/orm: seed lock row: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx,
 			"SELECT "+colID+" FROM "+lockTable+" WHERE "+colID+" = 1 FOR UPDATE",
 		); err != nil {
 			_ = tx.Rollback()
-			return nil, fmt.Errorf("velocity/orm: select for update lock: %w", err)
+			return nil, errchain.Errorf("velocity/orm: select for update lock: %w", err)
 		}
 		return func() {
 			// Commit releases the row lock. Rollback would also work,
@@ -497,7 +498,7 @@ func (m *Migrator) seedLockRow(ctx context.Context) error {
 			lockTable+" WHERE "+colID+" = 1)",
 	)
 	if err != nil {
-		return fmt.Errorf("velocity/orm: seed lock row: %w", err)
+		return errchain.Errorf("velocity/orm: seed lock row: %w", err)
 	}
 	return nil
 }
@@ -544,11 +545,11 @@ func (m *Migrator) sqliteAcquireLock(ctx context.Context) error {
 			now, staleCutoff,
 		)
 		if err != nil {
-			return fmt.Errorf("velocity/orm: acquire lock row: %w", err)
+			return errchain.Errorf("velocity/orm: acquire lock row: %w", err)
 		}
 		rows, err := res.RowsAffected()
 		if err != nil {
-			return fmt.Errorf("velocity/orm: rows affected: %w", err)
+			return errchain.Errorf("velocity/orm: rows affected: %w", err)
 		}
 		if rows == 1 {
 			return nil
@@ -577,7 +578,7 @@ func (m *Migrator) ensureLockTable(ctx context.Context) error {
 		return nil
 	}
 	if _, err := m.db.ExecContext(ctx, createSQL); err != nil {
-		return fmt.Errorf("velocity/orm: ensure lock table: %w", err)
+		return errchain.Errorf("velocity/orm: ensure lock table: %w", err)
 	}
 	if m.driver == "sqlite" {
 		if err := m.ensureSqliteLockedAtColumn(ctx); err != nil {
@@ -600,7 +601,7 @@ func (m *Migrator) ensureSqliteLockedAtColumn(ctx context.Context) error {
 	table := quoteIdentifier(migrationsLockTableName, m.driver)
 	rows, err := m.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
 	if err != nil {
-		return fmt.Errorf("velocity/orm: inspect lock table: %w", err)
+		return errchain.Errorf("velocity/orm: inspect lock table: %w", err)
 	}
 	hasLockedAt := false
 	for rows.Next() {
@@ -611,7 +612,7 @@ func (m *Migrator) ensureSqliteLockedAtColumn(ctx context.Context) error {
 		)
 		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
 			rows.Close()
-			return fmt.Errorf("velocity/orm: scan lock table info: %w", err)
+			return errchain.Errorf("velocity/orm: scan lock table info: %w", err)
 		}
 		if name == "locked_at" {
 			hasLockedAt = true
@@ -619,13 +620,13 @@ func (m *Migrator) ensureSqliteLockedAtColumn(ctx context.Context) error {
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("velocity/orm: inspect lock table: %w", err)
+		return errchain.Errorf("velocity/orm: inspect lock table: %w", err)
 	}
 	if hasLockedAt {
 		return nil
 	}
 	if _, err := m.db.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN "+quoteIdentifier("locked_at", m.driver)+" INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return fmt.Errorf("velocity/orm: add locked_at column: %w", err)
+		return errchain.Errorf("velocity/orm: add locked_at column: %w", err)
 	}
 	return nil
 }
@@ -703,7 +704,7 @@ func (m *Migrator) runMigrationDown(migration Migration, version string) error {
 
 	tx, err := m.conn.BeginTx(context.Background(), nil)
 	if err != nil {
-		return fmt.Errorf("velocity/orm: begin rollback %s tx: %w", version, err)
+		return errchain.Errorf("velocity/orm: begin rollback %s tx: %w", version, err)
 	}
 	m.tx = tx
 	defer func() { m.tx = nil }()
@@ -717,7 +718,7 @@ func (m *Migrator) runMigrationDown(migration Migration, version string) error {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("velocity/orm: commit rollback %s: %w", version, err)
+		return errchain.Errorf("velocity/orm: commit rollback %s: %w", version, err)
 	}
 	return nil
 }
@@ -734,7 +735,7 @@ func (m *Migrator) Fresh() error {
 		// Get all table names
 		tables, err := m.getAllTables()
 		if err != nil {
-			return fmt.Errorf("failed to get tables: %w", err)
+			return errchain.Errorf("failed to get tables: %w", err)
 		}
 
 		// Drop all tables except the lock table: on MySQL/SQLite the
@@ -747,7 +748,7 @@ func (m *Migrator) Fresh() error {
 				continue
 			}
 			if err := m.dropTable(table); err != nil {
-				return fmt.Errorf("failed to drop table %s: %w", table, err)
+				return errchain.Errorf("failed to drop table %s: %w", table, err)
 			}
 		}
 
@@ -834,7 +835,7 @@ func (m *Migrator) CreateTable(name string, fn func(*TableBuilder)) error {
 	sql := builder.ToSQL()
 	return m.withMigrationLock(func() error {
 		if err := m.exec(sql); err != nil {
-			return fmt.Errorf("failed to create table %s: %w", name, err)
+			return errchain.Errorf("failed to create table %s: %w", name, err)
 		}
 		return nil
 	})
@@ -857,7 +858,7 @@ func (m *Migrator) DropTable(name string) error {
 		}
 
 		if err := m.exec(sql); err != nil {
-			return fmt.Errorf("failed to drop table %s: %w", name, err)
+			return errchain.Errorf("failed to drop table %s: %w", name, err)
 		}
 
 		return nil
@@ -875,7 +876,7 @@ func (m *Migrator) DropTable(name string) error {
 func (m *Migrator) Raw(sql string) error {
 	return m.withMigrationLock(func() error {
 		if err := m.exec(sql); err != nil {
-			return fmt.Errorf("failed to execute raw SQL: %w", err)
+			return errchain.Errorf("failed to execute raw SQL: %w", err)
 		}
 		return nil
 	})
@@ -936,18 +937,18 @@ func (m *Migrator) Table(name string, fn func(*TableBuilder)) error {
 	return m.withMigrationLock(func() error {
 		if m.driver == "sqlite" && len(builder.checks) > 0 {
 			if err := m.sqliteRebuildWithChecks(name, colStmts, builder.checks); err != nil {
-				return fmt.Errorf("failed to alter table %s: %w", name, err)
+				return errchain.Errorf("failed to alter table %s: %w", name, err)
 			}
 			return nil
 		}
 		for _, s := range colStmts {
 			if err := m.exec(s); err != nil {
-				return fmt.Errorf("failed to alter table %s: %w", name, err)
+				return errchain.Errorf("failed to alter table %s: %w", name, err)
 			}
 		}
 		for _, s := range checkStmts {
 			if err := m.exec(s); err != nil {
-				return fmt.Errorf("failed to alter table %s: %w", name, err)
+				return errchain.Errorf("failed to alter table %s: %w", name, err)
 			}
 		}
 		return nil
@@ -992,7 +993,7 @@ func (m *Migrator) sqliteRebuildWithChecks(name string, preStmts []string, check
 
 	conn, err := m.db.Conn(ctx)
 	if err != nil {
-		return fmt.Errorf("pin sqlite conn: %w", err)
+		return errchain.Errorf("pin sqlite conn: %w", err)
 	}
 	defer conn.Close()
 
@@ -1002,13 +1003,13 @@ func (m *Migrator) sqliteRebuildWithChecks(name string, preStmts []string, check
 	var fkPrior int
 	_ = conn.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&fkPrior)
 	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
-		return fmt.Errorf("disable foreign keys: %w", err)
+		return errchain.Errorf("disable foreign keys: %w", err)
 	}
 	defer conn.ExecContext(ctx, fmt.Sprintf("PRAGMA foreign_keys=%d", fkPrior))
 
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin rebuild tx: %w", err)
+		return errchain.Errorf("begin rebuild tx: %w", err)
 	}
 	committed := false
 	defer func() {
@@ -1021,7 +1022,7 @@ func (m *Migrator) sqliteRebuildWithChecks(name string, preStmts []string, check
 	// schema below includes them.
 	for _, s := range preStmts {
 		if _, err := tx.ExecContext(ctx, s); err != nil {
-			return fmt.Errorf("add column failed (%s): %w", s, err)
+			return errchain.Errorf("add column failed (%s): %w", s, err)
 		}
 	}
 
@@ -1030,25 +1031,25 @@ func (m *Migrator) sqliteRebuildWithChecks(name string, preStmts []string, check
 	var createSQL string
 	if err := tx.QueryRowContext(ctx,
 		"SELECT sql FROM sqlite_master WHERE type='table' AND name=?", name).Scan(&createSQL); err != nil {
-		return fmt.Errorf("read schema for %q: %w", name, err)
+		return errchain.Errorf("read schema for %q: %w", name, err)
 	}
 	rows, err := tx.QueryContext(ctx,
 		"SELECT sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger') AND sql IS NOT NULL", name)
 	if err != nil {
-		return fmt.Errorf("read indexes/triggers for %q: %w", name, err)
+		return errchain.Errorf("read indexes/triggers for %q: %w", name, err)
 	}
 	var auxDDL []string
 	for rows.Next() {
 		var s string
 		if err := rows.Scan(&s); err != nil {
 			rows.Close()
-			return fmt.Errorf("scan index/trigger ddl: %w", err)
+			return errchain.Errorf("scan index/trigger ddl: %w", err)
 		}
 		auxDDL = append(auxDDL, s)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read indexes/triggers for %q: %w", name, err)
+		return errchain.Errorf("read indexes/triggers for %q: %w", name, err)
 	}
 
 	open := strings.Index(createSQL, "(")
@@ -1083,7 +1084,7 @@ func (m *Migrator) sqliteRebuildWithChecks(name string, preStmts []string, check
 	steps = append(steps, auxDDL...) // index/trigger DDL references name; valid post-rename
 	for _, s := range steps {
 		if _, err := tx.ExecContext(ctx, s); err != nil {
-			return fmt.Errorf("rebuild step failed (%s): %w", s, err)
+			return errchain.Errorf("rebuild step failed (%s): %w", s, err)
 		}
 	}
 
@@ -1091,19 +1092,19 @@ func (m *Migrator) sqliteRebuildWithChecks(name string, preStmts []string, check
 	// error, so it must be queried rather than Exec'd.
 	fkRows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
 	if err != nil {
-		return fmt.Errorf("foreign key check after rebuild: %w", err)
+		return errchain.Errorf("foreign key check after rebuild: %w", err)
 	}
 	violated := fkRows.Next()
 	fkErr := fkRows.Err()
 	fkRows.Close()
 	if fkErr != nil {
-		return fmt.Errorf("foreign key check after rebuild: %w", fkErr)
+		return errchain.Errorf("foreign key check after rebuild: %w", fkErr)
 	}
 	if violated {
 		return fmt.Errorf("rebuild of %q would violate foreign key constraints", name)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit rebuild: %w", err)
+		return errchain.Errorf("commit rebuild: %w", err)
 	}
 	committed = true
 	return nil
@@ -1130,7 +1131,7 @@ func (m *Migrator) AddColumn(table, column string, fn func(*ColumnBuilder)) erro
 	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", quoteIdentifier(table, m.driver), colSQL)
 	return m.withMigrationLock(func() error {
 		if err := m.exec(sql); err != nil {
-			return fmt.Errorf("failed to add column %s to table %s: %w", column, table, err)
+			return errchain.Errorf("failed to add column %s to table %s: %w", column, table, err)
 		}
 		return nil
 	})
@@ -1147,7 +1148,7 @@ func (m *Migrator) DropColumn(table, column string) error {
 		sql := fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", quotedTable, quotedColumn)
 
 		if err := m.exec(sql); err != nil {
-			return fmt.Errorf("failed to drop column %s from table %s: %w", column, table, err)
+			return errchain.Errorf("failed to drop column %s from table %s: %w", column, table, err)
 		}
 		return nil
 	})
@@ -2249,7 +2250,7 @@ func formatDefaultValue(value interface{}, colType string, driver string) string
 	case string:
 		return "'" + strings.ReplaceAll(v, "'", "''") + "'"
 	case int, int64, int32:
-		return fmt.Sprintf("%d", v)
+		return errchain.Sprintf("%d", v)
 	case bool:
 		// PostgreSQL BOOLEAN type requires true/false literals, not 0/1
 		if driver == "postgres" && colType == "boolean" {
@@ -2264,7 +2265,7 @@ func formatDefaultValue(value interface{}, colType string, driver string) string
 		}
 		return "0"
 	default:
-		return fmt.Sprintf("%v", v)
+		return errchain.Sprintf("%v", v)
 	}
 }
 

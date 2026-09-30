@@ -1,9 +1,9 @@
 package console
 
 import (
-	"fmt"
-
 	"github.com/velocitykode/prism"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/migrate"
 )
@@ -24,7 +24,7 @@ func DBWipe(db orm.Database) error {
 
 	tables, err := migrator.AllTables()
 	if err != nil {
-		return fmt.Errorf("velocity/console: failed to list tables: %w", err)
+		return errchain.Errorf("velocity/console: failed to list tables: %w", err)
 	}
 
 	if len(tables) == 0 {
@@ -34,7 +34,7 @@ func DBWipe(db orm.Database) error {
 
 	for _, table := range tables {
 		if err := migrator.DropTable(table); err != nil {
-			return fmt.Errorf("velocity/console: failed to drop table %s: %w", table, err)
+			return errchain.Errorf("velocity/console: failed to drop table %s: %w", table, err)
 		}
 	}
 

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Vector is a dense float32 embedding stored in a PostgreSQL pgvector column.
@@ -70,7 +72,7 @@ func (v *Vector) Scan(src any) error {
 	case []byte:
 		s = string(t)
 	default:
-		return fmt.Errorf("orm.Vector: cannot scan %T into Vector", src)
+		return errchain.Errorf("orm.Vector: cannot scan %T into Vector", src)
 	}
 
 	parsed, err := parseVector(s)
@@ -98,7 +100,7 @@ func parseVector(s string) (Vector, error) {
 	for i, p := range parts {
 		f, err := strconv.ParseFloat(strings.TrimSpace(p), 32)
 		if err != nil {
-			return nil, fmt.Errorf("orm.Vector: malformed element %q: %w", p, err)
+			return nil, errchain.Errorf("orm.Vector: malformed element %q: %w", p, err)
 		}
 		out[i] = float32(f)
 	}

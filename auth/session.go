@@ -4,13 +4,13 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // ErrInsecureSessionConfig is returned from
@@ -416,7 +416,7 @@ func (s *BaseSession) SetFlashData(flash map[string]interface{}) {
 func generateSessionID() (string, error) {
 	b := make([]byte, 32)
 	if _, err := io.ReadFull(sessionRandReader, b); err != nil {
-		return "", fmt.Errorf("velocity/auth: failed to generate session id: %w", err)
+		return "", errchain.Errorf("velocity/auth: failed to generate session id: %w", err)
 	}
 	return base64.URLEncoding.EncodeToString(b), nil
 }
@@ -630,13 +630,13 @@ func (c SessionConfig) CookiePolicy() contract.CookiePolicy {
 //   - RememberLifetime must be >= 0
 func (c SessionConfig) ValidateLifetimes() error {
 	if c.IdleLifetime < 0 {
-		return fmt.Errorf("%w: IdleLifetime %d minutes is negative", ErrInvalidLifetime, c.IdleLifetime)
+		return errchain.Errorf("%w: IdleLifetime %d minutes is negative", ErrInvalidLifetime, c.IdleLifetime)
 	}
 	if c.AbsoluteLifetime > 0 && c.AbsoluteLifetime < c.IdleLifetime {
-		return fmt.Errorf("%w: AbsoluteLifetime %d minutes is shorter than IdleLifetime %d minutes", ErrInvalidLifetime, c.AbsoluteLifetime, c.IdleLifetime)
+		return errchain.Errorf("%w: AbsoluteLifetime %d minutes is shorter than IdleLifetime %d minutes", ErrInvalidLifetime, c.AbsoluteLifetime, c.IdleLifetime)
 	}
 	if c.RememberLifetime < 0 {
-		return fmt.Errorf("%w: RememberLifetime %d minutes is negative", ErrInvalidLifetime, c.RememberLifetime)
+		return errchain.Errorf("%w: RememberLifetime %d minutes is negative", ErrInvalidLifetime, c.RememberLifetime)
 	}
 	return nil
 }
@@ -654,16 +654,16 @@ func (c SessionConfig) ValidateLifetimes() error {
 //   - SameSite=None requires Secure=true
 func (c SessionConfig) ValidateCookieSecurity(env string) error {
 	if !c.HttpOnly && !c.AllowJSAccess {
-		return fmt.Errorf("%w: HttpOnly=false requires AllowJSAccess=true opt-in", ErrInsecureSessionConfig)
+		return errchain.Errorf("%w: HttpOnly=false requires AllowJSAccess=true opt-in", ErrInsecureSessionConfig)
 	}
 	if !c.Secure && !contract.IsDevOrTestEnv(env) {
-		return fmt.Errorf("%w: Secure=false is not permitted in %q env (set APP_ENV to a dev or test profile to allow)", ErrInsecureSessionConfig, env)
+		return errchain.Errorf("%w: Secure=false is not permitted in %q env (set APP_ENV to a dev or test profile to allow)", ErrInsecureSessionConfig, env)
 	}
 	if c.SameSite == 0 || c.SameSite == http.SameSiteDefaultMode {
-		return fmt.Errorf("%w: SameSite must be set to Lax, Strict, or None (got default/zero)", ErrInsecureSessionConfig)
+		return errchain.Errorf("%w: SameSite must be set to Lax, Strict, or None (got default/zero)", ErrInsecureSessionConfig)
 	}
 	if c.SameSite == http.SameSiteNoneMode && !c.Secure {
-		return fmt.Errorf("%w: SameSite=None requires Secure=true", ErrInsecureSessionConfig)
+		return errchain.Errorf("%w: SameSite=None requires Secure=true", ErrInsecureSessionConfig)
 	}
 	return nil
 }

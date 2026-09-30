@@ -101,7 +101,7 @@ func NewS3DriverWithContext(ctx context.Context, diskConfig storage.DiskConfig) 
 	if diskConfig.URL != "" {
 		u, err := url.Parse(diskConfig.URL)
 		if err != nil {
-			return nil, fmt.Errorf("velocity/storage: s3 url is invalid: %w", err)
+			return nil, errchain.Errorf("velocity/storage: s3 url is invalid: %w", err)
 		}
 		if u.Scheme != "http" && u.Scheme != "https" {
 			return nil, fmt.Errorf("velocity/storage: s3 url must use http or https scheme, got %q", u.Scheme)
@@ -122,7 +122,7 @@ func NewS3DriverWithContext(ctx context.Context, diskConfig storage.DiskConfig) 
 	// Load AWS config
 	cfg, err := config.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/storage: failed to load aws config: %w", err)
+		return nil, errchain.Errorf("velocity/storage: failed to load aws config: %w", err)
 	}
 
 	// Create S3 client
@@ -133,7 +133,7 @@ func NewS3DriverWithContext(ctx context.Context, diskConfig storage.DiskConfig) 
 		Bucket: aws.String(diskConfig.Bucket),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("velocity/storage: failed to access bucket %s: %w", diskConfig.Bucket, err)
+		return nil, errchain.Errorf("velocity/storage: failed to access bucket %s: %w", diskConfig.Bucket, err)
 	}
 
 	// Default to Private. Public visibility must be opt-in.
@@ -222,7 +222,7 @@ func (d *S3Driver) PutStreamCtx(ctx context.Context, path string, stream io.Read
 	sniff := make([]byte, mimeSniffSize)
 	n, err := io.ReadFull(stream, sniff)
 	if err != nil && !errchain.Is(err, io.EOF) && !errchain.Is(err, io.ErrUnexpectedEOF) {
-		return fmt.Errorf("velocity/storage: failed to read stream: %w", err)
+		return errchain.Errorf("velocity/storage: failed to read stream: %w", err)
 	}
 	sniff = sniff[:n]
 	contentType := storage.DetectMimeType(sniff)
@@ -293,7 +293,7 @@ func (d *S3Driver) PutStreamCtx(ctx context.Context, path string, stream io.Read
 		if errchain.Is(err, ErrStreamTooLarge) {
 			return ErrStreamTooLarge
 		}
-		return fmt.Errorf("velocity/storage: failed to upload to s3: %w", err)
+		return errchain.Errorf("velocity/storage: failed to upload to s3: %w", err)
 	}
 
 	return nil
@@ -366,7 +366,7 @@ func (d *S3Driver) GetCtx(ctx context.Context, path string) ([]byte, error) {
 
 	buf := new(bytes.Buffer)
 	if _, err := io.Copy(buf, stream); err != nil {
-		return nil, fmt.Errorf("velocity/storage: failed to read stream: %w", err)
+		return nil, errchain.Errorf("velocity/storage: failed to read stream: %w", err)
 	}
 
 	return buf.Bytes(), nil
@@ -398,7 +398,7 @@ func (d *S3Driver) GetStreamCtx(ctx context.Context, path string) (io.ReadCloser
 		if isNotFoundError(err) {
 			return nil, storage.ErrFileNotFound
 		}
-		return nil, fmt.Errorf("velocity/storage: failed to get object from s3: %w", err)
+		return nil, errchain.Errorf("velocity/storage: failed to get object from s3: %w", err)
 	}
 
 	return result.Body, nil
@@ -462,7 +462,7 @@ func (d *S3Driver) DeleteCtx(ctx context.Context, paths ...string) error {
 	})
 
 	if err != nil {
-		return fmt.Errorf("velocity/storage: failed to delete objects from s3: %w", err)
+		return errchain.Errorf("velocity/storage: failed to delete objects from s3: %w", err)
 	}
 
 	return nil
@@ -503,7 +503,7 @@ func (d *S3Driver) CopyCtx(ctx context.Context, from, to string) error {
 		if isNotFoundError(err) {
 			return storage.ErrFileNotFound
 		}
-		return fmt.Errorf("velocity/storage: failed to copy object in s3: %w", err)
+		return errchain.Errorf("velocity/storage: failed to copy object in s3: %w", err)
 	}
 
 	return nil
@@ -548,7 +548,7 @@ func (d *S3Driver) SizeCtx(ctx context.Context, path string) (int64, error) {
 		if isNotFoundError(err) {
 			return 0, storage.ErrFileNotFound
 		}
-		return 0, fmt.Errorf("velocity/storage: failed to get object metadata from s3: %w", err)
+		return 0, errchain.Errorf("velocity/storage: failed to get object metadata from s3: %w", err)
 	}
 
 	return *result.ContentLength, nil
@@ -578,7 +578,7 @@ func (d *S3Driver) LastModifiedCtx(ctx context.Context, path string) (time.Time,
 		if isNotFoundError(err) {
 			return time.Time{}, storage.ErrFileNotFound
 		}
-		return time.Time{}, fmt.Errorf("velocity/storage: failed to get object metadata from s3: %w", err)
+		return time.Time{}, errchain.Errorf("velocity/storage: failed to get object metadata from s3: %w", err)
 	}
 
 	return *result.LastModified, nil
@@ -608,7 +608,7 @@ func (d *S3Driver) MimeTypeCtx(ctx context.Context, path string) (string, error)
 		if isNotFoundError(err) {
 			return "", storage.ErrFileNotFound
 		}
-		return "", fmt.Errorf("velocity/storage: failed to get object metadata from s3: %w", err)
+		return "", errchain.Errorf("velocity/storage: failed to get object metadata from s3: %w", err)
 	}
 
 	if result.ContentType != nil {
@@ -648,7 +648,7 @@ func (d *S3Driver) FilesCtx(ctx context.Context, directory string) ([]string, er
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("velocity/storage: failed to list objects from s3: %w", err)
+			return nil, errchain.Errorf("velocity/storage: failed to list objects from s3: %w", err)
 		}
 
 		for _, obj := range page.Contents {
@@ -692,7 +692,7 @@ func (d *S3Driver) AllFilesCtx(ctx context.Context, directory string) ([]string,
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("velocity/storage: failed to list objects from s3: %w", err)
+			return nil, errchain.Errorf("velocity/storage: failed to list objects from s3: %w", err)
 		}
 
 		for _, obj := range page.Contents {
@@ -734,7 +734,7 @@ func (d *S3Driver) DirectoriesCtx(ctx context.Context, directory string) ([]stri
 		Delimiter: aws.String("/"),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("velocity/storage: failed to list objects from s3: %w", err)
+		return nil, errchain.Errorf("velocity/storage: failed to list objects from s3: %w", err)
 	}
 
 	// Common prefixes represent "directories"
@@ -889,7 +889,7 @@ func (d *S3Driver) TemporaryURLCtx(ctx context.Context, path string, expiration 
 	}, s3.WithPresignExpires(expiration))
 
 	if err != nil {
-		return "", fmt.Errorf("velocity/storage: failed to generate presigned url: %w", err)
+		return "", errchain.Errorf("velocity/storage: failed to generate presigned url: %w", err)
 	}
 
 	return result.URL, nil

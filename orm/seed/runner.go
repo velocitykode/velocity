@@ -3,8 +3,8 @@ package seed
 import (
 	"context"
 	"errors"
-	"fmt"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm"
 )
 
@@ -38,10 +38,10 @@ func (r *Runner) Run(ctx context.Context, seeders ...Seeder) error {
 			return errors.New("seed: seeder cannot be nil")
 		}
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("seed: seeding stopped before %s: %w", s.Name(), err)
+			return errchain.Errorf("seed: seeding stopped before %s: %w", s.Name(), err)
 		}
 		if err := s.Run(ctx, r.db); err != nil {
-			return fmt.Errorf("seed: seeder %s failed: %w", s.Name(), err)
+			return errchain.Errorf("seed: seeder %s failed: %w", s.Name(), err)
 		}
 		r.ran = append(r.ran, s.Name())
 	}

@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/velocitykode/prism"
+
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // command is the internal interface for built-in CLI commands. Each root
@@ -301,7 +303,7 @@ func (a *App) run(argv []string, stderr io.Writer, exit func(code int)) error {
 	if code != 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), consoleShutdownTimeout)
 		if sdErr := a.Shutdown(ctx); sdErr != nil {
-			_, _ = fmt.Fprintf(stderr, "error: shutdown: %v\n", sdErr)
+			_, _ = fmt.Fprint(stderr, errchain.Sprintf("error: shutdown: %v\n", sdErr))
 		}
 		cancel()
 		exit(code)

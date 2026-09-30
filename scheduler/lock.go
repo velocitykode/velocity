@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Lock is a named mutual-exclusion primitive that a scheduler job can acquire
@@ -131,7 +133,7 @@ func (l *InMemoryLocker) Acquire(ctx context.Context, name string, ttl time.Dura
 	defer l.mu.Unlock()
 
 	if existing, ok := l.locks[name]; ok && now.Before(existing.expires) {
-		return nil, fmt.Errorf("velocity/scheduler: lock %q: %w", name, ErrLockHeld)
+		return nil, errchain.Errorf("velocity/scheduler: lock %q: %w", name, ErrLockHeld)
 	}
 
 	tok := l.token.Add(1)

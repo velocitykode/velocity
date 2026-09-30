@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Morph is the value held by a polymorphic relation field. TypeName matches
@@ -134,12 +136,12 @@ func (m *Morph) Resolve(ctx context.Context) (any, error) {
 	}
 	driver, err := mgr.liveDriver()
 	if err != nil {
-		return nil, fmt.Errorf("orm: Morph.Resolve: %w", err)
+		return nil, errchain.Errorf("orm: Morph.Resolve: %w", err)
 	}
 
 	tableName := resolveTableNameReflect(relatedType)
 	if err := validateIdentifier(tableName); err != nil {
-		return nil, fmt.Errorf("orm: Morph.Resolve: invalid table name for %s: %w", relatedType.Name(), err)
+		return nil, errchain.Errorf("orm: Morph.Resolve: invalid table name for %s: %w", relatedType.Name(), err)
 	}
 
 	// Honour every global scope registered on relatedType (tenant,
@@ -151,11 +153,11 @@ func (m *Morph) Resolve(ctx context.Context) (any, error) {
 	// rather than execute SQL with the scope silently dropped.
 	sqlStr, sqlArgs, scopeErr := buildScopedInSelect(ctx, driver, relatedType, tableName, "id", []any{m.ID})
 	if scopeErr != nil {
-		return nil, fmt.Errorf("orm: Morph.Resolve: scope error: %w", scopeErr)
+		return nil, errchain.Errorf("orm: Morph.Resolve: scope error: %w", scopeErr)
 	}
 	rows, err := driver.QueryContext(ctx, sqlStr, sqlArgs...)
 	if err != nil {
-		return nil, fmt.Errorf("orm: Morph.Resolve: query failed: %w", err)
+		return nil, errchain.Errorf("orm: Morph.Resolve: query failed: %w", err)
 	}
 	defer rows.Close()
 	if !rows.Next() {
@@ -166,7 +168,7 @@ func (m *Morph) Resolve(ctx context.Context) (any, error) {
 	}
 	ptr := reflect.New(relatedType)
 	if err := scanIntoStruct(rows, ptr.Interface()); err != nil {
-		return nil, fmt.Errorf("orm: Morph.Resolve: scan failed: %w", err)
+		return nil, errchain.Errorf("orm: Morph.Resolve: scan failed: %w", err)
 	}
 	markIsExisting(ptr.Elem())
 	m.Resolved = ptr.Interface()

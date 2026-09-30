@@ -11,6 +11,7 @@ import (
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/markdown"
 )
 
@@ -79,7 +80,7 @@ func Stylesheet(name string) (string, error) {
 	}
 	var buf bytes.Buffer
 	if err := html.New(html.WithClasses(true)).WriteCSS(&buf, style); err != nil {
-		return "", fmt.Errorf("velocity/markdown/chroma: stylesheet: %w", err)
+		return "", errchain.Errorf("velocity/markdown/chroma: stylesheet: %w", err)
 	}
 	// Chroma writes one rule per line as "/* Token */ .chroma .cls { ... }"
 	// with the pre wrapper itself as "/* PreWrapper */ .chroma { ... }" and a

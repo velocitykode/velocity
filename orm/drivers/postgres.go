@@ -473,7 +473,7 @@ func (g *PostgresGrammar) CompileCreateTable(name string, table *Table) string {
 					sql.WriteString("FALSE")
 				}
 			default:
-				sql.WriteString(fmt.Sprintf("%v", v))
+				sql.WriteString(errchain.Sprintf("%v", v))
 			}
 		}
 	}

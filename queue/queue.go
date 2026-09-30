@@ -83,7 +83,7 @@ func RegisterJob[T Job](factory func([]byte) (T, error)) {
 	// Derive the key from a zero T. For pointer types this is a typed nil,
 	// which is sufficient for fmt's reflection to emit "*pkg.Foo".
 	var zero T
-	key := normalizeJobType(fmt.Sprintf("%T", zero))
+	key := normalizeJobType(errchain.Sprintf("%T", zero))
 
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
@@ -104,7 +104,7 @@ func (r *JobRegistry) Deserialize(payload *Payload) (Job, error) {
 	r.mu.RUnlock()
 
 	if !exists {
-		return nil, fmt.Errorf("velocity/queue: no handler registered for job type %s: %w", payload.Type, ErrJobNotFound)
+		return nil, errchain.Errorf("velocity/queue: no handler registered for job type %s: %w", payload.Type, ErrJobNotFound)
 	}
 
 	job, err := rebuildContained(handler, payload.Data)

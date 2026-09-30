@@ -2,10 +2,10 @@ package factory
 
 import (
 	"context"
-	"fmt"
 	"reflect"
 	"sync"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm"
 )
 
@@ -220,7 +220,7 @@ func (f *ModelFactory[T]) createOne(ctx context.Context, activeState string, ove
 	model := f.makeOne(activeState, overrides)
 
 	if err := orm.Save(ctx, f.manager, model); err != nil {
-		return nil, fmt.Errorf("factory: failed to create model: %w", err)
+		return nil, errchain.Errorf("factory: failed to create model: %w", err)
 	}
 
 	return model, nil

@@ -14,6 +14,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/events"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventqueue"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -45,7 +46,7 @@ func (a *App) bootstrap() error {
 	a.bootstrapped = true
 	defer func() {
 		if p := recover(); p != nil {
-			a.bootstrapErr = fmt.Errorf("velocity: bootstrap panicked: %w", panicerr.FromRecovered(p))
+			a.bootstrapErr = errchain.Errorf("velocity: bootstrap panicked: %w", panicerr.FromRecovered(p))
 			panic(p)
 		}
 	}()
@@ -574,12 +575,12 @@ func wireComponentEvents(a *App, dispatch func(ctx context.Context, event any) e
 func runModuleLifecycle(modules []app.Module, services *app.Services, label string) (int, error) {
 	for i, p := range modules {
 		if err := p.Init(services); err != nil {
-			return i, fmt.Errorf("velocity: %s init failed: %w", label, err)
+			return i, errchain.Errorf("velocity: %s init failed: %w", label, err)
 		}
 	}
 	for _, p := range modules {
 		if err := p.Start(services); err != nil {
-			return len(modules), fmt.Errorf("velocity: %s start failed: %w", label, err)
+			return len(modules), errchain.Errorf("velocity: %s start failed: %w", label, err)
 		}
 	}
 	return len(modules), nil

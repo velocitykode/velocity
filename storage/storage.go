@@ -3,11 +3,11 @@ package storage
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/driverregistry"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/teardown"
 )
 
@@ -97,7 +97,7 @@ func (m *Manager) ConfigureWithContext(ctx context.Context, config Config) error
 			return cerr
 		})
 		if derr != nil {
-			err = fmt.Errorf("velocity/storage: failed to create driver for disk %s: %w", name, derr)
+			err = errchain.Errorf("velocity/storage: failed to create driver for disk %s: %w", name, derr)
 			break
 		}
 		built[name] = driver
@@ -109,7 +109,7 @@ func (m *Manager) ConfigureWithContext(ctx context.Context, config Config) error
 		errs := []error{errors.New("velocity/storage: the manager was shut down while the disks were configured")}
 		for name, driver := range built {
 			if derr := teardown.Close(ctx, driver); derr != nil {
-				errs = append(errs, fmt.Errorf("velocity/storage: shut down unpublished disk %q: %w", name, derr))
+				errs = append(errs, errchain.Errorf("velocity/storage: shut down unpublished disk %q: %w", name, derr))
 			}
 		}
 		if err != nil {
@@ -149,7 +149,7 @@ func (m *Manager) diskLocked(name string) (Driver, error) {
 	if driver, ok := m.disks[name]; ok {
 		return driver, nil
 	}
-	return nil, fmt.Errorf("velocity/storage: disk %q not found: %w", name, ErrDiskNotFound)
+	return nil, errchain.Errorf("velocity/storage: disk %q not found: %w", name, ErrDiskNotFound)
 }
 
 // AddDisk adds a new disk to the manager
@@ -195,7 +195,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	children := m.disks
 	m.disks = make(map[string]Driver)
 	wait := m.shutdowns.Detach(children, func(name string, err error) error {
-		return fmt.Errorf("velocity/storage: shutdown disk %q: %w", name, err)
+		return errchain.Errorf("velocity/storage: shutdown disk %q: %w", name, err)
 	})
 	m.generation++
 	m.mu.Unlock()
@@ -207,7 +207,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 func createDriverWithContext(ctx context.Context, config DiskConfig) (Driver, error) {
 	d, err := drivers.Resolve(ctx, config.Driver, config)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/storage: %w", err)
+		return nil, errchain.Errorf("velocity/storage: %w", err)
 	}
 	return d, nil
 }

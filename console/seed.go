@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/velocitykode/prism"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/seed"
 )
@@ -53,14 +55,14 @@ func Seed(ctx context.Context, db *orm.Manager, seeders []seed.Seeder, opts ...S
 
 	runner, err := seed.NewRunner(db)
 	if err != nil {
-		return fmt.Errorf("velocity/console: seeding failed: %w", err)
+		return errchain.Errorf("velocity/console: seeding failed: %w", err)
 	}
 
 	prism.Info("Seeding database...")
 
 	for _, s := range seeders {
 		if err := runner.Run(ctx, s); err != nil {
-			return fmt.Errorf("velocity/console: seeding failed: %w", err)
+			return errchain.Errorf("velocity/console: seeding failed: %w", err)
 		}
 		prism.Success(s.Name())
 	}

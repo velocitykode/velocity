@@ -3,7 +3,6 @@ package orm
 import (
 	"context"
 	"database/sql"
-	"fmt"
 
 	"github.com/velocitykode/velocity/internal/errchain"
 )
@@ -11,7 +10,7 @@ import (
 // ErrNotFound is returned by *OrFail methods when no record matches the query.
 // It wraps sql.ErrNoRows so callers can check with either
 // errors.Is(err, ErrNotFound) or errors.Is(err, sql.ErrNoRows).
-var ErrNotFound = fmt.Errorf("orm: record not found: %w", sql.ErrNoRows)
+var ErrNotFound = errchain.Errorf("orm: record not found: %w", sql.ErrNoRows)
 
 // wrapNotFound converts sql.ErrNoRows into ErrNotFound. Other errors pass through.
 func wrapNotFound(err error) error {

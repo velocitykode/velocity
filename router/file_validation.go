@@ -72,7 +72,7 @@ func OpenFileIn(root *os.Root, relative string) (*os.File, error) {
 	f, err := root.Open(relative)
 	if err != nil {
 		if containmentRejection(err) {
-			return nil, fmt.Errorf("velocity/router: path %q escapes root: %w", relative, errors.Join(ErrPathOutsideRoot, err))
+			return nil, errchain.Errorf("velocity/router: path %q escapes root: %w", relative, errors.Join(ErrPathOutsideRoot, err))
 		}
 		return nil, err
 	}
@@ -178,7 +178,7 @@ func (c *Context) ValidateFile(fh *multipart.FileHeader, opts ...FileValidationO
 	if len(cfg.mimeTypes) > 0 {
 		f, err := fh.Open()
 		if err != nil {
-			return fmt.Errorf("failed to open file for MIME detection: %w", err)
+			return errchain.Errorf("failed to open file for MIME detection: %w", err)
 		}
 		defer f.Close()
 

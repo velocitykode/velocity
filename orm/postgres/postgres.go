@@ -18,6 +18,7 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/drivers"
 )
@@ -170,7 +171,7 @@ func (d *PostgresDriver) Connect(config drivers.ConnectionConfig) error {
 	}
 
 	if err := d.OpenAndPing("postgres", dsn); err != nil {
-		return fmt.Errorf("velocity/orm: postgres connect failed (dsn=%q): %w", redactDSNPassword(dsn), err)
+		return errchain.Errorf("velocity/orm: postgres connect failed (dsn=%q): %w", redactDSNPassword(dsn), err)
 	}
 	return nil
 }

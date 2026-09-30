@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // batchCallbackUUIDNamespace is the v5 UUID namespace under which all
@@ -202,7 +204,7 @@ func (j *BatchCallbackJob) DedupeKey() string {
 func (j *BatchCallbackJob) HandleCtx(ctx context.Context) error {
 	b, err := DefaultBatchRepository().Find(ctx, j.BatchID)
 	if err != nil {
-		return fmt.Errorf("velocity/queue: batch callback %s/%s: load batch %s: %w",
+		return errchain.Errorf("velocity/queue: batch callback %s/%s: load batch %s: %w",
 			j.Kind, j.Name, j.BatchID, err)
 	}
 	if b == nil {

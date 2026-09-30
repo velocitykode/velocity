@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -93,7 +92,7 @@ type fileLockStore struct {
 func newFileLockStore(cache *FileStore) (*fileLockStore, error) {
 	lockDir := filepath.Join(cache.path, "locks")
 	if err := os.MkdirAll(lockDir, cacheDirMode); err != nil {
-		return nil, fmt.Errorf("velocity/cache: failed to create lock directory: %w", err)
+		return nil, errchain.Errorf("velocity/cache: failed to create lock directory: %w", err)
 	}
 	return &fileLockStore{cache: cache, lockDir: lockDir}, nil
 }
@@ -219,7 +218,7 @@ func (l *FileLock) acquire(ctx context.Context, wait time.Duration) (bool, error
 		if ctx != nil && ctx.Err() != nil {
 			return false, nil
 		}
-		return false, fmt.Errorf("velocity/cache: lock guard: %w", err)
+		return false, errchain.Errorf("velocity/cache: lock guard: %w", err)
 	}
 	defer unlock()
 
@@ -230,14 +229,14 @@ func (l *FileLock) acquire(ctx context.Context, wait time.Duration) (bool, error
 		hook("record-read")
 	}
 	if err != nil {
-		return false, fmt.Errorf("velocity/cache: read lock metadata: %w", err)
+		return false, errchain.Errorf("velocity/cache: read lock metadata: %w", err)
 	}
 	if ok && md.held(now) {
 		return false, nil
 	}
 	exp := now.Add(l.ttl)
 	if err := l.store.writeMetadata(path, fileLockMetadata{Owner: l.owner, ExpiresAt: &exp}); err != nil {
-		return false, fmt.Errorf("velocity/cache: write lock metadata: %w", err)
+		return false, errchain.Errorf("velocity/cache: write lock metadata: %w", err)
 	}
 	return true, nil
 }
@@ -277,11 +276,11 @@ func (l *FileLock) ForceRelease(ctx context.Context) error {
 	}
 	unlock, err := l.store.guard(ctx, l.key)
 	if err != nil {
-		return fmt.Errorf("velocity/cache: lock guard: %w", err)
+		return errchain.Errorf("velocity/cache: lock guard: %w", err)
 	}
 	defer unlock()
 	if err := l.store.removeMetadata(l.store.pathFor(l.key)); err != nil {
-		return fmt.Errorf("velocity/cache: remove lock metadata: %w", err)
+		return errchain.Errorf("velocity/cache: remove lock metadata: %w", err)
 	}
 	return nil
 }

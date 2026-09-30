@@ -199,7 +199,7 @@ func (m *Manager) createStore(ctx context.Context, name string) (Store, error) {
 		return m.buildStore(ctx, name)
 	})
 	if err != nil && !isStoreBuildError(err) {
-		return nil, fmt.Errorf("velocity/cache: store %q: %w", name, err)
+		return nil, errchain.Errorf("velocity/cache: store %q: %w", name, err)
 	}
 	return store, err
 }
@@ -219,11 +219,11 @@ func (m *Manager) buildStore(ctx context.Context, name string) (Store, error) {
 	m.mu.RUnlock()
 
 	if !exists {
-		return nil, &storeBuildError{fmt.Errorf("velocity/cache: store %q not configured: %w", name, ErrStoreNotFound)}
+		return nil, &storeBuildError{errchain.Errorf("velocity/cache: store %q not configured: %w", name, ErrStoreNotFound)}
 	}
 
 	if err := config.Validate(); err != nil {
-		return nil, &storeBuildError{fmt.Errorf("velocity/cache: store %q invalid: %w", name, err)}
+		return nil, &storeBuildError{errchain.Errorf("velocity/cache: store %q invalid: %w", name, err)}
 	}
 
 	// Combine global and store-specific prefix; mutate a copy of the
@@ -244,7 +244,7 @@ func (m *Manager) buildStore(ctx context.Context, name string) (Store, error) {
 
 	store, err := driverRegistry.Resolve(ctx, config.Driver, resolved)
 	if err != nil {
-		return nil, &storeBuildError{fmt.Errorf("velocity/cache: store %q: %w", name, err)}
+		return nil, &storeBuildError{errchain.Errorf("velocity/cache: store %q: %w", name, err)}
 	}
 
 	// Start is user code too: a panic in it is the build's error, and the
@@ -252,7 +252,7 @@ func (m *Manager) buildStore(ctx context.Context, name string) (Store, error) {
 	if starter, ok := store.(interface{ Start() }); ok {
 		if err := teardown.Step(func() error { starter.Start(); return nil }); err != nil {
 			return nil, &storeBuildError{errors.Join(
-				fmt.Errorf("velocity/cache: store %q: start: %w", name, err),
+				errchain.Errorf("velocity/cache: store %q: start: %w", name, err),
 				disposeStore(ctx, name, store),
 			)}
 		}
@@ -275,7 +275,7 @@ func (m *Manager) buildStore(ctx context.Context, name string) (Store, error) {
 // contained, and returns its error, which the caller returns with its own.
 func disposeStore(ctx context.Context, name string, store Store) error {
 	if err := teardown.Close(ctx, store); err != nil {
-		return fmt.Errorf("velocity/cache: shut down unpublished store %q: %w", name, err)
+		return errchain.Errorf("velocity/cache: shut down unpublished store %q: %w", name, err)
 	}
 	return nil
 }
@@ -327,7 +327,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
 	children := m.stores
 	m.stores = make(map[string]Store)
-	wait := m.shutdowns.Detach(children, func(name string, err error) error { return fmt.Errorf("cache store %q shutdown: %w", name, err) })
+	wait := m.shutdowns.Detach(children, func(name string, err error) error { return errchain.Errorf("cache store %q shutdown: %w", name, err) })
 	m.generation++
 	m.mu.Unlock()
 	return wait(ctx)

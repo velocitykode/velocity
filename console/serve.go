@@ -13,8 +13,10 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/velocitykode/prism"
+
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // defaultServeEnv is the APP_ENV applied when vel serve is started without one.
@@ -90,7 +92,7 @@ func startVite() *exec.Cmd {
 	startInOwnProcessGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
-		prism.Warning(fmt.Sprintf("Failed to start Vite: %v", err))
+		prism.Warning(errchain.Sprintf("Failed to start Vite: %v", err))
 		return nil
 	}
 
@@ -141,7 +143,7 @@ func runServer(opts ServeOptions) error {
 	buildCmd.Stderr = os.Stderr
 
 	if err := buildCmd.Run(); err != nil {
-		return fmt.Errorf("build failed: %w", err)
+		return errchain.Errorf("build failed: %w", err)
 	}
 
 	serverCmd := exec.Command(".vel/tmp/server", "serve", "run")
@@ -150,7 +152,7 @@ func runServer(opts ServeOptions) error {
 	serverCmd.Env = os.Environ()
 
 	if err := serverCmd.Run(); err != nil {
-		return fmt.Errorf("server failed: %w", err)
+		return errchain.Errorf("server failed: %w", err)
 	}
 	return nil
 }
@@ -222,7 +224,7 @@ func runWithWatcher(opts ServeOptions) error {
 		)
 
 		if err := serverCmd.Start(); err != nil {
-			return fmt.Errorf("failed to start server: %w", err)
+			return errchain.Errorf("failed to start server: %w", err)
 		}
 		return nil
 	}
@@ -246,7 +248,7 @@ func runWithWatcher(opts ServeOptions) error {
 func watchFiles(rebuild chan bool) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		return fmt.Errorf("failed to create watcher: %w", err)
+		return errchain.Errorf("failed to create watcher: %w", err)
 	}
 	defer watcher.Close()
 
@@ -264,7 +266,7 @@ func watchFiles(rebuild chan bool) error {
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("failed to setup watcher: %w", err)
+		return errchain.Errorf("failed to setup watcher: %w", err)
 	}
 
 	var debounce *time.Timer
@@ -291,7 +293,7 @@ func watchFiles(rebuild chan bool) error {
 			if !ok {
 				return nil
 			}
-			prism.Error(fmt.Sprintf("Watcher error: %v", err))
+			prism.Error(errchain.Sprintf("Watcher error: %v", err))
 		}
 	}
 }

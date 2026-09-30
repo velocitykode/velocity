@@ -190,7 +190,7 @@ func (h *Helper) Tags(entrypoints ...string) (template.HTML, error) {
 	for _, ep := range entrypoints {
 		chunk, ok := m[ep]
 		if !ok {
-			err := fmt.Errorf("%w: %s", ErrEntrypointNotInManifest, ep)
+			err := errchain.Errorf("%w: %s", ErrEntrypointNotInManifest, ep)
 			return errComment(err), err
 		}
 
@@ -263,7 +263,7 @@ func (h *Helper) Asset(file string) (string, error) {
 	}
 	chunk, ok := m[file]
 	if !ok {
-		return "", fmt.Errorf("%w: %s", ErrEntrypointNotInManifest, file)
+		return "", errchain.Errorf("%w: %s", ErrEntrypointNotInManifest, file)
 	}
 	return h.assetURL(chunk.File), nil
 }
@@ -280,7 +280,7 @@ func (h *Helper) hotFilePath() string {
 func (h *Helper) hotURL() (string, error) {
 	b, err := os.ReadFile(h.hotFilePath())
 	if err != nil {
-		return "", fmt.Errorf("vite: read hot file: %w", err)
+		return "", errchain.Errorf("vite: read hot file: %w", err)
 	}
 	url := strings.TrimRight(string(b), " \r\n\t")
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
@@ -319,9 +319,9 @@ func (h *Helper) manifest() (manifest, error) {
 	st, err := os.Stat(manifestPath)
 	if err != nil {
 		if errchain.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("%w: %s", ErrManifestNotFound, manifestPath)
+			return nil, errchain.Errorf("%w: %s", ErrManifestNotFound, manifestPath)
 		}
-		return nil, fmt.Errorf("vite: stat manifest: %w", err)
+		return nil, errchain.Errorf("vite: stat manifest: %w", err)
 	}
 
 	mod := st.ModTime().UnixNano()
@@ -344,11 +344,11 @@ func (h *Helper) manifest() (manifest, error) {
 
 	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return nil, fmt.Errorf("vite: read manifest: %w", err)
+		return nil, errchain.Errorf("vite: read manifest: %w", err)
 	}
 	parsed := manifest{}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, fmt.Errorf("vite: parse manifest: %w", err)
+		return nil, errchain.Errorf("vite: parse manifest: %w", err)
 	}
 
 	h.cached = parsed
@@ -432,7 +432,7 @@ func WriteHotFile(publicPath, hotName, devURL string) error {
 		publicPath = DefaultPublicPath
 	}
 	if err := os.MkdirAll(publicPath, hotDirMode); err != nil {
-		return fmt.Errorf("vite: mkdir public: %w", err)
+		return errchain.Errorf("vite: mkdir public: %w", err)
 	}
 	return os.WriteFile(filepath.Join(publicPath, hotName), []byte(devURL+"\n"), hotFileMode)
 }

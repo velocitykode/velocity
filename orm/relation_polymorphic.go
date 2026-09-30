@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/orm/drivers"
 	"github.com/velocitykode/velocity/trace"
@@ -45,10 +46,10 @@ func parsePolymorphicTag(value string) (typeCol, idCol string, err error) {
 		return "", "", fmt.Errorf("orm: polymorphic tag %q has empty parts", value)
 	}
 	if err := validateIdentifier(typeCol); err != nil {
-		return "", "", fmt.Errorf("orm: invalid type column in polymorphic tag: %w", err)
+		return "", "", errchain.Errorf("orm: invalid type column in polymorphic tag: %w", err)
 	}
 	if err := validateIdentifier(idCol); err != nil {
-		return "", "", fmt.Errorf("orm: invalid id column in polymorphic tag: %w", err)
+		return "", "", errchain.Errorf("orm: invalid id column in polymorphic tag: %w", err)
 	}
 	return typeCol, idCol, nil
 }
@@ -169,7 +170,7 @@ func (q *Query[T]) loadPolymorphic(ctx context.Context, models *[]T, meta *polym
 
 		loaded, err := loadByIDs(q.driver, ctx, relatedType, uniqueIDs)
 		if err != nil {
-			return fmt.Errorf("orm: failed to eager-load polymorphic %q (%s): %w", meta.fieldName, tName, err)
+			return errchain.Errorf("orm: failed to eager-load polymorphic %q (%s): %w", meta.fieldName, tName, err)
 		}
 
 		// Index loaded rows by id for assignment.
@@ -214,11 +215,11 @@ func loadByIDs(driver drivers.Driver, ctx context.Context, relatedType reflect.T
 	}
 	tableName := resolveTableNameReflect(relatedType)
 	if err := validateIdentifier(tableName); err != nil {
-		return nil, fmt.Errorf("orm: invalid table name for %s: %w", relatedType.Name(), err)
+		return nil, errchain.Errorf("orm: invalid table name for %s: %w", relatedType.Name(), err)
 	}
 	sqlStr, sqlArgs, scopeErr := buildScopedInSelect(ctx, driver, relatedType, tableName, "id", ids)
 	if scopeErr != nil {
-		return nil, fmt.Errorf("orm: failed to apply scopes for polymorphic %s: %w", relatedType.Name(), scopeErr)
+		return nil, errchain.Errorf("orm: failed to apply scopes for polymorphic %s: %w", relatedType.Name(), scopeErr)
 	}
 	rows, err := driver.QueryContext(ctx, sqlStr, sqlArgs...)
 	if err != nil {

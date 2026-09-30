@@ -13,6 +13,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/internal/drain"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
@@ -217,7 +218,7 @@ func NewManagerWithContext(ctx context.Context, config ManagerConfig) (*Manager,
 
 	driver, err := driverRegistry.Resolve(ctx, config.Driver, connConfig)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/orm: %w", err)
+		return nil, errchain.Errorf("velocity/orm: %w", err)
 	}
 	// m is not shared yet, so the extension calls run before it is.
 	m.attachStatementObserver(driver)
@@ -435,7 +436,7 @@ func (m *Manager) Raw(ctx context.Context, query string, args ...any) (*sql.Rows
 		// normalize here too (storage contract: instants stored UTC).
 		rows, err := tx.QueryContext(ctx, query, drivers.NormalizeTimeArgs(args)...)
 		if err != nil {
-			return nil, fmt.Errorf("orm: raw query failed: %w", err)
+			return nil, errchain.Errorf("orm: raw query failed: %w", err)
 		}
 		return rows, nil
 	}
@@ -446,7 +447,7 @@ func (m *Manager) Raw(ctx context.Context, query string, args ...any) (*sql.Rows
 	}
 	rows, err := driver.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("orm: raw query failed: %w", err)
+		return nil, errchain.Errorf("orm: raw query failed: %w", err)
 	}
 	return rows, nil
 }
@@ -470,7 +471,7 @@ func (m *Manager) Exec(ctx context.Context, query string, args ...any) (sql.Resu
 		// time args to UTC here as well.
 		res, err := tx.ExecContext(ctx, query, drivers.NormalizeTimeArgs(args)...)
 		if err != nil {
-			return nil, fmt.Errorf("orm: exec failed: %w", err)
+			return nil, errchain.Errorf("orm: exec failed: %w", err)
 		}
 		return res, nil
 	}
@@ -761,12 +762,12 @@ func (m *Manager) Transaction(ctx context.Context, fn func(ctx context.Context) 
 				// the rollback callbacks.
 				fields := trace.LogFields(txTraceCtx)
 				fallbacklog.Write(logger, func(l contract.Logger) {
-					l.With(fields...).Error("velocity/orm: rollback failed after panic", sqlerr.Key, sqlerr.Kind(rbErr), "panic", fmt.Sprint(p))
+					l.With(fields...).Error("velocity/orm: rollback failed after panic", sqlerr.Key, sqlerr.Kind(rbErr), "panic", errchain.Sprint(p))
 				})
 				dispatchTxRecover(func() *TxRecover {
 					return &TxRecover{
 						Cause:       "panic",
-						PanicValue:  fmt.Sprint(p),
+						PanicValue:  errchain.Sprint(p),
 						RollbackErr: rbErr,
 					}
 				})
@@ -944,7 +945,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	var drainErr error
 	if p != nil {
 		if err := p.stop(ctx); err != nil {
-			drainErr = fmt.Errorf("velocity/orm: deliver query events: %w", err)
+			drainErr = errchain.Errorf("velocity/orm: deliver query events: %w", err)
 		}
 	}
 
@@ -956,7 +957,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	if closed := m.closes.Ended(); closed != nil {
 		m.mu.Unlock()
 		if !drain.Closed(closed) && m.closes.Nested() {
-			return errors.Join(drainErr, fmt.Errorf("velocity/orm: Shutdown called from a driver's Close while the manager closes its drivers: %w", contract.ErrStopFromOwnWork))
+			return errors.Join(drainErr, errchain.Errorf("velocity/orm: Shutdown called from a driver's Close while the manager closes its drivers: %w", contract.ErrStopFromOwnWork))
 		}
 		if err := m.closes.Await(ctx, closed, nil); err != nil {
 			return errors.Join(drainErr, err)

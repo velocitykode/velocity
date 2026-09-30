@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm/drivers"
 )
 
@@ -42,7 +43,7 @@ func (q *Query[T]) Max(ctx context.Context, column string) (float64, error) {
 // per-query with [Query.WithoutGlobalScope].
 func (q *Query[T]) aggregate(ctx context.Context, fn, column string) (float64, error) {
 	if err := validateIdentifier(column); err != nil {
-		return 0, fmt.Errorf("%s: %w", fn, err)
+		return 0, errchain.Errorf("%s: %w", fn, err)
 	}
 	if q.err != nil {
 		return 0, q.err

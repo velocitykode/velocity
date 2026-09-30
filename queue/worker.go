@@ -276,7 +276,7 @@ func (w *Worker) Stop(ctx context.Context) error {
 		if cancel != nil {
 			cancel()
 		}
-		return fmt.Errorf("velocity/queue: Stop called from a handler or pump of this worker; the worker stops without this call waiting for it: %w", contract.ErrStopFromOwnWork)
+		return errchain.Errorf("velocity/queue: Stop called from a handler or pump of this worker; the worker stops without this call waiting for it: %w", contract.ErrStopFromOwnWork)
 	}
 	if run == nil {
 		return nil
@@ -365,7 +365,7 @@ func (w *Worker) processJob() error {
 		job, err = w.queue.PopCtx(w.ctx, w.queueName)
 	}
 	if err != nil {
-		return fmt.Errorf("velocity/queue: failed to pop job: %w", err)
+		return errchain.Errorf("velocity/queue: failed to pop job: %w", err)
 	}
 
 	if job == nil {
@@ -375,7 +375,7 @@ func (w *Worker) processJob() error {
 	// Get job type for event dispatching. Normalized to match the registry
 	// key and persisted Payload.Type so observability across drivers, events,
 	// and registry lookups all reference the same identifier.
-	jobType := normalizeJobType(fmt.Sprintf("%T", job))
+	jobType := normalizeJobType(errchain.Sprintf("%T", job))
 
 	// Process the job with timeout. Callers that need a different default
 	// for tests should inject their own timeout with WithTimeout, their own
@@ -490,7 +490,7 @@ func (w *Worker) processJob() error {
 				return nil
 			}
 			w.handleJobFailure(jobCtx, job, jobType, err, duration, reservation)
-			return &jobFailedError{err: fmt.Errorf("velocity/queue: job failed: %w", err)}
+			return &jobFailedError{err: errchain.Errorf("velocity/queue: job failed: %w", err)}
 		}
 		// Success: ack first, then run side effects only if we still
 		// own the lease. A stale worker whose lease was reclaimed must

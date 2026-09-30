@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // SegmentType represents the type of path segment
@@ -126,7 +128,7 @@ func parseSegment(part string) (Segment, error) {
 	// Regex constrained parameter
 	re, err := regexp.Compile("^" + pattern + "$")
 	if err != nil {
-		return Segment{}, fmt.Errorf("invalid regex pattern %q: %w", pattern, err)
+		return Segment{}, errchain.Errorf("invalid regex pattern %q: %w", pattern, err)
 	}
 
 	return Segment{

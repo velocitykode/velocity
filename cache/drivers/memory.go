@@ -10,6 +10,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // DefaultMaxEntries is the entry cap applied to a MemoryStore when no
@@ -145,10 +146,10 @@ func (s *MemoryStore) checkValueSize(value interface{}) error {
 	}
 	data, err := MarshalValue(value)
 	if err != nil {
-		return fmt.Errorf("velocity/cache: cannot measure value against MaxValueBytes cap: %w", err)
+		return errchain.Errorf("velocity/cache: cannot measure value against MaxValueBytes cap: %w", err)
 	}
 	if int64(len(data)) > s.maxValueBytes {
-		return fmt.Errorf("velocity/cache: value size %d exceeds maximum of %d bytes: %w", len(data), s.maxValueBytes, ErrValueTooLarge)
+		return errchain.Errorf("velocity/cache: value size %d exceeds maximum of %d bytes: %w", len(data), s.maxValueBytes, ErrValueTooLarge)
 	}
 	return nil
 }

@@ -3,7 +3,6 @@ package str
 import (
 	"crypto/rand"
 	"encoding/json"
-	"fmt"
 	"io"
 	"regexp"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/inflect"
 )
 
@@ -551,7 +551,7 @@ func Random(length ...int) (string, error) {
 	buf := make([]byte, n)
 	for len(out) < n {
 		if _, err := io.ReadFull(randReader, buf); err != nil {
-			return "", fmt.Errorf("str.Random: read entropy: %w", err)
+			return "", errchain.Errorf("str.Random: read entropy: %w", err)
 		}
 		for _, b := range buf {
 			if b >= rejectThreshold {

@@ -22,7 +22,8 @@ type chainLoop struct{}
 func (e *chainLoop) Error() string { return "loop" }
 func (e *chainLoop) Unwrap() error { return e }
 
-// A request error whose methods panic, or whose chain loops, is handled:
+// A request error whose methods panic (Error with a value whose own Error
+// panics too included), or whose chain loops, is handled:
 // HandleRequest returns, the request is answered with the plain 500, and
 // the error is reported once, at level error, where its text cannot be
 // read the report carries the fixed text.
@@ -33,6 +34,7 @@ func TestHandleRequest_HostileErrorIsReportedAndAnswered(t *testing.T) {
 	}{
 		{"methods panic", methodsPanic{}},
 		{"loop", &chainLoop{}},
+		{"Error panics nested", hostile.PanicError{Nested: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, rep, _ := newTestHandler()
@@ -55,13 +57,15 @@ func TestHandleRequest_HostileErrorIsReportedAndAnswered(t *testing.T) {
 // The log reporter writes a report whose error text cannot be read with
 // the fixed text, and does not panic.
 func TestLogReporter_UnreadableErrorText(t *testing.T) {
-	logger := &recLogger{}
-	rep := NewLogReporter(WithLogger(logger))
-	if p := hostile.Within(t, hostile.Deadline, func() { rep.Report(methodsPanic{}, nil) }); p != nil {
-		t.Fatalf("Report panicked: %v", p)
-	}
-	entries := logger.all()
-	if len(entries) != 1 || entries[0].msg != errchain.Unreadable {
-		t.Fatalf("log entries = %+v, want one with the fixed text", entries)
+	for _, err := range []error{methodsPanic{}, hostile.PanicError{Nested: true}} {
+		logger := &recLogger{}
+		rep := NewLogReporter(WithLogger(logger))
+		if p := hostile.Within(t, hostile.Deadline, func() { rep.Report(err, nil) }); p != nil {
+			t.Fatalf("%T: Report panicked: %v", err, p)
+		}
+		entries := logger.all()
+		if len(entries) != 1 || entries[0].msg != errchain.Unreadable {
+			t.Fatalf("%T: log entries = %+v, want one with the fixed text", err, entries)
+		}
 	}
 }

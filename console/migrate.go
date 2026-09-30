@@ -5,6 +5,8 @@ import (
 	"sort"
 
 	"github.com/velocitykode/prism"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/migrate"
 )
@@ -36,7 +38,7 @@ func Migrate(db orm.Database, opts ...MigrateOptions) error {
 
 	pending, err := migrate.Pending(db.DB(), db.DriverName())
 	if err != nil {
-		return fmt.Errorf("velocity/console: failed to get pending migrations: %w", err)
+		return errchain.Errorf("velocity/console: failed to get pending migrations: %w", err)
 	}
 
 	if len(pending) == 0 {
@@ -51,7 +53,7 @@ func Migrate(db orm.Database, opts ...MigrateOptions) error {
 	prism.Info("Running migrations...")
 
 	if err := migrator.Up(); err != nil {
-		return fmt.Errorf("velocity/console: migration failed: %w", err)
+		return errchain.Errorf("velocity/console: migration failed: %w", err)
 	}
 
 	for _, m := range pending {
@@ -69,7 +71,7 @@ func migratePretend(migrator *migrate.Migrator, pending []migrate.Migration) err
 	for _, m := range pending {
 		migrator.SetPretend(true) // reset log for each migration
 		if err := m.Up(migrator); err != nil {
-			return fmt.Errorf("velocity/console: pretend failed for %s: %w", m.Version, err)
+			return errchain.Errorf("velocity/console: pretend failed for %s: %w", m.Version, err)
 		}
 
 		prism.Info(fmt.Sprintf("%s_%s:", m.Version, m.Description))
@@ -104,14 +106,14 @@ func MigrateFresh(db orm.Database) error {
 	prism.Info("Dropping all tables...")
 
 	if err := migrator.Fresh(); err != nil {
-		return fmt.Errorf("velocity/console: fresh migration failed: %w", err)
+		return errchain.Errorf("velocity/console: fresh migration failed: %w", err)
 	}
 
 	prism.Info("Running migrations...")
 
 	statuses, err := migrator.Status()
 	if err != nil {
-		return fmt.Errorf("velocity/console: failed to read migration status: %w", err)
+		return errchain.Errorf("velocity/console: failed to read migration status: %w", err)
 	}
 
 	descriptions := make(map[string]string, len(migrations))
@@ -151,7 +153,7 @@ func MigrateRollback(db orm.Database, steps int) error {
 
 	statuses, err := migrator.Status()
 	if err != nil {
-		return fmt.Errorf("velocity/console: failed to get rollback migrations: %w", err)
+		return errchain.Errorf("velocity/console: failed to get rollback migrations: %w", err)
 	}
 
 	// A non-positive step count rolls back a single batch, matching Down's
@@ -191,7 +193,7 @@ func MigrateRollback(db orm.Database, steps int) error {
 	prism.Info("Rolling back migrations...")
 
 	if err := migrator.Down(steps); err != nil {
-		return fmt.Errorf("velocity/console: rollback failed: %w", err)
+		return errchain.Errorf("velocity/console: rollback failed: %w", err)
 	}
 
 	for _, version := range rollbackVersions {

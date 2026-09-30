@@ -189,11 +189,11 @@ func (p *pending) insert(kind string, payload any, opts []PendingOption) (int64,
 		time.Now().UTC(),
 	)
 	if err != nil {
-		return 0, fmt.Errorf("velocity/orm: outbox insert: %w", err)
+		return 0, errchain.Errorf("velocity/orm: outbox insert: %w", err)
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
-		return 0, fmt.Errorf("velocity/orm: outbox last insert id: %w", err)
+		return 0, errchain.Errorf("velocity/orm: outbox last insert id: %w", err)
 	}
 	return id, nil
 }
@@ -202,7 +202,7 @@ func (p *pending) insert(kind string, payload any, opts []PendingOption) (int64,
 func generateIdempotencyKey() (string, error) {
 	var buf [16]byte
 	if _, err := rand.Read(buf[:]); err != nil {
-		return "", fmt.Errorf("velocity/orm: idempotency key: %w", err)
+		return "", errchain.Errorf("velocity/orm: idempotency key: %w", err)
 	}
 	return hex.EncodeToString(buf[:]), nil
 }
@@ -260,12 +260,12 @@ func (m *Manager) TransactionWithOutbox(ctx context.Context, fn func(tx *sql.Tx,
 				// escape this recover and undo the panic-to-error contract.
 				fields := trace.LogFields(ctx)
 				fallbacklog.Write(logger, func(l contract.Logger) {
-					l.With(fields...).Error("velocity/orm: rollback failed after panic in outbox tx", sqlerr.Key, sqlerr.Kind(rbErr), "panic", fmt.Sprint(r))
+					l.With(fields...).Error("velocity/orm: rollback failed after panic in outbox tx", sqlerr.Key, sqlerr.Kind(rbErr), "panic", errchain.Sprint(r))
 				})
 				m.dispatchTxRecover(ctx, func() *TxRecover {
 					return &TxRecover{
 						Cause:       "panic",
-						PanicValue:  fmt.Sprint(r),
+						PanicValue:  errchain.Sprint(r),
 						RollbackErr: rbErr,
 					}
 				})
@@ -274,7 +274,7 @@ func (m *Manager) TransactionWithOutbox(ctx context.Context, fn func(tx *sql.Tx,
 			// return it to the caller instead of re-raising. This keeps
 			// outbox library code in line with CLAUDE.md rule #10
 			// (never panic in library code).
-			retErr = fmt.Errorf("velocity/orm: panic in outbox tx: %v", r)
+			retErr = errchain.Errorf("velocity/orm: panic in outbox tx: %v", r)
 		}
 	}()
 
@@ -349,7 +349,7 @@ func (pp *pendingPostgres) insert(kind string, payload any, opts []PendingOption
 		partition, kind, meta.IdempotencyKey, encoded, ptype,
 		0, meta.MaxAttempts, meta.AvailableAt.UTC(), false, time.Now().UTC(),
 	).Scan(&id); err != nil {
-		return 0, fmt.Errorf("velocity/orm: outbox insert: %w", err)
+		return 0, errchain.Errorf("velocity/orm: outbox insert: %w", err)
 	}
 	return id, nil
 }
@@ -402,7 +402,7 @@ func encodePayload(v any) (string, string, error) {
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
 	if err := enc.Encode(&v); err != nil {
-		return "", "", fmt.Errorf("velocity/orm: outbox encode: %w", err)
+		return "", "", errchain.Errorf("velocity/orm: outbox encode: %w", err)
 	}
 	return base64.StdEncoding.EncodeToString(buf.Bytes()), payloadTypeName(v), nil
 }
@@ -414,12 +414,12 @@ func encodePayload(v any) (string, string, error) {
 func decodePayload(encoded, _ string) (any, error) {
 	raw, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/orm: outbox decode base64: %w", err)
+		return nil, errchain.Errorf("velocity/orm: outbox decode base64: %w", err)
 	}
 	var out any
 	dec := gob.NewDecoder(bytes.NewReader(raw))
 	if err := dec.Decode(&out); err != nil {
-		return nil, fmt.Errorf("velocity/orm: outbox decode gob: %w", err)
+		return nil, errchain.Errorf("velocity/orm: outbox decode gob: %w", err)
 	}
 	return out, nil
 }
@@ -515,7 +515,7 @@ func (m *Manager) EnsureOutboxTable(ctx context.Context) error {
 	}
 	for _, stmt := range OutboxMigrationSQL(driver.DriverName()) {
 		if _, err := driver.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("velocity/orm: ensure outbox table: %w", err)
+			return errchain.Errorf("velocity/orm: ensure outbox table: %w", err)
 		}
 	}
 	return nil
@@ -712,7 +712,7 @@ func (r *Relay) Start(ctx context.Context) error {
 		defer func() {
 			if rec := recover(); rec != nil {
 				r.writeLine(func(l contract.Logger) {
-					l.Error("velocity/orm: relay loop panic", "panic", fmt.Sprint(rec))
+					l.Error("velocity/orm: relay loop panic", "panic", errchain.Sprint(rec))
 				})
 			}
 		}()
@@ -735,7 +735,7 @@ func (r *Relay) beginRun(ctx context.Context, cancelLoop context.CancelFunc) (*r
 		case prev != nil && !drain.Closed(prev.run.Finished()):
 			r.mu.Unlock()
 			if r.own.Nested() {
-				return nil, fmt.Errorf("velocity/orm: relay Start called from a dispatch of the run it would wait for: %w", contract.ErrStopFromOwnWork)
+				return nil, errchain.Errorf("velocity/orm: relay Start called from a dispatch of the run it would wait for: %w", contract.ErrStopFromOwnWork)
 			}
 			select {
 			case <-prev.run.Finished():
@@ -796,7 +796,7 @@ func (r *Relay) OwnsCaller() bool {
 // changes nothing: stop the relay from another goroutine.
 func (r *Relay) Stop(ctx context.Context) error {
 	if r.own.Nested() {
-		return fmt.Errorf("velocity/orm: relay Stop called from a relay callback or logger; stop the relay from another goroutine: %w", contract.ErrStopFromOwnWork)
+		return errchain.Errorf("velocity/orm: relay Stop called from a relay callback or logger; stop the relay from another goroutine: %w", contract.ErrStopFromOwnWork)
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -913,7 +913,7 @@ func (r *Relay) tick(ctx context.Context, rr *relayRun, sem chan struct{}) {
 // code: a panic there is written as a line, not left to kill the process.
 func (r *Relay) failPanicked(ctx context.Context, row outboxRow, rec any) {
 	r.writeLine(func(l contract.Logger) {
-		l.Error("velocity/orm: relay worker panic", "panic", fmt.Sprint(rec), "row_id", row.ID)
+		l.Error("velocity/orm: relay worker panic", "panic", errchain.Sprint(rec), "row_id", row.ID)
 	})
 	defer func() {
 		if p := recover(); p != nil {
@@ -923,7 +923,7 @@ func (r *Relay) failPanicked(ctx context.Context, row outboxRow, rec any) {
 			})
 		}
 	}()
-	_ = r.recordFailure(ctx, row, fmt.Errorf("panic: %v", rec))
+	_ = r.recordFailure(ctx, row, errchain.Errorf("panic: %v", rec))
 }
 
 // releasePartitions clears the activePart reservations for rows that were

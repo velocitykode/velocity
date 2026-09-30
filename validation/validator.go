@@ -196,7 +196,7 @@ func (v *defaultValidator) checkResolvable(rs normalizedRuleSet) error {
 	for field, fieldRules := range rs.fields {
 		for _, rule := range fieldRules {
 			if _, ok := v.resolve(rule.name, rs.custom); !ok {
-				return fmt.Errorf("%w: field %q names rule %q, which is not registered", ErrInvalidRule, field, rule.name)
+				return errchain.Errorf("%w: field %q names rule %q, which is not registered", ErrInvalidRule, field, rule.name)
 			}
 		}
 	}
@@ -267,6 +267,6 @@ func toMap(data interface{}) (map[string]interface{}, error) {
 		}
 		return result, nil
 	default:
-		return nil, fmt.Errorf("unsupported data type: %T", data)
+		return nil, errchain.Errorf("unsupported data type: %T", data)
 	}
 }

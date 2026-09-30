@@ -3,9 +3,9 @@ package events
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -362,9 +362,9 @@ func safeInvoke(ctx context.Context, fn func(ctx context.Context) error) (err er
 	defer func() {
 		if p := recover(); p != nil {
 			if existing := panicerr.FromRecovered(p); existing != nil {
-				err = fmt.Errorf("after-commit listener panicked: %w", existing)
+				err = errchain.Errorf("after-commit listener panicked: %w", existing)
 			} else {
-				err = fmt.Errorf("after-commit listener panicked: %v", p)
+				err = errchain.Errorf("after-commit listener panicked: %v", p)
 			}
 		}
 	}()

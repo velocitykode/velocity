@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // ErrLoginThrottled is returned from scheme Attempt() methods when the
@@ -28,7 +28,7 @@ var ErrLoginThrottled = errors.New("velocity/auth: too many login attempts")
 // existing throttle handling keeps working; handlers that render a
 // challenge (CAPTCHA, email code) match it specifically. Without a
 // configured challenge the same condition yields ErrLoginThrottled.
-var ErrLoginChallengeRequired = fmt.Errorf("%w: challenge required", ErrLoginThrottled)
+var ErrLoginChallengeRequired = errchain.Errorf("%w: challenge required", ErrLoginThrottled)
 
 // LoginChallenge reports whether r carries a passed interactive
 // challenge (a verified CAPTCHA token, an out-of-band code). When one

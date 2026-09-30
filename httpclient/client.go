@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/neturl"
 	"github.com/velocitykode/velocity/trace"
@@ -452,7 +453,7 @@ func (c *Client) evaluateHost(ctx context.Context, host string, resolve bool) (h
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		if neturl.IsPrivateOrInternal(ip) {
-			return hostCheck{}, fmt.Errorf("velocity/httpclient: refusing to reach %s: %w", host, errPrivateIP)
+			return hostCheck{}, errchain.Errorf("velocity/httpclient: refusing to reach %s: %w", host, errPrivateIP)
 		}
 		return hostCheck{}, nil
 	}
@@ -461,14 +462,14 @@ func (c *Client) evaluateHost(ctx context.Context, host string, resolve bool) (h
 	}
 	addrs, err := c.resolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return hostCheck{}, fmt.Errorf("velocity/httpclient: resolve %s: %w", host, err)
+		return hostCheck{}, errchain.Errorf("velocity/httpclient: resolve %s: %w", host, err)
 	}
 	if len(addrs) == 0 {
 		return hostCheck{}, fmt.Errorf("velocity/httpclient: resolve %s: no addresses", host)
 	}
 	for _, a := range addrs {
 		if neturl.IsPrivateOrInternal(a.IP) {
-			return hostCheck{}, fmt.Errorf("velocity/httpclient: refusing to reach %s (resolves to %s): %w", host, a.IP, errPrivateIP)
+			return hostCheck{}, errchain.Errorf("velocity/httpclient: refusing to reach %s (resolves to %s): %w", host, a.IP, errPrivateIP)
 		}
 	}
 	return hostCheck{pinnedIP: addrs[0].IP.String()}, nil
@@ -494,7 +495,7 @@ func (c *Client) dialContextGuarded(inner func(ctx context.Context, network, add
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
-			return nil, fmt.Errorf("velocity/httpclient: split host/port: %w", err)
+			return nil, errchain.Errorf("velocity/httpclient: split host/port: %w", err)
 		}
 		hc, err := c.evaluateHost(ctx, host, true)
 		if err != nil {

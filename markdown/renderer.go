@@ -2,7 +2,6 @@ package markdown
 
 import (
 	"bytes"
-	"fmt"
 	"html/template"
 	"strings"
 
@@ -12,6 +11,8 @@ import (
 	"github.com/yuin/goldmark/renderer"
 	"github.com/yuin/goldmark/text"
 	"github.com/yuin/goldmark/util"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Document is the result of rendering one Markdown source.
@@ -128,7 +129,7 @@ func (r *Renderer) render(src []byte) (*Document, []byte, error) {
 
 	var buf bytes.Buffer
 	if err := r.md.Renderer().Render(&buf, body, root); err != nil {
-		return nil, nil, fmt.Errorf("velocity/markdown: render: %w", err)
+		return nil, nil, errchain.Errorf("velocity/markdown: render: %w", err)
 	}
 
 	title := info.h1

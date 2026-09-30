@@ -12,11 +12,11 @@ package nonce
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Memory is an in-process NonceStore. The zero value is not usable; call
@@ -173,7 +173,7 @@ func (m *Memory) tickWithRecover() {
 			m.panicMu.RUnlock()
 			if h != nil {
 				// Wrap so handlers can type-assert to error if they want.
-				h(fmt.Errorf("webhook/nonce: sweep panic: %v", r))
+				h(errchain.Errorf("webhook/nonce: sweep panic: %v", r))
 			}
 		}
 	}()

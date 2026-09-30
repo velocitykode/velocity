@@ -2,7 +2,6 @@ package orm
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	"github.com/velocitykode/velocity/async"
@@ -431,7 +430,7 @@ func runCallbackSafe(ctx context.Context, fn TxCallback, phase string, logger co
 				return &TxRecover{
 					EventMeta:  eventmeta.Current(ctx),
 					Cause:      "callback_panic",
-					PanicValue: fmt.Sprintf("%s: %v", phase, p),
+					PanicValue: errchain.Sprintf("%s: %v", phase, p),
 				}
 			})
 		}

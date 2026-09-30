@@ -3,11 +3,11 @@ package crypto
 import (
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto/drivers"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Errors. Sentinels owned by crypto/drivers are re-exported here under
@@ -147,7 +147,7 @@ func (c Config) Validate() error {
 		return err
 	}
 	if len(raw) != want {
-		return fmt.Errorf("%w: cipher %s requires %d-byte key, got %d", ErrInvalidKeyLength, cipher, want, len(raw))
+		return errchain.Errorf("%w: cipher %s requires %d-byte key, got %d", ErrInvalidKeyLength, cipher, want, len(raw))
 	}
 	// PreviousKeys must satisfy the same parse + length contract as the
 	// primary key; otherwise Validate would accept a config that
@@ -187,10 +187,10 @@ func validatePreviousKeys(prev []string, cipher string, keySize int) ([][]byte, 
 		}
 		prevKey, err := parseKey(k)
 		if err != nil {
-			return nil, fmt.Errorf("%w: index %d: %v", ErrInvalidPreviousKey, i, err)
+			return nil, errchain.Errorf("%w: index %d: %v", ErrInvalidPreviousKey, i, err)
 		}
 		if len(prevKey) != keySize {
-			return nil, fmt.Errorf("%w: index %d: cipher %s requires %d-byte key, got %d", ErrInvalidPreviousKey, i, cipher, keySize, len(prevKey))
+			return nil, errchain.Errorf("%w: index %d: cipher %s requires %d-byte key, got %d", ErrInvalidPreviousKey, i, cipher, keySize, len(prevKey))
 		}
 		parsed = append(parsed, prevKey)
 	}

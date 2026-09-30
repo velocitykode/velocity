@@ -19,6 +19,7 @@ import (
 	"golang.org/x/crypto/hkdf"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Signed URL primitives.
@@ -142,7 +143,7 @@ func DeriveSignedURLKey(appKey []byte) ([]byte, error) {
 	r := hkdf.New(sha256.New, appKey, nil, []byte(signedURLHKDFInfo))
 	out := make([]byte, signedURLKeySize)
 	if _, err := io.ReadFull(r, out); err != nil {
-		return nil, fmt.Errorf("velocity/router: HKDF derivation failed: %w", err)
+		return nil, errchain.Errorf("velocity/router: HKDF derivation failed: %w", err)
 	}
 	return out, nil
 }

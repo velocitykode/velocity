@@ -65,7 +65,7 @@ func (s *FileStore) lockStripeWithin(ctx context.Context, stripe, what string, w
 	}
 	deadline := time.Now().Add(wait)
 	timedOut := func() error {
-		return fmt.Errorf("velocity/cache: %s write lock held for over %v: %w", what, wait, ErrLockTimeout)
+		return errchain.Errorf("velocity/cache: %s write lock held for over %v: %w", what, wait, ErrLockTimeout)
 	}
 	pause := time.Millisecond
 	for first := true; ; first = false {
@@ -108,12 +108,12 @@ func (s *FileStore) flockStripe(stripe string) (unlock func(), busy bool, err er
 		if errchain.Is(err, fs.ErrNotExist) {
 			// First write, or the directory was removed from outside.
 			if merr := os.MkdirAll(s.keyLockDir(), cacheDirMode); merr != nil {
-				return nil, false, fmt.Errorf("velocity/cache: create key lock directory: %w", merr)
+				return nil, false, errchain.Errorf("velocity/cache: create key lock directory: %w", merr)
 			}
 			fd, err = os.OpenFile(path, os.O_RDWR|os.O_CREATE, cacheFileMode)
 		}
 		if err != nil {
-			return nil, false, fmt.Errorf("velocity/cache: open key lock file: %w", err)
+			return nil, false, errchain.Errorf("velocity/cache: open key lock file: %w", err)
 		}
 		if s.lockStepHook != nil {
 			s.lockStepHook("guard-opened")
@@ -136,7 +136,7 @@ func (s *FileStore) flockStripe(stripe string) (unlock func(), busy bool, err er
 		if errchain.Is(err, unix.EWOULDBLOCK) || errchain.Is(err, unix.EINTR) {
 			return nil, true, nil
 		}
-		return nil, false, fmt.Errorf("velocity/cache: flock key lock: %w", err)
+		return nil, false, errchain.Errorf("velocity/cache: flock key lock: %w", err)
 	}
 }
 

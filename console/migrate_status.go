@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/velocitykode/prism"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/migrate"
 )
@@ -25,7 +27,7 @@ func MigrateStatus(db orm.Database) error {
 
 	statuses, err := migrator.Status()
 	if err != nil {
-		return fmt.Errorf("failed to get migration status: %w", err)
+		return errchain.Errorf("failed to get migration status: %w", err)
 	}
 
 	// Build a description lookup from registered migrations

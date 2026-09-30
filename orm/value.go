@@ -3,7 +3,6 @@ package orm
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"time"
 
 	"github.com/velocitykode/velocity/internal/errchain"
@@ -15,7 +14,7 @@ import (
 // argument.
 func (q *Query[T]) Value(ctx context.Context, column string) (any, error) {
 	if err := validateIdentifier(column); err != nil {
-		return nil, fmt.Errorf("velocity/orm: value: %w", err)
+		return nil, errchain.Errorf("velocity/orm: value: %w", err)
 	}
 	if q.err != nil {
 		return nil, q.err

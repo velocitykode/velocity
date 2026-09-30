@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Mode selects how CSRF tokens are bound to the requesting client.
@@ -207,10 +208,10 @@ const DefaultMaxFormBodyBytes int64 = 1 << 20
 //   - Mode must be ModeSession (ModeDoubleSubmit is reserved)
 func (c *Config) Validate() error {
 	if c == nil {
-		return fmt.Errorf("%w: nil config", ErrInsecureCSRFConfig)
+		return errchain.Errorf("%w: nil config", ErrInsecureCSRFConfig)
 	}
 	if c.Mode != ModeSession {
-		return fmt.Errorf("%w: Mode=%s is not yet implemented; use ModeSession", ErrInsecureCSRFConfig, c.Mode)
+		return errchain.Errorf("%w: Mode=%s is not yet implemented; use ModeSession", ErrInsecureCSRFConfig, c.Mode)
 	}
 	return nil
 }

@@ -2,11 +2,11 @@ package router
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"strings"
 
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // ErrInvalidTrustedProxy is returned when a trusted-proxy entry is not a
@@ -43,18 +43,18 @@ func ParseTrustedProxies(entries []string) (*TrustedProxies, error) {
 func parseTrustedProxyEntry(raw string) (*net.IPNet, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return nil, fmt.Errorf("%w: empty entry", ErrInvalidTrustedProxy)
+		return nil, errchain.Errorf("%w: empty entry", ErrInvalidTrustedProxy)
 	}
 	if strings.Contains(raw, "/") {
 		_, ipNet, err := net.ParseCIDR(raw)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %q: %v", ErrInvalidTrustedProxy, raw, err)
+			return nil, errchain.Errorf("%w: %q: %v", ErrInvalidTrustedProxy, raw, err)
 		}
 		return ipNet, nil
 	}
 	ip := net.ParseIP(raw)
 	if ip == nil {
-		return nil, fmt.Errorf("%w: not an ip or cidr: %q", ErrInvalidTrustedProxy, raw)
+		return nil, errchain.Errorf("%w: not an ip or cidr: %q", ErrInvalidTrustedProxy, raw)
 	}
 	var mask net.IPMask
 	if ip.To4() != nil {

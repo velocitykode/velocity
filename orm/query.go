@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm/drivers"
 )
 
@@ -137,7 +138,7 @@ type Query[T any] struct {
 // setters no-op; terminal methods check this before executing.
 func (q *Query[T]) setErr(op string, err error) {
 	if q.err == nil && err != nil {
-		q.err = fmt.Errorf("orm: %s: %w", op, err)
+		q.err = errchain.Errorf("orm: %s: %w", op, err)
 	}
 }
 
@@ -581,7 +582,7 @@ func parseCondition(condition string, args []any, registry map[string]drivers.Op
 		case 2:
 			op, ok := args[0].(string)
 			if !ok || !operatorToken(op, registry) {
-				return "", "", nil, fmt.Errorf(
+				return "", "", nil, errchain.Errorf(
 					"condition %q with two arguments is the three-argument form (column, operator, value), but %#v is not a SQL operator",
 					condition, args[0])
 			}
@@ -723,13 +724,13 @@ func validateOperatorValue(spec *drivers.OperatorSpec, val any) error {
 		}
 	case drivers.ParamSlice, drivers.ParamArray:
 		if _, ok := val.([]any); !ok {
-			return fmt.Errorf("operator %q requires []any, got %T", spec.Op, val)
+			return errchain.Errorf("operator %q requires []any, got %T", spec.Op, val)
 		}
 	case drivers.ParamJSON:
 		switch val.(type) {
 		case string, []byte, json.RawMessage:
 		default:
-			return fmt.Errorf("operator %q requires JSON (string, []byte, or json.RawMessage), got %T", spec.Op, val)
+			return errchain.Errorf("operator %q requires JSON (string, []byte, or json.RawMessage), got %T", spec.Op, val)
 		}
 	}
 	return nil
@@ -776,7 +777,7 @@ func toAnySlice(op string, val any) ([]any, error) {
 	}
 	rv := reflect.ValueOf(val)
 	if !rv.IsValid() || (rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array) {
-		return nil, fmt.Errorf("operator %s requires a slice of values (e.g. []any{...}), got %T", op, val)
+		return nil, errchain.Errorf("operator %s requires a slice of values (e.g. []any{...}), got %T", op, val)
 	}
 	out := make([]any, rv.Len())
 	for i := range out {
@@ -1830,7 +1831,7 @@ func (q *Query[T]) InsertGetId(ctx context.Context, data map[string]any) (int64,
 
 	sqlStr, values, err := q.compileInsertSQL(data)
 	if err != nil {
-		return 0, fmt.Errorf("velocity/orm: insertGetId: %w", err)
+		return 0, errchain.Errorf("velocity/orm: insertGetId: %w", err)
 	}
 
 	driverName := q.driver.DriverName()
@@ -1875,7 +1876,7 @@ func (q *Query[T]) insertExec(ctx context.Context, data map[string]any) error {
 
 	sqlStr, values, err := q.compileInsertSQL(data)
 	if err != nil {
-		return fmt.Errorf("velocity/orm: insert: %w", err)
+		return errchain.Errorf("velocity/orm: insert: %w", err)
 	}
 
 	if _, err := q.driver.ExecContext(ctx, sqlStr, values...); err != nil {

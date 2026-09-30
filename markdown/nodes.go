@@ -12,6 +12,8 @@ import (
 	"github.com/yuin/goldmark/renderer"
 	"github.com/yuin/goldmark/renderer/html"
 	"github.com/yuin/goldmark/util"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // nodeRenderer overrides the goldmark HTML renderer for the nodes whose
@@ -348,6 +350,6 @@ func attrString(v any) string {
 	case string:
 		return t
 	default:
-		return fmt.Sprint(t)
+		return errchain.Sprint(t)
 	}
 }

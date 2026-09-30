@@ -678,7 +678,7 @@ func (pb *PendingBatch) Dispatch(ctx context.Context, driver Driver) (*Batch, er
 
 	if err := repo.Save(ctx, batch); err != nil {
 		globalCallbacks.remove(id)
-		return nil, fmt.Errorf("batch: failed to save batch: %w", err)
+		return nil, errchain.Errorf("batch: failed to save batch: %w", err)
 	}
 
 	// Set BatchID on all Batchable jobs and push them
@@ -718,7 +718,7 @@ func (pb *PendingBatch) Dispatch(ctx context.Context, driver Driver) (*Batch, er
 			if anyFinished {
 				batch.fireTerminalCallbacks(ctx, refreshed)
 			}
-			return batch, fmt.Errorf("batch: failed to push job %d/%d: %w", pushed+1, len(pb.jobs), err)
+			return batch, errchain.Errorf("batch: failed to push job %d/%d: %w", pushed+1, len(pb.jobs), err)
 		}
 		pushed++
 	}

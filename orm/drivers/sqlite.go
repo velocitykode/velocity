@@ -100,13 +100,13 @@ func (d *SQLiteDriver) Connect(config ConnectionConfig) error {
 	if dsn != ":memory:" && strings.Contains(dsn, "/") {
 		dir := filepath.Dir(dsn)
 		if err := os.MkdirAll(dir, sqliteDirMode); err != nil {
-			return fmt.Errorf("failed to create database directory: %w", err)
+			return errchain.Errorf("failed to create database directory: %w", err)
 		}
 		// MkdirAll preserves the perms of a pre-existing directory. Force
 		// the tight mode on every open so an older binary's 0o755 dir does
 		// not stay world-readable across upgrades.
 		if err := os.Chmod(dir, sqliteDirMode); err != nil {
-			return fmt.Errorf("failed to tighten database directory permissions: %w", err)
+			return errchain.Errorf("failed to tighten database directory permissions: %w", err)
 		}
 	}
 
@@ -631,7 +631,7 @@ func (g *SQLiteGrammar) CompileCreateTable(name string, table *Table) string {
 			case string:
 				sql.WriteString(g.QuoteString(v))
 			default:
-				sql.WriteString(fmt.Sprintf("%v", v))
+				sql.WriteString(errchain.Sprintf("%v", v))
 			}
 		}
 	}

@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"time"
 
@@ -156,7 +155,7 @@ func (r *cacheRecord) toStored() *auth.StoredSession {
 func encodeRecord(r *cacheRecord) (string, error) {
 	buf, err := json.Marshal(r)
 	if err != nil {
-		return "", fmt.Errorf("velocity/auth/session: encode session %s: %w", r.ID, err)
+		return "", errchain.Errorf("velocity/auth/session: encode session %s: %w", r.ID, err)
 	}
 	return string(buf), nil
 }
@@ -164,7 +163,7 @@ func encodeRecord(r *cacheRecord) (string, error) {
 func decodeRecord(raw string) (*cacheRecord, error) {
 	var r cacheRecord
 	if err := json.Unmarshal([]byte(raw), &r); err != nil {
-		return nil, fmt.Errorf("velocity/auth/session: decode session: %w", err)
+		return nil, errchain.Errorf("velocity/auth/session: decode session: %w", err)
 	}
 	return &r, nil
 }
@@ -205,7 +204,7 @@ func (s *CacheStore) ensureGeneration(ctx context.Context, userID string) (strin
 		return "", err
 	}
 	if _, err := s.backend.AddCtx(ctx, cacheGenKey(userID), candidate, 0); err != nil {
-		return "", fmt.Errorf("velocity/auth/session: create generation: %w", err)
+		return "", errchain.Errorf("velocity/auth/session: create generation: %w", err)
 	}
 	// Re-read rather than assume: a concurrent creator may have won the
 	// add, and a backend that reports success but cannot serve the read
@@ -221,7 +220,7 @@ func (s *CacheStore) ensureGeneration(ctx context.Context, userID string) (strin
 func (s *CacheStore) newGeneration() (string, error) {
 	b := make([]byte, cacheGenTokenBytes)
 	if _, err := io.ReadFull(s.rand, b); err != nil {
-		return "", fmt.Errorf("velocity/auth/session: generate revocation token: %w", err)
+		return "", errchain.Errorf("velocity/auth/session: generate revocation token: %w", err)
 	}
 	return hex.EncodeToString(b), nil
 }
@@ -340,7 +339,7 @@ func (s *CacheStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 	}
 	ttl := recordTTL(rec.ExpiresAt, now)
 	if err := s.backend.PutCtx(ctx, cacheMetaKey(rec.ID), encoded, ttl); err != nil {
-		return fmt.Errorf("velocity/auth/session: put session: %w", err)
+		return errchain.Errorf("velocity/auth/session: put session: %w", err)
 	}
 	if rec.UserID == "" {
 		return nil
@@ -355,7 +354,7 @@ func (s *CacheStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 		// Roll the meta write back so no record exists that the user can
 		// neither list nor revoke.
 		_ = s.backend.ForgetCtx(ctx, cacheMetaKey(rec.ID))
-		return fmt.Errorf("velocity/auth/session: index session: %w", err)
+		return errchain.Errorf("velocity/auth/session: index session: %w", err)
 	}
 	return nil
 }
@@ -408,7 +407,7 @@ func (s *CacheStore) slide(ctx context.Context, id string, lastSeen, expiresAt t
 			return s.extendIndex(ctx, rec, ttl)
 		}
 	}
-	return fmt.Errorf("velocity/auth/session: write session %s: %w", id, errRecordContended)
+	return errchain.Errorf("velocity/auth/session: write session %s: %w", id, errRecordContended)
 }
 
 // slideOnce reads the record, applies the change and swaps it in against
@@ -434,7 +433,7 @@ func (s *CacheStore) slideOnce(ctx context.Context, id string, lastSeen, expires
 	ttl = recordTTL(rec.ExpiresAt, s.clock())
 	swapped, err = s.backend.CompareAndSwapCtx(ctx, cacheMetaKey(id), raw, encoded, ttl)
 	if err != nil {
-		return nil, 0, false, fmt.Errorf("velocity/auth/session: write session: %w", err)
+		return nil, 0, false, errchain.Errorf("velocity/auth/session: write session: %w", err)
 	}
 	return rec, ttl, swapped, nil
 }
@@ -452,7 +451,7 @@ func (s *CacheStore) extendIndex(ctx context.Context, rec *cacheRecord, ttl time
 	if err := s.backend.SetAddCtx(ctx, cacheUserKey(rec.UserID), indexTTL, rec.ID); err != nil {
 		// The record itself is refreshed; a shorter-lived index only drops
 		// the listing early, which ListForUser tolerates.
-		return fmt.Errorf("velocity/auth/session: extend index: %w", err)
+		return errchain.Errorf("velocity/auth/session: extend index: %w", err)
 	}
 	return nil
 }
@@ -473,7 +472,7 @@ func (s *CacheStore) Delete(ctx context.Context, id string) error {
 		}
 	}
 	if err := s.backend.ForgetCtx(ctx, cacheMetaKey(id)); err != nil {
-		return fmt.Errorf("velocity/auth/session: delete session: %w", err)
+		return errchain.Errorf("velocity/auth/session: delete session: %w", err)
 	}
 	if userID != "" {
 		_ = s.backend.SetRemoveCtx(ctx, cacheUserKey(userID), id)
@@ -499,20 +498,20 @@ func (s *CacheStore) DeleteAllForUser(ctx context.Context, userID string) error 
 		return err
 	}
 	if err := s.backend.ForeverCtx(ctx, cacheGenKey(userID), gen); err != nil {
-		return fmt.Errorf("velocity/auth/session: rotate generation: %w", err)
+		return errchain.Errorf("velocity/auth/session: rotate generation: %w", err)
 	}
 	ids, err := s.backend.SetMembersCtx(ctx, cacheUserKey(userID))
 	if err != nil {
-		return fmt.Errorf("velocity/auth/session: load index: %w", err)
+		return errchain.Errorf("velocity/auth/session: load index: %w", err)
 	}
 	for _, id := range ids {
 		if err := s.backend.ForgetCtx(ctx, cacheMetaKey(id)); err != nil {
-			return fmt.Errorf("velocity/auth/session: delete session %s: %w", id, err)
+			return errchain.Errorf("velocity/auth/session: delete session %s: %w", id, err)
 		}
 	}
 	if len(ids) > 0 {
 		if err := s.backend.SetRemoveCtx(ctx, cacheUserKey(userID), ids...); err != nil {
-			return fmt.Errorf("velocity/auth/session: clear index: %w", err)
+			return errchain.Errorf("velocity/auth/session: clear index: %w", err)
 		}
 	}
 	return nil
@@ -530,7 +529,7 @@ func (s *CacheStore) ListForUser(ctx context.Context, userID string) ([]*auth.Se
 	}
 	ids, err := s.backend.SetMembersCtx(ctx, cacheUserKey(userID))
 	if err != nil {
-		return nil, fmt.Errorf("velocity/auth/session: load index: %w", err)
+		return nil, errchain.Errorf("velocity/auth/session: load index: %w", err)
 	}
 	if len(ids) == 0 {
 		return nil, nil

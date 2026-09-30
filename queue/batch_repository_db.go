@@ -348,7 +348,7 @@ func (r *DatabaseBatchRepository) Find(ctx context.Context, id BatchID) (*Batch,
 		if errchain.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("velocity/queue: batch find: %w", err)
+		return nil, errchain.Errorf("velocity/queue: batch find: %w", err)
 	}
 	return b, nil
 }
@@ -389,7 +389,7 @@ func (r *DatabaseBatchRepository) Save(ctx context.Context, batch *Batch) error 
 		now,
 	)
 	if err != nil {
-		return fmt.Errorf("velocity/queue: batch save: %w", err)
+		return errchain.Errorf("velocity/queue: batch save: %w", err)
 	}
 	return nil
 }
@@ -470,7 +470,7 @@ func (r *DatabaseBatchRepository) incrementCounter(ctx context.Context, id Batch
 	}
 	tx, err := r.db.BeginTx(ctx, txOpts)
 	if err != nil {
-		return nil, false, fmt.Errorf("velocity/queue: batch increment begin: %w", err)
+		return nil, false, errchain.Errorf("velocity/queue: batch increment begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -479,7 +479,7 @@ func (r *DatabaseBatchRepository) incrementCounter(ctx context.Context, id Batch
 	updateQ, args := buildIncrementUpdate(id, success, failure, errText, now)
 	res, execErr := tx.ExecContext(ctx, r.rewriteQuery(updateQ), args...)
 	if execErr != nil {
-		return nil, false, fmt.Errorf("velocity/queue: batch increment update: %w", execErr)
+		return nil, false, errchain.Errorf("velocity/queue: batch increment update: %w", execErr)
 	}
 	rowsAff, _ := res.RowsAffected()
 	if rowsAff == 0 {
@@ -500,7 +500,7 @@ func (r *DatabaseBatchRepository) incrementCounter(ctx context.Context, id Batch
 	             WHERE id = $3 AND pending_jobs = 0 AND completed_at IS NULL`
 	casRes, casErr := tx.ExecContext(ctx, r.rewriteQuery(casQ), now, now, string(id))
 	if casErr != nil {
-		return nil, false, fmt.Errorf("velocity/queue: batch completion CAS: %w", casErr)
+		return nil, false, errchain.Errorf("velocity/queue: batch completion CAS: %w", casErr)
 	}
 	casRows, _ := casRes.RowsAffected()
 	justFinished := casRows == 1
@@ -518,11 +518,11 @@ func (r *DatabaseBatchRepository) incrementCounter(ctx context.Context, id Batch
 	row := tx.QueryRowContext(ctx, r.rewriteQuery(selQ), string(id))
 	b, scanErr := scanBatchRow(row)
 	if scanErr != nil {
-		return nil, false, fmt.Errorf("velocity/queue: batch increment readback: %w", scanErr)
+		return nil, false, errchain.Errorf("velocity/queue: batch increment readback: %w", scanErr)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, false, fmt.Errorf("velocity/queue: batch increment commit: %w", err)
+		return nil, false, errchain.Errorf("velocity/queue: batch increment commit: %w", err)
 	}
 
 	return b, justFinished, nil
@@ -542,7 +542,7 @@ func (r *DatabaseBatchRepository) Cancel(ctx context.Context, id BatchID) (*Batc
 	           WHERE id = $3 AND cancelled_at IS NULL`
 	now := time.Now().UTC()
 	if _, err := r.db.ExecContext(ctx, r.rewriteQuery(q), now, now, string(id)); err != nil {
-		return nil, fmt.Errorf("velocity/queue: batch cancel: %w", err)
+		return nil, errchain.Errorf("velocity/queue: batch cancel: %w", err)
 	}
 	return r.Find(ctx, id)
 }
@@ -557,7 +557,7 @@ func (r *DatabaseBatchRepository) Delete(ctx context.Context, id BatchID) error 
 	}
 	const q = `DELETE FROM job_batches WHERE id = $1`
 	if _, err := r.db.ExecContext(ctx, r.rewriteQuery(q), string(id)); err != nil {
-		return fmt.Errorf("velocity/queue: batch delete: %w", err)
+		return errchain.Errorf("velocity/queue: batch delete: %w", err)
 	}
 	globalCallbacks.remove(id)
 	return nil
@@ -577,7 +577,7 @@ func (r *DatabaseBatchRepository) PruneStale(ctx context.Context, olderThan time
 	const q = `DELETE FROM job_batches WHERE completed_at IS NOT NULL AND completed_at < $1`
 	res, err := r.db.ExecContext(ctx, r.rewriteQuery(q), cutoff)
 	if err != nil {
-		return 0, fmt.Errorf("velocity/queue: batch prune: %w", err)
+		return 0, errchain.Errorf("velocity/queue: batch prune: %w", err)
 	}
 	rows, _ := res.RowsAffected()
 	return int(rows), nil
@@ -602,7 +602,7 @@ func (r *DatabaseBatchRepository) MarkCallbackDispatched(ctx context.Context, id
 	q := fmt.Sprintf(`UPDATE job_batches SET %s = $1, updated_at = $2 WHERE id = $3 AND %s = $4`, col, col)
 	now := time.Now().UTC()
 	if _, err := r.db.ExecContext(ctx, r.rewriteQuery(q), true, now, string(id), false); err != nil {
-		return fmt.Errorf("velocity/queue: mark callback dispatched: %w", err)
+		return errchain.Errorf("velocity/queue: mark callback dispatched: %w", err)
 	}
 	return nil
 }
@@ -648,7 +648,7 @@ func (r *DatabaseBatchRepository) FindUndispatchedCallbacks(ctx context.Context,
 	      LIMIT ` + fmt.Sprintf("%d", limit)
 	rows, err := r.db.QueryContext(ctx, r.rewriteQuery(q), false, false, false)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/queue: find undispatched callbacks: %w", err)
+		return nil, errchain.Errorf("velocity/queue: find undispatched callbacks: %w", err)
 	}
 	defer rows.Close()
 
@@ -671,7 +671,7 @@ func (r *DatabaseBatchRepository) FindUndispatchedCallbacks(ctx context.Context,
 			&catchCallback, &catchDispatched,
 			&finallyCallback, &finallyDispatched,
 			&lastError); scanErr != nil {
-			return nil, fmt.Errorf("velocity/queue: scan undispatched callback row: %w", scanErr)
+			return nil, errchain.Errorf("velocity/queue: scan undispatched callback row: %w", scanErr)
 		}
 		bid := BatchID(id)
 		errMsg := ""
@@ -706,7 +706,7 @@ func (r *DatabaseBatchRepository) FindUndispatchedCallbacks(ctx context.Context,
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("velocity/queue: iterate undispatched callbacks: %w", err)
+		return nil, errchain.Errorf("velocity/queue: iterate undispatched callbacks: %w", err)
 	}
 	return out, nil
 }

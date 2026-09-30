@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/internal/teardown"
@@ -65,7 +66,7 @@ func (m *Manager) Channel(name string) (Mailer, error) {
 		return mailer, nil
 	}
 
-	return nil, fmt.Errorf("velocity/mail: channel %q not configured: %w", name, ErrChannelNotFound)
+	return nil, errchain.Errorf("velocity/mail: channel %q not configured: %w", name, ErrChannelNotFound)
 }
 
 // SetChannel sets a specific mailer for a channel
@@ -118,7 +119,7 @@ func (m *Manager) send(ctx context.Context, channel string, msg *Message, delive
 
 	mailer, err := m.Channel(channel)
 	if err != nil {
-		return fmt.Errorf("velocity/mail: send via %q: %w", channel, err)
+		return errchain.Errorf("velocity/mail: send via %q: %w", channel, err)
 	}
 
 	// Extract recipient emails for event dispatching
@@ -182,11 +183,11 @@ func (m *Manager) Broadcast(ctx context.Context, channels []string, msg *Message
 						spanCtx, _ = trace.ContinueTrace(ctx)
 					}
 					dispatchMailFailed(&m.events, spanCtx, toEmails, msg.GetSubject(), ch, err, 0)
-					errChan <- fmt.Errorf("velocity/mail: channel %s panic: %w", ch, err)
+					errChan <- errchain.Errorf("velocity/mail: channel %s panic: %w", ch, err)
 				}
 			}()
 			if err := m.send(ctx, ch, msg, &delivery); err != nil {
-				errChan <- fmt.Errorf("velocity/mail: channel %s: %w", ch, err)
+				errChan <- errchain.Errorf("velocity/mail: channel %s: %w", ch, err)
 			}
 		}(channel)
 	}
@@ -252,7 +253,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	children := m.channels
 	m.channels = make(map[string]Mailer)
 	wait := m.shutdowns.Detach(children, func(name string, err error) error {
-		return fmt.Errorf("velocity/mail: shutdown channel %q: %w", name, err)
+		return errchain.Errorf("velocity/mail: shutdown channel %q: %w", name, err)
 	})
 	m.mu.Unlock()
 	return wait(ctx)

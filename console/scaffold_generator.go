@@ -4,8 +4,10 @@ import (
 	"fmt"
 
 	"github.com/velocitykode/prism"
+
 	"github.com/velocitykode/velocity/console/scaffold"
 	"github.com/velocitykode/velocity/console/stubs"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // requireNormalizedName rejects a name that survives scaffold.ValidateName but
@@ -32,7 +34,7 @@ func runScaffoldGenerator(g scaffold.Generator, name, dirOverride string, data m
 func writeScaffoldedFile(name, dirOverride, defaultDir, kind, filename, stubPath string, data map[string]any) error {
 	stubContent, err := stubs.Get(stubPath)
 	if err != nil {
-		return fmt.Errorf("failed to read stub: %w", err)
+		return errchain.Errorf("failed to read stub: %w", err)
 	}
 
 	_, err = runScaffoldGenerator(scaffold.Generator{

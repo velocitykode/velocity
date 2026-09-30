@@ -10,8 +10,10 @@ import (
 	"text/template"
 
 	"github.com/velocitykode/velocity/console/scaffold"
+	"github.com/velocitykode/velocity/internal/errchain"
 
 	"github.com/velocitykode/prism"
+
 	"github.com/velocitykode/velocity/console/stubs"
 )
 
@@ -150,7 +152,7 @@ func resolveGRPCScaffold(name string, opts GenGRPCServiceOptions) (grpcScaffold,
 	var leaf string
 	if opts.ProtoPackage != "" {
 		if err := validateProtoPackage(opts.ProtoPackage); err != nil {
-			return sc, fmt.Errorf("invalid --proto-package %q: %w", opts.ProtoPackage, err)
+			return sc, errchain.Errorf("invalid --proto-package %q: %w", opts.ProtoPackage, err)
 		}
 		leaf, version = splitProtoPackage(opts.ProtoPackage)
 		sc.WirePackage = opts.ProtoPackage
@@ -165,7 +167,7 @@ func resolveGRPCScaffold(name string, opts GenGRPCServiceOptions) (grpcScaffold,
 		leaf = grpcPackageName(name)
 	}
 	if err := validateLeaf(leaf); err != nil {
-		return sc, fmt.Errorf("package leaf %q: %w", leaf, err)
+		return sc, errchain.Errorf("package leaf %q: %w", leaf, err)
 	}
 	sc.Leaf = leaf
 	sc.Version = version
@@ -182,7 +184,7 @@ func resolveGRPCScaffold(name string, opts GenGRPCServiceOptions) (grpcScaffold,
 		alias = opts.Alias
 	}
 	if err := validateGoIdent(alias); err != nil {
-		return sc, fmt.Errorf("invalid --alias %q: %w", alias, err)
+		return sc, errchain.Errorf("invalid --alias %q: %w", alias, err)
 	}
 	sc.Alias = alias
 
@@ -191,7 +193,7 @@ func resolveGRPCScaffold(name string, opts GenGRPCServiceOptions) (grpcScaffold,
 		protoFile = opts.ProtoName
 	}
 	if err := validateFileBase(protoFile); err != nil {
-		return sc, fmt.Errorf("proto file name %q: %w", protoFile, err)
+		return sc, errchain.Errorf("proto file name %q: %w", protoFile, err)
 	}
 	sc.ProtoFile = protoFile
 
@@ -200,7 +202,7 @@ func resolveGRPCScaffold(name string, opts GenGRPCServiceOptions) (grpcScaffold,
 		implFile = opts.ImplName
 	}
 	if err := validateFileBase(implFile); err != nil {
-		return sc, fmt.Errorf("impl file name %q: %w", implFile, err)
+		return sc, errchain.Errorf("impl file name %q: %w", implFile, err)
 	}
 	sc.ImplFile = implFile
 
@@ -312,10 +314,10 @@ func writeProtoFile(sc grpcScaffold) error {
 	protoRoot := filepath.Join("api", "proto")
 	dir := filepath.Join(protoRoot, sc.Leaf, sc.Version)
 	if err := scaffold.EnsureWithinRoot(protoRoot, dir); err != nil {
-		return fmt.Errorf("invalid package leaf %q: %w", sc.Leaf, err)
+		return errchain.Errorf("invalid package leaf %q: %w", sc.Leaf, err)
 	}
 	if err := os.MkdirAll(dir, defaultDirMode); err != nil {
-		return fmt.Errorf("create proto dir: %w", err)
+		return errchain.Errorf("create proto dir: %w", err)
 	}
 	path := filepath.Join(dir, sc.ProtoFile+".proto")
 	if err := scaffold.EnsureWritableTarget(path, "proto"); err != nil {
@@ -324,11 +326,11 @@ func writeProtoFile(sc grpcScaffold) error {
 
 	stub, err := stubs.Get("grpc/proto.proto.stub")
 	if err != nil {
-		return fmt.Errorf("load proto stub: %w", err)
+		return errchain.Errorf("load proto stub: %w", err)
 	}
 	tmpl, err := template.New("proto").Parse(string(stub))
 	if err != nil {
-		return fmt.Errorf("parse proto stub: %w", err)
+		return errchain.Errorf("parse proto stub: %w", err)
 	}
 
 	data := map[string]interface{}{
@@ -344,10 +346,10 @@ func writeProtoFile(sc grpcScaffold) error {
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("render proto: %w", err)
+		return errchain.Errorf("render proto: %w", err)
 	}
 	if err := scaffold.WriteNewFile(path, "proto", buf.Bytes()); err != nil {
-		return fmt.Errorf("write proto: %w", err)
+		return errchain.Errorf("write proto: %w", err)
 	}
 	prism.Success(fmt.Sprintf("Created: %s", path))
 	return nil
@@ -361,7 +363,7 @@ func writeProtoFile(sc grpcScaffold) error {
 func ensureBufConfigs() error {
 	protoRoot := filepath.Join("api", "proto")
 	if err := os.MkdirAll(protoRoot, defaultDirMode); err != nil {
-		return fmt.Errorf("create %s: %w", protoRoot, err)
+		return errchain.Errorf("create %s: %w", protoRoot, err)
 	}
 
 	bufYaml := filepath.Join(protoRoot, "buf.yaml")
@@ -377,7 +379,7 @@ breaking:
     - FILE
 `
 		if err := scaffold.WriteNewFile(bufYaml, "buf config", []byte(content)); err != nil {
-			return fmt.Errorf("write %s: %w", bufYaml, err)
+			return errchain.Errorf("write %s: %w", bufYaml, err)
 		}
 		prism.Success(fmt.Sprintf("Created: %s", bufYaml))
 	}
@@ -396,7 +398,7 @@ plugins:
       - require_unimplemented_servers=false
 `
 		if err := scaffold.WriteNewFile(bufGen, "buf config", []byte(content)); err != nil {
-			return fmt.Errorf("write %s: %w", bufGen, err)
+			return errchain.Errorf("write %s: %w", bufGen, err)
 		}
 		prism.Success(fmt.Sprintf("Created: %s", bufGen))
 	}
@@ -406,17 +408,17 @@ plugins:
 func writeServiceImpl(sc grpcScaffold) error {
 	dir := sc.ImplDir
 	if err := os.MkdirAll(dir, defaultDirMode); err != nil {
-		return fmt.Errorf("create services dir: %w", err)
+		return errchain.Errorf("create services dir: %w", err)
 	}
 	path := filepath.Join(dir, sc.ImplFile+".go")
 	if err := scaffold.EnsureWithinRoot(dir, path); err != nil {
-		return fmt.Errorf("invalid impl file name %q: %w", sc.ImplFile, err)
+		return errchain.Errorf("invalid impl file name %q: %w", sc.ImplFile, err)
 	}
 	// Guard the custom --dir against escaping the project root. scaffold.ValidateName
 	// already rejected "../" and absolute dirs, but resolving against the
 	// working directory is the authoritative path-traversal check.
 	if err := scaffold.EnsureWithinRoot(".", path); err != nil {
-		return fmt.Errorf("invalid --dir %q: %w", dir, err)
+		return errchain.Errorf("invalid --dir %q: %w", dir, err)
 	}
 	if err := scaffold.EnsureWritableTarget(path, "service"); err != nil {
 		return err
@@ -424,11 +426,11 @@ func writeServiceImpl(sc grpcScaffold) error {
 
 	stub, err := stubs.Get("grpc/service.go.stub")
 	if err != nil {
-		return fmt.Errorf("load service stub: %w", err)
+		return errchain.Errorf("load service stub: %w", err)
 	}
 	tmpl, err := template.New("service").Parse(string(stub))
 	if err != nil {
-		return fmt.Errorf("parse service stub: %w", err)
+		return errchain.Errorf("parse service stub: %w", err)
 	}
 
 	data := map[string]interface{}{
@@ -442,10 +444,10 @@ func writeServiceImpl(sc grpcScaffold) error {
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("render service: %w", err)
+		return errchain.Errorf("render service: %w", err)
 	}
 	if err := scaffold.WriteNewFile(path, "service", buf.Bytes()); err != nil {
-		return fmt.Errorf("write service: %w", err)
+		return errchain.Errorf("write service: %w", err)
 	}
 	prism.Success(fmt.Sprintf("Created: %s", path))
 	return nil

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // readModulePath returns the module path declared in go.mod in the current
@@ -13,7 +15,7 @@ import (
 func readModulePath() (string, error) {
 	f, err := os.Open("go.mod")
 	if err != nil {
-		return "", fmt.Errorf("read go.mod: %w", err)
+		return "", errchain.Errorf("read go.mod: %w", err)
 	}
 	defer f.Close()
 

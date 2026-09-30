@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/prism"
+
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
@@ -24,6 +24,7 @@ import (
 	"github.com/velocitykode/velocity/csrf/stores"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventqueue"
 	"github.com/velocitykode/velocity/log"
@@ -220,7 +221,7 @@ func New(opts ...Option) (*App, error) {
 	if a.config.Timezone != "" {
 		loc, err := time.LoadLocation(a.config.Timezone)
 		if err != nil {
-			return nil, fmt.Errorf("velocity: invalid app timezone %q (APP_TIMEZONE): %w", a.config.Timezone, err)
+			return nil, errchain.Errorf("velocity: invalid app timezone %q (APP_TIMEZONE): %w", a.config.Timezone, err)
 		}
 		appLocation = loc
 		if time.Local != loc {
@@ -244,7 +245,7 @@ func New(opts ...Option) (*App, error) {
 	}
 	logger, err := log.NewLogger(a.config.Log)
 	if err != nil {
-		return nil, fmt.Errorf("velocity: failed to initialize logger: %w", err)
+		return nil, errchain.Errorf("velocity: failed to initialize logger: %w", err)
 	}
 	a.Log = logger
 	cleanups = append(cleanups, func() {
@@ -314,7 +315,7 @@ func New(opts ...Option) (*App, error) {
 	} else {
 		enc, err := crypto.NewEncryptor(a.config.Crypto)
 		if err != nil {
-			return nil, fmt.Errorf("velocity: failed to initialize crypto: %w", err)
+			return nil, errchain.Errorf("velocity: failed to initialize crypto: %w", err)
 		}
 		a.Crypto = enc
 	}
@@ -322,7 +323,7 @@ func New(opts ...Option) (*App, error) {
 	// 4. Initialize database connection
 	dbManager, err := initDB(a.config.DB, a.Log)
 	if err != nil {
-		return nil, fmt.Errorf("velocity: failed to initialize database: %w", err)
+		return nil, errchain.Errorf("velocity: failed to initialize database: %w", err)
 	}
 	// sqlDB is the raw handle the queue and notification database drivers
 	// still take directly. Auth no longer needs one - its user store queries
@@ -347,7 +348,7 @@ func New(opts ...Option) (*App, error) {
 		return nil, err
 	}
 	if err := a.config.CSRF.Validate(); err != nil {
-		return nil, fmt.Errorf("velocity: %w", err)
+		return nil, errchain.Errorf("velocity: %w", err)
 	}
 
 	// 6. Initialize auth manager. No cleanup registration: *auth.Manager
@@ -418,7 +419,7 @@ func New(opts ...Option) (*App, error) {
 		if a.config.CSRF.Store == nil {
 			consumedLifetime := csrfConsumedTokenLifetime(a.config.Session)
 			if a.config.CSRF.SingleUse && consumedLifetime <= 0 {
-				return nil, fmt.Errorf("%w: CSRF_SINGLE_USE needs a session absolute lifetime: with SESSION_ABSOLUTE_LIFETIME negative a captured session cookie can be renewed forever, so a consumed token could never be refused for as long as it can be replayed", ErrInvalidConfig)
+				return nil, errchain.Errorf("%w: CSRF_SINGLE_USE needs a session absolute lifetime: with SESSION_ABSOLUTE_LIFETIME negative a captured session cookie can be renewed forever, so a consumed token could never be refused for as long as it can be replayed", ErrInvalidConfig)
 			}
 			a.config.CSRF.Store = stores.NewSessionBagStore(csrfSessionBag, consumedLifetime)
 		}
@@ -445,7 +446,7 @@ func New(opts ...Option) (*App, error) {
 	a.config.CSRF.CookiePolicy = a.config.Session.CookiePolicy()
 	csrfInstance, err := csrf.NewE(&a.config.CSRF)
 	if err != nil {
-		return nil, fmt.Errorf("velocity: failed to initialize csrf: %w", err)
+		return nil, errchain.Errorf("velocity: failed to initialize csrf: %w", err)
 	}
 	a.CSRF = csrfInstance
 	cleanups = append(cleanups, func() {
@@ -478,7 +479,7 @@ func New(opts ...Option) (*App, error) {
 	if buildsViewEngine(a.config.View) {
 		viewEngine, err := view.NewEngine(a.config.View)
 		if err != nil {
-			return nil, fmt.Errorf("velocity: failed to initialize view engine: %w", err)
+			return nil, errchain.Errorf("velocity: failed to initialize view engine: %w", err)
 		}
 		a.View = viewEngine
 		cleanups = append(cleanups, func() {
@@ -513,7 +514,7 @@ func New(opts ...Option) (*App, error) {
 	} else {
 		queueDriver, err = initQueue(a.config.Queue, sqlDB, a.config.DB.Connection, a.config.Queue.SigningKey, a.config.Key, a.config.Env, a.Crypto, a.Log)
 		if err != nil {
-			return nil, fmt.Errorf("velocity: failed to initialize queue: %w", err)
+			return nil, errchain.Errorf("velocity: failed to initialize queue: %w", err)
 		}
 	}
 	a.Queue = queueDriver
@@ -742,13 +743,13 @@ func New(opts ...Option) (*App, error) {
 	// "dev", "test", "local" behave the same way as "development" /
 	// "testing".
 	if a.config.Key == "" {
-		if err := a.envGatedSecurityCheck("APP_KEY is unset, router signed-URL middleware will fail closed (403) on every signed route. Run `vel key generate` before exercising signed-URL flows.", nil, fmt.Errorf("velocity: %w", ErrNoAppKey)); err != nil {
+		if err := a.envGatedSecurityCheck("APP_KEY is unset, router signed-URL middleware will fail closed (403) on every signed route. Run `vel key generate` before exercising signed-URL flows.", nil, errchain.Errorf("velocity: %w", ErrNoAppKey)); err != nil {
 			return nil, err
 		}
 	} else {
 		signedKey, err := router.DeriveSignedURLKey([]byte(a.config.Key))
 		if err != nil {
-			return nil, fmt.Errorf("velocity: failed to derive signed URL key: %w", err)
+			return nil, errchain.Errorf("velocity: failed to derive signed URL key: %w", err)
 		}
 		a.Router.SetSignedURLKey(signedKey)
 	}
@@ -898,7 +899,7 @@ func New(opts ...Option) (*App, error) {
 				_ = a.modules[i].Shutdown(shutdownCtx)
 			}
 		})
-		return nil, fmt.Errorf("velocity: boot hook failed: %w", err)
+		return nil, errchain.Errorf("velocity: boot hook failed: %w", err)
 	}
 
 	// Install the session save seam last, once modules and boot hooks
@@ -968,7 +969,7 @@ func (a *App) checkSessionCookieSecurity() error {
 	if err == nil {
 		return nil
 	}
-	return a.envGatedSecurityCheck("Insecure session cookie config (dev only, will fail in production)", []any{"error", err}, fmt.Errorf("velocity: %w", err))
+	return a.envGatedSecurityCheck("Insecure session cookie config (dev only, will fail in production)", []any{"error", err}, errchain.Errorf("velocity: %w", err))
 }
 
 // Version returns the framework version.
@@ -1082,19 +1083,19 @@ func sessionStoreFromConfig(cfg auth.SessionConfig, caches contract.CacheManager
 		return nil, nil, nil
 	}
 	if caches == nil {
-		return nil, nil, fmt.Errorf("velocity: SESSION_STORE=server needs a cache store: %w", session.ErrCacheStoreNilBackend)
+		return nil, nil, errchain.Errorf("velocity: SESSION_STORE=server needs a cache store: %w", session.ErrCacheStoreNilBackend)
 	}
 	backend, err := caches.DefaultStore()
 	if err != nil {
-		return nil, nil, fmt.Errorf("velocity: SESSION_STORE=server needs a cache store: %w", err)
+		return nil, nil, errchain.Errorf("velocity: SESSION_STORE=server needs a cache store: %w", err)
 	}
 	records, err := session.NewCacheStore(backend)
 	if err != nil {
-		return nil, nil, fmt.Errorf("velocity: SESSION_STORE=server: %w", err)
+		return nil, nil, errchain.Errorf("velocity: SESSION_STORE=server: %w", err)
 	}
 	store, err := session.NewServerStore(cfg, records)
 	if err != nil {
-		return nil, nil, fmt.Errorf("velocity: SESSION_STORE=server: %w", err)
+		return nil, nil, errchain.Errorf("velocity: SESSION_STORE=server: %w", err)
 	}
 	return []schemes.SessionSchemeOption{schemes.WithSessionStore(store)}, records, nil
 }

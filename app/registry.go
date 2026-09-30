@@ -5,6 +5,7 @@ import (
 	"reflect"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Default is the qualifier marker used for ordinary single-instance
@@ -170,7 +171,7 @@ func GetFor[T any, Q any](s *Services) (T, error) {
 	}
 	typed, ok := v.(T)
 	if !ok {
-		return zero, fmt.Errorf("velocity/app: component %s is %T, not %T", key, v, zero)
+		return zero, errchain.Errorf("velocity/app: component %s is %T, not %T", key, v, zero)
 	}
 	return typed, nil
 }

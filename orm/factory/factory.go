@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm"
 )
 
@@ -237,13 +238,13 @@ func (f *Factory) persistOne(ctx context.Context, exec sqlExecer, driver, active
 		var id int64
 		err := exec.QueryRowContext(ctx, query, values...).Scan(&id)
 		if err != nil {
-			panic(fmt.Sprintf("failed to create %s: %v", f.tableName, err))
+			panic(errchain.Sprintf("failed to create %s: %v", f.tableName, err))
 		}
 		data["id"] = id
 	} else {
 		result, err := exec.ExecContext(ctx, query, values...)
 		if err != nil {
-			panic(fmt.Sprintf("failed to create %s: %v", f.tableName, err))
+			panic(errchain.Sprintf("failed to create %s: %v", f.tableName, err))
 		}
 		id, err := result.LastInsertId()
 		if err == nil {

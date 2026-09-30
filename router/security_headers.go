@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // SecurityHeadersConfig holds configuration for the SecurityHeaders middleware.
@@ -272,7 +274,7 @@ func HTTPSRedirect(opts ...HTTPSRedirectOption) MiddlewareFunc {
 		opt(cfg)
 	}
 	if cfg.trustedProxyErr != nil {
-		panic(fmt.Errorf("velocity/router: https redirect: %w", cfg.trustedProxyErr))
+		panic(errchain.Errorf("velocity/router: https redirect: %w", cfg.trustedProxyErr))
 	}
 
 	return func(next HandlerFunc) HandlerFunc {

@@ -6,6 +6,8 @@ import (
 	"io"
 
 	"github.com/velocitykode/prism"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -19,7 +21,7 @@ func RouteListJSON(r *router.VelocityRouterV2, w io.Writer) error {
 	}
 	out, err := json.MarshalIndent(routes, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal routes: %w", err)
+		return errchain.Errorf("marshal routes: %w", err)
 	}
 	_, err = fmt.Fprintln(w, string(out))
 	return err

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // createMigrationsTable creates the migrations tracking table if it doesn't exist
@@ -47,12 +49,12 @@ func (m *Migrator) createMigrationsTable() error {
 func (m *Migrator) getAppliedMigrations() ([]string, error) {
 	// Ensure migrations table exists
 	if err := m.createMigrationsTable(); err != nil {
-		return nil, fmt.Errorf("failed to create migrations table: %w", err)
+		return nil, errchain.Errorf("failed to create migrations table: %w", err)
 	}
 
 	rows, err := m.queryContext(context.Background(), "SELECT version FROM migrations ORDER BY version ASC")
 	if err != nil {
-		return nil, fmt.Errorf("failed to query applied migrations: %w", err)
+		return nil, errchain.Errorf("failed to query applied migrations: %w", err)
 	}
 	defer rows.Close()
 
@@ -60,13 +62,13 @@ func (m *Migrator) getAppliedMigrations() ([]string, error) {
 	for rows.Next() {
 		var version string
 		if err := rows.Scan(&version); err != nil {
-			return nil, fmt.Errorf("failed to scan migration version: %w", err)
+			return nil, errchain.Errorf("failed to scan migration version: %w", err)
 		}
 		versions = append(versions, version)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating migration rows: %w", err)
+		return nil, errchain.Errorf("error iterating migration rows: %w", err)
 	}
 
 	return versions, nil
@@ -76,12 +78,12 @@ func (m *Migrator) getAppliedMigrations() ([]string, error) {
 func (m *Migrator) getAppliedMigrationsWithBatch() (map[string]int, error) {
 	// Ensure migrations table exists
 	if err := m.createMigrationsTable(); err != nil {
-		return nil, fmt.Errorf("failed to create migrations table: %w", err)
+		return nil, errchain.Errorf("failed to create migrations table: %w", err)
 	}
 
 	rows, err := m.queryContext(context.Background(), "SELECT version, batch FROM migrations ORDER BY version ASC")
 	if err != nil {
-		return nil, fmt.Errorf("failed to query applied migrations: %w", err)
+		return nil, errchain.Errorf("failed to query applied migrations: %w", err)
 	}
 	defer rows.Close()
 
@@ -90,13 +92,13 @@ func (m *Migrator) getAppliedMigrationsWithBatch() (map[string]int, error) {
 		var version string
 		var batch int
 		if err := rows.Scan(&version, &batch); err != nil {
-			return nil, fmt.Errorf("failed to scan migration: %w", err)
+			return nil, errchain.Errorf("failed to scan migration: %w", err)
 		}
 		result[version] = batch
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating migration rows: %w", err)
+		return nil, errchain.Errorf("error iterating migration rows: %w", err)
 	}
 
 	return result, nil
@@ -107,7 +109,7 @@ func (m *Migrator) recordMigration(version string, batch int) error {
 	query := m.placeholder("INSERT INTO migrations (version, batch) VALUES (%s, %s)")
 	_, err := m.execContext(context.Background(), query, version, batch)
 	if err != nil {
-		return fmt.Errorf("failed to record migration %s: %w", version, err)
+		return errchain.Errorf("failed to record migration %s: %w", version, err)
 	}
 	return nil
 }
@@ -117,7 +119,7 @@ func (m *Migrator) removeMigration(version string) error {
 	query := m.placeholder("DELETE FROM migrations WHERE version = %s")
 	_, err := m.execContext(context.Background(), query, version)
 	if err != nil {
-		return fmt.Errorf("failed to remove migration %s: %w", version, err)
+		return errchain.Errorf("failed to remove migration %s: %w", version, err)
 	}
 	return nil
 }
@@ -126,13 +128,13 @@ func (m *Migrator) removeMigration(version string) error {
 func (m *Migrator) getLastBatch() (int, error) {
 	// Ensure migrations table exists
 	if err := m.createMigrationsTable(); err != nil {
-		return 0, fmt.Errorf("failed to create migrations table: %w", err)
+		return 0, errchain.Errorf("failed to create migrations table: %w", err)
 	}
 
 	var batch sql.NullInt64
 	err := m.queryRowContext(context.Background(), "SELECT MAX(batch) FROM migrations").Scan(&batch)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get last batch: %w", err)
+		return 0, errchain.Errorf("failed to get last batch: %w", err)
 	}
 
 	if !batch.Valid {
@@ -147,7 +149,7 @@ func (m *Migrator) getMigrationsByBatch(batch int) ([]string, error) {
 	query := m.placeholder("SELECT version FROM migrations WHERE batch = %s ORDER BY version DESC")
 	rows, err := m.queryContext(context.Background(), query, batch)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query migrations by batch: %w", err)
+		return nil, errchain.Errorf("failed to query migrations by batch: %w", err)
 	}
 	defer rows.Close()
 
@@ -155,13 +157,13 @@ func (m *Migrator) getMigrationsByBatch(batch int) ([]string, error) {
 	for rows.Next() {
 		var version string
 		if err := rows.Scan(&version); err != nil {
-			return nil, fmt.Errorf("failed to scan migration version: %w", err)
+			return nil, errchain.Errorf("failed to scan migration version: %w", err)
 		}
 		versions = append(versions, version)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating migration rows: %w", err)
+		return nil, errchain.Errorf("error iterating migration rows: %w", err)
 	}
 
 	return versions, nil

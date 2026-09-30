@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/notification"
 )
 
@@ -61,7 +63,7 @@ func (c *DatabaseChannel) SetDB(db *sql.DB, driver ...string) {
 func (c *DatabaseChannel) Send(ctx context.Context, notifiable interface{}, n notification.Notification) error {
 	dn, ok := n.(notification.DatabaseNotification)
 	if !ok {
-		return fmt.Errorf("notification: %T does not implement DatabaseNotification", n)
+		return errchain.Errorf("notification: %T does not implement DatabaseNotification", n)
 	}
 
 	dbMsg := dn.ToDatabase(notifiable)
@@ -95,7 +97,7 @@ func (c *DatabaseChannel) Send(ctx context.Context, notifiable interface{}, n no
 	// consistent failure mode whether they pre-validated or not.
 	dataJSON, err := notification.EncodeDatabaseData(dbMsg.Data)
 	if err != nil {
-		return fmt.Errorf("notification: failed to serialize notification data: %w", err)
+		return errchain.Errorf("notification: failed to serialize notification data: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -117,7 +119,7 @@ func (c *DatabaseChannel) Send(ctx context.Context, notifiable interface{}, n no
 		id, dbMsg.Type, notifiableType, notifiableID, string(dataJSON), now, now,
 	)
 	if err != nil {
-		return fmt.Errorf("notification: failed to insert notification: %w", err)
+		return errchain.Errorf("notification: failed to insert notification: %w", err)
 	}
 
 	return nil

@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Expression represents a parsed cron expression
@@ -43,27 +45,27 @@ func ParseExpression(expr string) (*Expression, error) {
 	var err error
 	e.minute, err = parseField(fields[0], 0, 59)
 	if err != nil {
-		return nil, fmt.Errorf("invalid minute field: %w", err)
+		return nil, errchain.Errorf("invalid minute field: %w", err)
 	}
 
 	e.hour, err = parseField(fields[1], 0, 23)
 	if err != nil {
-		return nil, fmt.Errorf("invalid hour field: %w", err)
+		return nil, errchain.Errorf("invalid hour field: %w", err)
 	}
 
 	e.dayOfMonth, err = parseField(fields[2], 1, 31)
 	if err != nil {
-		return nil, fmt.Errorf("invalid day of month field: %w", err)
+		return nil, errchain.Errorf("invalid day of month field: %w", err)
 	}
 
 	e.month, err = parseField(fields[3], 1, 12)
 	if err != nil {
-		return nil, fmt.Errorf("invalid month field: %w", err)
+		return nil, errchain.Errorf("invalid month field: %w", err)
 	}
 
 	e.dayOfWeek, err = parseField(fields[4], 0, 6)
 	if err != nil {
-		return nil, fmt.Errorf("invalid day of week field: %w", err)
+		return nil, errchain.Errorf("invalid day of week field: %w", err)
 	}
 
 	return e, nil

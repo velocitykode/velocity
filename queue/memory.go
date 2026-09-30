@@ -225,7 +225,7 @@ func (m *MemoryDriver) warnIfNonIdentifiable(ctx context.Context, job Job) {
 	if _, ok := job.(Identifiable); ok {
 		return
 	}
-	typ := fmt.Sprintf("%T", job)
+	typ := errchain.Sprintf("%T", job)
 	if _, loaded := m.nonIdentifiableWarned.LoadOrStore(typ, struct{}{}); loaded {
 		return
 	}
@@ -343,7 +343,7 @@ func (m *MemoryDriver) PopCtxWithTrace(ctx context.Context, queueName string) (J
 // and the pop returns ErrLeaseLost, as the database driver does when its
 // lease no longer covers the row.
 func (m *MemoryDriver) quarantine(queueName string, token ReservationToken, wrapper *jobWrapper, cause error) error {
-	poisonErr := fmt.Errorf("velocity/queue: failed to restore job from wrapper: %w", cause)
+	poisonErr := errchain.Errorf("velocity/queue: failed to restore job from wrapper: %w", cause)
 	exception := errchain.Text(poisonErr)
 
 	m.mu.Lock()

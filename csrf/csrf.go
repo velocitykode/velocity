@@ -104,11 +104,11 @@ func NewE(config *Config) (*CSRF, error) {
 	// ModeDoubleSubmit would be worse than rejecting it - apps would
 	// believe they had CSRF protection that was never wired.
 	if config.Mode != ModeSession {
-		return nil, fmt.Errorf("%w: Mode=%s is not yet implemented; use ModeSession", ErrInsecureCSRFConfig, config.Mode)
+		return nil, errchain.Errorf("%w: Mode=%s is not yet implemented; use ModeSession", ErrInsecureCSRFConfig, config.Mode)
 	}
 
 	if config.SessionIDResolver == nil {
-		return nil, fmt.Errorf("%w: SessionIDResolver is required; raw cookie value MUST NOT be used as the CSRF binding key", ErrInsecureCSRFConfig)
+		return nil, errchain.Errorf("%w: SessionIDResolver is required; raw cookie value MUST NOT be used as the CSRF binding key", ErrInsecureCSRFConfig)
 	}
 
 	// Session-less default: an in-memory map keyed by session id.
@@ -127,7 +127,7 @@ func NewE(config *Config) (*CSRF, error) {
 	// lock, across the store's own calls.
 	if config.SingleUse {
 		if _, ok := config.Store.(AtomicConsumer); !ok {
-			return nil, fmt.Errorf("%w: SingleUse requires a Store that implements AtomicConsumer; %T does not", ErrInsecureCSRFConfig, config.Store)
+			return nil, errchain.Errorf("%w: SingleUse requires a Store that implements AtomicConsumer; %T does not", ErrInsecureCSRFConfig, config.Store)
 		}
 	}
 
@@ -845,10 +845,10 @@ func (c *CSRF) RotateToken(ctx context.Context, oldID, newID string) error {
 	}
 	token, err := GenerateToken()
 	if err != nil {
-		return fmt.Errorf("velocity/csrf: RotateToken: generate: %w", err)
+		return errchain.Errorf("velocity/csrf: RotateToken: generate: %w", err)
 	}
 	if err := c.config.Store.Set(ctx, newID, token); err != nil {
-		return fmt.Errorf("velocity/csrf: RotateToken: store set: %w", err)
+		return errchain.Errorf("velocity/csrf: RotateToken: store set: %w", err)
 	}
 	// The request cache ctx carries (the scheme's rotation context and a
 	// handler's request context derive from the request) may hold the

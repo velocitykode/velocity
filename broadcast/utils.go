@@ -2,11 +2,11 @@ package broadcast
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // SecureCompareToken compares two private/presence channel tokens in
@@ -37,7 +37,7 @@ var (
 	// configured driver does not implement the Unsubscriber capability. It
 	// wraps errors.ErrUnsupported so callers can errors.Is either this
 	// sentinel or the standard unsupported-operation marker.
-	ErrLeaveUnsupported = fmt.Errorf("velocity/broadcast: leave unsupported by driver: %w", errors.ErrUnsupported)
+	ErrLeaveUnsupported = errchain.Errorf("velocity/broadcast: leave unsupported by driver: %w", errors.ErrUnsupported)
 )
 
 // isPrivateChannel checks if a channel is private

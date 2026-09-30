@@ -228,11 +228,11 @@ var ErrParamParse = errors.New("velocity/router: route param parse error")
 func (c *Context) ParamInt(name string) (int, error) {
 	val := c.Param(name)
 	if val == "" {
-		return 0, fmt.Errorf("%w: %q", ErrParamNotFound, name)
+		return 0, errchain.Errorf("%w: %q", ErrParamNotFound, name)
 	}
 	n, err := strconv.Atoi(val)
 	if err != nil {
-		return 0, fmt.Errorf("%w: %q=%q: %v", ErrParamParse, name, val, err)
+		return 0, errchain.Errorf("%w: %q=%q: %v", ErrParamParse, name, val, err)
 	}
 	return n, nil
 }
@@ -245,11 +245,11 @@ func (c *Context) ParamInt(name string) (int, error) {
 func (c *Context) ParamInt64(name string) (int64, error) {
 	val := c.Param(name)
 	if val == "" {
-		return 0, fmt.Errorf("%w: %q", ErrParamNotFound, name)
+		return 0, errchain.Errorf("%w: %q", ErrParamNotFound, name)
 	}
 	n, err := strconv.ParseInt(val, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("%w: %q=%q: %v", ErrParamParse, name, val, err)
+		return 0, errchain.Errorf("%w: %q=%q: %v", ErrParamParse, name, val, err)
 	}
 	return n, nil
 }
@@ -1369,19 +1369,19 @@ func bindValues(v interface{}, vals url.Values, tag string) error {
 		case reflect.Int, reflect.Int64:
 			n, err := strconv.ParseInt(val, 10, 64)
 			if err != nil {
-				return fmt.Errorf("field %s: %w", field.Name, err)
+				return errchain.Errorf("field %s: %w", field.Name, err)
 			}
 			fv.SetInt(n)
 		case reflect.Float64:
 			f, err := strconv.ParseFloat(val, 64)
 			if err != nil {
-				return fmt.Errorf("field %s: %w", field.Name, err)
+				return errchain.Errorf("field %s: %w", field.Name, err)
 			}
 			fv.SetFloat(f)
 		case reflect.Bool:
 			b, err := strconv.ParseBool(val)
 			if err != nil {
-				return fmt.Errorf("field %s: %w", field.Name, err)
+				return errchain.Errorf("field %s: %w", field.Name, err)
 			}
 			fv.SetBool(b)
 		}
@@ -2030,14 +2030,14 @@ func (c *Context) SaveFile(fh *multipart.FileHeader, dst string, opts ...FileVal
 	out, err := root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, uploadedFileMode)
 	if err != nil {
 		if containmentRejection(err) {
-			return fmt.Errorf("velocity/router: path %q escapes root: %w", rel, errors.Join(ErrPathOutsideRoot, err))
+			return errchain.Errorf("velocity/router: path %q escapes root: %w", rel, errors.Join(ErrPathOutsideRoot, err))
 		}
 		return err
 	}
 	defer out.Close()
 	if chmodErr := out.Chmod(uploadedFileMode); chmodErr != nil {
 		_ = root.Remove(rel)
-		return fmt.Errorf("velocity/router: chmod uploaded file: %w", chmodErr)
+		return errchain.Errorf("velocity/router: chmod uploaded file: %w", chmodErr)
 	}
 
 	written, err := io.Copy(out, io.LimitReader(src, sizeCap+1))

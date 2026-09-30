@@ -2,8 +2,8 @@ package queue
 
 import (
 	"context"
-	"fmt"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -20,7 +20,7 @@ import (
 func RunFailedHook(ctx context.Context, job Job, err error) (hookErr error) {
 	defer func() {
 		if r := recover(); r != nil {
-			hookErr = fmt.Errorf("%w: %w", ErrFailedHookPanicked, panicerr.FromRecovered(r))
+			hookErr = errchain.Errorf("%w: %w", ErrFailedHookPanicked, panicerr.FromRecovered(r))
 		}
 	}()
 	if ctx == nil {

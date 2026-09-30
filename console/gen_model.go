@@ -1,10 +1,10 @@
 package console
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/velocitykode/velocity/console/scaffold"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/inflect"
 )
 
@@ -47,7 +47,7 @@ func GenModel(name string, opts GenModelOptions) error {
 			SoftDeletes: opts.SoftDeletes,
 		}
 		if err := GenMigration(migrationName, migrationOpts); err != nil {
-			return fmt.Errorf("failed to create migration: %w", err)
+			return errchain.Errorf("failed to create migration: %w", err)
 		}
 	}
 

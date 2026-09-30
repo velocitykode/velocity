@@ -176,7 +176,7 @@ func NewHTTPGateway(rawURL string, opts ...GatewayOption) *HTTPGateway {
 func validateSSRTarget(target string) error {
 	u, err := url.Parse(target)
 	if err != nil {
-		return fmt.Errorf("bond: parse ssr url: %w", err)
+		return errchain.Errorf("bond: parse ssr url: %w", err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("bond: ssr url must be http or https")
@@ -184,7 +184,7 @@ func validateSSRTarget(target string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := neturl.ValidateURLHost(ctx, nil, target); err != nil {
-		return fmt.Errorf("bond: ssr target rejected: %w", err)
+		return errchain.Errorf("bond: ssr target rejected: %w", err)
 	}
 	return nil
 }
@@ -210,7 +210,7 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 
 	body, err := json.Marshal(page)
 	if err != nil {
-		return nil, fmt.Errorf("bond: marshal page for SSR: %w", err)
+		return nil, errchain.Errorf("bond: marshal page for SSR: %w", err)
 	}
 
 	timeout := g.Timeout
@@ -278,7 +278,7 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 			payload = parsed
 		}
 		serverErr := errors.New(payload.Error)
-		return g.handleFailureWrapped(ctx, page, payload, serverErr, fmt.Errorf("velocity/bond: ssr server error: %w", serverErr))
+		return g.handleFailureWrapped(ctx, page, payload, serverErr, errchain.Errorf("velocity/bond: ssr server error: %w", serverErr))
 	}
 
 	var out SSRResponse

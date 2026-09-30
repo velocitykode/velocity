@@ -51,7 +51,7 @@ func isTempFile(path string) bool {
 func writeTempFile(path string, data []byte) (string, error) {
 	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+fileTempMarker+"*")
 	if err != nil {
-		return "", fmt.Errorf("velocity/cache: failed to create temp cache file: %w", err)
+		return "", errchain.Errorf("velocity/cache: failed to create temp cache file: %w", err)
 	}
 	tmp := f.Name()
 	_, werr := f.Write(data)
@@ -64,7 +64,7 @@ func writeTempFile(path string, data []byte) (string, error) {
 	}
 	if werr != nil {
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("velocity/cache: failed to write cache file: %w", werr)
+		return "", errchain.Errorf("velocity/cache: failed to write cache file: %w", werr)
 	}
 	return tmp, nil
 }
@@ -79,7 +79,7 @@ func replaceFile(path string, data []byte) error {
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
-		return fmt.Errorf("velocity/cache: failed to write cache file: %w", err)
+		return errchain.Errorf("velocity/cache: failed to write cache file: %w", err)
 	}
 	return nil
 }
@@ -109,16 +109,16 @@ func createFileExclusive(path string, data []byte) (created bool, err error) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("velocity/cache: failed to create cache file: %w", err)
+		return false, errchain.Errorf("velocity/cache: failed to create cache file: %w", err)
 	}
 	_, werr := f.Write(data)
 	cerr := f.Close()
 	if werr != nil {
 		_ = os.Remove(path)
-		return false, fmt.Errorf("velocity/cache: failed to write cache file: %w", werr)
+		return false, errchain.Errorf("velocity/cache: failed to write cache file: %w", werr)
 	}
 	if cerr != nil {
-		return false, fmt.Errorf("velocity/cache: failed to close cache file: %w", cerr)
+		return false, errchain.Errorf("velocity/cache: failed to close cache file: %w", cerr)
 	}
 	return true, nil
 }
@@ -269,7 +269,7 @@ func NewFileStoreWithOptions(prefix, path string, cleanupInterval time.Duration,
 	// later (see getCacheFilePath) also MkdirAll, but the common case is
 	// covered here and avoids the system call on every Put.
 	if err := os.MkdirAll(path, cacheDirMode); err != nil {
-		return nil, fmt.Errorf("velocity/cache: failed to create cache directory: %w", err)
+		return nil, errchain.Errorf("velocity/cache: failed to create cache directory: %w", err)
 	}
 
 	if cleanupInterval <= 0 {
@@ -297,7 +297,7 @@ func (s *FileStore) MaxValueBytes() int64 {
 // value bytes. Returns nil when no cap is configured.
 func (s *FileStore) checkValueSize(valueData []byte) error {
 	if s.maxValueBytes > 0 && int64(len(valueData)) > s.maxValueBytes {
-		return fmt.Errorf("velocity/cache: value size %d exceeds maximum of %d bytes: %w", len(valueData), s.maxValueBytes, ErrValueTooLarge)
+		return errchain.Errorf("velocity/cache: value size %d exceeds maximum of %d bytes: %w", len(valueData), s.maxValueBytes, ErrValueTooLarge)
 	}
 	return nil
 }
@@ -598,7 +598,7 @@ func (s *FileStore) lockKeyForPlainWrite(ctx context.Context, key string) (func(
 func (s *FileStore) encodeValue(value interface{}) ([]byte, error) {
 	valueData, err := MarshalValue(value)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
+		return nil, errchain.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
 	if err := s.checkValueSize(valueData); err != nil {
 		return nil, err
@@ -612,7 +612,7 @@ func (s *FileStore) encodeValue(value interface{}) ([]byte, error) {
 func encodeItem(valueData []byte, expiration *time.Time) ([]byte, error) {
 	data, err := json.Marshal(fileCacheItem{Value: valueData, Expiration: expiration})
 	if err != nil {
-		return nil, fmt.Errorf("velocity/cache: failed to marshal cache item: %w", err)
+		return nil, errchain.Errorf("velocity/cache: failed to marshal cache item: %w", err)
 	}
 	return data, nil
 }
@@ -854,7 +854,7 @@ func (s *FileStore) AddCtx(ctx context.Context, key string, value interface{}, t
 	// cannot fulfil the contract on this platform; operators relying
 	// on cross-process single-flight should use Redis or run on POSIX.
 	if !keyLocked {
-		return false, fmt.Errorf("velocity/cache: FileStore.Add cannot fulfil SETNX contract on this platform: %w", ErrLockNotSupported)
+		return false, errchain.Errorf("velocity/cache: FileStore.Add cannot fulfil SETNX contract on this platform: %w", ErrLockNotSupported)
 	}
 
 	if werr := replaceFile(path, data); werr != nil {
@@ -1057,7 +1057,7 @@ func (s *FileStore) flushStripe(ctx context.Context, stripe string, g *flushGrou
 			unlock, err = func() {}, nil
 		}
 		if err != nil {
-			return fmt.Errorf("velocity/cache: FileStore.Flush: %w", err)
+			return errchain.Errorf("velocity/cache: FileStore.Flush: %w", err)
 		}
 	} else {
 		var ok bool

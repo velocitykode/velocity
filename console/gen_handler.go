@@ -1,11 +1,11 @@
 package console
 
 import (
-	"fmt"
 	"path/filepath"
 	"strings"
 
 	"github.com/velocitykode/velocity/console/scaffold"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // GenHandlerOptions holds flags for the gen handler command.
@@ -52,7 +52,7 @@ func GenHandler(name string, opts GenHandlerOptions) error {
 	// traversal shapes, recompute and confirm the resolved directory still
 	// lives inside the handler root before writing anything to disk.
 	if err := scaffold.EnsureWithinRoot(handlerRoot, outputDir); err != nil {
-		return fmt.Errorf("invalid handler name %q: %w", name, err)
+		return errchain.Errorf("invalid handler name %q: %w", name, err)
 	}
 
 	// scaffold.EnsureWithinRoot is lexical only. The name-derived subdirectory (and the
@@ -60,7 +60,7 @@ func GenHandler(name string, opts GenHandlerOptions) error {
 	// outside the tree, so re-run the symlink-component guard on the final,
 	// fully-assembled output directory before creating or writing anything.
 	if err := scaffold.EnsureNoSymlinkComponents(outputDir); err != nil {
-		return fmt.Errorf("invalid handler output dir %q: %w", outputDir, err)
+		return errchain.Errorf("invalid handler output dir %q: %w", outputDir, err)
 	}
 
 	filename := toSnakeCase(handlerName) + ".go"

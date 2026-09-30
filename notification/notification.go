@@ -13,12 +13,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
+
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/mail"
 )
 
@@ -395,7 +396,7 @@ func encodeDatabaseData(data map[string]interface{}, buf *bytes.Buffer) error {
 	enc := json.NewEncoder(target)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(data); err != nil {
-		return fmt.Errorf("notification: database data not json-encodable: %w", err)
+		return errchain.Errorf("notification: database data not json-encodable: %w", err)
 	}
 	return nil
 }

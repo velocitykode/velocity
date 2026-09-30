@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	velmail "github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/notification"
 )
@@ -37,7 +38,7 @@ func (c *MailChannel) SetMailer(mailer velmail.Mailer) {
 func (c *MailChannel) Send(ctx context.Context, notifiable interface{}, n notification.Notification) error {
 	mn, ok := n.(notification.MailNotification)
 	if !ok {
-		return fmt.Errorf("notification: %T does not implement MailNotification", n)
+		return errchain.Errorf("notification: %T does not implement MailNotification", n)
 	}
 
 	mailMsg := mn.ToMail(notifiable)

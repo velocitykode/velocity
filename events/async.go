@@ -3,10 +3,10 @@ package events
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
@@ -80,7 +80,7 @@ func newAsyncFailed(ctx context.Context, eventName string, listener Listener, er
 	return &AsyncFailed{
 		EventMeta:    eventmeta.Current(ctx),
 		EventName:    eventName,
-		ListenerName: fmt.Sprintf("%T", listener),
+		ListenerName: errchain.Sprintf("%T", listener),
 		Err:          err,
 	}
 }

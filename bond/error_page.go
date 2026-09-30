@@ -2,9 +2,10 @@ package bond
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // ErrInvalidStatus is matched (errors.Is) by the error RenderWithStatus
@@ -18,7 +19,7 @@ var ErrInvalidStatus = errors.New("bond: invalid status code")
 // before writing leaves the response untouched.
 func (b *Bond) RenderWithStatus(w http.ResponseWriter, r *http.Request, component string, props Props, status int) error {
 	if status < http.StatusOK || status > 999 {
-		return fmt.Errorf("%w: %d", ErrInvalidStatus, status)
+		return errchain.Errorf("%w: %d", ErrInvalidStatus, status)
 	}
 	return b.Render(&statusWriter{ResponseWriter: w, status: status}, r, component, props)
 }

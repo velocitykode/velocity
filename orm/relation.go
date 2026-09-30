@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm/drivers"
 )
 
@@ -177,10 +178,10 @@ func resolveRelationMeta(modelType reflect.Type, preloadName string) (*relationM
 	}
 
 	if err := validateIdentifier(fk); err != nil {
-		return nil, fmt.Errorf("orm: invalid foreign key in relation tag: %w", err)
+		return nil, errchain.Errorf("orm: invalid foreign key in relation tag: %w", err)
 	}
 	if err := validateIdentifier(lk); err != nil {
-		return nil, fmt.Errorf("orm: invalid local key in relation tag: %w", err)
+		return nil, errchain.Errorf("orm: invalid local key in relation tag: %w", err)
 	}
 
 	// Determine the related type from the field's Go type
@@ -209,7 +210,7 @@ func resolveRelationMeta(modelType reflect.Type, preloadName string) (*relationM
 
 	tableName := resolveTableNameReflect(fieldType)
 	if err := validateIdentifier(tableName); err != nil {
-		return nil, fmt.Errorf("orm: invalid table name for related type %s: %w", fieldType.Name(), err)
+		return nil, errchain.Errorf("orm: invalid table name for related type %s: %w", fieldType.Name(), err)
 	}
 
 	return &relationMeta{
@@ -544,12 +545,12 @@ func (q *Query[T]) loadRelation(ctx context.Context, models *[]T, meta *relation
 	// SQL with the scope silently dropped.
 	relSQL, sqlArgs, scopeErr := buildScopedInSelect(ctx, q.driver, meta.relatedType, meta.relatedTable, queryColumn, keys)
 	if scopeErr != nil {
-		return fmt.Errorf("orm: failed to apply scopes for relation %q: %w", meta.fieldName, scopeErr)
+		return errchain.Errorf("orm: failed to apply scopes for relation %q: %w", meta.fieldName, scopeErr)
 	}
 
 	rows, err := q.driver.QueryContext(ctx, relSQL, sqlArgs...)
 	if err != nil {
-		return fmt.Errorf("orm: failed to load relation %q: %w", meta.fieldName, err)
+		return errchain.Errorf("orm: failed to load relation %q: %w", meta.fieldName, err)
 	}
 	defer rows.Close()
 
@@ -562,12 +563,12 @@ func (q *Query[T]) loadRelation(ctx context.Context, models *[]T, meta *relation
 		if plan == nil {
 			var perr error
 			if plan, perr = newScanPlan(rows, meta.relatedType); perr != nil {
-				return fmt.Errorf("orm: failed to scan relation %q: %w", meta.fieldName, perr)
+				return errchain.Errorf("orm: failed to scan relation %q: %w", meta.fieldName, perr)
 			}
 		}
 		ptr := reflect.New(meta.relatedType)
 		if err := plan.scanRow(rows, ptr.Elem()); err != nil {
-			return fmt.Errorf("orm: failed to scan relation %q: %w", meta.fieldName, err)
+			return errchain.Errorf("orm: failed to scan relation %q: %w", meta.fieldName, err)
 		}
 		elem := ptr.Elem()
 		markIsExisting(elem)
@@ -580,7 +581,7 @@ func (q *Query[T]) loadRelation(ctx context.Context, models *[]T, meta *relation
 		groups[normalized] = append(groups[normalized], elem)
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("orm: error iterating relation %q results: %w", meta.fieldName, err)
+		return errchain.Errorf("orm: error iterating relation %q results: %w", meta.fieldName, err)
 	}
 
 	// 4. Assign results back to parent models

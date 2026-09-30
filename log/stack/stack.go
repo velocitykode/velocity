@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/log"
 )
 
@@ -59,7 +60,7 @@ func init() {
 			}
 			child, err := log.Drivers().Resolve(ctx, name, log.LogConfig{Driver: name, Config: cfg.Config})
 			if err != nil {
-				childErrs = append(childErrs, fmt.Errorf("velocity/log: stack driver: child %q: %w", name, err))
+				childErrs = append(childErrs, errchain.Errorf("velocity/log: stack driver: child %q: %w", name, err))
 				continue
 			}
 			loggers = append(loggers, child)

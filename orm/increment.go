@@ -2,10 +2,11 @@ package orm
 
 import (
 	"context"
-	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // pgPlaceholderPattern matches a complete postgres placeholder ($1, $12,
@@ -107,7 +108,7 @@ func (q *Query[T]) Decrement(ctx context.Context, column string, amount ...int64
 // [Query.WithoutGlobalScope].
 func (q *Query[T]) incrementOrDecrement(ctx context.Context, column, op string, amount ...int64) error {
 	if err := validateIdentifier(column); err != nil {
-		return fmt.Errorf("velocity/orm: increment/decrement: %w", err)
+		return errchain.Errorf("velocity/orm: increment/decrement: %w", err)
 	}
 	if q.err != nil {
 		return q.err

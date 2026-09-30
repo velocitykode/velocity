@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/pipeline"
 )
@@ -161,7 +162,7 @@ func NewValidationMiddleware(validator func(context.Context, interface{}) error)
 // Handle validates the event
 func (m *ValidationMiddleware) Handle(ctx context.Context, event interface{}, next func(context.Context, interface{}) error) error {
 	if err := m.validator(ctx, event); err != nil {
-		return fmt.Errorf("event validation failed: %w", err)
+		return errchain.Errorf("event validation failed: %w", err)
 	}
 	return next(ctx, event)
 }
@@ -300,7 +301,7 @@ func (m *RetryMiddleware) Handle(ctx context.Context, event interface{}, next fu
 		}
 	}
 
-	return fmt.Errorf("event dispatch failed after %d retries: %w", m.maxRetries, err)
+	return errchain.Errorf("event dispatch failed after %d retries: %w", m.maxRetries, err)
 }
 
 // GetAttempts returns the number of attempts for an event

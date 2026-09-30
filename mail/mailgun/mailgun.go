@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/mail"
 )
 
@@ -86,7 +87,7 @@ func NewMailgunDriver(config mail.MailgunConfig, fromAddr, fromName string) (*Ma
 
 	u, err := url.Parse(endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/mail: mailgun endpoint is invalid: %w", err)
+		return nil, errchain.Errorf("velocity/mail: mailgun endpoint is invalid: %w", err)
 	}
 	if !strings.EqualFold(u.Scheme, "https") {
 		return nil, fmt.Errorf("velocity/mail: mailgun endpoint must use https, got %q", u.Scheme)
@@ -111,11 +112,11 @@ func (d *MailgunDriver) Send(ctx context.Context, msg *mail.Message) error {
 	writer := multipart.NewWriter(body)
 
 	if err := d.addFields(writer, msg); err != nil {
-		return fmt.Errorf("mail: failed to build mailgun request: %w", err)
+		return errchain.Errorf("mail: failed to build mailgun request: %w", err)
 	}
 
 	if err := d.addAttachments(writer, msg); err != nil {
-		return fmt.Errorf("mail: failed to add attachments: %w", err)
+		return errchain.Errorf("mail: failed to add attachments: %w", err)
 	}
 
 	writer.Close()
@@ -123,7 +124,7 @@ func (d *MailgunDriver) Send(ctx context.Context, msg *mail.Message) error {
 	url := fmt.Sprintf("%s/%s/messages", d.endpoint, d.domain)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, body)
 	if err != nil {
-		return fmt.Errorf("mail: failed to create mailgun request: %w", err)
+		return errchain.Errorf("mail: failed to create mailgun request: %w", err)
 	}
 
 	req.SetBasicAuth("api", d.apiKey)
@@ -131,7 +132,7 @@ func (d *MailgunDriver) Send(ctx context.Context, msg *mail.Message) error {
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("mail: mailgun request failed: %w", err)
+		return errchain.Errorf("mail: mailgun request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -145,7 +146,7 @@ func (d *MailgunDriver) Send(ctx context.Context, msg *mail.Message) error {
 	// bytes, so we do not attempt decoding at all.
 	if resp.StatusCode != http.StatusOK {
 		if _, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, mailgunErrorPreview+1)); readErr != nil {
-			return fmt.Errorf("mail: mailgun API error (status %d): read failed: %w", resp.StatusCode, readErr)
+			return errchain.Errorf("mail: mailgun API error (status %d): read failed: %w", resp.StatusCode, readErr)
 		}
 		return fmt.Errorf("mail: mailgun API error (status %d)", resp.StatusCode)
 	}
@@ -182,7 +183,7 @@ func (d *MailgunDriver) writeFromField(writer *multipart.Writer, msg *mail.Messa
 		from.Name = d.fromName
 	}
 	if err := from.Validate(); err != nil {
-		return fmt.Errorf("mail: mailgun From: %w", err)
+		return errchain.Errorf("mail: mailgun From: %w", err)
 	}
 	return writer.WriteField("from", formatAddress(from.Name, from.Email))
 }
@@ -195,7 +196,7 @@ func (d *MailgunDriver) writeFromField(writer *multipart.Writer, msg *mail.Messa
 func (d *MailgunDriver) writeRecipientFields(writer *multipart.Writer, msg *mail.Message) error {
 	for _, addr := range msg.GetTo() {
 		if err := addr.Validate(); err != nil {
-			return fmt.Errorf("mail: mailgun To: %w", err)
+			return errchain.Errorf("mail: mailgun To: %w", err)
 		}
 		if err := writer.WriteField("to", formatAddress(addr.Name, addr.Email)); err != nil {
 			return err
@@ -203,7 +204,7 @@ func (d *MailgunDriver) writeRecipientFields(writer *multipart.Writer, msg *mail
 	}
 	for _, addr := range msg.GetCC() {
 		if err := addr.Validate(); err != nil {
-			return fmt.Errorf("mail: mailgun Cc: %w", err)
+			return errchain.Errorf("mail: mailgun Cc: %w", err)
 		}
 		if err := writer.WriteField("cc", formatAddress(addr.Name, addr.Email)); err != nil {
 			return err
@@ -211,7 +212,7 @@ func (d *MailgunDriver) writeRecipientFields(writer *multipart.Writer, msg *mail
 	}
 	for _, addr := range msg.GetBCC() {
 		if err := addr.Validate(); err != nil {
-			return fmt.Errorf("mail: mailgun Bcc: %w", err)
+			return errchain.Errorf("mail: mailgun Bcc: %w", err)
 		}
 		if err := writer.WriteField("bcc", formatAddress(addr.Name, addr.Email)); err != nil {
 			return err
@@ -220,7 +221,7 @@ func (d *MailgunDriver) writeRecipientFields(writer *multipart.Writer, msg *mail
 	replyTo := msg.GetReplyTo()
 	if len(replyTo) > 0 {
 		if err := replyTo[0].Validate(); err != nil {
-			return fmt.Errorf("mail: mailgun Reply-To: %w", err)
+			return errchain.Errorf("mail: mailgun Reply-To: %w", err)
 		}
 		if err := writer.WriteField("h:Reply-To", formatAddress(replyTo[0].Name, replyTo[0].Email)); err != nil {
 			return err

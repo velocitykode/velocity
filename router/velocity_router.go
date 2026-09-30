@@ -428,7 +428,7 @@ func (r *VelocityRouterV2) ShareEventFailures(f *eventemit.Failures) {
 func (r *VelocityRouterV2) ValidateConfig() error {
 	tp, err := ParseTrustedProxies(r.TrustedProxies)
 	if err != nil {
-		return fmt.Errorf("velocity/router: trusted proxies: %w", err)
+		return errchain.Errorf("velocity/router: trusted proxies: %w", err)
 	}
 	r.parsedTrustedProxies.Store(tp)
 	return nil
@@ -1449,10 +1449,11 @@ func (r *VelocityRouterV2) logDefault(ctx *Context, err error, f *errorFacts, in
 			err = cause
 		}
 	}
-	// fmt contains a panicking Error method; the logger, in With or in
+	// errchain.Sprint contains a panicking Error method, a nested panic
+	// included; the logger, in With or in
 	// the line, is contained by fallbacklog.Write. Either way the caller
 	// goes on to answer the request and dispatch its terminal event.
-	kvs := []any{"error", fmt.Sprint(err)}
+	kvs := []any{"error", errchain.Sprint(err)}
 	var fields []any
 	if ctx != nil && ctx.Request != nil {
 		fields = ctx.LogFields()

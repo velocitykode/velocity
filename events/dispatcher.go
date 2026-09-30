@@ -12,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/goroutine"
@@ -461,7 +462,7 @@ func (d *DefaultDispatcher) dispatch(ctx context.Context, event interface{}, det
 		}
 		if listener.Async() && q != nil {
 			if err := q.Push(ctx, event, listener, 0); err != nil {
-				return fmt.Errorf("failed to queue listener: %w", err)
+				return errchain.Errorf("failed to queue listener: %w", err)
 			}
 			return nil
 		}
@@ -487,7 +488,7 @@ func (d *DefaultDispatcher) replayListener(ctx context.Context, event interface{
 		d.mu.RUnlock()
 		if q != nil {
 			if err := q.Push(ctx, event, listener, 0); err != nil {
-				return fmt.Errorf("failed to queue listener: %w", err)
+				return errchain.Errorf("failed to queue listener: %w", err)
 			}
 			return nil
 		}
@@ -668,7 +669,7 @@ func containDetached(event interface{}, fn func()) {
 			// Formatting a panic value can panic in turn (an error whose
 			// Error method panics); fallbacklog.Write contains that too.
 			fallbacklog.Write(nil, func(l contract.Logger) {
-				l.Error(detachedPanicMessage, "event", eventemit.EventName(event), "panic", fmt.Sprint(p))
+				l.Error(detachedPanicMessage, "event", eventemit.EventName(event), "panic", errchain.Sprint(p))
 			})
 		}
 	}()
@@ -759,7 +760,7 @@ func (d *DefaultDispatcher) DispatchAsync(ctx context.Context, event interface{}
 
 	return d.dispatchToListeners(event, func(listener Listener) error {
 		if err := q.Push(ctx, event, listener, 0); err != nil {
-			return fmt.Errorf("failed to queue listener: %w", err)
+			return errchain.Errorf("failed to queue listener: %w", err)
 		}
 		return nil
 	})
@@ -794,7 +795,7 @@ func (d *DefaultDispatcher) DispatchAfter(ctx context.Context, event interface{}
 
 	return d.dispatchToListeners(event, func(listener Listener) error {
 		if err := q.Push(ctx, event, listener, delay); err != nil {
-			return fmt.Errorf("failed to queue delayed listener: %w", err)
+			return errchain.Errorf("failed to queue delayed listener: %w", err)
 		}
 		return nil
 	})

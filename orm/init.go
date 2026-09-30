@@ -2,7 +2,6 @@ package orm
 
 import (
 	"context"
-	"fmt"
 
 	// modernc.org/sqlite is the pure-Go SQLite driver. It self-registers with
 	// database/sql under the name "sqlite" and is the always-on, cgo-free
@@ -12,6 +11,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/velocitykode/velocity/driverregistry"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm/drivers"
 )
 
@@ -56,7 +56,7 @@ func init() {
 		Drivers().Register(name, func(_ context.Context, cfg drivers.ConnectionConfig) (drivers.Driver, error) {
 			d := ctor()
 			if err := d.Connect(cfg); err != nil {
-				return nil, fmt.Errorf("velocity/orm: %s connect: %w", name, err)
+				return nil, errchain.Errorf("velocity/orm: %s connect: %w", name, err)
 			}
 			return d, nil
 		})

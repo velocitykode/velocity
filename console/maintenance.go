@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/velocitykode/prism"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/maintpath"
 )
 
@@ -39,10 +41,10 @@ type downPayload struct {
 func Down(opts DownOptions) error {
 	dir, err := maintpath.MarkerDirPath()
 	if err != nil {
-		return fmt.Errorf("resolve maintenance root: %w", err)
+		return errchain.Errorf("resolve maintenance root: %w", err)
 	}
 	if err := os.MkdirAll(dir, secretDirMode); err != nil {
-		return fmt.Errorf("failed to create %s directory: %w", maintpath.MarkerDir, err)
+		return errchain.Errorf("failed to create %s directory: %w", maintpath.MarkerDir, err)
 	}
 
 	payload := downPayload{
@@ -53,12 +55,12 @@ func Down(opts DownOptions) error {
 
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("failed to marshal maintenance payload: %w", err)
+		return errchain.Errorf("failed to marshal maintenance payload: %w", err)
 	}
 
 	path := filepath.Join(dir, maintpath.MarkerFile)
 	if err := os.WriteFile(path, data, secretFileMode); err != nil {
-		return fmt.Errorf("failed to write maintenance file: %w", err)
+		return errchain.Errorf("failed to write maintenance file: %w", err)
 	}
 	// os.WriteFile does NOT chmod a pre-existing file: a marker laid down
 	// by a previous release (or an operator) with looser perms would keep
@@ -66,13 +68,13 @@ func Down(opts DownOptions) error {
 	// invariant the next reader can rely on. Defends against the same
 	// drift seen in the H-31 audit note about M-40 being stale.
 	if err := os.Chmod(path, secretFileMode); err != nil {
-		return fmt.Errorf("failed to chmod maintenance file: %w", err)
+		return errchain.Errorf("failed to chmod maintenance file: %w", err)
 	}
 	// MkdirAll also leaves an existing directory's perms alone. Force
 	// 0o700 here so a pre-existing world-readable .vel does not leak the
 	// bypass secret through a second-hand directory listing.
 	if err := os.Chmod(dir, secretDirMode); err != nil {
-		return fmt.Errorf("failed to chmod maintenance dir: %w", err)
+		return errchain.Errorf("failed to chmod maintenance dir: %w", err)
 	}
 
 	prism.Success(fmt.Sprintf("Application is now in maintenance mode (marker: %s).", path))
@@ -86,10 +88,10 @@ func Down(opts DownOptions) error {
 func Up() error {
 	path, err := maintpath.MarkerPath()
 	if err != nil {
-		return fmt.Errorf("resolve maintenance root: %w", err)
+		return errchain.Errorf("resolve maintenance root: %w", err)
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove maintenance file: %w", err)
+		return errchain.Errorf("failed to remove maintenance file: %w", err)
 	}
 
 	prism.Success("Application is now live.")

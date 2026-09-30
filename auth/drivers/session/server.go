@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"reflect"
 	"sync/atomic"
@@ -208,7 +207,7 @@ func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
 		http.SetCookie(w, s.config.CookiePolicy().Cookie(s.config.Name, "", -1, s.config.HttpOnly))
 		if ss.savedID != "" {
 			if err := records.Delete(ctx, ss.savedID); err != nil {
-				return fmt.Errorf("velocity/auth/session: delete session record: %w", err)
+				return errchain.Errorf("velocity/auth/session: delete session record: %w", err)
 			}
 			ss.savedID = ""
 		}
@@ -239,7 +238,7 @@ func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
 	// a captured cookie naming the old id must not keep a live record.
 	if ss.savedID != "" && ss.savedID != id {
 		if err := records.Delete(ctx, ss.savedID); err != nil && !errchain.Is(err, auth.ErrSessionNotFound) {
-			return fmt.Errorf("velocity/auth/session: retire previous session record: %w", err)
+			return errchain.Errorf("velocity/auth/session: retire previous session record: %w", err)
 		}
 		ss.savedID = ""
 	}
@@ -264,7 +263,7 @@ func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
 		})
 	}
 	if err != nil {
-		return fmt.Errorf("velocity/auth/session: save session record: %w", err)
+		return errchain.Errorf("velocity/auth/session: save session record: %w", err)
 	}
 
 	// The cookie carries the id alone and ends when the policy ends the
@@ -398,11 +397,11 @@ func validSessionID(id string) bool {
 func encodeRecordPayload(data, flash map[string]any) (map[string]any, error) {
 	raw, err := json.Marshal(map[string]any{recordDataKey: data, recordFlashKey: flash})
 	if err != nil {
-		return nil, fmt.Errorf("velocity/auth/session: encode session: %w", err)
+		return nil, errchain.Errorf("velocity/auth/session: encode session: %w", err)
 	}
 	var out map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("velocity/auth/session: encode session: %w", err)
+		return nil, errchain.Errorf("velocity/auth/session: encode session: %w", err)
 	}
 	return out, nil
 }

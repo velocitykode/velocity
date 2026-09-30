@@ -87,19 +87,19 @@ func (p *Store[T]) resolve() {
 	// query paths are equally broken for a pointer T (orm.Model[*Admin]
 	// scans into **Admin), so this is a rejection, not a supported shape.
 	if modelName.Kind() != reflect.Struct {
-		p.err = fmt.Errorf("velocity/ormauth: %v is not a struct model; instantiate with the model type itself, not a pointer or interface (ormauth.New[Admin], not ormauth.New[*Admin])", modelName)
+		p.err = errchain.Errorf("velocity/ormauth: %v is not a struct model; instantiate with the model type itself, not a pointer or interface (ormauth.New[Admin], not ormauth.New[*Admin])", modelName)
 		return
 	}
 
 	p.meta = orm.MetaFor(modelName)
 	if p.meta == nil {
-		p.err = fmt.Errorf("velocity/ormauth: %v has no ORM metadata", modelName)
+		p.err = errchain.Errorf("velocity/ormauth: %v has no ORM metadata", modelName)
 		return
 	}
 
 	pk, ok := p.meta.PrimaryKeyColumn()
 	if !ok {
-		p.err = fmt.Errorf("velocity/ormauth: model %v declares no primary key; auth needs one for GetAuthIdentifier", modelName)
+		p.err = errchain.Errorf("velocity/ormauth: model %v declares no primary key; auth needs one for GetAuthIdentifier", modelName)
 		return
 	}
 	p.pk = pk
@@ -111,7 +111,7 @@ func (p *Store[T]) resolve() {
 	// The identifier column is only ever used in a WHERE clause, so it
 	// needs to exist but its Go type is irrelevant.
 	if _, ok := p.meta.ColumnByName(p.opts.IdentifierColumn); !ok {
-		p.err = fmt.Errorf("velocity/ormauth: model %v has no column %q (configure it with ormauth.WithIdentifierColumn); columns: %v",
+		p.err = errchain.Errorf("velocity/ormauth: model %v has no column %q (configure it with ormauth.WithIdentifierColumn); columns: %v",
 			modelName, p.opts.IdentifierColumn, columnNames(p.meta))
 		return
 	}
@@ -122,7 +122,7 @@ func (p *Store[T]) resolve() {
 	// not where to persist it.
 	remember, ok := p.meta.ColumnByName(p.opts.RememberTokenColumn)
 	if !ok {
-		p.err = fmt.Errorf("velocity/ormauth: model %v has no column %q (configure it with ormauth.WithRememberTokenColumn); columns: %v",
+		p.err = errchain.Errorf("velocity/ormauth: model %v has no column %q (configure it with ormauth.WithRememberTokenColumn); columns: %v",
 			modelName, p.opts.RememberTokenColumn, columnNames(p.meta))
 		return
 	}
@@ -133,7 +133,7 @@ func (p *Store[T]) resolve() {
 	// declares no policy at all rejects every map key, so remember-me
 	// would fail on first use at runtime; refuse at startup instead.
 	if implicitDeny(&zero) {
-		p.err = fmt.Errorf("velocity/ormauth: model %v declares no mass-assignment policy, so writing %q would be rejected; declare AssignableFields() including %q (or ProtectedFields()/AllowAllColumns)",
+		p.err = errchain.Errorf("velocity/ormauth: model %v declares no mass-assignment policy, so writing %q would be rejected; declare AssignableFields() including %q (or ProtectedFields()/AllowAllColumns)",
 			modelName, p.opts.RememberTokenColumn, p.opts.RememberTokenColumn)
 		return
 	}
@@ -143,18 +143,18 @@ func (p *Store[T]) resolve() {
 	}
 
 	if err := stringFieldKind(p.meta, remember); err != nil {
-		p.err = fmt.Errorf("velocity/ormauth: model %v column %q: %w", modelName, p.opts.RememberTokenColumn, err)
+		p.err = errchain.Errorf("velocity/ormauth: model %v column %q: %w", modelName, p.opts.RememberTokenColumn, err)
 		return
 	}
 
 	password, ok := p.meta.ColumnByName(p.opts.PasswordColumn)
 	if !ok {
-		p.err = fmt.Errorf("velocity/ormauth: model %v has no column %q (configure it with ormauth.WithPasswordColumn); columns: %v",
+		p.err = errchain.Errorf("velocity/ormauth: model %v has no column %q (configure it with ormauth.WithPasswordColumn); columns: %v",
 			modelName, p.opts.PasswordColumn, columnNames(p.meta))
 		return
 	}
 	if err := stringFieldKind(p.meta, password); err != nil {
-		p.err = fmt.Errorf("velocity/ormauth: model %v column %q: %w", modelName, p.opts.PasswordColumn, err)
+		p.err = errchain.Errorf("velocity/ormauth: model %v column %q: %w", modelName, p.opts.PasswordColumn, err)
 		return
 	}
 	p.passwordPath = password.IndexPath
@@ -292,11 +292,11 @@ func (p *Store[T]) wrap(model *T) (auth.Authenticatable, error) {
 
 	password, err := readString(value.FieldByIndex(p.passwordPath))
 	if err != nil {
-		return nil, fmt.Errorf("velocity/ormauth: reading %q: %w", p.opts.PasswordColumn, err)
+		return nil, errchain.Errorf("velocity/ormauth: reading %q: %w", p.opts.PasswordColumn, err)
 	}
 	remember, err := readString(value.FieldByIndex(p.rememberPath))
 	if err != nil {
-		return nil, fmt.Errorf("velocity/ormauth: reading %q: %w", p.opts.RememberTokenColumn, err)
+		return nil, errchain.Errorf("velocity/ormauth: reading %q: %w", p.opts.RememberTokenColumn, err)
 	}
 
 	return &mappedUser[T]{
@@ -350,5 +350,5 @@ func (u *mappedUser[T]) SetRememberToken(token string) {
 // String renders the adapter for logs without leaking the hash.
 func (u *mappedUser[T]) String() string {
 	var zero T
-	return fmt.Sprintf("ormauth.User<%T %v>", zero, u.id)
+	return errchain.Sprintf("ormauth.User<%T %v>", zero, u.id)
 }

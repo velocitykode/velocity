@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/mail"
 )
 
@@ -100,26 +101,26 @@ func (d *LocalDriver) Send(ctx context.Context, msg *mail.Message) error {
 // CR/LF in either Email or Name is rejected before serialisation.
 func validateMessageAddresses(msg *mail.Message) error {
 	if err := msg.GetFrom().Validate(); err != nil {
-		return fmt.Errorf("mail: smtp From: %w", err)
+		return errchain.Errorf("mail: smtp From: %w", err)
 	}
 	for _, a := range msg.GetTo() {
 		if err := a.Validate(); err != nil {
-			return fmt.Errorf("mail: smtp To: %w", err)
+			return errchain.Errorf("mail: smtp To: %w", err)
 		}
 	}
 	for _, a := range msg.GetCC() {
 		if err := a.Validate(); err != nil {
-			return fmt.Errorf("mail: smtp Cc: %w", err)
+			return errchain.Errorf("mail: smtp Cc: %w", err)
 		}
 	}
 	for _, a := range msg.GetBCC() {
 		if err := a.Validate(); err != nil {
-			return fmt.Errorf("mail: smtp Bcc: %w", err)
+			return errchain.Errorf("mail: smtp Bcc: %w", err)
 		}
 	}
 	for _, a := range msg.GetReplyTo() {
 		if err := a.Validate(); err != nil {
-			return fmt.Errorf("mail: smtp Reply-To: %w", err)
+			return errchain.Errorf("mail: smtp Reply-To: %w", err)
 		}
 	}
 	return nil
@@ -178,12 +179,12 @@ func (d *LocalDriver) sendViaImplicitTLS(ctx context.Context, addr, from string,
 	dialer := &tls.Dialer{Config: &tls.Config{ServerName: d.host, MinVersion: tls.VersionTLS12}}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return fmt.Errorf("velocity/mail: failed to dial smtps: %w", err)
+		return errchain.Errorf("velocity/mail: failed to dial smtps: %w", err)
 	}
 	client, err := smtp.NewClient(conn, d.host)
 	if err != nil {
 		conn.Close()
-		return fmt.Errorf("velocity/mail: failed to create smtp client: %w", err)
+		return errchain.Errorf("velocity/mail: failed to create smtp client: %w", err)
 	}
 	defer client.Close()
 
@@ -196,12 +197,12 @@ func (d *LocalDriver) sendViaStartTLS(ctx context.Context, addr, from string, re
 	dialer := newContextDialer(ctx)
 	conn, err := dialer("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("velocity/mail: failed to dial smtp: %w", err)
+		return errchain.Errorf("velocity/mail: failed to dial smtp: %w", err)
 	}
 	client, err := smtp.NewClient(conn, d.host)
 	if err != nil {
 		conn.Close()
-		return fmt.Errorf("velocity/mail: failed to create smtp client: %w", err)
+		return errchain.Errorf("velocity/mail: failed to create smtp client: %w", err)
 	}
 	defer client.Close()
 
@@ -210,7 +211,7 @@ func (d *LocalDriver) sendViaStartTLS(ctx context.Context, addr, from string, re
 		return ErrPlainAuthRefused
 	}
 	if err := client.StartTLS(&tls.Config{ServerName: d.host, MinVersion: tls.VersionTLS12}); err != nil {
-		return fmt.Errorf("velocity/mail: starttls failed: %w", err)
+		return errchain.Errorf("velocity/mail: starttls failed: %w", err)
 	}
 
 	auth := smtp.PlainAuth("", d.username, d.password, d.host)
@@ -221,27 +222,27 @@ func (d *LocalDriver) sendViaStartTLS(ctx context.Context, addr, from string, re
 func (d *LocalDriver) runSMTP(client *smtp.Client, auth smtp.Auth, from string, recipients []string, body []byte) error {
 	if ok, _ := client.Extension("AUTH"); ok && auth != nil {
 		if err := client.Auth(auth); err != nil {
-			return fmt.Errorf("velocity/mail: smtp auth failed: %w", err)
+			return errchain.Errorf("velocity/mail: smtp auth failed: %w", err)
 		}
 	}
 	if err := client.Mail(from); err != nil {
-		return fmt.Errorf("velocity/mail: mail from failed: %w", err)
+		return errchain.Errorf("velocity/mail: mail from failed: %w", err)
 	}
 	for _, rcpt := range recipients {
 		if err := client.Rcpt(rcpt); err != nil {
-			return fmt.Errorf("velocity/mail: rcpt to failed: %w", err)
+			return errchain.Errorf("velocity/mail: rcpt to failed: %w", err)
 		}
 	}
 	w, err := client.Data()
 	if err != nil {
-		return fmt.Errorf("velocity/mail: data failed: %w", err)
+		return errchain.Errorf("velocity/mail: data failed: %w", err)
 	}
 	if _, err := w.Write(body); err != nil {
 		_ = w.Close()
-		return fmt.Errorf("velocity/mail: write body failed: %w", err)
+		return errchain.Errorf("velocity/mail: write body failed: %w", err)
 	}
 	if err := w.Close(); err != nil {
-		return fmt.Errorf("velocity/mail: close body failed: %w", err)
+		return errchain.Errorf("velocity/mail: close body failed: %w", err)
 	}
 	return client.Quit()
 }
@@ -275,7 +276,7 @@ func (d *LocalDriver) sendViaSendmail(ctx context.Context, msg *mail.Message) er
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("velocity/mail: sendmail failed: %w, output: %s", err, string(output))
+		return errchain.Errorf("velocity/mail: sendmail failed: %w, output: %s", err, string(output))
 	}
 
 	return nil

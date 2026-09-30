@@ -44,7 +44,6 @@ package eventemit
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -182,7 +181,7 @@ func (f *Failures) callHook(ctx context.Context, logger contract.Logger, err err
 			f.count.Add(1)
 			if f.hookPanicLogged.CompareAndSwap(false, true) {
 				WriteLine(ctx, logger, func(l contract.Logger) {
-					l.Error(HookPanicMessage, "event", name, "panic", fmt.Sprint(p))
+					l.Error(HookPanicMessage, "event", name, "panic", errchain.Sprint(p))
 				})
 			}
 		}
@@ -298,7 +297,7 @@ func EventName(event any) string {
 	if name := contractName(event); name != "" {
 		return name
 	}
-	return fmt.Sprintf("%T", event)
+	return errchain.Sprintf("%T", event)
 }
 
 // contractName returns the event's Name when it implements

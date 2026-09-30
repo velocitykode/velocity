@@ -1,9 +1,8 @@
 package validation
 
 import (
-	"fmt"
-
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // validateNormalized runs an already-normalized rule set against data.
@@ -24,7 +23,7 @@ func (v *defaultValidator) validateNormalized(data interface{}, rs normalizedRul
 
 	dataMap, err := toMap(data)
 	if err != nil {
-		return nil, fmt.Errorf("failed to convert data to map: %w", err)
+		return nil, errchain.Errorf("failed to convert data to map: %w", err)
 	}
 
 	for field, fieldRules := range rs.fields {
@@ -56,7 +55,7 @@ func runNormalized(data map[string]interface{}, rs normalizedRuleSet, extra map[
 			return nil, err
 		}
 		if _, carried := rs.custom[name]; carried {
-			return nil, fmt.Errorf("%w: custom rule %q shadows the %q rule supplied by the caller", ErrInvalidRule, name, name)
+			return nil, errchain.Errorf("%w: custom rule %q shadows the %q rule supplied by the caller", ErrInvalidRule, name, name)
 		}
 	}
 

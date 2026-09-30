@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // JobBatchesMigrationSQL returns the CREATE TABLE DDL for the
@@ -176,7 +178,7 @@ func EnsureJobBatchesTable(ctx context.Context, db *sql.DB, driver string) error
 	stmts = append(stmts, JobDedupeMigrationSQL(driver)...)
 	for _, stmt := range stmts {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("velocity/queue: job_batches schema: %w", err)
+			return errchain.Errorf("velocity/queue: job_batches schema: %w", err)
 		}
 	}
 	return nil

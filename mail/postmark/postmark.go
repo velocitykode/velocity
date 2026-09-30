@@ -11,6 +11,7 @@ import (
 	netmail "net/mail"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/mail"
 )
 
@@ -83,12 +84,12 @@ func (d *PostmarkDriver) Send(ctx context.Context, msg *mail.Message) error {
 
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("mail: failed to marshal postmark request: %w", err)
+		return errchain.Errorf("mail: failed to marshal postmark request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.postmarkapp.com/email", bytes.NewBuffer(jsonData))
 	if err != nil {
-		return fmt.Errorf("mail: failed to create postmark request: %w", err)
+		return errchain.Errorf("mail: failed to create postmark request: %w", err)
 	}
 
 	req.Header.Set("Accept", "application/json")
@@ -98,7 +99,7 @@ func (d *PostmarkDriver) Send(ctx context.Context, msg *mail.Message) error {
 	// Send request
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("velocity/mail: postmark request failed: %w", err)
+		return errchain.Errorf("velocity/mail: postmark request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -110,7 +111,7 @@ func (d *PostmarkDriver) Send(ctx context.Context, msg *mail.Message) error {
 	if resp.StatusCode != http.StatusOK {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, postmarkErrorPreview+1)) //nolint:forbidigo // bounded by io.LimitReader above
 		if readErr != nil {
-			return fmt.Errorf("velocity/mail: postmark api error (status %d): read failed: %w", resp.StatusCode, readErr)
+			return errchain.Errorf("velocity/mail: postmark api error (status %d): read failed: %w", resp.StatusCode, readErr)
 		}
 		var errorResp struct {
 			ErrorCode int    `json:"ErrorCode"`
@@ -119,7 +120,7 @@ func (d *PostmarkDriver) Send(ctx context.Context, msg *mail.Message) error {
 		if decodeErr := json.Unmarshal(body, &errorResp); decodeErr != nil {
 			// Decoder failed — we deliberately do NOT include the raw body in
 			// the error to avoid leaking response data.
-			return fmt.Errorf("velocity/mail: postmark api error (status %d): response not json: %w", resp.StatusCode, decodeErr)
+			return errchain.Errorf("velocity/mail: postmark api error (status %d): response not json: %w", resp.StatusCode, decodeErr)
 		}
 		if errorResp.ErrorCode != 0 {
 			return fmt.Errorf("velocity/mail: postmark api error (status %d, code %d)", resp.StatusCode, errorResp.ErrorCode)
@@ -155,26 +156,26 @@ func (d *PostmarkDriver) buildPayload(msg *mail.Message) map[string]interface{} 
 // on the common path.
 func validatePostmarkAddresses(msg *mail.Message) error {
 	if err := msg.GetFrom().Validate(); err != nil {
-		return fmt.Errorf("mail: postmark From: %w", err)
+		return errchain.Errorf("mail: postmark From: %w", err)
 	}
 	for _, a := range msg.GetTo() {
 		if err := a.Validate(); err != nil {
-			return fmt.Errorf("mail: postmark To: %w", err)
+			return errchain.Errorf("mail: postmark To: %w", err)
 		}
 	}
 	for _, a := range msg.GetCC() {
 		if err := a.Validate(); err != nil {
-			return fmt.Errorf("mail: postmark Cc: %w", err)
+			return errchain.Errorf("mail: postmark Cc: %w", err)
 		}
 	}
 	for _, a := range msg.GetBCC() {
 		if err := a.Validate(); err != nil {
-			return fmt.Errorf("mail: postmark Bcc: %w", err)
+			return errchain.Errorf("mail: postmark Bcc: %w", err)
 		}
 	}
 	for _, a := range msg.GetReplyTo() {
 		if err := a.Validate(); err != nil {
-			return fmt.Errorf("mail: postmark Reply-To: %w", err)
+			return errchain.Errorf("mail: postmark Reply-To: %w", err)
 		}
 	}
 	return nil

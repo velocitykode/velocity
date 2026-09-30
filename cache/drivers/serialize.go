@@ -2,9 +2,10 @@ package drivers
 
 import (
 	"encoding/json"
-	"fmt"
 	"reflect"
 	"unicode/utf8"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // rawStringFrame is the one-byte prefix marking a payload as raw string bytes
@@ -78,7 +79,7 @@ func UnmarshalValue(data []byte) (interface{}, error) {
 func MatchesStoredValue(stored []byte, expected interface{}) (bool, error) {
 	have, err := UnmarshalValue(stored)
 	if err != nil {
-		return false, fmt.Errorf("decode stored value: %w", err)
+		return false, errchain.Errorf("decode stored value: %w", err)
 	}
 	want, err := expectedShape(expected)
 	if err != nil {
@@ -94,11 +95,11 @@ func MatchesStoredValue(stored []byte, expected interface{}) (bool, error) {
 func expectedShape(expected interface{}) (interface{}, error) {
 	encoded, err := MarshalValue(expected)
 	if err != nil {
-		return nil, fmt.Errorf("encode expected value: %w", err)
+		return nil, errchain.Errorf("encode expected value: %w", err)
 	}
 	want, err := UnmarshalValue(encoded)
 	if err != nil {
-		return nil, fmt.Errorf("decode expected value: %w", err)
+		return nil, errchain.Errorf("decode expected value: %w", err)
 	}
 	return want, nil
 }

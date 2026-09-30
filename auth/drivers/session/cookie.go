@@ -19,6 +19,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
@@ -337,7 +338,7 @@ func (s *CookieStore) Save(w http.ResponseWriter, session auth.Session) error {
 	// Refuse a cookie the browser would drop: nothing is sent, and the
 	// session stays modified so the error is the whole outcome.
 	if size := len(cookie.String()); size > maxCookieBytes {
-		return fmt.Errorf("%w: %d bytes", ErrCookieTooLarge, size)
+		return errchain.Errorf("%w: %d bytes", ErrCookieTooLarge, size)
 	}
 	http.SetCookie(w, cookie)
 

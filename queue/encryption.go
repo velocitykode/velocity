@@ -115,7 +115,7 @@ func sealQuarantineBlob(raw string) (string, bool) {
 	sealed, err := enc.EncryptBytesWithAAD([]byte(raw), quarantineAAD)
 	if err != nil {
 		sum := sha256.Sum256([]byte(raw))
-		return fmt.Sprintf(
+		return errchain.Sprintf(
 			"velocity/queue: poison payload redacted (quarantine seal failed: %v); sha256=%s len=%d",
 			err, hex.EncodeToString(sum[:]), len(raw),
 		), true
@@ -160,14 +160,14 @@ func sealPayload(p *Payload) error {
 		// not bound to the job type, so a sealed Data blob could be
 		// replayed under a different job type. No EncryptBytes fallback.
 		if errchain.Is(err, contract.ErrInvalidCipher) {
-			return fmt.Errorf("velocity/queue: payload encryption requires an AEAD cipher (AES-GCM) to bind ciphertext to the job type; set CRYPTO_CIPHER to a GCM cipher or disable QUEUE_ENCRYPT: %w", err)
+			return errchain.Errorf("velocity/queue: payload encryption requires an AEAD cipher (AES-GCM) to bind ciphertext to the job type; set CRYPTO_CIPHER to a GCM cipher or disable QUEUE_ENCRYPT: %w", err)
 		}
-		return fmt.Errorf("velocity/queue: failed to encrypt payload data: %w", err)
+		return errchain.Errorf("velocity/queue: failed to encrypt payload data: %w", err)
 	}
 
 	quoted, err := json.Marshal(sealed)
 	if err != nil {
-		return fmt.Errorf("velocity/queue: failed to encode encrypted payload data: %w", err)
+		return errchain.Errorf("velocity/queue: failed to encode encrypted payload data: %w", err)
 	}
 	p.Data = quoted
 	p.Encrypted = true
@@ -213,7 +213,7 @@ func openPayload(p *Payload, signatureVerified bool) error {
 
 	var envelope string
 	if err := json.Unmarshal(p.Data, &envelope); err != nil {
-		return fmt.Errorf("velocity/queue: malformed encrypted payload envelope: %w", err)
+		return errchain.Errorf("velocity/queue: malformed encrypted payload envelope: %w", err)
 	}
 
 	plaintext, err := enc.DecryptBytesWithAAD(envelope, payloadAAD(p.Type))
@@ -222,7 +222,7 @@ func openPayload(p *Payload, signatureVerified bool) error {
 		// so any failure here (non-AEAD cipher, AEAD auth, wrong key,
 		// malformed envelope) is surfaced for quarantine. No DecryptBytes
 		// fallback that would accept ciphertext unbound from the job type.
-		return fmt.Errorf("velocity/queue: failed to decrypt payload data: %w", err)
+		return errchain.Errorf("velocity/queue: failed to decrypt payload data: %w", err)
 	}
 
 	p.Data = plaintext

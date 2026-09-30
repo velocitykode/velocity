@@ -14,6 +14,7 @@ import (
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // RateLimitConfig holds configuration for rate limiting middleware.
@@ -414,7 +415,7 @@ func RateLimitByIPE(requests int, window time.Duration, opts ...RateLimitOption)
 	}
 	extra, err := ParseTrustedProxies(cfg.TrustedProxies)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/router: rate limit: %w", err)
+		return nil, errchain.Errorf("velocity/router: rate limit: %w", err)
 	}
 	extraNets := extra.IPNets()
 
@@ -463,7 +464,7 @@ func (r *VelocityRouterV2) ThrottleByIPE(requests int, window time.Duration, opt
 	}
 	extra, err := ParseTrustedProxies(cfg.TrustedProxies)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/router: rate limit: %w", err)
+		return nil, errchain.Errorf("velocity/router: rate limit: %w", err)
 	}
 
 	// Capture the router-level trusted-proxy set at registration time

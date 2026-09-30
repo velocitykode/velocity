@@ -2,11 +2,12 @@ package websocket
 
 import (
 	"context"
-	"fmt"
 	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -244,7 +245,7 @@ func (c *Client) closeSend() {
 
 // errClientClosed is the error a send to a closed client returns.
 func (c *Client) errClientClosed() error {
-	return fmt.Errorf("client %s disconnected: %w", sanitizeForLog(c.ID), ErrClientNotFound)
+	return errchain.Errorf("client %s disconnected: %w", sanitizeForLog(c.ID), ErrClientNotFound)
 }
 
 // SendMessage enqueues msg for the client without blocking. A client that

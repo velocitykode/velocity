@@ -2,9 +2,10 @@ package markdown
 
 import (
 	"bytes"
-	"fmt"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
@@ -40,7 +41,7 @@ func ParseFrontMatter(src []byte) (meta map[string]any, body []byte, err error) 
 			raw := rest[:offset]
 			if len(bytes.TrimSpace(raw)) > 0 {
 				if err := yaml.Unmarshal(raw, &meta); err != nil {
-					return nil, nil, fmt.Errorf("velocity/markdown: front matter: %w", err)
+					return nil, nil, errchain.Errorf("velocity/markdown: front matter: %w", err)
 				}
 				if meta == nil {
 					meta = map[string]any{}

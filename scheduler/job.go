@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/drain"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -325,7 +325,7 @@ func (j *Job) runInternal(ctx, tctx context.Context, shutdownGrace time.Duration
 		if release != nil {
 			release()
 		}
-		return fmt.Errorf("velocity/scheduler: job %s: %w", j.name, ErrJobRunning)
+		return errchain.Errorf("velocity/scheduler: job %s: %w", j.name, ErrJobRunning)
 	}
 	j.running = true
 	j.lastRun = time.Now()

@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/velocitykode/prism"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // KeyGenerate generates a new APP_KEY and writes it to .env.
@@ -15,7 +17,7 @@ func KeyGenerate() error {
 	// Generate 32-byte key
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
-		return fmt.Errorf("failed to generate key: %w", err)
+		return errchain.Errorf("failed to generate key: %w", err)
 	}
 
 	// crypto.parseKey only base64-decodes values prefixed with "base64:".
@@ -30,18 +32,18 @@ func KeyGenerate() error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			if err := os.WriteFile(envPath, []byte(fmt.Sprintf("APP_KEY=%s\n", encodedKey)), secretFileMode); err != nil {
-				return fmt.Errorf("failed to create .env: %w", err)
+				return errchain.Errorf("failed to create .env: %w", err)
 			}
 			// os.WriteFile does NOT chmod a pre-existing file; the file may
 			// have been raced into existence between Stat and WriteFile.
 			// Force the tight mode so a loose pre-existing .env is tightened.
 			if err := os.Chmod(envPath, secretFileMode); err != nil {
-				return fmt.Errorf("failed to tighten .env permissions: %w", err)
+				return errchain.Errorf("failed to tighten .env permissions: %w", err)
 			}
 			prism.Success("Created .env with APP_KEY")
 			return nil
 		}
-		return fmt.Errorf("failed to read .env: %w", err)
+		return errchain.Errorf("failed to read .env: %w", err)
 	}
 
 	lines := strings.Split(string(content), "\n")
@@ -59,13 +61,13 @@ func KeyGenerate() error {
 	}
 
 	if err := os.WriteFile(envPath, []byte(strings.Join(lines, "\n")), secretFileMode); err != nil {
-		return fmt.Errorf("failed to update .env: %w", err)
+		return errchain.Errorf("failed to update .env: %w", err)
 	}
 	// .env carries APP_KEY and other secrets; os.WriteFile preserves the
 	// perms of a pre-existing file, so an older 0o644 .env would stay
 	// world-readable across a `key generate` run. Force the tight mode.
 	if err := os.Chmod(envPath, secretFileMode); err != nil {
-		return fmt.Errorf("failed to tighten .env permissions: %w", err)
+		return errchain.Errorf("failed to tighten .env permissions: %w", err)
 	}
 
 	prism.Success("Application key set successfully")

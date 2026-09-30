@@ -6,6 +6,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/driverregistry"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // drivers is the canonical Velocity driver registry for mail. Driver
@@ -108,7 +109,7 @@ func NewMailerWithContext(ctx context.Context, config MailConfig) (Mailer, error
 
 	m, err := drivers.Resolve(ctx, driver, config)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/mail: %w", err)
+		return nil, errchain.Errorf("velocity/mail: %w", err)
 	}
 	return &checkedMailer{inner: m}, nil
 }

@@ -3,7 +3,6 @@ package schemes
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"mime"
 	"net"
@@ -18,6 +17,7 @@ import (
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 )
 
@@ -546,7 +546,7 @@ func (g *JWTScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	// above, so the immediate logout still has effect.
 	userIDStr, _ := claims.UserID.(string)
 	if userIDStr == "" && claims.UserID != nil {
-		userIDStr = fmt.Sprintf("%v", claims.UserID)
+		userIDStr = errchain.Sprintf("%v", claims.UserID)
 	}
 	if userIDStr != "" {
 		_, _ = g.jwtManager.BumpRefreshGeneration(userIDStr)

@@ -46,7 +46,9 @@ func (d *popErrDriver) FailedCtx(context.Context, Job, error, string) error {
 	return nil
 }
 
-// A pop error whose Is panics, or whose chain loops, is a worker error
+// A pop error whose Is panics, whose Error panics with a value whose own
+// Error panics (fmt re-panics on that one), or whose chain loops, is a
+// worker error
 // like any other: the loop logs it, backs off and polls again, and Stop
 // returns.
 func TestWorker_HostilePopErrorKeepsPolling(t *testing.T) {
@@ -56,6 +58,7 @@ func TestWorker_HostilePopErrorKeepsPolling(t *testing.T) {
 	}{
 		{"Is panics", isPanics{}},
 		{"loop", &selfUnwrap{}},
+		{"Error panics nested", hostile.PanicError{Nested: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := &popErrDriver{err: tc.err}
@@ -71,8 +74,9 @@ func TestWorker_HostilePopErrorKeepsPolling(t *testing.T) {
 	}
 }
 
-// A job whose handler returns an error whose Is panics, or whose chain
-// loops, while the worker runs is the job's failure: it is failed for good
+// A job whose handler returns an error whose Is panics, whose Error
+// panics nested, or whose chain loops, while the worker runs is the job's
+// failure: it is failed for good
 // (one attempt allowed), not taken for a shutdown abort.
 func TestWorker_HostileHandlerErrorFailsTheJob(t *testing.T) {
 	for _, tc := range []struct {
@@ -81,6 +85,7 @@ func TestWorker_HostileHandlerErrorFailsTheJob(t *testing.T) {
 	}{
 		{"Is panics", isPanics{}},
 		{"loop", &selfUnwrap{}},
+		{"Error panics nested", hostile.PanicError{Nested: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := &popErrDriver{job: hashCountJob{N: 1}}

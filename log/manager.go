@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/teardown"
 )
@@ -61,7 +62,7 @@ func (m *Manager) Channel(name string) (Logger, error) {
 
 	logger, err := m.createLogger(channelConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create logger for channel %s: %w", name, err)
+		return nil, errchain.Errorf("failed to create logger for channel %s: %w", name, err)
 	}
 
 	// Re-acquire lock to store the logger. We released the lock during
@@ -121,7 +122,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	children := m.channels
 	m.channels = make(map[string]Logger)
 	wait := m.shutdowns.Detach(children, func(name string, err error) error {
-		return fmt.Errorf("velocity/log: shutdown channel %q: %w", name, err)
+		return errchain.Errorf("velocity/log: shutdown channel %q: %w", name, err)
 	})
 	m.mu.Unlock()
 	return wait(ctx)
@@ -155,7 +156,7 @@ func (m *Manager) createLogger(cfg ChannelConfig) (Logger, error) {
 		for _, channelName := range channelNames {
 			logger, err := m.Channel(channelName)
 			if err != nil {
-				childErrs = append(childErrs, fmt.Errorf("velocity/log: stack driver: child %q: %w", channelName, err))
+				childErrs = append(childErrs, errchain.Errorf("velocity/log: stack driver: child %q: %w", channelName, err))
 				continue
 			}
 			loggers = append(loggers, logger)

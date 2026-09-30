@@ -153,7 +153,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	children := m.channels
 	m.channels = make(map[string]Channel)
 	wait := m.shutdowns.Detach(children, func(name string, err error) error {
-		return fmt.Errorf("velocity/notification: shutdown channel %q: %w", name, err)
+		return errchain.Errorf("velocity/notification: shutdown channel %q: %w", name, err)
 	})
 	m.generation++
 	m.mu.Unlock()
@@ -189,7 +189,7 @@ func (m *Manager) Channel(name string) (Channel, error) {
 		if ce, ok := errchain.As[*createError](err); ok {
 			return nil, ce.err
 		}
-		return nil, fmt.Errorf("velocity/notification: channel %q: %w", name, err)
+		return nil, errchain.Errorf("velocity/notification: channel %q: %w", name, err)
 	}
 	return ch, nil
 }
@@ -242,7 +242,7 @@ func (m *Manager) createAndRegister(name string) (Channel, error) {
 // registered, contained, and returns its error.
 func disposeChannel(name string, ch Channel) error {
 	if err := teardown.Close(context.Background(), ch); err != nil {
-		return fmt.Errorf("velocity/notification: shut down unregistered channel %q: %w", name, err)
+		return errchain.Errorf("velocity/notification: shut down unregistered channel %q: %w", name, err)
 	}
 	return nil
 }
@@ -350,7 +350,7 @@ func (m *Manager) SendMany(ctx context.Context, notifiables []interface{}, notif
 					}
 					m.dispatchNotificationFailed(spanCtx, n, notification, "", err, 0)
 					errsMu.Lock()
-					errs = append(errs, fmt.Errorf("velocity/notification: send many panic: %w", err))
+					errs = append(errs, errchain.Errorf("velocity/notification: send many panic: %w", err))
 					errsMu.Unlock()
 				}
 			}()
@@ -365,7 +365,7 @@ func (m *Manager) SendMany(ctx context.Context, notifiables []interface{}, notif
 	wg.Wait()
 
 	if len(errs) > 0 {
-		return fmt.Errorf("velocity/notification: %d of %d sends failed: %w", len(errs), len(notifiables), errors.Join(errs...))
+		return errchain.Errorf("velocity/notification: %d of %d sends failed: %w", len(errs), len(notifiables), errors.Join(errs...))
 	}
 	return nil
 }
@@ -383,7 +383,7 @@ func (m *Manager) sendViaChannel(ctx context.Context, channelName string, notifi
 	ch, err := m.Channel(channelName)
 	if err != nil {
 		m.dispatchNotificationFailed(ctx, notifiable, notification, channelName, err, 0)
-		return fmt.Errorf("velocity/notification: channel %q: %w", channelName, err)
+		return errchain.Errorf("velocity/notification: channel %q: %w", channelName, err)
 	}
 
 	start := time.Now()
@@ -392,7 +392,7 @@ func (m *Manager) sendViaChannel(ctx context.Context, channelName string, notifi
 
 	if err != nil {
 		m.dispatchNotificationFailed(ctx, notifiable, notification, channelName, err, duration)
-		return fmt.Errorf("velocity/notification: channel %q: %w", channelName, err)
+		return errchain.Errorf("velocity/notification: channel %q: %w", channelName, err)
 	}
 
 	m.dispatchNotificationSent(ctx, notifiable, notification, channelName, duration)

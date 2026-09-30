@@ -11,11 +11,13 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/events"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
@@ -707,7 +709,7 @@ func parseSameSiteStrict(envName, value string) (http.SameSite, error) {
 	case "none":
 		return http.SameSiteNoneMode, nil
 	default:
-		return http.SameSiteLaxMode, fmt.Errorf("%w: %s=%q is not one of strict|lax|none", ErrInvalidConfig, envName, value)
+		return http.SameSiteLaxMode, errchain.Errorf("%w: %s=%q is not one of strict|lax|none", ErrInvalidConfig, envName, value)
 	}
 }
 
@@ -732,41 +734,41 @@ func parseSameSiteStrict(envName, value string) (http.SameSite, error) {
 func (c Config) Validate() error {
 	if c.Port != "" {
 		if _, err := strconv.Atoi(c.Port); err != nil {
-			return fmt.Errorf("%w: APP_PORT=%q is not a valid port number", ErrInvalidConfig, c.Port)
+			return errchain.Errorf("%w: APP_PORT=%q is not a valid port number", ErrInvalidConfig, c.Port)
 		}
 	}
 	if c.ReadTimeout < 0 || c.WriteTimeout < 0 || c.IdleTimeout < 0 || c.ReadHeaderTimeout < 0 {
-		return fmt.Errorf("%w: server timeouts must be non-negative", ErrInvalidConfig)
+		return errchain.Errorf("%w: server timeouts must be non-negative", ErrInvalidConfig)
 	}
 	if _, err := parseSameSiteStrict("SESSION_SAME_SITE", c.sessionSameSiteRaw); err != nil {
 		return err
 	}
 	if err := c.Session.ValidateLifetimes(); err != nil {
-		return fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+		return errchain.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
 	switch c.Session.Store {
 	case "", auth.SessionStoreCookie, auth.SessionStoreServer:
 	default:
-		return fmt.Errorf("%w: SESSION_STORE=%q is not one of %q, %q", ErrInvalidConfig, c.Session.Store, auth.SessionStoreCookie, auth.SessionStoreServer)
+		return errchain.Errorf("%w: SESSION_STORE=%q is not one of %q, %q", ErrInvalidConfig, c.Session.Store, auth.SessionStoreCookie, auth.SessionStoreServer)
 	}
 	if err := c.DB.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+		return errchain.Errorf("%w: %v", ErrInvalidConfig, err)
 	}
 	if err := c.Cache.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+		return errchain.Errorf("%w: %v", ErrInvalidConfig, err)
 	}
 	if err := c.Queue.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+		return errchain.Errorf("%w: %v", ErrInvalidConfig, err)
 	}
 	if err := c.Storage.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+		return errchain.Errorf("%w: %v", ErrInvalidConfig, err)
 	}
 	// View validation runs at the root level so a bad view config fails
 	// here whether or not New builds the engine (see buildsViewEngine):
 	// VIEW_SSR_ENABLED=true with VIEW_SSR_TIMEOUT=0 is rejected before
 	// anything is constructed.
 	if err := c.View.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+		return errchain.Errorf("%w: %v", ErrInvalidConfig, err)
 	}
 	return nil
 }

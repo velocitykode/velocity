@@ -59,7 +59,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -186,7 +185,7 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 	// shared with the crypto package's Config.Validate / newDriver.
 	keySize, err := KeySize(d.cipher)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", err, cipher)
+		return nil, errchain.Errorf("%w: %s", err, cipher)
 	}
 	d.keySize = keySize
 
@@ -194,7 +193,7 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 	// oversized keys all reject through the same sentinel so callers can
 	// branch on errors.Is(err, ErrInvalidKeyLength).
 	if len(key) != d.keySize {
-		return nil, fmt.Errorf("%w: cipher %s requires %d-byte key, got %d", ErrInvalidKeyLength, d.cipher, d.keySize, len(key))
+		return nil, errchain.Errorf("%w: cipher %s requires %d-byte key, got %d", ErrInvalidKeyLength, d.cipher, d.keySize, len(key))
 	}
 
 	// Validate previous keys with the same rule, failing fast on any
@@ -207,7 +206,7 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 	// slice.
 	for i, pk := range previousKeys {
 		if len(pk) != d.keySize {
-			return nil, fmt.Errorf("%w: index %d: cipher %s requires %d-byte key, got %d", ErrInvalidPreviousKey, i, d.cipher, d.keySize, len(pk))
+			return nil, errchain.Errorf("%w: index %d: cipher %s requires %d-byte key, got %d", ErrInvalidPreviousKey, i, d.cipher, d.keySize, len(pk))
 		}
 	}
 
@@ -217,11 +216,11 @@ func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver,
 	// length.
 	encKey, err := deriveSubkey(key, d.keySize, []byte("encryption"))
 	if err != nil {
-		return nil, fmt.Errorf("velocity/crypto: failed to derive encryption key: %w", err)
+		return nil, errchain.Errorf("velocity/crypto: failed to derive encryption key: %w", err)
 	}
 	hmacKey, err := deriveSubkey(key, 32, []byte("hmac"))
 	if err != nil {
-		return nil, fmt.Errorf("velocity/crypto: failed to derive hmac key: %w", err)
+		return nil, errchain.Errorf("velocity/crypto: failed to derive hmac key: %w", err)
 	}
 
 	d.key = encKey
@@ -613,13 +612,13 @@ func (d *AESDriver) encryptCBC(plaintext, aad []byte) (string, error) {
 	// Create cipher block
 	block, err := aes.NewCipher(d.key)
 	if err != nil {
-		return "", fmt.Errorf("velocity/crypto: %w", err)
+		return "", errchain.Errorf("velocity/crypto: %w", err)
 	}
 
 	// Generate IV
 	iv := make([]byte, aes.BlockSize)
 	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-		return "", fmt.Errorf("velocity/crypto: failed to read iv: %w", err)
+		return "", errchain.Errorf("velocity/crypto: failed to read iv: %w", err)
 	}
 
 	// Pad plaintext to block size

@@ -370,7 +370,7 @@ func (g *MySQLGrammar) CompileCreateTable(name string, table *Table) string {
 					sql.WriteString("0")
 				}
 			default:
-				sql.WriteString(fmt.Sprintf("%v", v))
+				sql.WriteString(errchain.Sprintf("%v", v))
 			}
 		}
 	}

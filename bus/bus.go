@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -191,7 +193,7 @@ func Register[T any](b *Bus, handler Handler[T]) {
 	// and round-trip it through encoding/json.
 	var zero T
 	if _, err := json.Marshal(zero); err != nil {
-		panic(contract.NewRegistrationError("bus", fmt.Sprintf("command type %s is not json-serializable: %v", reflect.TypeFor[T]().String(), err)))
+		panic(contract.NewRegistrationError("bus", errchain.Sprintf("command type %s is not json-serializable: %v", reflect.TypeFor[T]().String(), err)))
 	}
 
 	cmdType := reflect.TypeFor[T]()
@@ -206,7 +208,7 @@ func Register[T any](b *Bus, handler Handler[T]) {
 	b.handlers[cmdType] = func(cmd Command) error {
 		typed, ok := cmd.(T)
 		if !ok {
-			return fmt.Errorf("velocity/bus: command type mismatch: got %T, want %s", cmd, typeName)
+			return errchain.Errorf("velocity/bus: command type mismatch: got %T, want %s", cmd, typeName)
 		}
 		return handler(typed)
 	}
@@ -263,7 +265,7 @@ func (b *Bus) Dispatch(cmd Command) error {
 	b.mu.RUnlock()
 
 	if handler == nil {
-		return fmt.Errorf("bus: no handler registered for %T", cmd)
+		return errchain.Errorf("bus: no handler registered for %T", cmd)
 	}
 
 	// Dispatch has no caller-supplied context (the public signature is
@@ -360,7 +362,7 @@ func (b *Bus) DispatchAsyncCtx(ctx context.Context, cmd Command) error {
 
 	data, err := json.Marshal(cmd)
 	if err != nil {
-		return fmt.Errorf("velocity/bus: failed to marshal command %s: %w", cmdType.String(), err)
+		return errchain.Errorf("velocity/bus: failed to marshal command %s: %w", cmdType.String(), err)
 	}
 
 	job := &commandJob{
@@ -378,7 +380,7 @@ func (b *Bus) DispatchAsyncCtx(ctx context.Context, cmd Command) error {
 	}
 
 	if err := q.PushCtx(ctx, job, args...); err != nil {
-		return fmt.Errorf("bus: failed to push command to queue: %w", err)
+		return errchain.Errorf("bus: failed to push command to queue: %w", err)
 	}
 
 	b.events.EmitBuilt(ctx, func() any {
@@ -431,7 +433,7 @@ func (b *Bus) dispatchToHandler(cmd Command) error {
 	h := b.resolveHandler(cmd)
 	b.mu.RUnlock()
 	if h == nil {
-		return fmt.Errorf("bus: no handler registered for %T", cmd)
+		return errchain.Errorf("bus: no handler registered for %T", cmd)
 	}
 	return h(cmd)
 }
@@ -540,7 +542,7 @@ func (j *commandJob) Handle() error {
 		return err
 	}
 	if j.cmdType != nil && reflect.TypeOf(cmd) != j.cmdType {
-		return fmt.Errorf("velocity/bus: command type mismatch in queued job: got %T, want %s", cmd, j.cmdType.String())
+		return errchain.Errorf("velocity/bus: command type mismatch in queued job: got %T, want %s", cmd, j.cmdType.String())
 	}
 	return b.Dispatch(cmd)
 }
@@ -588,7 +590,7 @@ func (j *commandJob) resolveCommand() (Command, *Bus, error) {
 	target.Elem().Set(reflect.ValueOf(cmd))
 	if len(j.Data) > 0 {
 		if err := json.Unmarshal(j.Data, target.Interface()); err != nil {
-			return nil, nil, fmt.Errorf("velocity/bus: failed to unmarshal command payload into %q: %w", j.Type, err)
+			return nil, nil, errchain.Errorf("velocity/bus: failed to unmarshal command payload into %q: %w", j.Type, err)
 		}
 	}
 	cmd = target.Elem().Interface()
@@ -677,7 +679,7 @@ func lookupBus(id string) (*Bus, bool) {
 func commandJobFactory(data []byte) (*commandJob, error) {
 	job := &commandJob{}
 	if err := json.Unmarshal(data, job); err != nil {
-		return nil, fmt.Errorf("velocity/bus: failed to unmarshal commandJob payload: %w", err)
+		return nil, errchain.Errorf("velocity/bus: failed to unmarshal commandJob payload: %w", err)
 	}
 	return job, nil
 }

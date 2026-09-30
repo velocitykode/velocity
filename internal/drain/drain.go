@@ -9,11 +9,11 @@ package drain
 
 import (
 	"context"
-	"fmt"
 	"sync/atomic"
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
@@ -93,7 +93,7 @@ func (o *Owner) Stop(ctx context.Context, r *Run, work func() error, force func(
 		if Closed(r.finished) {
 			return r.err
 		}
-		return fmt.Errorf("velocity: stop called from the work it would wait for: %w", contract.ErrStopFromOwnWork)
+		return errchain.Errorf("velocity: stop called from the work it would wait for: %w", contract.ErrStopFromOwnWork)
 	}
 	o.Signal(r, work)
 	return r.Await(ctx, force)

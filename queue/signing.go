@@ -9,10 +9,12 @@ import (
 	"io"
 	"sync"
 
+	"golang.org/x/crypto/hkdf"
+
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
-	"golang.org/x/crypto/hkdf"
 )
 
 // minSigningKeyBytes is the floor for a raw QUEUE_SIGNING_KEY. HMAC-SHA256
@@ -136,7 +138,7 @@ func configureSigningLocked(rawSigningKey, appKey string, opts SigningOptions) (
 		r := hkdf.New(sha256.New, []byte(key), nil, []byte("queue-signing"))
 		derived := make([]byte, 32)
 		if _, err := io.ReadFull(r, derived); err != nil {
-			return warning, fmt.Errorf("velocity/queue: failed to derive signing key from app_key: %w", err)
+			return warning, errchain.Errorf("velocity/queue: failed to derive signing key from app_key: %w", err)
 		}
 		signingKey = derived
 	} else {
@@ -147,7 +149,7 @@ func configureSigningLocked(rawSigningKey, appKey string, opts SigningOptions) (
 		if len(key) < minSigningKeyBytes {
 			signingKey = nil
 			signingEnabled = false
-			return "", fmt.Errorf("%w (got %d)", ErrSigningKeyTooShort, len(key))
+			return "", errchain.Errorf("%w (got %d)", ErrSigningKeyTooShort, len(key))
 		}
 		signingKey = []byte(key)
 	}
@@ -206,13 +208,13 @@ func signPayload(data []byte) string {
 func marshalSigned(v any, setSig func(string), unsignedErrMsg, signedErrMsg string) ([]byte, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", unsignedErrMsg, err)
+		return nil, errchain.Errorf("%s: %w", unsignedErrMsg, err)
 	}
 	if sig := signPayload(data); sig != "" {
 		setSig(sig)
 		data, err = json.Marshal(v)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", signedErrMsg, err)
+			return nil, errchain.Errorf("%s: %w", signedErrMsg, err)
 		}
 	}
 	return data, nil

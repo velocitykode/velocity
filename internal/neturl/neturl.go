@@ -24,6 +24,8 @@ import (
 	"strings"
 
 	"golang.org/x/net/publicsuffix"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // ErrPrivateHost is the sentinel returned when a host resolves to a
@@ -52,7 +54,7 @@ var teredoNet = mustCIDR("2001::/32")
 func mustCIDR(s string) *net.IPNet {
 	_, n, err := net.ParseCIDR(s)
 	if err != nil {
-		panic(fmt.Errorf("neturl: bad CIDR %q: %w", s, err))
+		panic(errchain.Errorf("neturl: bad CIDR %q: %w", s, err))
 	}
 	return n
 }
@@ -125,7 +127,7 @@ func IsPrivateHost(ctx context.Context, resolver *net.Resolver, host string) (bo
 	}
 	addrs, err := resolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return false, fmt.Errorf("neturl: resolve %q: %w", host, err)
+		return false, errchain.Errorf("neturl: resolve %q: %w", host, err)
 	}
 	if len(addrs) == 0 {
 		return false, fmt.Errorf("neturl: resolve %q: no addresses", host)
@@ -144,7 +146,7 @@ func IsPrivateHost(ctx context.Context, resolver *net.Resolver, host string) (bo
 func ValidateURLHost(ctx context.Context, resolver *net.Resolver, rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return fmt.Errorf("neturl: parse url: %w", err)
+		return errchain.Errorf("neturl: parse url: %w", err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("neturl: unsupported scheme %q", u.Scheme)
@@ -158,7 +160,7 @@ func ValidateURLHost(ctx context.Context, resolver *net.Resolver, rawURL string)
 		return err
 	}
 	if private {
-		return fmt.Errorf("%w: %s", ErrPrivateHost, host)
+		return errchain.Errorf("%w: %s", ErrPrivateHost, host)
 	}
 	return nil
 }

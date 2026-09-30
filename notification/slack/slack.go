@@ -45,7 +45,7 @@ func NewSlackChannel() *SlackChannel {
 func (c *SlackChannel) Send(ctx context.Context, notifiable interface{}, n notification.Notification) error {
 	sn, ok := n.(notification.SlackNotification)
 	if !ok {
-		return fmt.Errorf("notification: %T does not implement SlackNotification", n)
+		return errchain.Errorf("notification: %T does not implement SlackNotification", n)
 	}
 
 	slackMsg := sn.ToSlack(notifiable)
@@ -77,18 +77,18 @@ func (c *SlackChannel) Send(ctx context.Context, notifiable interface{}, n notif
 
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("notification: failed to marshal Slack payload: %w", err)
+		return errchain.Errorf("notification: failed to marshal Slack payload: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", webhookURL, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return fmt.Errorf("notification: failed to create Slack request: %w", err)
+		return errchain.Errorf("notification: failed to create Slack request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.client.Do(ctx, req)
 	if err != nil {
-		return fmt.Errorf("notification: Slack request failed: %w", err)
+		return errchain.Errorf("notification: Slack request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -175,9 +175,9 @@ func validateWebhookURL(rawURL string) error {
 	defer cancel()
 	if err := neturl.ValidateURLHost(ctx, nil, rawURL); err != nil {
 		if errchain.Is(err, neturl.ErrPrivateHost) {
-			return fmt.Errorf("velocity/notification: webhook url must not target private or internal addresses: %w", err)
+			return errchain.Errorf("velocity/notification: webhook url must not target private or internal addresses: %w", err)
 		}
-		return fmt.Errorf("velocity/notification: invalid webhook url: %w", err)
+		return errchain.Errorf("velocity/notification: invalid webhook url: %w", err)
 	}
 	return nil
 }

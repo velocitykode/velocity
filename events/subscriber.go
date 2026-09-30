@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // SubscriberDispatcher extends the base dispatcher with subscriber support
@@ -58,7 +60,7 @@ func NewAutoSubscriber(instance interface{}, prefix string) *AutoSubscriber {
 		prefix = "Handle"
 	}
 	if err := ensureStructInstance(instance); err != nil {
-		panic(fmt.Errorf("velocity/events: NewAutoSubscriber: %w", err))
+		panic(errchain.Errorf("velocity/events: NewAutoSubscriber: %w", err))
 	}
 	return &AutoSubscriber{
 		instance: instance,
@@ -219,7 +221,7 @@ type MappedSubscriber struct {
 // NewAutoSubscriber for rationale.
 func NewMappedSubscriber(instance interface{}, mappings EventMap) *MappedSubscriber {
 	if err := ensureStructInstance(instance); err != nil {
-		panic(fmt.Errorf("velocity/events: NewMappedSubscriber: %w", err))
+		panic(errchain.Errorf("velocity/events: NewMappedSubscriber: %w", err))
 	}
 	return &MappedSubscriber{
 		instance: instance,
@@ -340,7 +342,7 @@ type SubscriberError struct {
 }
 
 func (e *SubscriberError) Error() string {
-	return fmt.Sprintf("subscriber %s method %s: %v", e.Subscriber, e.Method, e.Err)
+	return errchain.Sprintf("subscriber %s method %s: %v", e.Subscriber, e.Method, e.Err)
 }
 
 // ValidateSubscriber validates that a subscriber has valid Handle*-prefixed
@@ -372,7 +374,7 @@ func ValidateSubscriber(subscriber interface{}) []error {
 				errs = append(errs, &SubscriberError{
 					Subscriber: subscriberType.Name(),
 					Method:     method.Name,
-					Err:        fmt.Errorf("invalid first parameter: expected context.Context, got %v", mt.In(1)),
+					Err:        errchain.Errorf("invalid first parameter: expected context.Context, got %v", mt.In(1)),
 				})
 				continue
 			}
@@ -398,7 +400,7 @@ func ValidateSubscriber(subscriber interface{}) []error {
 			errs = append(errs, &SubscriberError{
 				Subscriber: subscriberType.Name(),
 				Method:     method.Name,
-				Err:        fmt.Errorf("invalid return type: expected error, got %v", mt.Out(0)),
+				Err:        errchain.Errorf("invalid return type: expected error, got %v", mt.Out(0)),
 			})
 		}
 	}

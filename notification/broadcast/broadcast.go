@@ -7,6 +7,7 @@ import (
 
 	velbroadcast "github.com/velocitykode/velocity/broadcast"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/notification"
 	"github.com/velocitykode/velocity/trace"
@@ -125,7 +126,7 @@ func (c *BroadcastChannel) authorizerOrWarn(ctx context.Context) BroadcastChanne
 func (c *BroadcastChannel) Send(ctx context.Context, notifiable interface{}, n notification.Notification) error {
 	bn, ok := n.(notification.BroadcastNotification)
 	if !ok {
-		return fmt.Errorf("notification: %T does not implement BroadcastNotification", n)
+		return errchain.Errorf("notification: %T does not implement BroadcastNotification", n)
 	}
 
 	broadcastMsg := bn.ToBroadcast(notifiable)

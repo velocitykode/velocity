@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -119,7 +118,7 @@ func (d *LocalDriver) Shutdown(ctx context.Context) error {
 	err := d.rootHandle.Close()
 	d.rootHandle = nil
 	if err != nil {
-		return fmt.Errorf("velocity/storage: close local root: %w", err)
+		return errchain.Errorf("velocity/storage: close local root: %w", err)
 	}
 	return nil
 }
@@ -131,7 +130,7 @@ func (d *LocalDriver) withRoot(fn func(root *os.Root) error) error {
 	d.rootMu.RLock()
 	defer d.rootMu.RUnlock()
 	if d.rootHandle == nil {
-		return fmt.Errorf("velocity/storage: local driver has no open root: %w", ErrInvalidPath)
+		return errchain.Errorf("velocity/storage: local driver has no open root: %w", ErrInvalidPath)
 	}
 	return fn(d.rootHandle)
 }
@@ -144,7 +143,7 @@ func (d *LocalDriver) withRoot(fn func(root *os.Root) error) error {
 func normalizeRelative(path string) (string, error) {
 	normalised := filepath.FromSlash(path)
 	if filepath.IsAbs(normalised) || strings.HasPrefix(normalised, string(filepath.Separator)) {
-		return "", fmt.Errorf("velocity/storage: absolute path rejected: %w", ErrInvalidPath)
+		return "", errchain.Errorf("velocity/storage: absolute path rejected: %w", ErrInvalidPath)
 	}
 	clean := filepath.Clean(normalised)
 	if clean == "" || clean == "." {
@@ -172,7 +171,7 @@ func mapOpenError(err error) error {
 // Put stores content at the given path
 func (d *LocalDriver) Put(path string, contents []byte) error {
 	if int64(len(contents)) > d.maxFileSize {
-		return fmt.Errorf("velocity/storage: file size %d exceeds maximum of %d bytes: %w", len(contents), d.maxFileSize, ErrQuotaExceeded)
+		return errchain.Errorf("velocity/storage: file size %d exceeds maximum of %d bytes: %w", len(contents), d.maxFileSize, ErrQuotaExceeded)
 	}
 	rel, err := normalizeRelative(path)
 	if err != nil {
@@ -180,12 +179,12 @@ func (d *LocalDriver) Put(path string, contents []byte) error {
 	}
 	return d.withRoot(func(root *os.Root) error {
 		if err := mkdirAllIn(root, filepath.Dir(rel)); err != nil {
-			return fmt.Errorf("velocity/storage: create directory: %w", err)
+			return errchain.Errorf("velocity/storage: create directory: %w", err)
 		}
 		// Atomic write: a temp file of this write's own, then rename.
 		file, tmp, err := createTemp(root, rel)
 		if err != nil {
-			return fmt.Errorf("velocity/storage: create file: %w", mapOpenError(err))
+			return errchain.Errorf("velocity/storage: create file: %w", mapOpenError(err))
 		}
 		committed := false
 		defer func() {
@@ -195,13 +194,13 @@ func (d *LocalDriver) Put(path string, contents []byte) error {
 			}
 		}()
 		if _, err := file.Write(contents); err != nil {
-			return fmt.Errorf("velocity/storage: write file: %w", err)
+			return errchain.Errorf("velocity/storage: write file: %w", err)
 		}
 		if err := file.Close(); err != nil {
-			return fmt.Errorf("velocity/storage: close file: %w", err)
+			return errchain.Errorf("velocity/storage: close file: %w", err)
 		}
 		if err := root.Rename(tmp, rel); err != nil {
-			return fmt.Errorf("velocity/storage: move file: %w", mapOpenError(err))
+			return errchain.Errorf("velocity/storage: move file: %w", mapOpenError(err))
 		}
 		committed = true
 		return nil
@@ -230,16 +229,16 @@ func (d *LocalDriver) PutStream(path string, stream io.Reader) error {
 	var tmp string
 	err = d.withRoot(func(root *os.Root) error {
 		if err := mkdirAllIn(root, dir); err != nil {
-			return fmt.Errorf("velocity/storage: create directory: %w", err)
+			return errchain.Errorf("velocity/storage: create directory: %w", err)
 		}
 		r, err := root.OpenRoot(dir)
 		if err != nil {
-			return fmt.Errorf("velocity/storage: open directory: %w", mapOpenError(err))
+			return errchain.Errorf("velocity/storage: open directory: %w", mapOpenError(err))
 		}
 		f, name, err := createTemp(r, base)
 		if err != nil {
 			_ = r.Close()
-			return fmt.Errorf("velocity/storage: create file: %w", mapOpenError(err))
+			return errchain.Errorf("velocity/storage: create file: %w", mapOpenError(err))
 		}
 		dirRoot, file, tmp = r, f, name
 		return nil
@@ -259,19 +258,19 @@ func (d *LocalDriver) PutStream(path string, stream io.Reader) error {
 	limited := io.LimitReader(stream, d.maxFileSize+1)
 	written, err := io.Copy(file, limited)
 	if err != nil {
-		return fmt.Errorf("velocity/storage: write stream: %w", err)
+		return errchain.Errorf("velocity/storage: write stream: %w", err)
 	}
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("velocity/storage: close file: %w", err)
+		return errchain.Errorf("velocity/storage: close file: %w", err)
 	}
 	if written > d.maxFileSize {
-		return fmt.Errorf("velocity/storage: stream exceeds maximum size of %d bytes: %w", d.maxFileSize, ErrQuotaExceeded)
+		return errchain.Errorf("velocity/storage: stream exceeds maximum size of %d bytes: %w", d.maxFileSize, ErrQuotaExceeded)
 	}
 	// Under the lock, so the object lands before a Shutdown closes the
 	// root, or not at all.
 	return d.withRoot(func(*os.Root) error {
 		if err := dirRoot.Rename(tmp, base); err != nil {
-			return fmt.Errorf("velocity/storage: move file: %w", mapOpenError(err))
+			return errchain.Errorf("velocity/storage: move file: %w", mapOpenError(err))
 		}
 		committed = true
 		return nil
@@ -346,7 +345,7 @@ func (d *LocalDriver) Delete(paths ...string) error {
 				return err
 			}
 			if err := root.Remove(rel); err != nil && !errors.Is(err, os.ErrNotExist) { //error-inspection-ok: os.Root error, stdlib value, no user method
-				return fmt.Errorf("velocity/storage: delete %s: %w", path, mapOpenError(err))
+				return errchain.Errorf("velocity/storage: delete %s: %w", path, mapOpenError(err))
 			}
 		}
 		return nil
@@ -366,26 +365,26 @@ func (d *LocalDriver) Copy(from, to string) error {
 	return d.withRoot(func(root *os.Root) error {
 		source, err := root.Open(fromRel)
 		if err != nil {
-			return fmt.Errorf("velocity/storage: open source: %w", mapOpenError(err))
+			return errchain.Errorf("velocity/storage: open source: %w", mapOpenError(err))
 		}
 		defer source.Close()
 
 		if err := mkdirAllIn(root, filepath.Dir(toRel)); err != nil {
-			return fmt.Errorf("velocity/storage: create directory: %w", err)
+			return errchain.Errorf("velocity/storage: create directory: %w", err)
 		}
 		dest, err := root.Create(toRel)
 		if err != nil {
-			return fmt.Errorf("velocity/storage: create destination: %w", mapOpenError(err))
+			return errchain.Errorf("velocity/storage: create destination: %w", mapOpenError(err))
 		}
 		defer dest.Close()
 		// Tighten umask-derived mode (~0o644) down to 0o600 so the
 		// copy inherits the same owner-only invariant Put applies on
 		// initial write.
 		if chmodErr := dest.Chmod(storageFileMode); chmodErr != nil {
-			return fmt.Errorf("velocity/storage: chmod destination: %w", chmodErr)
+			return errchain.Errorf("velocity/storage: chmod destination: %w", chmodErr)
 		}
 		if _, err := io.Copy(dest, source); err != nil {
-			return fmt.Errorf("velocity/storage: copy: %w", err)
+			return errchain.Errorf("velocity/storage: copy: %w", err)
 		}
 		return nil
 	})
@@ -405,7 +404,7 @@ func (d *LocalDriver) Move(from, to string) error {
 	// back to copy+delete. Both branches stay inside the root.
 	renameErr := d.withRoot(func(root *os.Root) error {
 		if err := mkdirAllIn(root, filepath.Dir(toRel)); err != nil {
-			return fmt.Errorf("velocity/storage: create directory: %w", err)
+			return errchain.Errorf("velocity/storage: create directory: %w", err)
 		}
 		return root.Rename(fromRel, toRel)
 	})
@@ -481,7 +480,7 @@ func sniffMimeType(r io.Reader) (string, error) {
 	buf := make([]byte, 512)
 	n, err := io.ReadFull(r, buf)
 	if err != nil && !errchain.Is(err, io.EOF) && !errchain.Is(err, io.ErrUnexpectedEOF) {
-		return "", fmt.Errorf("velocity/storage: read file: %w", err)
+		return "", errchain.Errorf("velocity/storage: read file: %w", err)
 	}
 	return http.DetectContentType(buf[:n]), nil
 }
@@ -499,7 +498,7 @@ func (d *LocalDriver) Files(directory string) ([]string, error) {
 			if errors.Is(err, os.ErrNotExist) { //error-inspection-ok: os.Root error, stdlib value, no user method
 				return nil
 			}
-			return fmt.Errorf("velocity/storage: read directory: %w", mapOpenError(err))
+			return errchain.Errorf("velocity/storage: read directory: %w", mapOpenError(err))
 		}
 		for _, entry := range entries {
 			if !entry.IsDir() {
@@ -533,7 +532,7 @@ func (d *LocalDriver) AllFiles(directory string) ([]string, error) {
 		if errchain.Is(err, os.ErrNotExist) {
 			return []string{}, nil
 		}
-		return nil, fmt.Errorf("velocity/storage: walk directory: %w", err)
+		return nil, errchain.Errorf("velocity/storage: walk directory: %w", err)
 	}
 	return files, nil
 }
@@ -551,7 +550,7 @@ func (d *LocalDriver) Directories(directory string) ([]string, error) {
 			if errors.Is(err, os.ErrNotExist) { //error-inspection-ok: os.Root error, stdlib value, no user method
 				return nil
 			}
-			return fmt.Errorf("velocity/storage: read directory: %w", mapOpenError(err))
+			return errchain.Errorf("velocity/storage: read directory: %w", mapOpenError(err))
 		}
 		for _, entry := range entries {
 			if entry.IsDir() {
@@ -585,7 +584,7 @@ func (d *LocalDriver) AllDirectories(directory string) ([]string, error) {
 		if errchain.Is(err, os.ErrNotExist) {
 			return []string{}, nil
 		}
-		return nil, fmt.Errorf("velocity/storage: walk directory: %w", err)
+		return nil, errchain.Errorf("velocity/storage: walk directory: %w", err)
 	}
 	return dirs, nil
 }
@@ -609,7 +608,7 @@ func (d *LocalDriver) DeleteDirectory(directory string) error {
 	}
 	return d.withRoot(func(root *os.Root) error {
 		if err := root.RemoveAll(rel); err != nil {
-			return fmt.Errorf("velocity/storage: remove directory: %w", mapOpenError(err))
+			return errchain.Errorf("velocity/storage: remove directory: %w", mapOpenError(err))
 		}
 		return nil
 	})
@@ -661,7 +660,7 @@ func createTemp(root *os.Root, name string) (*os.File, string, error) {
 		if err := file.Chmod(storageFileMode); err != nil {
 			_ = file.Close()
 			_ = root.Remove(tmp)
-			return nil, "", fmt.Errorf("chmod temp file: %w", err)
+			return nil, "", errchain.Errorf("chmod temp file: %w", err)
 		}
 		return file, tmp, nil
 	}

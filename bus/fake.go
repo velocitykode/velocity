@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // FakeBus records dispatched commands for test assertions.
@@ -50,13 +52,13 @@ func (f *FakeBus) AssertDispatched(cmd Command, callback func(Command) bool) err
 	if matchingCommand(f.GetDispatched(), cmd, callback) {
 		return nil
 	}
-	return fmt.Errorf("expected command %T to be dispatched, but it was not", cmd)
+	return errchain.Errorf("expected command %T to be dispatched, but it was not", cmd)
 }
 
 // AssertDispatchedTimes asserts that a command type was dispatched exactly n times.
 func (f *FakeBus) AssertDispatchedTimes(cmd Command, n int) error {
 	if count := countCommands(f.GetDispatched(), cmd); count != n {
-		return fmt.Errorf("expected command %T to be dispatched %d times, got %d", cmd, n, count)
+		return errchain.Errorf("expected command %T to be dispatched %d times, got %d", cmd, n, count)
 	}
 	return nil
 }
@@ -64,7 +66,7 @@ func (f *FakeBus) AssertDispatchedTimes(cmd Command, n int) error {
 // AssertNotDispatched asserts that a command type was never dispatched.
 func (f *FakeBus) AssertNotDispatched(cmd Command) error {
 	if countCommands(f.GetDispatched(), cmd) > 0 {
-		return fmt.Errorf("expected command %T not to be dispatched, but it was", cmd)
+		return errchain.Errorf("expected command %T not to be dispatched, but it was", cmd)
 	}
 	return nil
 }
@@ -85,14 +87,14 @@ func (f *FakeBus) AssertAsyncDispatched(cmd Command, callback func(Command) bool
 	if matchingCommand(f.GetAsyncDispatched(), cmd, callback) {
 		return nil
 	}
-	return fmt.Errorf("expected command %T to be async dispatched, but it was not", cmd)
+	return errchain.Errorf("expected command %T to be async dispatched, but it was not", cmd)
 }
 
 // AssertAsyncDispatchedTimes asserts that a command type was dispatched async
 // exactly n times.
 func (f *FakeBus) AssertAsyncDispatchedTimes(cmd Command, n int) error {
 	if count := countCommands(f.GetAsyncDispatched(), cmd); count != n {
-		return fmt.Errorf("expected command %T to be async dispatched %d times, got %d", cmd, n, count)
+		return errchain.Errorf("expected command %T to be async dispatched %d times, got %d", cmd, n, count)
 	}
 	return nil
 }
@@ -100,7 +102,7 @@ func (f *FakeBus) AssertAsyncDispatchedTimes(cmd Command, n int) error {
 // AssertAsyncNotDispatched asserts that a command type was never dispatched async.
 func (f *FakeBus) AssertAsyncNotDispatched(cmd Command) error {
 	if countCommands(f.GetAsyncDispatched(), cmd) > 0 {
-		return fmt.Errorf("expected command %T not to be async dispatched, but it was", cmd)
+		return errchain.Errorf("expected command %T not to be async dispatched, but it was", cmd)
 	}
 	return nil
 }

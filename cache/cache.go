@@ -3,10 +3,10 @@ package cache
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // GetAs retrieves a value from the store and returns it typed as T. It bridges
@@ -144,7 +144,7 @@ func RememberT[T any](mgr RememberEable, key string, ttl time.Duration, callback
 	}
 	typed, ok := val.(T)
 	if !ok {
-		return zero, fmt.Errorf("velocity/cache: cache slot %q holds %T, want %T", key, val, zero)
+		return zero, errchain.Errorf("velocity/cache: cache slot %q holds %T, want %T", key, val, zero)
 	}
 	return typed, nil
 }
@@ -174,7 +174,7 @@ func RememberTWithContext[T any](mgr RememberEContextable, ctx context.Context, 
 	}
 	typed, ok := val.(T)
 	if !ok {
-		return zero, fmt.Errorf("velocity/cache: cache slot %q holds %T, want %T", key, val, zero)
+		return zero, errchain.Errorf("velocity/cache: cache slot %q holds %T, want %T", key, val, zero)
 	}
 	return typed, nil
 }

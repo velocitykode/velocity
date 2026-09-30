@@ -691,7 +691,7 @@ func newListener(provided net.Listener, network, address, port string) (net.List
 	}
 	lis, err := net.Listen(network, address)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/grpc: failed to listen on %s %s: %w", network, address, err)
+		return nil, errchain.Errorf("velocity/grpc: failed to listen on %s %s: %w", network, address, err)
 	}
 	return lis, nil
 }
@@ -777,7 +777,7 @@ func (s *Server) admitServe() (*life, error) {
 func (s *Server) serve(c *life, logFailure bool) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("velocity/grpc: serve loop panicked: %w", panicerr.FromRecovered(p))
+			err = errchain.Errorf("velocity/grpc: serve loop panicked: %w", panicerr.FromRecovered(p))
 		}
 		c.serveErr = err
 		close(c.serveDone)
@@ -1001,7 +1001,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.own.Signal(c.run, work)
 		err := s.own.Stop(ctx, c.run, nil, nil)
 		if errchain.Is(err, contract.ErrStopFromOwnWork) {
-			err = fmt.Errorf("velocity/grpc: %w: %w", err, grpc.ErrServerStopped)
+			err = errchain.Errorf("velocity/grpc: %w: %w", err, grpc.ErrServerStopped)
 		}
 		return err
 	}

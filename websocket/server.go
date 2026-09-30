@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/drain"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -349,7 +351,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if drain.Closed(run.Finished()) {
 		return nil
 	}
-	return fmt.Errorf("websocket: Shutdown called from a server goroutine (run loop, fan-out, a client pump or a connection's Close); the server drains without this call waiting for it: %w: %w", contract.ErrStopFromOwnWork, ErrServerClosed)
+	return errchain.Errorf("websocket: Shutdown called from a server goroutine (run loop, fan-out, a client pump or a connection's Close); the server drains without this call waiting for it: %w: %w", contract.ErrStopFromOwnWork, ErrServerClosed)
 }
 
 // closeConnections closes every live client connection so each readPump's
@@ -1005,16 +1007,16 @@ func (s *Server) SendToClient(clientID string, message Message) error {
 	s.mu.RUnlock()
 
 	if !ok {
-		return fmt.Errorf("client %s not found: %w", sanitizeForLog(clientID), ErrClientNotFound)
+		return errchain.Errorf("client %s not found: %w", sanitizeForLog(clientID), ErrClientNotFound)
 	}
 
 	// Counted once at the wire write in writePump, not here at enqueue.
 	queued, closed := client.trySend(message)
 	switch {
 	case closed:
-		return fmt.Errorf("client %s disconnected: %w", sanitizeForLog(clientID), ErrClientNotFound)
+		return errchain.Errorf("client %s disconnected: %w", sanitizeForLog(clientID), ErrClientNotFound)
 	case !queued:
-		return fmt.Errorf("client %s send channel full: %w", sanitizeForLog(clientID), ErrSendChannelFull)
+		return errchain.Errorf("client %s send channel full: %w", sanitizeForLog(clientID), ErrSendChannelFull)
 	}
 	return nil
 }
@@ -1091,7 +1093,7 @@ func (s *Server) HandleRaw(w http.ResponseWriter, r *http.Request) (*websocket.C
 	if s.config.AuthFunc != nil {
 		if err := s.config.AuthFunc(r); err != nil {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return nil, noop, fmt.Errorf("websocket auth: %w", err)
+			return nil, noop, errchain.Errorf("websocket auth: %w", err)
 		}
 	}
 
@@ -1115,7 +1117,7 @@ func (s *Server) HandleRaw(w http.ResponseWriter, r *http.Request) (*websocket.C
 	}()
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		return nil, noop, fmt.Errorf("websocket upgrade: %w", err)
+		return nil, noop, errchain.Errorf("websocket upgrade: %w", err)
 	}
 	upgraded = true
 

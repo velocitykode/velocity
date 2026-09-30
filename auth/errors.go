@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -196,7 +195,7 @@ func (m *Manager) RequestUserID(r *http.Request) (id string) {
 	if s, ok := raw.(string); ok {
 		return s
 	}
-	return fmt.Sprint(raw)
+	return errchain.Sprint(raw)
 }
 
 // RenderUnauthenticated is the framework's default render rule for an

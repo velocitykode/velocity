@@ -7,6 +7,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/driverregistry"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // QueueConfig holds configuration for creating a queue driver.
@@ -111,7 +112,7 @@ func NewQueueWithContext(ctx context.Context, config QueueConfig) (Driver, error
 	}
 	d, err := drivers.Resolve(ctx, driver, config)
 	if err != nil {
-		return nil, fmt.Errorf("velocity/queue: %w", err)
+		return nil, errchain.Errorf("velocity/queue: %w", err)
 	}
 	if config.Logger != nil {
 		if la, ok := d.(contract.LoggerAware); ok {

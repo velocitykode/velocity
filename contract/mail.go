@@ -119,7 +119,7 @@ type Address struct {
 // stricter name check.
 func NewAddress(email string, name ...string) (Address, error) {
 	if _, err := netmail.ParseAddress(email); err != nil {
-		return Address{}, fmt.Errorf("mail: invalid email address %q: %w", email, err)
+		return Address{}, errchain.Errorf("mail: invalid email address %q: %w", email, err)
 	}
 	addr := Address{Email: email}
 	if len(name) > 0 {
@@ -164,10 +164,10 @@ func (a Address) Validate() error {
 	}
 	if a.Name != "" {
 		if containsForbiddenControl(a.Name) {
-			return fmt.Errorf("%w: address Name contains CR/LF or other control characters", ErrInvalidHeader)
+			return errchain.Errorf("%w: address Name contains CR/LF or other control characters", ErrInvalidHeader)
 		}
 		if i := strings.IndexAny(a.Name, "<>,;:\"\\()"); i >= 0 {
-			return fmt.Errorf("%w: address Name contains address-grammar special %q",
+			return errchain.Errorf("%w: address Name contains address-grammar special %q",
 				ErrInvalidHeader, a.Name[i])
 		}
 	}
@@ -223,19 +223,19 @@ func validateAddrSpec(email string) error {
 		return nil
 	}
 	if containsForbiddenControl(email) {
-		return fmt.Errorf("%w: address Email contains CR/LF or other control characters", ErrInvalidHeader)
+		return errchain.Errorf("%w: address Email contains CR/LF or other control characters", ErrInvalidHeader)
 	}
 	if i := strings.IndexAny(email, ",;<>"); i >= 0 {
-		return fmt.Errorf("%w: address Email contains forbidden character %q",
+		return errchain.Errorf("%w: address Email contains forbidden character %q",
 			ErrInvalidEmailAddress, email[i])
 	}
 	parsed, err := netmail.ParseAddress(email)
 	if err != nil {
-		return fmt.Errorf("%w: address Email %q: %v",
+		return errchain.Errorf("%w: address Email %q: %v",
 			ErrInvalidEmailAddress, email, err)
 	}
 	if parsed.Name != "" {
-		return fmt.Errorf("%w: address Email %q includes a display name; use the Name field",
+		return errchain.Errorf("%w: address Email %q includes a display name; use the Name field",
 			ErrInvalidEmailAddress, email)
 	}
 	return nil
@@ -618,7 +618,7 @@ func (m *Message) AttachFile(path string) (*Message, error) {
 	// but a dedicated message helps callers see the API mismatch faster
 	// than a syscall-level error from the kernel.
 	if filepath.IsAbs(path) {
-		wrapped := fmt.Errorf("mail: attachment path %q must be relative to the attachment root: %w",
+		wrapped := errchain.Errorf("mail: attachment path %q must be relative to the attachment root: %w",
 			path, ErrAttachmentPathOutsideRoot)
 		m.setErr(wrapped)
 		return m, wrapped
@@ -633,11 +633,11 @@ func (m *Message) AttachFile(path string) (*Message, error) {
 	f, err := root.Open(path)
 	if err != nil {
 		if errchain.Is(err, os.ErrNotExist) {
-			wrapped := fmt.Errorf("mail: failed to open attachment %q: %w", path, err)
+			wrapped := errchain.Errorf("mail: failed to open attachment %q: %w", path, err)
 			m.setErr(wrapped)
 			return m, wrapped
 		}
-		wrapped := fmt.Errorf("mail: attachment %q escapes attachment root: %w",
+		wrapped := errchain.Errorf("mail: attachment %q escapes attachment root: %w",
 			path, errors.Join(ErrAttachmentPathOutsideRoot, err))
 		m.setErr(wrapped)
 		return m, wrapped
@@ -649,12 +649,12 @@ func (m *Message) AttachFile(path string) (*Message, error) {
 	// open TOCTOU.
 	info, err := f.Stat()
 	if err != nil {
-		wrapped := fmt.Errorf("mail: failed to stat attachment %q: %w", path, err)
+		wrapped := errchain.Errorf("mail: failed to stat attachment %q: %w", path, err)
 		m.setErr(wrapped)
 		return m, wrapped
 	}
 	if info.Size() > limit {
-		wrapped := fmt.Errorf("mail: attachment %q is %d bytes, limit is %d: %w",
+		wrapped := errchain.Errorf("mail: attachment %q is %d bytes, limit is %d: %w",
 			path, info.Size(), limit, ErrAttachmentTooLarge)
 		m.setErr(wrapped)
 		return m, wrapped
@@ -665,12 +665,12 @@ func (m *Message) AttachFile(path string) (*Message, error) {
 	// unbounded memory.
 	data, err := io.ReadAll(io.LimitReader(f, limit+1)) //nolint:forbidigo // bounded by io.LimitReader above
 	if err != nil {
-		wrapped := fmt.Errorf("mail: failed to read attachment %q: %w", path, err)
+		wrapped := errchain.Errorf("mail: failed to read attachment %q: %w", path, err)
 		m.setErr(wrapped)
 		return m, wrapped
 	}
 	if int64(len(data)) > limit {
-		wrapped := fmt.Errorf("mail: attachment %q exceeds limit of %d bytes: %w",
+		wrapped := errchain.Errorf("mail: attachment %q exceeds limit of %d bytes: %w",
 			path, limit, ErrAttachmentTooLarge)
 		m.setErr(wrapped)
 		return m, wrapped
@@ -699,7 +699,7 @@ func (m *Message) AttachData(data []byte, name, contentType string) *Message {
 	}
 	limit := m.MaxAttachmentSize()
 	if int64(len(data)) > limit {
-		m.setErr(fmt.Errorf("mail: in-memory attachment %q is %d bytes, limit is %d: %w",
+		m.setErr(errchain.Errorf("mail: in-memory attachment %q is %d bytes, limit is %d: %w",
 			name, len(data), limit, ErrAttachmentTooLarge))
 		return m
 	}
@@ -739,14 +739,14 @@ func (m *Message) Template(name string, data interface{}) (*Message, error) {
 
 	tmpl, err := template.ParseFiles(cleanFile)
 	if err != nil {
-		wrapped := fmt.Errorf("mail: failed to parse template %q: %w", name, err)
+		wrapped := errchain.Errorf("mail: failed to parse template %q: %w", name, err)
 		m.setErr(wrapped)
 		return m, wrapped
 	}
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		wrapped := fmt.Errorf("mail: failed to execute template %q: %w", name, err)
+		wrapped := errchain.Errorf("mail: failed to execute template %q: %w", name, err)
 		m.setErr(wrapped)
 		return m, wrapped
 	}
@@ -809,16 +809,16 @@ func containsForbiddenControl(s string) bool {
 // §3.2.3 restricts field-name to visible printable ASCII minus colon.
 func validateHeaderName(name string) error {
 	if name == "" {
-		return fmt.Errorf("%w: empty header name", ErrInvalidHeader)
+		return errchain.Errorf("%w: empty header name", ErrInvalidHeader)
 	}
 	for i := 0; i < len(name); i++ {
 		c := name[i]
 		if c == '\r' || c == '\n' || c == '\t' || c == ':' || c == ' ' {
-			return fmt.Errorf("%w: header name %q contains forbidden character", ErrInvalidHeader, name)
+			return errchain.Errorf("%w: header name %q contains forbidden character", ErrInvalidHeader, name)
 		}
 		// RFC 5322 token: visible printable ASCII (33..126) minus ':'.
 		if c < 33 || c > 126 {
-			return fmt.Errorf("%w: header name %q contains non-ASCII or control byte", ErrInvalidHeader, name)
+			return errchain.Errorf("%w: header name %q contains non-ASCII or control byte", ErrInvalidHeader, name)
 		}
 	}
 	return nil
@@ -830,7 +830,7 @@ func validateHeaderName(name string) error {
 // separate fields. This is the conservative stance recommended for 1.0.
 func validateHeaderValue(field, value string) error {
 	if containsForbiddenControl(value) {
-		return fmt.Errorf("%w: %s value contains CR/LF or other control characters", ErrInvalidHeader, field)
+		return errchain.Errorf("%w: %s value contains CR/LF or other control characters", ErrInvalidHeader, field)
 	}
 	return nil
 }
@@ -869,7 +869,7 @@ func validateAddressField(field, email, name string) error {
 			return err
 		}
 		if i := strings.IndexAny(name, "<>,;:\"\\()"); i >= 0 {
-			return fmt.Errorf("%w: %s name contains address-grammar special %q",
+			return errchain.Errorf("%w: %s name contains address-grammar special %q",
 				ErrInvalidHeader, field, name[i])
 		}
 	}
@@ -889,19 +889,19 @@ func validateSingleAddrSpec(field, email string) error {
 	// callers a single, consistent error and closes the corner case
 	// "<addr@x>" which ParseAddress accepts with an empty Name.
 	if i := strings.IndexAny(email, ",;<>"); i >= 0 {
-		return fmt.Errorf("%w: %s address contains forbidden character %q",
+		return errchain.Errorf("%w: %s address contains forbidden character %q",
 			ErrInvalidEmailAddress, field, email[i])
 	}
 	parsed, err := netmail.ParseAddress(email)
 	if err != nil {
-		return fmt.Errorf("%w: %s address %q: %v",
+		return errchain.Errorf("%w: %s address %q: %v",
 			ErrInvalidEmailAddress, field, email, err)
 	}
 	// A non-empty Name means the caller passed "Display <addr>" through
 	// the email parameter. Display names must come via the Name argument
 	// so they get the dedicated grammar-specials check above.
 	if parsed.Name != "" {
-		return fmt.Errorf("%w: %s address %q includes a display name; pass it via the name argument",
+		return errchain.Errorf("%w: %s address %q includes a display name; pass it via the name argument",
 			ErrInvalidEmailAddress, field, email)
 	}
 	return nil

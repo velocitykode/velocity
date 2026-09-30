@@ -8,6 +8,7 @@ import (
 	"reflect"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/validation"
@@ -84,7 +85,7 @@ func Validate[T any](ctx *router.Context) (*T, *Result, error) {
 			)
 		}
 		if err := ctx.BindAuto(req); err != nil {
-			return nil, nil, fmt.Errorf("velocity/vform: bind failed: %w", err)
+			return nil, nil, errchain.Errorf("velocity/vform: bind failed: %w", err)
 		}
 		return req, nil, nil
 	}
@@ -107,14 +108,14 @@ func Validate[T any](ctx *router.Context) (*T, *Result, error) {
 	}
 	result, err := dbrules.CheckDataWithDBCtx(ctx.Request.Context(), data, rules, safeDB(ctx), msgs...)
 	if err != nil {
-		return nil, nil, fmt.Errorf("velocity/vform: %T rule set is invalid: %w", req, err)
+		return nil, nil, errchain.Errorf("velocity/vform: %T rule set is invalid: %w", req, err)
 	}
 	if result.HasErrors() {
 		return new(T), result, nil
 	}
 
 	if err := ctx.BindAuto(req); err != nil {
-		return nil, nil, fmt.Errorf("velocity/vform: bind failed: %w", err)
+		return nil, nil, errchain.Errorf("velocity/vform: bind failed: %w", err)
 	}
 	return req, nil, nil
 }

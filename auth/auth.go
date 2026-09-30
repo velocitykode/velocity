@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"sync"
@@ -75,7 +74,7 @@ func mustBcrypt(cost int) []byte {
 	h, err := bcrypt.GenerateFromPassword([]byte(seed), cost)
 	if err != nil {
 		// crypto/rand exhaustion at package init is unrecoverable.
-		panic(fmt.Sprintf("velocity/auth: bcrypt dummy hash generation failed at cost %d: %v", cost, err))
+		panic(errchain.Sprintf("velocity/auth: bcrypt dummy hash generation failed at cost %d: %v", cost, err))
 	}
 	return h
 }
@@ -1110,7 +1109,7 @@ func (m *Manager) RevokeSession(ctx context.Context, sessionID string) error {
 		// No live record, so no owner whose credential this session holds.
 	default:
 		m.logWarn("velocity/auth: revoke session: record read failed; remember-me not cleared", "session_id", sessionID, "error", err)
-		partialErrs = append(partialErrs, fmt.Errorf("session record read: %w", err))
+		partialErrs = append(partialErrs, errchain.Errorf("session record read: %w", err))
 	}
 	if err := store.Delete(ctx, sessionID); err != nil {
 		return err
@@ -1160,7 +1159,7 @@ func (m *Manager) RevokeAllSessions(ctx context.Context, userID string) error {
 		if gc.revoker != nil {
 			if err := gc.revoker.RevokeAllRefreshTokensForUser(ctx, userID); err != nil {
 				m.logWarn("velocity/auth: revoke refresh tokens failed", "scheme", gc.name, "user_id", userID, "error", err)
-				partialErrs = append(partialErrs, fmt.Errorf("scheme %q revoke refresh: %w", gc.name, err))
+				partialErrs = append(partialErrs, errchain.Errorf("scheme %q revoke refresh: %w", gc.name, err))
 			}
 		}
 	}
@@ -1208,7 +1207,7 @@ func (gc schemeRevocation) clearRemember(ctx context.Context, m *Manager, userID
 	}
 	if err := gc.clearer.ClearRememberTokensForUser(ctx, userID); err != nil {
 		m.logWarn("velocity/auth: clear remember token failed", "scheme", gc.name, "user_id", userID, "error", err)
-		return fmt.Errorf("scheme %q clear remember: %w", gc.name, err)
+		return errchain.Errorf("scheme %q clear remember: %w", gc.name, err)
 	}
 	return nil
 }

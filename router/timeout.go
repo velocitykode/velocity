@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"sync"
@@ -298,7 +297,7 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 						}
 						// Skip the deferred function so the trace starts
 						// at the panic site.
-						pe := newPanicError(fmt.Errorf("velocity/router: timeout handler panic: %w", panicerr.FromRecovered(r)), 1)
+						pe := newPanicError(errchain.Errorf("velocity/router: timeout handler panic: %w", panicerr.FromRecovered(r)), 1)
 						if !tw.deliver(done, pe) {
 							reportLatePanic(clone, pe)
 						}
@@ -388,7 +387,7 @@ func reportLatePanic(c *Context, err error) {
 	}
 	defer func() {
 		if p := recover(); p != nil {
-			panicText := fmt.Sprint(p)
+			panicText := errchain.Sprint(p)
 			writeRequestLine(c, func(l contract.Logger) {
 				l.Error("velocity/router: reporting a timeout handler panic after the timeout failed", "panic", panicText, "error", err)
 			})

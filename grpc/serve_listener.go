@@ -1,12 +1,12 @@
 package grpc
 
 import (
-	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -85,7 +85,7 @@ func (l *serveListener) Accept() (conn net.Conn, err error) {
 	}
 	defer func() {
 		if p := recover(); p != nil {
-			conn, err = nil, fmt.Errorf("velocity/grpc: listener Accept panicked: %w", panicerr.FromRecovered(p))
+			conn, err = nil, errchain.Errorf("velocity/grpc: listener Accept panicked: %w", panicerr.FromRecovered(p))
 		}
 	}()
 	return l.Listener.Accept()
@@ -97,7 +97,7 @@ func (l *serveListener) Accept() (conn net.Conn, err error) {
 func (l *serveListener) Close() (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("velocity/grpc: listener Close panicked: %w", panicerr.FromRecovered(p))
+			err = errchain.Errorf("velocity/grpc: listener Close panicked: %w", panicerr.FromRecovered(p))
 			l.closePanic.Store(&err)
 		}
 		l.closeOnce.Do(func() { close(l.closed) })

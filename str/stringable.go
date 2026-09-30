@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Stringable provides a fluent interface for string manipulation.
@@ -22,7 +24,7 @@ func Of(value interface{}) *Stringable {
 	case fmt.Stringer:
 		str = v.String()
 	default:
-		str = fmt.Sprintf("%v", v)
+		str = errchain.Sprintf("%v", v)
 	}
 	return &Stringable{value: str}
 }

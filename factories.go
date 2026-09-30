@@ -2,7 +2,6 @@ package velocity
 
 import (
 	"database/sql"
-	"fmt"
 	"os"
 	"strings"
 
@@ -14,6 +13,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/notification"
 	"github.com/velocitykode/velocity/orm"
@@ -180,7 +180,7 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger contract.L
 				if jc, ok := opts.(auth.JWTConfig); ok {
 					jwtCfg = jc
 				} else if logger != nil {
-					logger.Warn("JWT scheme config has wrong type, using defaults", "scheme", name, "type", fmt.Sprintf("%T", opts))
+					logger.Warn("JWT scheme config has wrong type, using defaults", "scheme", name, "type", errchain.Sprintf("%T", opts))
 				}
 			}
 			if jwtCfg.Secret == "" {
@@ -336,7 +336,7 @@ func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey strin
 			// queue driver itself accepts dbDriver values that the
 			// batch repo rejects, so this catches typos that would
 			// otherwise hide for weeks.
-			return nil, fmt.Errorf("velocity/queue: failed to wire database batch repository: %w", repoErr)
+			return nil, errchain.Errorf("velocity/queue: failed to wire database batch repository: %w", repoErr)
 		}
 		if !queue.EnsureDefaultBatchRepository(repo) {
 			logger.Info("Skipping DatabaseBatchRepository auto-install: a custom batch repository was already configured")

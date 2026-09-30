@@ -1,6 +1,10 @@
 package rules
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/velocitykode/velocity/internal/errchain"
+)
 
 // RequiredIfRule validates that a field is required when another field equals a given value.
 // Usage: required_if:other_field,value
@@ -17,7 +21,7 @@ func RequiredIfRule(field string, value interface{}, params []string, data map[s
 		return nil
 	}
 
-	if fmt.Sprintf("%v", otherValue) != expectedValue {
+	if errchain.Sprintf("%v", otherValue) != expectedValue {
 		return nil
 	}
 
@@ -36,7 +40,7 @@ func RequiredUnlessRule(field string, value interface{}, params []string, data m
 	exemptValue := params[1]
 
 	otherValue, exists := data[otherField]
-	if exists && fmt.Sprintf("%v", otherValue) == exemptValue {
+	if exists && errchain.Sprintf("%v", otherValue) == exemptValue {
 		return nil
 	}
 

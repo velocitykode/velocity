@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Schedule represents when a job should run
@@ -209,7 +211,7 @@ func (s *Schedule) Cron(expression string) *Schedule {
 		s.dayOfWeek = parts[4]
 	}
 	if _, err := ParseExpression(expression); err != nil {
-		s.validationErr = errors.Join(s.validationErr, fmt.Errorf("invalid cron expression %q: %w", expression, err))
+		s.validationErr = errors.Join(s.validationErr, errchain.Errorf("invalid cron expression %q: %w", expression, err))
 	}
 	return s
 }
@@ -230,7 +232,7 @@ func (s *Schedule) Days(days ...int) *Schedule {
 	}
 	for _, day := range days {
 		if day < 1 || day > 31 {
-			s.validationErr = errors.Join(s.validationErr, fmt.Errorf("%w: got %d", ErrInvalidDayOfMonth, day))
+			s.validationErr = errors.Join(s.validationErr, errchain.Errorf("%w: got %d", ErrInvalidDayOfMonth, day))
 			return s
 		}
 	}

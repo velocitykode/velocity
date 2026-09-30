@@ -1,8 +1,6 @@
 package websocket
 
-import (
-	"fmt"
-)
+import "github.com/velocitykode/velocity/internal/errchain"
 
 // JoinGroup adds a client to a group
 func (s *Server) JoinGroup(clientID, groupName string) error {
@@ -21,7 +19,7 @@ func (s *Server) joinGroup(clientID, groupName string) error {
 
 	client, ok := s.clients[clientID]
 	if !ok {
-		return fmt.Errorf("client %s not found: %w", sanitizeForLog(clientID), ErrClientNotFound)
+		return errchain.Errorf("client %s not found: %w", sanitizeForLog(clientID), ErrClientNotFound)
 	}
 
 	// Add to server groups
@@ -53,7 +51,7 @@ func (s *Server) leaveGroup(clientID, groupName string) error {
 
 	client, ok := s.clients[clientID]
 	if !ok {
-		return fmt.Errorf("client %s not found: %w", sanitizeForLog(clientID), ErrClientNotFound)
+		return errchain.Errorf("client %s not found: %w", sanitizeForLog(clientID), ErrClientNotFound)
 	}
 
 	// Remove from server groups
@@ -147,7 +145,7 @@ func (s *Server) BroadcastToGroup(groupName string, message Message) error {
 	group, ok := s.groups[groupName]
 	if !ok {
 		s.mu.RUnlock()
-		return fmt.Errorf("group %s not found: %w", sanitizeForLog(groupName), ErrGroupNotFound)
+		return errchain.Errorf("group %s not found: %w", sanitizeForLog(groupName), ErrGroupNotFound)
 	}
 
 	// Copy clients to avoid holding lock during send
@@ -180,7 +178,7 @@ func (s *Server) SendToOthersInGroup(groupName, senderID string, message Message
 	group, ok := s.groups[groupName]
 	if !ok {
 		s.mu.RUnlock()
-		return fmt.Errorf("group %s not found: %w", sanitizeForLog(groupName), ErrGroupNotFound)
+		return errchain.Errorf("group %s not found: %w", sanitizeForLog(groupName), ErrGroupNotFound)
 	}
 
 	// Copy clients except sender

@@ -89,7 +89,7 @@ func newRedisStore(ctx context.Context, prefix string, host string, port int, pa
 	// Test the connection under the caller's deadline.
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()
-		return nil, fmt.Errorf("velocity/cache: failed to connect to redis: %w", err)
+		return nil, errchain.Errorf("velocity/cache: failed to connect to redis: %w", err)
 	}
 
 	// An empty prefix on Redis is dangerous: Flush would SCAN/DEL every
@@ -234,11 +234,11 @@ func (s *RedisStore) GetString(key string) (string, bool) {
 func (s *RedisStore) PutCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
 	data, err := drivers.MarshalValue(value)
 	if err != nil {
-		return fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
+		return errchain.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
 
 	if err := s.client.Set(ctx, s.prefixedKey(key), data, clampTTL(ttl)).Err(); err != nil {
-		return fmt.Errorf("velocity/cache: redis set failed: %w", err)
+		return errchain.Errorf("velocity/cache: redis set failed: %w", err)
 	}
 	return nil
 }
@@ -257,11 +257,11 @@ func (s *RedisStore) Put(key string, value interface{}, ttl time.Duration) error
 func (s *RedisStore) AddCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error) {
 	data, err := drivers.MarshalValue(value)
 	if err != nil {
-		return false, fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
+		return false, errchain.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
 	ok, err := s.client.SetNX(ctx, s.prefixedKey(key), data, clampTTL(ttl)).Result()
 	if err != nil {
-		return false, fmt.Errorf("velocity/cache: redis setnx failed: %w", err)
+		return false, errchain.Errorf("velocity/cache: redis setnx failed: %w", err)
 	}
 	return ok, nil
 }
@@ -291,11 +291,11 @@ func (s *RedisStore) Forever(key string, value interface{}) error {
 func (s *RedisStore) ReplaceCtx(ctx context.Context, key string, value interface{}, ttl time.Duration) (bool, error) {
 	data, err := drivers.MarshalValue(value)
 	if err != nil {
-		return false, fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
+		return false, errchain.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
 	ok, err := s.client.SetXX(ctx, s.prefixedKey(key), data, clampTTL(ttl)).Result()
 	if err != nil {
-		return false, fmt.Errorf("velocity/cache: redis setxx failed: %w", err)
+		return false, errchain.Errorf("velocity/cache: redis setxx failed: %w", err)
 	}
 	return ok, nil
 }
@@ -337,11 +337,11 @@ return 1
 func (s *RedisStore) CompareAndSwapCtx(ctx context.Context, key string, expected, value interface{}, ttl time.Duration) (bool, error) {
 	want, err := drivers.MarshalValue(expected)
 	if err != nil {
-		return false, fmt.Errorf("velocity/cache: failed to marshal expected value: %w", err)
+		return false, errchain.Errorf("velocity/cache: failed to marshal expected value: %w", err)
 	}
 	data, err := drivers.MarshalValue(value)
 	if err != nil {
-		return false, fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
+		return false, errchain.Errorf("velocity/cache: failed to marshal value: %w", err)
 	}
 	ttlMS := clampTTL(ttl).Milliseconds()
 	if ttl > 0 && ttlMS == 0 {
@@ -359,11 +359,11 @@ func (s *RedisStore) CompareAndSwapCtx(ctx context.Context, key string, expected
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("velocity/cache: redis get failed: %w", err)
+		return false, errchain.Errorf("velocity/cache: redis get failed: %w", err)
 	}
 	same, err := drivers.MatchesStoredValue(stored, expected)
 	if err != nil {
-		return false, fmt.Errorf("velocity/cache: failed to compare expected value: %w", err)
+		return false, errchain.Errorf("velocity/cache: failed to compare expected value: %w", err)
 	}
 	if !same {
 		return false, nil
@@ -376,7 +376,7 @@ func (s *RedisStore) CompareAndSwapCtx(ctx context.Context, key string, expected
 func (s *RedisStore) swapStoredBytes(ctx context.Context, prefixed string, want, data []byte, ttlMS int64) (bool, error) {
 	swapped, err := compareAndSwapScript.Run(ctx, s.client, []string{prefixed}, want, data, ttlMS).Int()
 	if err != nil {
-		return false, fmt.Errorf("velocity/cache: redis compare-and-swap failed: %w", err)
+		return false, errchain.Errorf("velocity/cache: redis compare-and-swap failed: %w", err)
 	}
 	return swapped == 1, nil
 }
@@ -420,7 +420,7 @@ func (s *RedisStore) SetAddCtx(ctx context.Context, key string, ttl time.Duratio
 		args = append(args, m)
 	}
 	if err := setAddScript.Run(ctx, s.client, []string{s.prefixedKey(key)}, args...).Err(); err != nil {
-		return fmt.Errorf("velocity/cache: redis sadd failed: %w", err)
+		return errchain.Errorf("velocity/cache: redis sadd failed: %w", err)
 	}
 	return nil
 }
@@ -436,7 +436,7 @@ func (s *RedisStore) SetRemoveCtx(ctx context.Context, key string, members ...st
 		args[i] = m
 	}
 	if err := s.client.SRem(ctx, s.prefixedKey(key), args...).Err(); err != nil {
-		return fmt.Errorf("velocity/cache: redis srem failed: %w", err)
+		return errchain.Errorf("velocity/cache: redis srem failed: %w", err)
 	}
 	return nil
 }
@@ -446,7 +446,7 @@ func (s *RedisStore) SetRemoveCtx(ctx context.Context, key string, members ...st
 func (s *RedisStore) SetMembersCtx(ctx context.Context, key string) ([]string, error) {
 	members, err := s.client.SMembers(ctx, s.prefixedKey(key)).Result()
 	if err != nil {
-		return nil, fmt.Errorf("velocity/cache: redis smembers failed: %w", err)
+		return nil, errchain.Errorf("velocity/cache: redis smembers failed: %w", err)
 	}
 	if len(members) == 0 {
 		return nil, nil
@@ -456,7 +456,7 @@ func (s *RedisStore) SetMembersCtx(ctx context.Context, key string) ([]string, e
 
 func (s *RedisStore) ForgetCtx(ctx context.Context, key string) error {
 	if err := s.client.Del(ctx, s.prefixedKey(key)).Err(); err != nil {
-		return fmt.Errorf("velocity/cache: redis del failed: %w", err)
+		return errchain.Errorf("velocity/cache: redis del failed: %w", err)
 	}
 	return nil
 }
@@ -511,11 +511,11 @@ func (s *RedisStore) flushPattern(ctx context.Context, pattern string) error {
 	for {
 		keys, nextCursor, err := s.client.Scan(ctx, cursor, pattern, 100).Result()
 		if err != nil {
-			return fmt.Errorf("velocity/cache: failed to scan cache keys: %w", err)
+			return errchain.Errorf("velocity/cache: failed to scan cache keys: %w", err)
 		}
 		if len(keys) > 0 {
 			if err := s.client.Del(ctx, keys...).Err(); err != nil {
-				return fmt.Errorf("velocity/cache: failed to delete cache keys: %w", err)
+				return errchain.Errorf("velocity/cache: failed to delete cache keys: %w", err)
 			}
 		}
 		cursor = nextCursor
@@ -620,13 +620,13 @@ func (s *RedisStore) PutManyCtx(ctx context.Context, items map[string]interface{
 	for key, value := range items {
 		data, err := drivers.MarshalValue(value)
 		if err != nil {
-			return fmt.Errorf("velocity/cache: failed to marshal value for key %s: %w", key, err)
+			return errchain.Errorf("velocity/cache: failed to marshal value for key %s: %w", key, err)
 		}
 		pipe.Set(ctx, s.prefixedKey(key), data, clampTTL(ttl))
 	}
 
 	if _, err := pipe.Exec(ctx); err != nil {
-		return fmt.Errorf("velocity/cache: redis pipeline exec failed: %w", err)
+		return errchain.Errorf("velocity/cache: redis pipeline exec failed: %w", err)
 	}
 	return nil
 }
