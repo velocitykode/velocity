@@ -1,0 +1,371 @@
+// check-error-inspection reports framework code that inspects an error it
+// did not make itself outside internal/errchain. An error's Error, Unwrap,
+// Is and As methods are user code when a handler, job, driver, store,
+// listener or callback returned the error: they may panic, and a chain may
+// loop back on itself. errors.Is and errors.As follow such a chain without
+// bound and let a panic through, so the goroutine inspecting the error
+// crashes or hangs, often cleanup that must finish. internal/errchain
+// holds the bounded, contained forms: Is, As, Unwrap, Text, and Walk with
+// Matches and MatchesAs for a classification of its own.
+//
+// Calls flagged, told apart by type only:
+//
+//   - is, as, unwrap: a call to errors.Is, errors.As or errors.Unwrap;
+//   - text, unwrap, is, as: a method call on a value whose static type is
+//     an interface, when the method is Error() string, Unwrap() error,
+//     Unwrap() []error, Is(error) bool or As(any) bool (matched by
+//     signature, so a logger's Error(msg, kvs...) is not a hit, and a hand
+//     walk's x.Unwrap() after err.(interface{ Unwrap() error }) is).
+//
+// Every error-typed value is treated as possibly user-made: types cannot
+// tell a framework sentinel from a user error wrapping one, and a stdlib
+// error (a json decode, an io.Copy) can wrap one too.
+//
+// Known limits: a call on a concrete type is not flagged (its method is
+// the module's own or a dependency's). Other methods of a user error (a
+// status code, headers, a client message, GRPCStatus) are not flagged: an
+// interface method call cannot be told from any other by type; the
+// classification sites read them inside the same contained walk. fmt and
+// logger arguments are not flagged: fmt recovers a panicking Error method
+// itself, and loggers are called through fallbacklog.
+//
+// Suppression: a same-line `//error-inspection-ok: <rationale>` comment,
+// the rationale at least 5 characters. A bare marker does not suppress,
+// and the hit on its line says so. A marker that suppresses nothing is
+// stale and is reported.
+//
+// Scope: the non-test files of the packages the patterns name, except
+// internal/errchain (the one place allowed to make these calls) and test
+// infrastructure, excluded by directory as check-lock-held-calls does: any
+// directory whose name ends in "test" or is "testing", internal/hostile,
+// and scripts/.
+//
+// Type information comes from `go list -export` and the standard library
+// importer, so the tool needs no dependency outside the standard library.
+//
+// Usage: go run ./scripts/ci/check-error-inspection [-report-only] [packages]
+// Prints "file:line: kind: call" per offender, then on stderr the fix for
+// each kind reported and the marker syntax, and exits 1 when there is any;
+// prints nothing and exits 0 otherwise. -report-only prints the same and
+// exits 0.
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"go/ast"
+	"go/importer"
+	"go/parser"
+	"go/token"
+	"go/types"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+)
+
+func main() {
+	reportOnly := flag.Bool("report-only", false, "print the offenders and exit 0")
+	flag.Parse()
+	patterns := flag.Args()
+	if len(patterns) == 0 {
+		patterns = []string{"./..."}
+	}
+	hits, err := check(".", patterns)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "check-error-inspection:", err)
+		os.Exit(2)
+	}
+	for _, h := range hits {
+		fmt.Println(h)
+	}
+	if len(hits) > 0 {
+		fmt.Fprint(os.Stderr, hints(hits))
+		if !*reportOnly {
+			os.Exit(1)
+		}
+	}
+}
+
+const (
+	kindIs     = "is"
+	kindAs     = "as"
+	kindUnwrap = "unwrap"
+	kindText   = "text"
+	kindStale  = "stale"
+)
+
+var fixes = []struct{ kind, fix string }{
+	{kindIs, "is: errchain.Is(err, target), or errchain.Matches inside an errchain.Walk visit"},
+	{kindAs, "as: errchain.As[T](err), or errchain.MatchesAs[T] inside an errchain.Walk visit"},
+	{kindUnwrap, "unwrap: errchain.Unwrap(err), or errchain.Walk for a walk of the chain"},
+	{kindText, "text: errchain.Text(err)"},
+	{kindStale, "stale: remove the //error-inspection-ok: marker; nothing on its line inspects an error any more"},
+}
+
+// hints returns the fix lines for the kinds in hits, and the marker
+// syntax.
+func hints(hits []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d uncontained inspection(s) of an error. Its Error, Unwrap, Is and As methods can panic, and its chain can loop.\n", len(hits))
+	for _, f := range fixes {
+		for _, h := range hits {
+			if strings.Contains(h, ": "+f.kind+": ") {
+				b.WriteString("  " + f.fix + "\n")
+				break
+			}
+		}
+	}
+	b.WriteString("  an inspection that is safe: same-line //error-inspection-ok: <rationale of at least 5 characters>\n")
+	return b.String()
+}
+
+type listedPackage struct {
+	ImportPath      string
+	Dir             string
+	Export          string
+	CompiledGoFiles []string
+	DepOnly         bool
+	Module          *struct{ Path, Dir string }
+	Error           *struct{ Err string }
+}
+
+func goCmd(dir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("go", args...)
+	cmd.Dir = dir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("go %s: %w: %s", strings.Join(args, " "), err, stderr.String())
+	}
+	return out, nil
+}
+
+// excluded reports whether a package is out of scope (see the package
+// comment).
+func excluded(module, path string) bool {
+	rel := strings.TrimPrefix(strings.TrimPrefix(path, module), "/")
+	for _, dir := range []string{"internal/errchain", "internal/hostile", "scripts"} {
+		if rel == dir || strings.HasPrefix(rel, dir+"/") {
+			return true
+		}
+	}
+	for _, seg := range strings.Split(rel, "/") {
+		if strings.HasSuffix(seg, "test") || seg == "testing" {
+			return true
+		}
+	}
+	return false
+}
+
+const markerPrefix = "//error-inspection-ok:"
+
+// markerRE matches a marker with a rationale of at least 5 characters.
+var markerRE = regexp.MustCompile(`//error-inspection-ok: *\S.{3,}\S`)
+
+var (
+	errorType   = types.Universe.Lookup("error").Type()
+	errorsSlice = types.NewSlice(errorType)
+	emptyIface  = types.NewInterfaceType(nil, nil).Complete()
+)
+
+// check type-checks the module packages patterns name, run in dir, and
+// returns the offenders, sorted.
+func check(dir string, patterns []string) ([]string, error) {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	modOut, err := goCmd(absDir, "list", "-m", "-json")
+	if err != nil {
+		return nil, err
+	}
+	var mod struct{ Path, Dir string }
+	if err := json.Unmarshal(modOut, &mod); err != nil {
+		return nil, fmt.Errorf("go list -m: %w", err)
+	}
+	listOut, err := goCmd(absDir, append([]string{"list", "-e", "-export", "-compiled", "-deps", "-json"}, patterns...)...)
+	if err != nil {
+		return nil, err
+	}
+	exports := map[string]string{}
+	var targets []listedPackage
+	dec := json.NewDecoder(bytes.NewReader(listOut))
+	for {
+		var p listedPackage
+		if err := dec.Decode(&p); err == io.EOF {
+			break
+		} else if err != nil {
+			return nil, fmt.Errorf("go list: %w", err)
+		}
+		if p.Error != nil {
+			return nil, fmt.Errorf("go list %s: %s", p.ImportPath, p.Error.Err)
+		}
+		exports[p.ImportPath] = p.Export
+		if p.Module != nil && p.Module.Path == mod.Path && !p.DepOnly && !excluded(mod.Path, p.ImportPath) {
+			targets = append(targets, p)
+		}
+	}
+
+	fset := token.NewFileSet()
+	imp := importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
+		f := exports[path]
+		if f == "" {
+			return nil, fmt.Errorf("no export data for %s", path)
+		}
+		return os.Open(f)
+	})
+	hits := map[string]bool{}
+	for _, p := range targets {
+		var files []*ast.File
+		for _, f := range p.CompiledGoFiles {
+			if !filepath.IsAbs(f) {
+				f = filepath.Join(p.Dir, f)
+			}
+			if strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			af, err := parser.ParseFile(fset, f, nil, parser.ParseComments)
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, af)
+		}
+		info := &types.Info{
+			Types:      map[ast.Expr]types.TypeAndValue{},
+			Uses:       map[*ast.Ident]types.Object{},
+			Selections: map[*ast.SelectorExpr]*types.Selection{},
+		}
+		var typeErr error
+		conf := types.Config{Importer: imp, Error: func(err error) {
+			if typeErr == nil {
+				typeErr = err
+			}
+		}}
+		if _, err := conf.Check(p.ImportPath, fset, files, info); err != nil && typeErr == nil {
+			typeErr = err
+		}
+		if typeErr != nil {
+			return nil, fmt.Errorf("type-check %s: %w", p.ImportPath, typeErr)
+		}
+		for _, f := range files {
+			checkFile(fset, mod.Dir, info, f, hits)
+		}
+	}
+	out := make([]string, 0, len(hits))
+	for h := range hits {
+		out = append(out, h)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// checkFile adds f's offenders and stale markers to hits.
+func checkFile(fset *token.FileSet, root string, info *types.Info, f *ast.File, hits map[string]bool) {
+	markers := map[int]string{} // line -> comment text
+	for _, cg := range f.Comments {
+		for _, c := range cg.List {
+			if strings.HasPrefix(c.Text, markerPrefix) {
+				markers[fset.Position(c.Pos()).Line] = c.Text
+			}
+		}
+	}
+	rel := func(file string) string {
+		r, err := filepath.Rel(root, file)
+		if err != nil {
+			r = file
+		}
+		return filepath.ToSlash(r)
+	}
+	used := map[int]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		kind := classify(info, call)
+		if kind == "" {
+			return true
+		}
+		pos := fset.Position(call.Pos())
+		if m, ok := markers[pos.Line]; ok {
+			used[pos.Line] = true
+			if markerRE.MatchString(m) {
+				return true
+			}
+			hits[fmt.Sprintf("%s:%d: %s: %s (the marker on this line has no rationale)", rel(pos.Filename), pos.Line, kind, types.ExprString(call.Fun))] = true
+			return true
+		}
+		hits[fmt.Sprintf("%s:%d: %s: %s", rel(pos.Filename), pos.Line, kind, types.ExprString(call.Fun))] = true
+		return true
+	})
+	for line := range markers {
+		if !used[line] {
+			hits[fmt.Sprintf("%s:%d: %s: the //error-inspection-ok: marker suppresses no inspection", rel(fset.File(f.Pos()).Name()), line, kindStale)] = true
+		}
+	}
+}
+
+// classify returns the kind of an inspection call, or "".
+func classify(info *types.Info, call *ast.CallExpr) string {
+	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	if fn, ok := info.Uses[sel.Sel].(*types.Func); ok && fn.Pkg() != nil && fn.Pkg().Path() == "errors" && fn.Type().(*types.Signature).Recv() == nil {
+		switch fn.Name() {
+		case "Is":
+			return kindIs
+		case "As":
+			return kindAs
+		case "Unwrap":
+			return kindUnwrap
+		}
+		return ""
+	}
+	s := info.Selections[sel]
+	if s == nil || s.Kind() != types.MethodVal || !types.IsInterface(s.Recv()) {
+		return ""
+	}
+	fn, ok := s.Obj().(*types.Func)
+	if !ok {
+		return ""
+	}
+	return errorMethod(fn)
+}
+
+// errorMethod returns the kind of fn when it is one of the error methods
+// by name and signature, or "".
+func errorMethod(fn *types.Func) string {
+	sig := fn.Type().(*types.Signature)
+	p, r := sig.Params(), sig.Results()
+	if r.Len() != 1 || sig.Variadic() {
+		return ""
+	}
+	res := r.At(0).Type()
+	switch fn.Name() {
+	case "Error":
+		if p.Len() == 0 && types.Identical(res, types.Typ[types.String]) {
+			return kindText
+		}
+	case "Unwrap":
+		if p.Len() == 0 && (types.Identical(res, errorType) || types.Identical(res, errorsSlice)) {
+			return kindUnwrap
+		}
+	case "Is":
+		if p.Len() == 1 && types.Identical(p.At(0).Type(), errorType) && types.Identical(res, types.Typ[types.Bool]) {
+			return kindIs
+		}
+	case "As":
+		if p.Len() == 1 && types.Identical(p.At(0).Type(), emptyIface) && types.Identical(res, types.Typ[types.Bool]) {
+			return kindAs
+		}
+	}
+	return ""
+}
