@@ -15,7 +15,6 @@ import (
 	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
-	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -57,7 +56,7 @@ const terminalCleanupTimeout = 5 * time.Second
 // defaultHandlerKillCeiling bounds how long processJob will wait, after
 // the per-job ctx fires, for the detached handler goroutine to return
 // cooperatively. Once jobCtx.Done() fires, the goroutine is no longer
-// tracked by w.wg, so without this drain Stop returns before timed-out
+// one of the worker's units, so without this drain Stop returns before timed-out
 // handlers complete and the goroutines accumulate unbounded.
 //
 // 5s mirrors retryPushTimeout: long enough for a well-behaved handler to
@@ -81,21 +80,20 @@ type Worker struct {
 	maxRetries  int
 	backoff     BackoffStrategy
 	attempts    sync.Map // keyed by jobKey(job) → *int32
-	// life serializes Start and Stop: Start publishes ctx and cancel and
-	// adds every pump to wg under it, so a Stop that races Start sees
-	// either no start or the whole start and never waits before a pump's
-	// Add. The pumps read ctx without it: Start writes it before it spawns
-	// them.
+	// life serializes Start and Stop: Start publishes ctx, cancel and run
+	// and admits every pump into run under it, so a Stop that races Start
+	// sees either no start or the whole start. The pumps read ctx without
+	// it: Start writes it before it spawns them.
 	life   sync.Mutex
 	ctx    context.Context
 	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	// stops records the pump and handler goroutines as the worker's own
+	// run is the worker's one run; its units are the pumps, and its drain
+	// is the one every Stop from outside waits for. Nil before Start.
+	run *drain.Run
+	// own records the pump and handler goroutines as the worker's own
 	// work, so a Stop called from one of them (a handler, or a listener,
-	// logger or hook the pump runs) returns instead of waiting on itself,
-	// and holds the drain that every Stop from outside waits for. Its
-	// drain is guarded by life.
-	stops  drain.Coordinator
+	// logger or hook the pump runs) returns instead of waiting on itself.
+	own    drain.Owner
 	logger contract.Logger
 
 	// events holds the event dispatcher and handles a failed dispatch
@@ -235,27 +233,41 @@ func NewWorker(queue Driver, queueName string, handler func(Job) error, opts ...
 // instead of tearing down the process.
 //
 // Start is idempotent: a second call while the worker is already running
-// is a no-op.
+// is a no-op. Start derives the worker's context from ctx before it takes
+// the worker's lifecycle lock, so a ctx that calls back into the worker
+// cannot deadlock it.
 func (w *Worker) Start(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	workerCtx, cancel := context.WithCancel(ctx)
+	if !w.begin(workerCtx, cancel) {
+		// Already started: no additional pumps. Cancelling the unused
+		// context calls into its parent, so it happens unlocked.
+		cancel()
+	}
+}
+
+// begin publishes the worker's run with context ctx and starts its pumps,
+// or reports false when the worker has started already.
+func (w *Worker) begin(ctx context.Context, cancel context.CancelFunc) bool {
 	w.life.Lock()
 	defer w.life.Unlock()
-	if w.ctx != nil {
-		// Already started: do not spawn additional pumps.
-		return
+	if w.run != nil {
+		return false
 	}
-	w.ctx, w.cancel = context.WithCancel(ctx)
-
-	w.wg.Add(w.concurrency)
+	w.ctx, w.cancel = ctx, cancel
+	run := w.own.NewRun()
+	w.run = run
 	for i := 0; i < w.concurrency; i++ {
 		id := i
+		run.Admit()
 		async.Go(func() {
-			defer w.wg.Done()
-			w.stops.Run(func() { w.work(id) })
+			defer run.Release()
+			w.own.Do(func() { w.work(id) })
 		})
 	}
+	return true
 }
 
 // Stop stops the worker and waits, bounded by ctx, for its pumps to finish
@@ -276,39 +288,27 @@ func (w *Worker) Stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if w.stops.Nested() {
-		w.life.Lock()
-		cancel := w.cancel
-		w.life.Unlock()
+	w.life.Lock()
+	run, cancel := w.run, w.cancel
+	w.life.Unlock()
+	if w.own.Nested() {
 		if cancel != nil {
 			cancel()
 		}
 		return fmt.Errorf("velocity/queue: Stop called from a handler or pump of this worker; the worker stops without this call waiting for it: %w", contract.ErrStopFromOwnWork)
 	}
-	w.life.Lock()
-	if w.cancel == nil {
-		w.life.Unlock()
+	if run == nil {
 		return nil
 	}
-	drained := w.stops.Ended()
-	owner := drained == nil
-	if owner {
-		drained = w.stops.Begin()
-	}
-	cancel := w.cancel
-	w.life.Unlock()
-	if owner {
+	return w.own.Stop(ctx, run, func() error {
 		cancel()
-		async.Go(func() {
-			w.wg.Wait()
-			close(drained)
-		})
-	}
-	return w.stops.Await(ctx, drained, nil)
+		<-run.Idle()
+		return nil
+	}, nil)
 }
 
-// work is the main worker loop. Caller is responsible for wg bookkeeping
-// via async.Go in Start().
+// work is the main worker loop. The caller (Start) holds the pump's unit
+// of the worker's run.
 func (w *Worker) work(id int) {
 	w.logger.Info("Worker started", "id", id, "queue", w.queueName)
 
@@ -457,10 +457,8 @@ func (w *Worker) processJob() error {
 	go func() { //safe-goroutine: forwards panic via done for retry accounting, see comment above
 		// The handler is the worker's own work from its first statement
 		// on, so a Stop it calls returns instead of waiting on it.
-		id := goroutine.ID()
-		own := w.stops.Work()
-		own.Enter(id)
-		defer own.Leave(id)
+		id := w.own.Enter()
+		defer w.own.Leave(id)
 		defer func() {
 			if r := recover(); r != nil {
 				done <- panicerr.FromRecovered(r)
@@ -540,7 +538,7 @@ func (w *Worker) processJob() error {
 		// jobCtx fired: either the worker is shutting down (w.ctx cancelled,
 		// which propagates to jobCtx) or the per-job timeout expired. In
 		// both cases the handler goroutine is still running and is NOT
-		// tracked by w.wg, so without an explicit drain it leaks past
+		// one of the worker's units, so without an explicit drain it leaks past
 		// Stop and accumulates unbounded over time.
 		//
 		// Wait up to defaultHandlerKillCeiling for the handler to observe

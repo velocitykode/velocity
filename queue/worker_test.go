@@ -628,15 +628,13 @@ func TestWorker_CtxCancelPropagatesToJobExecution(t *testing.T) {
 	//
 	// We intentionally do NOT call worker.Stop() to force exit; the test
 	// relies purely on parent ctx propagation to drive shutdown. Waiting
-	// on the worker's internal WaitGroup directly verifies that the pumps
-	// exited on their own.
+	// for the worker's run to go idle directly verifies that the pumps
+	// exited on their own: closing its admission admits nothing more
+	// (the pumps are admitted at Start) and stops nothing.
 	parentCancel()
 
-	done := make(chan struct{})
-	go func() {
-		worker.wg.Wait()
-		close(done)
-	}()
+	worker.run.Close()
+	done := worker.run.Idle()
 
 	// Bound: kill ceiling (drainHandler) + pump-loop slack. If propagation
 	// is wired correctly the pumps exit promptly once jobCtx fires and
