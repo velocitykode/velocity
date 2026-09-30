@@ -29,7 +29,7 @@ func TestShouldRun_ConditionMayCallTheJobsSetters(t *testing.T) {
 			case <-time.After(2 * time.Second):
 				t.Fatalf("the tick deadlocked on a %s callback that calls a job setter", kind)
 			}
-			s.runWg.Wait()
+			waitTicks(s)
 			if !ran.Load() {
 				t.Errorf("the task did not run after its %s callback allowed it", kind)
 			}

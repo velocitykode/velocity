@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
-	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -274,7 +274,7 @@ func callCondition(s *Scheduler, jobName, kind string, cond func() bool) (result
 // Run executes the job. This is the legacy entry point preserved for
 // direct callers (tests, ad-hoc invocations). The scheduler itself uses
 // runInternal, which threads a runCtx + release callback so the
-// scheduler can drain locks and runWg accurately even when the job is a
+// scheduler can drain locks and its run accurately even when the job is a
 // RunInBackground command whose OS process outlives Job.Run.
 func (j *Job) Run() error {
 	return j.runInternal(context.Background(), trace.StartSpan(context.Background(), trace.Parent{}), 0, nil, nil)
@@ -296,22 +296,23 @@ func (j *Job) Run() error {
 //	                means "no SIGTERM, just wait for cmd.Wait until
 //	                Shutdown's deadline elapses".
 //	release       - a callback the scheduler uses to release the
-//	                WithoutOverlapping lock and decrement runWg. Called
+//	                WithoutOverlapping lock and the task's unit of its
+//	                run. Called
 //	                EXACTLY ONCE: inline before return for synchronous
 //	                paths, OR by the RunInBackground waiter goroutine
 //	                after cmd.Wait returns. May be nil for direct (test)
 //	                callers that have no scheduler-side bookkeeping.
-//	working       - the scheduler's set of goroutines running its work
-//	                (Scheduler.stops). A RunInBackground waiter enters
-//	                it, as the caller's goroutine did, so a Shutdown from
-//	                the waiter's hooks is refused. Nil with a nil release.
+//	working       - the Owner of the scheduler's work (Scheduler.own). A
+//	                RunInBackground waiter enters it, as the caller's
+//	                goroutine did, so a Shutdown from the waiter's hooks
+//	                is refused. Nil with a nil release.
 //
 // Background ownership transfer: for a RunInBackground command that
 // successfully started, ownership of `release` moves into the waiter
 // goroutine. runInternal returns nil to the caller in that case so
 // the scheduler's dispatch goroutine exits promptly; the waiter holds
 // the WithoutOverlapping lock until the OS process exits.
-func (j *Job) runInternal(ctx, tctx context.Context, shutdownGrace time.Duration, release func(), working *goroutine.Set) error {
+func (j *Job) runInternal(ctx, tctx context.Context, shutdownGrace time.Duration, release func(), working *drain.Owner) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -544,7 +545,7 @@ func (j *Job) runInternal(ctx, tctx context.Context, shutdownGrace time.Duration
 	return err
 }
 
-// spawnBackgroundWaiter owns the lock + runWg + completion bookkeeping
+// spawnBackgroundWaiter owns the lock + run unit + completion bookkeeping
 // for a RunInBackground command that successfully started. It runs in
 // its own goroutine so Job.runInternal can return promptly to the
 // scheduler's dispatch goroutine.
@@ -565,18 +566,17 @@ func (j *Job) spawnBackgroundWaiter(
 	onFailureCallbacks []func(error),
 	clearRunningFlag func(),
 	release func(),
-	working *goroutine.Set,
+	working *drain.Owner,
 ) {
 	// Not async.Go: the supervisor needs a job-scoped recover that
 	// dispatches ScheduledTaskFailed and runs the resource-release
 	// teardown (outFile.Close, clearRunningFlag, release) even on panic.
 	go func() { //safe-goroutine: job-scoped recovery + resource release, see comment above
 		// In working until after the release below (deferred first, so
-		// it runs last): see Scheduler.stops.
+		// it runs last): see Scheduler.own.
 		if working != nil {
-			gid := goroutine.ID()
-			working.Enter(gid)
-			defer working.Leave(gid)
+			id := working.Enter()
+			defer working.Leave(id)
 		}
 		// Panic-safe: a misbehaving callback must not leak the lock.
 		defer func() {

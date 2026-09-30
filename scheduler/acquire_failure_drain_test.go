@@ -44,7 +44,7 @@ func TestRunDueJobs_AcquireFailureWarningKeepsTheRunCounted(t *testing.T) {
 			case <-time.After(2 * time.Second):
 				t.Fatal("acquire-failure warning never written")
 			}
-			done := runWgDone(s)
+			done := ticksIdle(s)
 			assertStillCounted(t, done, "acquire-failure warning")
 			close(l.gate)
 			wg.Wait()
@@ -78,7 +78,7 @@ func TestRunDueJobs_PanickingAcquireFailureWarningIsContained(t *testing.T) {
 		s.runDueJobs()
 	}()
 	select {
-	case <-runWgDone(s):
+	case <-ticksIdle(s):
 	case <-time.After(2 * time.Second):
 		t.Fatal("run never released after its warning panicked")
 	}

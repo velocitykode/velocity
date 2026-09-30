@@ -159,7 +159,14 @@ func (r *Run) Admit() bool {
 	}
 }
 
-// Release ends one unit Admit counted. The last one released after Close
+// Join counts one more unit on behalf of a unit the caller holds and has
+// not released, such as a tick starting the tasks it admitted: the run
+// cannot go idle meanwhile, so Join never fails, closed admission or not.
+func (r *Run) Join() {
+	r.state.Add(1)
+}
+
+// Release ends one unit Admit or Join counted. The last one released after Close
 // makes the run idle.
 func (r *Run) Release() {
 	if r.state.Add(-1) == closedBit {

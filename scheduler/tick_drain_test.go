@@ -78,7 +78,7 @@ func TestRunDueJobs_AfterShutdownDispatchesNothing(t *testing.T) {
 	s.jobs[0].mu.Unlock()
 	before := runs.Load()
 	s.runDueJobs()
-	s.runWg.Wait()
+	waitTicks(s)
 	if got := runs.Load(); got != before {
 		t.Fatalf("a tick after Shutdown dispatched %d runs, want 0", got-before)
 	}

@@ -68,11 +68,11 @@ func TestRunDueJobs_OneServerLockReleasedOnOverlapAcquireFailure(t *testing.T) {
 	// Wait for any in-flight dispatch goroutines to finish so the
 	// release side effects have landed.
 	done := make(chan struct{})
-	go func() { s.runWg.Wait(); close(done) }()
+	go func() { waitTicks(s); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("runWg leaked an Add on the pre-dispatch acquire-failure path")
+		t.Fatal("the run leaked a unit on the pre-dispatch acquire-failure path")
 	}
 
 	// The minute-scoped OnOneServer key must be free; another host

@@ -74,13 +74,13 @@ func TestRunLines_CarryTheTaskNameAndTheRunTrace(t *testing.T) {
 	s.runDueJobs()
 	done := make(chan struct{})
 	go func() {
-		s.runWg.Wait()
+		waitTicks(s)
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("runWg.Wait timed out")
+		t.Fatal("waiting for the ticks timed out")
 	}
 
 	mu.Lock()

@@ -155,7 +155,7 @@ func TestM36_InvalidJob_DoesNotFire(t *testing.T) {
 	s.Named("invalid.job", func() { ran.Add(1) }).Days(0)
 
 	s.runDueJobs()
-	s.runWg.Wait()
+	waitTicks(s)
 	time.Sleep(20 * time.Millisecond)
 
 	if ran.Load() != 0 {

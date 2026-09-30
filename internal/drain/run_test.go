@@ -45,6 +45,26 @@ func TestRun_AdmissionClosesWithTheStop(t *testing.T) {
 	}
 }
 
+// A unit joined under a held unit counts even after Close, and the run
+// goes idle only once both are released.
+func TestRun_JoinUnderAHeldUnit(t *testing.T) {
+	var o drain.Owner
+	r := o.NewRun()
+	if !r.Admit() {
+		t.Fatal("Admit = false")
+	}
+	r.Close()
+	r.Join()
+	r.Release()
+	if drain.Closed(r.Idle()) {
+		t.Fatal("idle while a joined unit is unreleased")
+	}
+	r.Release()
+	if !drain.Closed(r.Idle()) {
+		t.Fatal("not idle once every unit was released")
+	}
+}
+
 // A run nobody admitted into is idle as soon as it closes.
 func TestRun_IdleAtCloseWithNothingAdmitted(t *testing.T) {
 	var o drain.Owner

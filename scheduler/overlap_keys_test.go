@@ -69,8 +69,8 @@ func TestRunDueJobs_BothGates_ExactlyOnce(t *testing.T) {
 	hostA.runDueJobs()
 	hostB.runDueJobs()
 
-	hostA.runWg.Wait()
-	hostB.runWg.Wait()
+	waitTicks(hostA)
+	waitTicks(hostB)
 
 	if got := counter.Load(); got != 1 {
 		t.Fatalf("expected exactly 1 execution under combined OnOneServer+WithoutOverlapping; got %d", got)

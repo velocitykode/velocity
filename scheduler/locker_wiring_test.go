@@ -38,8 +38,8 @@ func TestRunDueJobs_OnOneServer_OnlyOneInstanceRuns(t *testing.T) {
 	hostA.runDueJobs()
 	hostB.runDueJobs()
 
-	hostA.runWg.Wait()
-	hostB.runWg.Wait()
+	waitTicks(hostA)
+	waitTicks(hostB)
 
 	if got := counter.Load(); got != 1 {
 		t.Fatalf("expected exactly 1 execution across both hosts, got %d", got)
@@ -101,7 +101,7 @@ func TestRunDueJobs_MaintenanceMode_RespectsEvenInMaintenanceMode(t *testing.T) 
 	}).Cron(cron)
 
 	s.runDueJobs()
-	s.runWg.Wait()
+	waitTicks(s)
 
 	if maintenanceRan.Load() != 1 {
 		t.Errorf("EvenInMaintenanceMode job must run during maintenance; got %d", maintenanceRan.Load())
@@ -150,14 +150,14 @@ func TestRunDueJobs_WithoutOverlapping_AcrossSchedulers(t *testing.T) {
 
 	hostB.runDueJobs()
 	// hostB must see lock held and skip immediately.
-	hostB.runWg.Wait()
+	waitTicks(hostB)
 
 	if got := counter.Load(); got != 1 {
 		t.Fatalf("expected exactly 1 execution while hostA's job still running, got %d", got)
 	}
 
 	close(release)
-	hostA.runWg.Wait()
+	waitTicks(hostA)
 }
 
 // TestRunDueJobs_LockReleasedOnPanic verifies that a panicking job hook
@@ -186,9 +186,9 @@ func TestRunDueJobs_LockReleasedOnPanic(t *testing.T) {
 	}).Cron(cron).WithoutOverlapping()
 
 	s.runDueJobs()
-	s.runWg.Wait()
+	waitTicks(s)
 
-	// Tiny grace for any backend bookkeeping after runWg.Done.
+	// Tiny grace for any backend bookkeeping after the unit is released.
 	time.Sleep(10 * time.Millisecond)
 
 	ctx := context.Background()
@@ -205,7 +205,7 @@ func TestRunDueJobs_LockReleasedOnPanic(t *testing.T) {
 	s2.SetLocker(shared)
 	s2.Named("healthy.job", func() { ran.Add(1) }).Cron(cron).WithoutOverlapping().OnOneServer()
 	s2.runDueJobs()
-	s2.runWg.Wait()
+	waitTicks(s2)
 
 	if ran.Load() != 1 {
 		t.Fatalf("expected fresh job to run after panic on different job; got %d", ran.Load())
@@ -236,9 +236,9 @@ func TestRunDueJobs_OnOneServer_LockHeldUntilTTL(t *testing.T) {
 	// lock; the second must observe it as held and skip even though the
 	// first job has already finished executing.
 	s.runDueJobs()
-	s.runWg.Wait()
+	waitTicks(s)
 	s.runDueJobs()
-	s.runWg.Wait()
+	waitTicks(s)
 
 	if got := counter.Load(); got != 1 {
 		t.Fatalf("OnOneServer lock must be held until TTL so repeat ticks in the same minute do not re-run; got %d executions", got)
@@ -301,7 +301,7 @@ func TestRunDueJobs_OnOneServer_ConcurrentSchedulers(t *testing.T) {
 	wg.Wait()
 
 	for _, s := range schedulers {
-		s.runWg.Wait()
+		waitTicks(s)
 	}
 
 	if got := counter.Load(); got != 1 {

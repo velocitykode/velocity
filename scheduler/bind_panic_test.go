@@ -33,7 +33,7 @@ func TestRunDueJobs_PanickingLoggerBindingIsRecovered(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		s.runWg.Wait()
+		waitTicks(s)
 		close(done)
 	}()
 	select {
@@ -72,5 +72,5 @@ func TestRunDueJobs_BindingPanicLogsWithTheTaskName(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("recovered binding panic never logged")
 	}
-	s.runWg.Wait()
+	waitTicks(s)
 }

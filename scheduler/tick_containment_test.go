@@ -40,7 +40,7 @@ func tickSurvives(t *testing.T, s *Scheduler) {
 		t.Fatalf("a panic escaped the tick: %v", escaped)
 	}
 	select {
-	case <-runWgDone(s):
+	case <-ticksIdle(s):
 	case <-time.After(5 * time.Second):
 		t.Fatal("the tick's runs were never released")
 	}

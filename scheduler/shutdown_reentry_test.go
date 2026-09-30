@@ -249,7 +249,7 @@ func TestShutdown_RefusedBeforeRunChangesNothing(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the task never called Shutdown")
 	}
-	s.runWg.Wait()
+	waitTicks(s)
 	s.mu.RLock()
 	terminated := s.terminated
 	s.mu.RUnlock()

@@ -38,13 +38,6 @@ func (l *gatedLogger) Error(string, ...any)      { l.hold() }
 func (*gatedLogger) Fatal(string, ...any)        {}
 func (*gatedLogger) With(...any) contract.Logger { panic("with broke") }
 
-// runWgDone returns a channel closed once s has no run in flight.
-func runWgDone(s *Scheduler) <-chan struct{} {
-	done := make(chan struct{})
-	go func() { s.runWg.Wait(); close(done) }()
-	return done
-}
-
 // assertStillCounted fails when s's in-flight count drains while a
 // diagnostic is still being written: a Shutdown waiting on it would
 // return, and the app would close the logger under the line.
@@ -71,7 +64,7 @@ func TestRunDueJobs_PanicDiagnosticKeepsTheRunCounted(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("panic diagnostic never written")
 	}
-	done := runWgDone(s)
+	done := ticksIdle(s)
 	assertStillCounted(t, done, "panic diagnostic")
 	close(l.gate)
 	select {
@@ -93,7 +86,7 @@ func TestRunDueJobs_PanickingPanicDiagnosticStillReleases(t *testing.T) {
 
 	s.runDueJobs()
 	select {
-	case <-runWgDone(s):
+	case <-ticksIdle(s):
 	case <-time.After(2 * time.Second):
 		t.Fatal("run never released after its diagnostic panicked")
 	}
@@ -124,7 +117,7 @@ func TestRunDueJobs_PanicInsideTheRunKeepsItCountedUntilLogged(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("panic diagnostic never written")
 	}
-	done := runWgDone(s)
+	done := ticksIdle(s)
 	assertStillCounted(t, done, "panic diagnostic")
 	close(l.gate)
 	select {

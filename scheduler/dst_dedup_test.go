@@ -115,7 +115,7 @@ func TestRunDueJobs_DSTSpringForward_SkipsMinute(t *testing.T) {
 	// proves runDueJobs is panic-free for a cron whose target minute
 	// is unreachable today.
 	s.runDueJobs()
-	s.runWg.Wait()
+	waitTicks(s)
 
 	if ran.Load() != 0 {
 		// Could only happen if "now" happens to match 02:30 in the

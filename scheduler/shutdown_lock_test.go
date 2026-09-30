@@ -108,10 +108,10 @@ func TestShutdown_CancelsInflightLockAcquire(t *testing.T) {
 	select {
 	case err := <-shutdownDone:
 		if err != nil {
-			t.Fatalf("Shutdown returned non-nil error (runWg did not drain): %v", err)
+			t.Fatalf("Shutdown returned non-nil error (the run did not drain): %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("Shutdown did not return within 2s; runWg leaked an acquire-pending slot")
+		t.Fatal("Shutdown did not return within 2s; the run leaked an acquire-pending unit")
 	}
 
 	if !loc.observedCtxCancel.Load() {
@@ -128,7 +128,7 @@ func TestShutdown_CancelsInflightLockAcquire(t *testing.T) {
 }
 
 // countingErrLocker is a Locker that fails Acquire deterministically
-// with the given error. Used to verify the runWg is balanced on the
+// with the given error. Used to verify the run's units are balanced on the
 // error-return path: every Add must be matched by a Done even when
 // Acquire never returns a Lock.
 type countingErrLocker struct {
@@ -142,7 +142,7 @@ func (l *countingErrLocker) Acquire(_ context.Context, _ string, _ time.Duration
 }
 
 // TestRunDueJobs_RunWgBalancedOnAcquireFailure pins the invariant that
-// runWg.Add(1) taken before Acquire is balanced by runWg.Done() on the
+// unit a task joins before Acquire is released on the
 // error path. A leaked Add would make Shutdown.Wait() block forever.
 func TestRunDueJobs_RunWgBalancedOnAcquireFailure(t *testing.T) {
 	t.Parallel()
@@ -163,17 +163,17 @@ func TestRunDueJobs_RunWgBalancedOnAcquireFailure(t *testing.T) {
 	}
 
 	// Shutdown of a non-running scheduler is a no-op, so we test the
-	// runWg balance directly: it must already be at zero (no pending
-	// Adds) immediately after runDueJobs returns.
+	// run's balance directly: it must already be idle (no unreleased
+	// unit) immediately after runDueJobs returns.
 	done := make(chan struct{})
 	go func() {
-		s.runWg.Wait()
+		waitTicks(s)
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("runWg leaked an Add on the Acquire-failure path")
+		t.Fatal("the run leaked a unit on the Acquire-failure path")
 	}
 }
 
@@ -231,7 +231,7 @@ func TestRunInBackground_LockHeldUntilProcessExit(t *testing.T) {
 	}
 
 	// Drain any in-flight scheduler bookkeeping.
-	s.runWg.Wait()
+	waitTicks(s)
 }
 
 // TestRunInBackground_ShutdownSIGTERMsThenKills verifies the documented
@@ -284,7 +284,7 @@ func TestRunInBackground_ShutdownSIGTERMsThenKills(t *testing.T) {
 	}
 
 	// Shutdown. With a 30s sleep + 100ms grace, the process MUST be
-	// SIGKILLed; Shutdown must drain runWg promptly (well under 30s).
+	// SIGKILLed; Shutdown must drain the run promptly (well under 30s).
 	shutdownDone := make(chan error, 1)
 	start := time.Now()
 	go func() {
@@ -296,7 +296,7 @@ func TestRunInBackground_ShutdownSIGTERMsThenKills(t *testing.T) {
 	select {
 	case err := <-shutdownDone:
 		if err != nil {
-			t.Fatalf("Shutdown returned error (runWg leaked the bg waiter): %v", err)
+			t.Fatalf("Shutdown returned error (the run leaked the bg waiter): %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Shutdown did not return within 5s; bg waiter did not respect runCtx cancel")
@@ -434,7 +434,7 @@ func TestRunDueJobs_BackendErrorLogsAsWarn(t *testing.T) {
 	s.Named("job.a", func() {}).Cron(cron).OnOneServer()
 
 	s.runDueJobs()
-	s.runWg.Wait()
+	waitTicks(s)
 
 	warns := loggerHits.Warns()
 	if len(warns) == 0 {
@@ -469,7 +469,7 @@ func TestRunDueJobs_ContentionLogsAsDebug(t *testing.T) {
 	s.Named("job.b", func() {}).Cron(cron).OnOneServer()
 
 	s.runDueJobs()
-	s.runWg.Wait()
+	waitTicks(s)
 
 	if w := loggerHits.Warns(); len(w) != 0 {
 		t.Errorf("ErrLockHeld must NOT Warn; got %d warnings: %v", len(w), w)
@@ -487,7 +487,7 @@ func TestRunDueJobs_ContentionLogsAsDebug(t *testing.T) {
 	}
 }
 
-// TestRunDueJobs_BackendErrorBalancesRunWg pins that runWg is still
+// TestRunDueJobs_BackendErrorBalancesRunWg pins that the run is still
 // drained on the backend-error path (same invariant as
 // TestRunDueJobs_RunWgBalancedOnAcquireFailure, but for the non-
 // ErrLockHeld branch we just routed to Warn).
@@ -505,12 +505,12 @@ func TestRunDueJobs_BackendErrorBalancesRunWg(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		s.runWg.Wait()
+		waitTicks(s)
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("runWg leaked on backend-error path")
+		t.Fatal("the run leaked a unit on the backend-error path")
 	}
 }

@@ -352,16 +352,16 @@ func TestScheduler_RunDueJobs_CallE_Concurrent(t *testing.T) {
 	// Drive the runDueJobs path so we exercise the goroutine fan-out.
 	s.runDueJobs()
 
-	// runDueJobs spawns goroutines via runWg; wait for them.
+	// runDueJobs spawns goroutines admitted into a run; wait for them.
 	done := make(chan struct{})
 	go func() {
-		s.runWg.Wait()
+		waitTicks(s)
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("runWg.Wait timed out")
+		t.Fatal("waiting for the ticks timed out")
 	}
 
 	mu.Lock()

@@ -18,7 +18,7 @@ import (
 // Post-fix: each Before hook is isolated in its own recover scope, and
 // the top of runInternal installs a single defer that clears
 // j.running and calls release() unconditionally. The test asserts the
-// distributed lock is releasable immediately after runWg drains.
+// distributed lock is releasable immediately after the ticks drain.
 func TestM35_BeforeHookPanic_LockReleased(t *testing.T) {
 	t.Parallel()
 
@@ -35,7 +35,7 @@ func TestM35_BeforeHookPanic_LockReleased(t *testing.T) {
 	})
 
 	s.runDueJobs()
-	s.runWg.Wait()
+	waitTicks(s)
 	time.Sleep(10 * time.Millisecond)
 
 	// If the lock leaked the Acquire below would return ErrLockHeld
@@ -75,7 +75,7 @@ func TestM35_AfterHookPanic_LockReleased(t *testing.T) {
 	})
 
 	s.runDueJobs()
-	s.runWg.Wait()
+	waitTicks(s)
 	time.Sleep(10 * time.Millisecond)
 
 	if !workRan.Load() {
@@ -113,7 +113,7 @@ func TestM35_OnSuccessHookPanic_LockReleased(t *testing.T) {
 	})
 
 	s.runDueJobs()
-	s.runWg.Wait()
+	waitTicks(s)
 	time.Sleep(10 * time.Millisecond)
 
 	overlapKey := "velocity/scheduler/overlap:flaky.onsuccess"
@@ -141,7 +141,7 @@ func TestM35_OnFailureHookPanic_LockReleased(t *testing.T) {
 	})
 
 	s.runDueJobs()
-	s.runWg.Wait()
+	waitTicks(s)
 	time.Sleep(10 * time.Millisecond)
 
 	overlapKey := "velocity/scheduler/overlap:flaky.onfailure"
@@ -169,7 +169,7 @@ func TestM35_MultipleBeforeHooks_PanicIsolated(t *testing.T) {
 	job.Before(func() { third.Store(true) })
 
 	s.runDueJobs()
-	s.runWg.Wait()
+	waitTicks(s)
 
 	if !first.Load() {
 		t.Error("first Before hook must run")
@@ -197,7 +197,7 @@ func TestM35_HandlerPanic_LockReleased(t *testing.T) {
 	}).Cron(cron).WithoutOverlapping()
 
 	s.runDueJobs()
-	s.runWg.Wait()
+	waitTicks(s)
 	time.Sleep(10 * time.Millisecond)
 
 	overlapKey := "velocity/scheduler/overlap:flaky.handler"
