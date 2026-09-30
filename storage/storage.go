@@ -46,6 +46,9 @@ type Manager struct {
 	disks       map[string]Driver
 	config      Config
 	defaultDisk string
+	// generation counts Shutdowns, so a Configure whose drivers are built
+	// across one publishes nothing into the emptied manager. Guarded by mu.
+	generation uint64
 }
 
 // NewManager creates a new storage manager
@@ -68,13 +71,28 @@ func (m *Manager) Configure(config Config) error {
 // The disks' drivers are built with no lock held: a registered driver
 // factory is user code, and one that looks up a disk on this manager must
 // not wait on it. The configuration and the drivers built are then
-// published under one lock. When a factory fails, the drivers built before
-// it are still published and the error is returned, as before.
+// published under one lock. When a factory fails, or panics (the panic is
+// its error), the drivers built before it are still published and the
+// error is returned, as before.
+//
+// A Configure whose drivers are built across a Shutdown publishes nothing:
+// it shuts down every driver it built, writes neither the configuration
+// nor the default disk, and returns an error that holds those drivers'
+// Shutdown errors.
 func (m *Manager) ConfigureWithContext(ctx context.Context, config Config) error {
+	m.mu.RLock()
+	generation := m.generation
+	m.mu.RUnlock()
+
 	built := make(map[string]Driver, len(config.Disks))
 	var err error
 	for name, diskConfig := range config.Disks {
-		driver, derr := createDriverWithContext(ctx, diskConfig)
+		var driver Driver
+		derr := teardown.Step(func() error {
+			var cerr error
+			driver, cerr = createDriverWithContext(ctx, diskConfig)
+			return cerr
+		})
 		if derr != nil {
 			err = fmt.Errorf("velocity/storage: failed to create driver for disk %s: %w", name, derr)
 			break
@@ -83,6 +101,19 @@ func (m *Manager) ConfigureWithContext(ctx context.Context, config Config) error
 	}
 
 	m.mu.Lock()
+	if m.generation != generation {
+		m.mu.Unlock()
+		errs := []error{errors.New("velocity/storage: the manager was shut down while the disks were configured")}
+		for name, driver := range built {
+			if derr := teardown.Close(ctx, driver); derr != nil {
+				errs = append(errs, fmt.Errorf("velocity/storage: shut down unpublished disk %q: %w", name, derr))
+			}
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
+		return errors.Join(errs...)
+	}
 	defer m.mu.Unlock()
 	m.config = config
 	m.defaultDisk = config.Default
@@ -143,6 +174,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
 	disks := m.disks
 	m.disks = make(map[string]Driver)
+	m.generation++
 	m.mu.Unlock()
 
 	var errs []error
