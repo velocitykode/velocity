@@ -1134,6 +1134,7 @@ func (g *SessionScheme) resolveAuthenticationChange(r *http.Request, session aut
 			// stale. A valid remember cookie signs the user back in on a
 			// new session, exactly as when the cookie itself expired.
 			if recalled := g.checkRememberCookie(r); recalled != nil {
+				op.beginMutation()
 				session.Remove(auth.UserIDSessionKey)
 				if g.anchorRecalledUser(r, session, recalled, op) {
 					return recalled, true, nil
@@ -1243,6 +1244,7 @@ func (g *SessionScheme) anchorRecalledUser(r *http.Request, session auth.Session
 
 	// Rotate the session id BEFORE writing user_id so an attacker who
 	// planted the prior id can no longer inherit authenticated state.
+	op.beginMutation()
 	if err := session.Regenerate(); err != nil {
 		g.logWarn("velocity/auth: remember-cookie revival: session regenerate failed", "error", err)
 		return false
@@ -1567,6 +1569,7 @@ func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, us
 	// Regenerate session ID for security. A failure here must abort the
 	// login: proceeding with the old session ID opens a session-fixation
 	// window (an attacker who planted the cookie keeps access).
+	op.beginMutation()
 	if err := session.Regenerate(); err != nil {
 		return nil, fmt.Errorf("velocity/auth: login aborted: session regenerate failed: %w", err)
 	}
@@ -1771,6 +1774,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	// store is unavailable.
 	if rotator := g.getCSRFTokenRotator(); rotator != nil {
 		if sessionID != "" {
+			op.beginMutation()
 			if err := rotator.RevokeToken(sessionContext(r, session), sessionID); err != nil {
 				g.logWarn("velocity/auth: csrf token revoke (logout) failed", "session_id", sessionID, "error", err)
 			}
@@ -1821,6 +1825,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	// pre-invalidate session id, and the server-store Delete, leaving
 	// the client cookie valid and the server-side record live until
 	// natural expiry.
+	op.beginMutation()
 	invalidateErr := session.Invalidate()
 	// The session is ended: this logout supersedes the credential writes
 	// an earlier transition of the request queued, so a remember-me

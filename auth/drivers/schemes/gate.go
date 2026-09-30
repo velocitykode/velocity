@@ -47,6 +47,10 @@ type gateOp struct {
 	// staged holds the credential writes the operation queued, bound to
 	// the transition in effect when each was queued.
 	staged []afterSaveWrite
+	// mutated is set before op calls the first thing that can change the
+	// request's session (see beginMutation): a panic from then on leaves
+	// the session possibly half-changed, so abort marks the request torn.
+	mutated bool
 	// ended is set once op published or aborted; a later end is a no-op,
 	// so an operation may publish as soon as its state is whole and run
 	// the rest of its work with the gate free.
@@ -117,7 +121,18 @@ func (h *sessionHolder) sessionForRead() (s auth.Session, busy, torn bool) {
 // operation that fails before it changed anything leaves them to be
 // delivered, or undone, as before.
 func (op *gateOp) beginTransition() {
+	op.mutated = true
 	op.bumps++
+}
+
+// beginMutation records that op is about to call something that can
+// change the request's session (Regenerate, Invalidate, Remove, a CSRF
+// token rotation or revocation, which change the token the session
+// keeps). It is called before that call, since user code can change the
+// session and then panic: from here on a panic tears the request (see
+// abort).
+func (op *gateOp) beginMutation() {
+	op.mutated = true
 }
 
 // queueCredentialWrite stages e, bound to the transition op is in.
@@ -173,10 +188,10 @@ func (op *gateOp) publish(refuseSealed bool) bool {
 }
 
 // abort ends op unwound by a panic: nothing op staged is applied, the gate
-// is freed, and when op had begun changing the session the request is
-// marked torn, so no scheme read uses the session and the commit does not
-// save it. The undo steps of the writes op queued run, each contained, so
-// the panic goes on unchanged.
+// is freed, and when op had begun changing the session (see
+// beginMutation) the request is marked torn, so no scheme read uses the
+// session and the commit does not save it. The undo steps of the writes op
+// queued run, each contained, so the panic goes on unchanged.
 func (op *gateOp) abort() {
 	h := op.h
 	if h == nil || op.ended {
@@ -184,7 +199,7 @@ func (op *gateOp) abort() {
 	}
 	op.ended = true
 	h.mu.Lock()
-	if op.bumps > 0 {
+	if op.mutated {
 		h.torn = true
 	}
 	h.busy = false
