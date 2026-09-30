@@ -205,16 +205,17 @@ func (d *ObservableDispatcher) FireModelEvent(ctx context.Context, event string,
 
 	return d.Dispatch(ctx, &ModelEvent{
 		BaseEvent: BaseEvent{EventName: eventName},
-		Model:     model,
 		Action:    event,
 		ModelType: modelType,
 	})
 }
 
-// ModelEvent represents a model lifecycle event
+// ModelEvent represents a model lifecycle event. It names the model's
+// type and the action, as diagnostics that survive the queue's JSON codec
+// unchanged; the model itself does not cross the event. Model observers
+// (Observe, ObserveModel) receive the live model.
 type ModelEvent struct {
 	BaseEvent
-	Model     interface{}
 	Action    string // creating, created, updating, etc.
 	ModelType string
 }

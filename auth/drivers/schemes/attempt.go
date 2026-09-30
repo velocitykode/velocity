@@ -9,6 +9,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 )
@@ -267,7 +268,7 @@ func maybeEmitRehashEvent(
 	}
 	events.Emit(ctx, auth.PasswordNeedsRehashEvent{
 		EventMeta:  eventmeta.Current(ctx),
-		UserID:     user.GetAuthIdentifier(),
+		UserID:     errchain.Sprint(user.GetAuthIdentifier()),
 		SchemeName: schemeName,
 	})
 }

@@ -76,7 +76,7 @@ func TestManagerDispatchEvent(t *testing.T) {
 
 	ctx := context.Background()
 	sql := "SELECT * FROM users WHERE id = ?"
-	bindings := []any{1}
+	bindings := []QueryBinding{{Type: "int64", Value: "1"}}
 
 	m.dispatchEvent(context.Background(), &QueryExecuted{
 		EventMeta:    contract.EventMeta{Context: ctx},
@@ -139,7 +139,7 @@ func TestManagerDispatchEventBindings(t *testing.T) {
 	m := &Manager{}
 	m.SetEventDispatcher(collector.dispatch)
 
-	bindings := []any{1, "test", true, 3.14}
+	bindings := []QueryBinding{{Type: "int64", Value: "1"}, {Type: "string", Value: "test"}, {Type: "bool", Value: "true"}, {Type: "float64", Value: "3.14"}}
 	m.dispatchEvent(context.Background(), &QueryExecuted{
 		EventMeta:  contract.EventMeta{Context: context.Background()},
 		SQL:        "INSERT INTO test",
@@ -153,10 +153,10 @@ func TestManagerDispatchEventBindings(t *testing.T) {
 			if len(q.Bindings) != 4 {
 				return false
 			}
-			return q.Bindings[0] == 1 &&
-				q.Bindings[1] == "test" &&
-				q.Bindings[2] == true &&
-				q.Bindings[3] == 3.14
+			return q.Bindings[0] == bindings[0] &&
+				q.Bindings[1] == bindings[1] &&
+				q.Bindings[2] == bindings[2] &&
+				q.Bindings[3] == bindings[3]
 		}
 		return false
 	})

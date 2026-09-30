@@ -222,8 +222,8 @@ func TestCallLifecycle_PanicRecoveredEventCarriesTrace(t *testing.T) {
 	if seen.Method != "/test.Service/Boom" {
 		t.Errorf("PanicRecovered Method: got %q", seen.Method)
 	}
-	if seen.Panic == nil {
-		t.Error("PanicRecovered Panic value missing")
+	if seen.PanicValue != "panic: boom" {
+		t.Errorf("PanicRecovered PanicValue = %q, want %q", seen.PanicValue, "panic: boom")
 	}
 }
 

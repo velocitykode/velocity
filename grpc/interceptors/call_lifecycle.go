@@ -15,6 +15,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/grpc/internal/callhook"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
@@ -597,7 +598,7 @@ func (c *call) panicRecovered(p interface{}, stack string) {
 		return &grpcevents.PanicRecovered{
 			EventMeta:  eventmeta.Current(c.ctx),
 			Method:     c.method,
-			Panic:      p,
+			PanicValue: errchain.Text(panicerr.FromRecovered(p)),
 			StackTrace: stack,
 		}
 	})

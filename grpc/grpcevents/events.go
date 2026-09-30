@@ -234,11 +234,14 @@ func (e *GatewayStopped) Name() string {
 	return "grpc.gateway.stopped"
 }
 
-// PanicRecovered is dispatched when a panic is recovered in a gRPC handler
+// PanicRecovered is dispatched when a panic is recovered in a gRPC handler.
+// PanicValue is the panic's text ("panic: " and the recovered value's
+// text), a diagnostic that survives the queue's JSON codec unchanged; the
+// recovered value itself does not cross the event.
 type PanicRecovered struct {
 	contract.EventMeta
 	Method     string
-	Panic      interface{}
+	PanicValue string
 	StackTrace string
 }
 

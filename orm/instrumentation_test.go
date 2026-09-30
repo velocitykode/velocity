@@ -121,7 +121,7 @@ func TestInstrumentation_RawSQLDBEmitsEvents(t *testing.T) {
 	if !strings.HasSuffix(ev.File, "_test.go") || ev.Line == 0 {
 		t.Errorf("caller frame did not resolve to the caller: file=%q line=%d", ev.File, ev.Line)
 	}
-	if len(ev.Bindings) != 1 || ev.Bindings[0] != "alice" {
+	if len(ev.Bindings) != 1 || ev.Bindings[0] != (QueryBinding{Type: "string", Value: "alice"}) {
 		t.Errorf("Bindings = %#v, want [alice]", ev.Bindings)
 	}
 }
@@ -580,7 +580,7 @@ func TestInstrumentation_DispatcherToggledBackOnStillDelivers(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("want exactly the statement run while enabled, got %d events", len(events))
 	}
-	if len(events[0].Bindings) == 0 || events[0].Bindings[0] != "on" {
+	if len(events[0].Bindings) == 0 || events[0].Bindings[0] != (QueryBinding{Type: "string", Value: "on"}) {
 		t.Errorf("delivered the wrong statement: bindings=%#v", events[0].Bindings)
 	}
 }

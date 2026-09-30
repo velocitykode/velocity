@@ -287,7 +287,6 @@ func TestObservableDispatcher(t *testing.T) {
 func TestModelEvent(t *testing.T) {
 	event := &ModelEvent{
 		BaseEvent: BaseEvent{EventName: "user.created"},
-		Model:     &TestUser{ID: 1},
 		Action:    "created",
 		ModelType: "TestUser",
 	}

@@ -1,8 +1,8 @@
 package orm
 
 import (
-	"bytes"
 	"context"
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +26,7 @@ func TestQueryExecuted_BindingsSnapshotByteArguments(t *testing.T) {
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	got := make(chan []any, 1)
+	got := make(chan []QueryBinding, 1)
 	m.SetEventDispatcher(func(_ context.Context, ev any) error {
 		q, ok := ev.(*QueryExecuted)
 		if !ok || !strings.Contains(q.SQL, "INSERT INTO blobs") {
@@ -50,7 +50,7 @@ func TestQueryExecuted_BindingsSnapshotByteArguments(t *testing.T) {
 	// The caller reuses its buffer while the event is still queued.
 	copy(buf, "OVERRIDE")
 	close(release)
-	var bindings []any
+	var bindings []QueryBinding
 	select {
 	case bindings = <-got:
 	case <-time.After(hostile.Deadline):
@@ -59,8 +59,8 @@ func TestQueryExecuted_BindingsSnapshotByteArguments(t *testing.T) {
 	if len(bindings) != 1 {
 		t.Fatalf("Bindings = %#v, want one value", bindings)
 	}
-	b, ok := bindings[0].([]byte)
-	if !ok || !bytes.Equal(b, []byte("original")) {
-		t.Fatalf("Bindings[0] = %#v, want the bytes the statement ran with", bindings[0])
+	want := QueryBinding{Type: "[]uint8", Value: hex.EncodeToString([]byte("original"))}
+	if bindings[0] != want {
+		t.Fatalf("Bindings[0] = %#v, want %#v, the bytes the statement ran with", bindings[0], want)
 	}
 }

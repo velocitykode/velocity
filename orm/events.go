@@ -2,8 +2,11 @@ package orm
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -34,15 +37,12 @@ type QueryExecuted struct {
 	contract.EventMeta
 	SQL string
 	// Bindings are the bound parameters as the database driver received
-	// them, after database/sql's conversion: an int arrives as int64, and a
-	// driver.Valuer has already been resolved to its underlying value.
-	// They are a snapshot taken when the statement ran: a []byte is a
-	// copy, so a caller reusing its buffer after the statement returned
-	// does not change the event. The copy is made only when a dispatcher
-	// is set, for a statement that binds a []byte. A named byte-slice
-	// type or another driver-specific value a driver lets through is
-	// delivered by reference, as the caller passed it.
-	Bindings []any
+	// them, after database/sql's conversion (an int arrives as int64, and a
+	// driver.Valuer has already been resolved to its underlying value),
+	// each as its type and its text (see QueryBinding): diagnostics that
+	// survive the queue's JSON codec unchanged, taken when the statement
+	// ran, so a caller reusing its buffer afterwards does not change them.
+	Bindings []QueryBinding
 	// Duration is the wall time the statement took. For a statement that
 	// returns rows it spans from issue until the result set is closed, so
 	// it covers row transfer and scanning, not just the round trip.
@@ -63,6 +63,78 @@ type QueryExecuted struct {
 // Name returns the canonical event name.
 func (e *QueryExecuted) Name() string {
 	return "orm.query.completed"
+}
+
+// QueryBinding is one bound parameter of a statement, as a diagnostic: the
+// type the database driver received and the value's text. It is not a
+// reconstruction key: the text is what the value reads as, not a value to
+// bind again.
+type QueryBinding struct {
+	// Type is the Go type of the value as the driver received it
+	// ("int64", "float64", "bool", "string", "[]uint8", "time.Time", or a
+	// driver-specific type a driver let through), "" for NULL.
+	Type string
+	// Value is the value's text, read from its kind and never from a
+	// method of its own: an integer or float in decimal, a bool as true or
+	// false, a string as is, a byte slice as lowercase hex, a time.Time in
+	// RFC 3339 with nanoseconds. "" for NULL and for a value of any other
+	// kind (a pointer, a struct, a driver's array type), whose Type still
+	// names it.
+	Value string
+}
+
+// queryBindings returns args as QueryBindings, nil for none. It runs inside
+// the driver callback with the connection held, so it calls no method of
+// any value: user code must not run there.
+func queryBindings(args []any) []QueryBinding {
+	if len(args) == 0 {
+		return nil
+	}
+	out := make([]QueryBinding, len(args))
+	for i, a := range args {
+		out[i] = queryBinding(a)
+	}
+	return out
+}
+
+func queryBinding(v any) QueryBinding {
+	switch x := v.(type) {
+	case nil:
+		return QueryBinding{}
+	case int64:
+		return QueryBinding{Type: "int64", Value: strconv.FormatInt(x, 10)}
+	case float64:
+		return QueryBinding{Type: "float64", Value: strconv.FormatFloat(x, 'g', -1, 64)}
+	case bool:
+		return QueryBinding{Type: "bool", Value: strconv.FormatBool(x)}
+	case string:
+		return QueryBinding{Type: "string", Value: x}
+	case []byte:
+		return QueryBinding{Type: "[]uint8", Value: hex.EncodeToString(x)}
+	case time.Time:
+		return QueryBinding{Type: "time.Time", Value: x.Format(time.RFC3339Nano)}
+	}
+	rv := reflect.ValueOf(v)
+	b := QueryBinding{Type: rv.Type().String()}
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		b.Value = strconv.FormatInt(rv.Int(), 10)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		b.Value = strconv.FormatUint(rv.Uint(), 10)
+	case reflect.Float32:
+		b.Value = strconv.FormatFloat(rv.Float(), 'g', -1, 32)
+	case reflect.Float64:
+		b.Value = strconv.FormatFloat(rv.Float(), 'g', -1, 64)
+	case reflect.Bool:
+		b.Value = strconv.FormatBool(rv.Bool())
+	case reflect.String:
+		b.Value = rv.String()
+	case reflect.Slice:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			b.Value = hex.EncodeToString(rv.Bytes())
+		}
+	}
+	return b
 }
 
 // QueryFailed is dispatched when a database query fails, on the same
@@ -385,7 +457,7 @@ func (o managerObserver) ObserveStatement(ev drivers.StatementEvent) {
 	p.enqueue(ctx, &QueryExecuted{
 		EventMeta:    meta,
 		SQL:          ev.SQL,
-		Bindings:     ev.Args,
+		Bindings:     queryBindings(ev.Args),
 		Duration:     ev.Duration,
 		RowsAffected: ev.RowsAffected,
 		Slow:         ev.Slow,

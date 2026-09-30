@@ -116,12 +116,17 @@ func Timebox(floor time.Duration, inner func()) {
 // event itself intentionally carries only the user identifier so the
 // plaintext never crosses the event boundary.
 //
+// UserID is the text of the user's GetAuthIdentifier, as a diagnostic: it
+// names the user in a log or a queued listener, and survives the queue's
+// JSON codec unchanged. It is not a key to hand back to a UserStore as is
+// (an integer identifier arrives as its decimal text).
+//
 // Audit M-08: previously Hasher.NeedsRehash was defined but never
 // invoked, so a cost-bump silently left every legacy hash at the lower
 // cost forever.
 type PasswordNeedsRehashEvent struct {
 	contract.EventMeta
-	UserID     interface{}
+	UserID     string
 	SchemeName string
 }
 
