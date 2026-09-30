@@ -127,7 +127,7 @@ func WrapError(err error) error {
 	}
 
 	// Check if it's already a gRPC status error
-	if _, ok := status.FromError(err); ok {
+	if _, ok := statusOf(err); ok {
 		return err
 	}
 
@@ -147,7 +147,7 @@ func WrapErrorWithCode(err error, code codes.Code) error {
 	}
 
 	// Check if it's already a gRPC status error
-	if _, ok := status.FromError(err); ok {
+	if _, ok := statusOf(err); ok {
 		return err
 	}
 
@@ -169,7 +169,7 @@ func Code(err error) codes.Code {
 		return codes.OK
 	}
 
-	if s, ok := status.FromError(err); ok {
+	if s, ok := statusOf(err); ok {
 		return s.Code()
 	}
 
@@ -184,7 +184,7 @@ func Message(err error) string {
 		return ""
 	}
 
-	if s, ok := status.FromError(err); ok {
+	if s, ok := statusOf(err); ok {
 		return s.Message()
 	}
 
@@ -229,7 +229,7 @@ func IsUnavailable(err error) bool {
 // FromError converts a standard Go error to a gRPC status.
 // This is useful for extracting code and message from errors.
 func FromError(err error) *status.Status {
-	s, _ := status.FromError(err)
+	s, _ := statusOf(err)
 	return s
 }
 
@@ -239,8 +239,8 @@ func ErrorIs(err, target error) bool {
 		return err == target
 	}
 
-	errStatus, errOk := status.FromError(err)
-	targetStatus, targetOk := status.FromError(target)
+	errStatus, errOk := statusOf(err)
+	targetStatus, targetOk := statusOf(target)
 
 	if errOk && targetOk {
 		return errStatus.Code() == targetStatus.Code() &&
@@ -248,4 +248,52 @@ func ErrorIs(err, target error) bool {
 	}
 
 	return errchain.Is(err, target)
+}
+
+// statusOf is status.FromError read through internal/errchain: the same
+// answer (the status err carries itself; else the first one in its chain,
+// with err's text as the message; else Unknown with err's text), with the
+// chain walked bounded and every method of err (Unwrap, As, GRPCStatus,
+// Error) called contained. grpc-go's FromError follows the chain with
+// errors.As and reads Error uncontained, so a caller's error whose method
+// panics, or whose chain loops, would crash or hang the helper. An error
+// that cannot be read answers Unknown with errchain.Unreadable, not ok.
+func statusOf(err error) (*status.Status, bool) {
+	if err == nil {
+		return nil, true
+	}
+	type grpcStatus interface{ GRPCStatus() *status.Status }
+	var (
+		found           *status.Status
+		matched, atRoot bool
+		visited         int
+	)
+	walked := errchain.Walk(err, func(e error) bool {
+		visited++
+		if gs, ok := e.(grpcStatus); ok {
+			matched, atRoot, found = true, visited == 1, gs.GRPCStatus()
+			return true
+		}
+		if gs, ok := errchain.MatchesAs[grpcStatus](e); ok && gs != nil {
+			matched, found = true, gs.GRPCStatus()
+			return true
+		}
+		return false
+	})
+	if walked == errchain.Panicked || (walked == errchain.Truncated && !matched) {
+		return status.New(codes.Unknown, errchain.Unreadable), false
+	}
+	if found != nil && atRoot {
+		return found, true
+	}
+	msg, ok := errchain.ReadText(err)
+	if !ok {
+		return status.New(codes.Unknown, errchain.Unreadable), false
+	}
+	if found == nil {
+		return status.New(codes.Unknown, msg), false
+	}
+	p := found.Proto()
+	p.Message = msg
+	return status.FromProto(p), true
 }
