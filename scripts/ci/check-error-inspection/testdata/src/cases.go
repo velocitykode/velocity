@@ -30,17 +30,17 @@ type statusErr interface {
 func Cases(err error, l logger, c *concrete, s statusErr, x fmt.Stringer) {
 	_ = errors.Is(err, io.EOF) // want is
 	var c2 *concrete
-	_ = errors.As(err, &c2)     // want as
-	_ = errors.Unwrap(err)      // want unwrap
-	_ = err.Error()             // want text
-	_ = s.Error()               // want text
-	_ = s.Status()              // not an error method
-	l.Error("failed", "e", err) // a logger's Error(msg, kvs...) is not one
-	_ = c.Error()               // concrete type
-	_ = c.Unwrap()              // concrete type
-	_ = x.String()              // not an error method
-	_ = fmt.Sprint(err)         // fmt recovers a panicking Error itself
-	_ = fmt.Errorf("w: %w", err)
+	_ = errors.As(err, &c2)      // want as
+	_ = errors.Unwrap(err)       // want unwrap
+	_ = err.Error()              // want text
+	_ = s.Error()                // want text
+	_ = s.Status()               // not an error method
+	l.Error("failed", "e", err)  // a logger's Error(msg, kvs...) is not one
+	_ = c.Error()                // concrete type
+	_ = c.Unwrap()               // concrete type
+	_ = x.String()               // not an error method
+	_ = fmt.Sprint(err)          // want format
+	_ = fmt.Errorf("w: %w", err) // want format
 	_ = errors.New("x")
 	_ = errors.Join(err)
 
@@ -70,4 +70,23 @@ func Markers(err error) {
 
 func Stale() {
 	_ = 1 //error-inspection-ok: nothing is inspected here // want stale
+}
+
+func Format[T any](err error, v any, x fmt.Stringer, w io.Writer, kvs []any, c *concrete, t T, n int, s string) {
+	_ = fmt.Sprintf("%v", v)         // want format
+	_ = fmt.Sprintf("%s", x)         // want format
+	_ = fmt.Sprintf("%d %s", n, s)   // plain operands
+	_ = fmt.Sprintf("%v", c)         // concrete type: the module's own method
+	_ = fmt.Sprintf("%v", nil)       // untyped nil
+	_ = fmt.Sprint(kvs...)           // want format
+	_ = fmt.Sprintln(n, s)           // plain operands
+	_ = fmt.Sprintf("%v", t)         // want format
+	_, _ = fmt.Fprintf(w, "%d\n", n) // the writer is not an operand
+	_, _ = fmt.Fprintf(w, "%v", err) // want format
+	_, _ = fmt.Fprintln(w, err)      // want format
+	_ = fmt.Appendf(nil, "%v", err)  // want format
+	_ = fmt.Append(nil, n)           // plain operand
+	_ = fmt.Errorf("plain %d", n)    // plain operand
+	_ = fmt.Errorf("w: %w", err)     /* want format */ //error-inspection-ok: bare
+	_ = fmt.Errorf("w: %w", err)     //error-inspection-ok: a sentinel this package made
 }

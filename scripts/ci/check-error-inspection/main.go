@@ -6,7 +6,8 @@
 // bound and let a panic through, so the goroutine inspecting the error
 // crashes or hangs, often cleanup that must finish. internal/errchain
 // holds the bounded, contained forms: Is, As, Unwrap, Text, and Walk with
-// Matches and MatchesAs for a classification of its own.
+// Matches and MatchesAs for a classification of its own, and Errorf,
+// Sprintf and Sprint for formatting a value whose type is not known.
 //
 // Calls flagged, told apart by type only:
 //
@@ -15,19 +16,30 @@
 //     an interface, when the method is Error() string, Unwrap() error,
 //     Unwrap() []error, Is(error) bool or As(any) bool (matched by
 //     signature, so a logger's Error(msg, kvs...) is not a hit, and a hand
-//     walk's x.Unwrap() after err.(interface{ Unwrap() error }) is).
+//     walk's x.Unwrap() after err.(interface{ Unwrap() error }) is);
+//   - format: a call to a fmt print function (Errorf, Sprintf, Sprint,
+//     Fprintf, Appendf and the rest) with an operand whose static type is
+//     an interface (error, any, fmt.Stringer, a type parameter), or a
+//     spread slice of them. fmt recovers a panic in the operand's Error,
+//     String or Format method once, but it formats the panic value too,
+//     and re-panics when that panics: a writer or buffer argument and
+//     the format string are not operands.
 //
-// Every error-typed value is treated as possibly user-made: types cannot
-// tell a framework sentinel from a user error wrapping one, and a stdlib
-// error (a json decode, an io.Copy) can wrap one too.
+// Every error-typed (and, for format, interface-typed) value is treated
+// as possibly user-made: types cannot tell a framework sentinel from a
+// user error wrapping one, and a stdlib error (a json decode, an io.Copy)
+// can wrap one too.
 //
 // Known limits: a call on a concrete type is not flagged (its method is
 // the module's own or a dependency's). Other methods of a user error (a
 // status code, headers, a client message, GRPCStatus) are not flagged: an
 // interface method call cannot be told from any other by type; the
-// classification sites read them inside the same contained walk. fmt and
-// logger arguments are not flagged: fmt recovers a panicking Error method
-// itself, and loggers are called through fallbacklog.
+// classification sites read them inside the same contained walk. A fmt
+// operand of concrete type is not flagged, though fmt may reach a user
+// value through its fields. Logger key-value pairs are not flagged: the
+// framework's log drivers format every value with errchain.Sprint (their
+// fmt calls fall under the format rule), and a user logger's own
+// formatting is contained by fallbacklog.
 //
 // Suppression: a same-line `//error-inspection-ok: <rationale>` comment,
 // the rationale at least 5 characters. A bare marker does not suppress,
@@ -98,6 +110,7 @@ const (
 	kindUnwrap = "unwrap"
 	kindText   = "text"
 	kindStale  = "stale"
+	kindFormat = "format"
 )
 
 var fixes = []struct{ kind, fix string }{
@@ -105,6 +118,7 @@ var fixes = []struct{ kind, fix string }{
 	{kindAs, "as: errchain.As[T](err), or errchain.MatchesAs[T] inside an errchain.Walk visit"},
 	{kindUnwrap, "unwrap: errchain.Unwrap(err), or errchain.Walk for a walk of the chain"},
 	{kindText, "text: errchain.Text(err)"},
+	{kindFormat, "format: errchain.Errorf, errchain.Sprintf or errchain.Sprint(v) in place of the fmt call"},
 	{kindStale, "stale: remove the //error-inspection-ok: marker; nothing on its line inspects an error any more"},
 }
 
@@ -112,7 +126,7 @@ var fixes = []struct{ kind, fix string }{
 // syntax.
 func hints(hits []string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d uncontained inspection(s) of an error. Its Error, Unwrap, Is and As methods can panic, and its chain can loop.\n", len(hits))
+	fmt.Fprintf(&b, "%d uncontained inspection(s) of an error or formatting of a value. Its Error, String, Format, Unwrap, Is and As methods can panic, and its chain can loop.\n", len(hits))
 	for _, f := range fixes {
 		for _, h := range hits {
 			if strings.Contains(h, ": "+f.kind+": ") {
@@ -318,6 +332,12 @@ func classify(info *types.Info, call *ast.CallExpr) string {
 	if !ok {
 		return ""
 	}
+	if fn, ok := info.Uses[sel.Sel].(*types.Func); ok && fn.Pkg() != nil && fn.Pkg().Path() == "fmt" && fn.Type().(*types.Signature).Recv() == nil {
+		if formatsInterface(info, call, fn.Name()) {
+			return kindFormat
+		}
+		return ""
+	}
 	if fn, ok := info.Uses[sel.Sel].(*types.Func); ok && fn.Pkg() != nil && fn.Pkg().Path() == "errors" && fn.Type().(*types.Signature).Recv() == nil {
 		switch fn.Name() {
 		case "Is":
@@ -368,4 +388,47 @@ func errorMethod(fn *types.Func) string {
 		}
 	}
 	return ""
+}
+
+// fmtOperands maps a fmt print function to the index of its first
+// operand: the arguments before it are a writer, a buffer or the format.
+var fmtOperands = map[string]int{
+	"Errorf": 1, "Sprintf": 1, "Printf": 1, "Fprintf": 2, "Appendf": 2,
+	"Sprint": 0, "Print": 0, "Fprint": 1, "Append": 1,
+	"Sprintln": 0, "Println": 0, "Fprintln": 1, "Appendln": 1,
+}
+
+// formatsInterface reports whether a call to the fmt function name hands
+// fmt an operand of interface type: a value whose dynamic type, and so
+// whose Error, String, Format or GoString method, the call site does not
+// know.
+func formatsInterface(info *types.Info, call *ast.CallExpr, name string) bool {
+	first, ok := fmtOperands[name]
+	if !ok {
+		return false
+	}
+	for i := first; i < len(call.Args); i++ {
+		if interfaceOperand(info, call, i) {
+			return true
+		}
+	}
+	return false
+}
+
+// interfaceOperand reports whether argument i of call is a value of
+// interface type, or a spread slice of them.
+func interfaceOperand(info *types.Info, call *ast.CallExpr, i int) bool {
+	tv, ok := info.Types[call.Args[i]]
+	if !ok || tv.IsNil() || tv.Type == nil {
+		return false
+	}
+	t := tv.Type
+	if call.Ellipsis.IsValid() && i == len(call.Args)-1 {
+		s, ok := t.Underlying().(*types.Slice)
+		if !ok {
+			return false
+		}
+		t = s.Elem()
+	}
+	return types.IsInterface(t)
 }
