@@ -177,6 +177,14 @@ func schedulerSweepCase(t *testing.T, entry string, mode hostile.Mode, site stri
 	case "Run":
 		w.armed.Store(true)
 		done = w.start()
+		// Every site runs in the first run's start or first tick: wait for
+		// it, so the case proves the code ran, and the Shutdowns below come
+		// after Run began (one before it would stop the scheduler for good).
+		select {
+		case <-w.code.Entered():
+		case <-time.After(hostile.Deadline):
+			t.Fatal("the hostile code never ran")
+		}
 	case "Shutdown":
 		done = w.start()
 		w.ranOnce(t)
