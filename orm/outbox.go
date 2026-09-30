@@ -763,6 +763,18 @@ func (r *Relay) newRun() *relayRun {
 	return rr
 }
 
+// OwnsCaller reports whether the relay owns the calling goroutine: whether
+// the goroutine is running the relay's own work, in any of its runs, its
+// polling loop or a dispatch (the callback, the failure recording, a
+// logger writing a relay line).
+// The answer is for this instance only: another relay's work, or
+// another app's, is not this one's. App.Shutdown asks it because its
+// teardown stops the relay and waits for that work, so a Shutdown
+// called from the work would wait on itself; it is refused instead.
+func (r *Relay) OwnsCaller() bool {
+	return r.own.Nested()
+}
+
 // Stop signals the relay to stop and waits for in-flight dispatches to finish
 // (bounded by ctx). After cfg.ShutdownGrace elapses (or ctx is cancelled),
 // the run's shutdown context is also cancelled, which interrupts any

@@ -254,6 +254,19 @@ func (s *asyncEventStop) begin() (owner bool, drained chan struct{}) {
 	return true, s.stops.Begin()
 }
 
+// OwnsCaller reports whether the router owns the calling goroutine:
+// whether the goroutine is one of the current async event pool's workers,
+// delivering an event to a listener. It is false when delivery is
+// synchronous.
+// The answer is for this instance only: another router's work, or
+// another app's, is not this one's. App.Shutdown asks it because its
+// teardown drains the event pool and waits for that work, so a Shutdown
+// called from the work would wait on itself; it is refused instead. Like the other configuration
+// calls, it must not overlap SetAsyncEventDispatcher.
+func (r *VelocityRouterV2) OwnsCaller() bool {
+	return r.asyncStop != nil && r.asyncStop.stops.Nested()
+}
+
 // ShutdownEventDispatcher drains pending events and stops dispatcher
 // workers. It is safe to call whether SetAsyncEventDispatcher was used
 // or not — in the synchronous case it is a no-op.

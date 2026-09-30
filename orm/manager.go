@@ -889,6 +889,21 @@ func (m *Manager) Begin(ctx context.Context) (*sql.Tx, error) {
 	return driver.BeginTx(ctx, nil)
 }
 
+// OwnsCaller reports whether the manager owns the calling goroutine:
+// whether the goroutine is running the manager's own work, a
+// statement-event listener or the failure hook the event delivery runs,
+// or a driver's Close during Shutdown.
+// The answer is for this instance only: another manager's work, or
+// another app's, is not this one's. App.Shutdown asks it because its
+// teardown shuts the manager down and waits for that work, so a Shutdown
+// called from the work would wait on itself; it is refused instead.
+func (m *Manager) OwnsCaller() bool {
+	if p := m.pump.Load(); p != nil && p.onPumpGoroutine() {
+		return true
+	}
+	return m.closes.Nested()
+}
+
 // Shutdown delivers the queued statement events, then closes the default
 // database connection and all named connections. When ctx ends before the
 // events are delivered it still closes the connections, and returns the

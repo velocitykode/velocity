@@ -174,8 +174,10 @@ func (r *Run) Join() {
 	r.state.Add(1)
 }
 
-// Release ends one unit Admit or Join counted. The last one released after Close
-// makes the run idle.
+// Release ends one unit Admit or Join counted. The last one released
+// after Close makes the run idle. Each Release must match an Admit that
+// reported true, or a Join: an unmatched one corrupts the count, and the
+// run may never go idle.
 func (r *Run) Release() {
 	if r.state.Add(-1) == closedBit {
 		close(r.idle)

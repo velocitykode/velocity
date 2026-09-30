@@ -184,41 +184,70 @@ func (a *App) serveHTTP() error {
 // step runs, so the queue, cache and database are not closed beneath a
 // task, listener or dispatch; the steps after it are handed ctx, already
 // done, and force their stops at once. A step, or admitted work, that
-// never returns leaves every step after it unrun. A Shutdown that overlaps or follows the first waits for that
-// same teardown, or for its own ctx, and returns its result; none starts a
-// second teardown. A Shutdown called from inside the teardown (a module's
-// Shutdown, say) would wait on itself: the teardown goes on, and the call
-// returns an error at once.
+// never returns leaves every step after it unrun. A Shutdown that overlaps
+// or follows the first waits for that same teardown, or for its own ctx,
+// and returns its result; none starts a second teardown.
+//
+// A Shutdown called from work the teardown waits for would wait on itself:
+// from inside the teardown (a module's Shutdown, say), or from the own work
+// of a component the teardown drains (a router event listener, a scheduler
+// task, hook or line, an outbox relay dispatch, a statement-event listener
+// or a driver's Close). It returns an error wrapping
+// contract.ErrStopFromOwnWork at once and changes nothing: a teardown not
+// yet started does not start, and one under way goes on. The teardown is
+// bounded by whoever calls Shutdown from outside: a teardown started from
+// that work would run under the work's ctx, which it cancels as soon as
+// the refused call returns, and every step would be forced. A goroutine
+// that work starts on its own is not recognised.
 func (a *App) Shutdown(ctx context.Context) error {
 	t := &a.teardown
-	if t.stops.Nested() {
-		return fmt.Errorf("velocity: Shutdown called from the app's own teardown: %w", contract.ErrStopFromOwnWork)
+	// The app owns the caller when the goroutine runs its teardown, or the
+	// own work of a component the teardown drains; either way the teardown
+	// would wait for the caller. Each answer is read without a lock and
+	// before any ctx method is called.
+	if t.own.Nested() || a.childOwnsCaller() {
+		return fmt.Errorf("velocity: Shutdown called from work the app's teardown waits for: %w", contract.ErrStopFromOwnWork)
 	}
 	t.mu.Lock()
-	done := t.stops.Ended()
-	owner := done == nil
-	if owner {
-		done = t.stops.Begin()
+	if t.run == nil {
+		t.run = t.own.NewRun()
 	}
+	run := t.run
 	t.mu.Unlock()
-	if owner {
-		async.Go(func() {
-			t.stops.Drain(done, func() { t.err = a.teardownSteps(ctx) })
-		})
-	}
-	if err := t.stops.Await(ctx, done, nil); err != nil {
-		return err
-	}
-	return t.err
+	return t.own.Stop(ctx, run, func() error { return a.teardownSteps(ctx) }, nil)
 }
 
-// appTeardown is the one run of App.Shutdown's teardown: the coordinator
-// marks the goroutine running it, and err is its result, written before
-// the drain closes.
+// ownsCaller is a component whose stop the teardown waits on, able to tell
+// whether the calling goroutine runs its own work.
+type ownsCaller interface {
+	OwnsCaller() bool
+}
+
+// childOwnsCaller reports whether the calling goroutine runs the own work
+// of a component the teardown drains. Each answer is read without a lock
+// and without calling a ctx.
+func (a *App) childOwnsCaller() bool {
+	children := []any{a.Scheduler, a.DB}
+	if a.Router != nil {
+		children = append(children, a.Router)
+	}
+	if a.outboxRelay != nil {
+		children = append(children, a.outboxRelay)
+	}
+	for _, c := range children {
+		if o, ok := c.(ownsCaller); ok && o.OwnsCaller() {
+			return true
+		}
+	}
+	return false
+}
+
+// appTeardown is App.Shutdown's teardown: one run, made by the first
+// Shutdown, on an Owner that records the goroutine running it.
 type appTeardown struct {
-	mu    sync.Mutex
-	stops drain.Coordinator
-	err   error
+	mu  sync.Mutex
+	own drain.Owner
+	run *drain.Run
 }
 
 // teardownSteps runs every teardown step in order; see Shutdown.

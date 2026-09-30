@@ -546,6 +546,19 @@ func (s *Scheduler) ValidateJobs() {
 	}
 }
 
+// OwnsCaller reports whether the scheduler owns the calling goroutine:
+// whether the goroutine is running the scheduler's own work, in any of its
+// runs, from a tick (its callbacks, Locker and lines) or a task (its hooks,
+// listeners and logger) to a RunInBackground task's completion and a
+// stop's diagnostic lines.
+// The answer is for this instance only: another scheduler's work, or
+// another app's, is not this one's. App.Shutdown asks it because its
+// teardown stops the scheduler and waits for that work, so a Shutdown
+// called from the work would wait on itself; it is refused instead.
+func (s *Scheduler) OwnsCaller() bool {
+	return s.own.Nested()
+}
+
 // Shutdown stops the scheduler and waits for in-flight jobs to finish,
 // honoring the context deadline. Returns ctx.Err() if the context expires
 // before all jobs complete. A Shutdown that overlaps one or follows one
