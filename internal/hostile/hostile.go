@@ -15,6 +15,7 @@ package hostile
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -288,4 +289,42 @@ func (v Value) String() string {
 func (v Value) Error() string {
 	v.code.Run()
 	return v.text
+}
+
+// PanicError is an error whose Error method panics. With Nested set, the
+// panic value is a PanicError whose own Error panics too: fmt recovers the
+// first panic and formats its value, and re-panics on the second, so
+// formatting a nested PanicError through fmt crashes the caller.
+type PanicError struct{ Nested bool }
+
+func (e PanicError) Error() string { panic(panicValue(e.Nested)) }
+
+// PanicStringer is PanicError for a fmt.Stringer.
+type PanicStringer struct{ Nested bool }
+
+func (s PanicStringer) String() string { panic(panicValue(s.Nested)) }
+
+// PanicFormatter is PanicError for a fmt.Formatter.
+type PanicFormatter struct{ Nested bool }
+
+func (f PanicFormatter) Format(fmt.State, rune) { panic(panicValue(f.Nested)) }
+
+func panicValue(nested bool) any {
+	if nested {
+		return PanicError{}
+	}
+	return "hostile formatting method"
+}
+
+// Unformattables returns a value of each formatting method, panicking
+// once and nested, keyed by a name for subtests.
+func Unformattables() map[string]any {
+	return map[string]any{
+		"Error":         PanicError{},
+		"Error/nested":  PanicError{Nested: true},
+		"String":        PanicStringer{},
+		"String/nested": PanicStringer{Nested: true},
+		"Format":        PanicFormatter{},
+		"Format/nested": PanicFormatter{Nested: true},
+	}
 }

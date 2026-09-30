@@ -11,12 +11,14 @@
 // keeps its own classification policy on top of it (internal/sqlerr for a
 // database error's kind, the gRPC call lifecycle for a returned error's
 // status). Is, As, Unwrap and Text are the contained forms of errors.Is,
-// errors.As, errors.Unwrap and an Error call; outside this package the
-// framework calls those only through them (scripts/ci/check-error-inspection
-// enforces it).
+// errors.As, errors.Unwrap and an Error call, and Errorf, Sprintf and
+// Sprint the contained forms of fmt's formatting of a value whose type the
+// caller does not know; outside this package the framework calls those
+// only through them (scripts/ci/check-error-inspection enforces it).
 package errchain
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 )
@@ -296,6 +298,9 @@ func ReadValue(v any) (text string, ok bool) {
 	switch x := v.(type) {
 	case nil:
 		return fmt.Sprint(nil), true
+	case string:
+		// The common log value: fmt would copy it to the same text.
+		return x, true
 	case fmt.Formatter:
 		var s state
 		x.Format(&s, 'v')
@@ -316,3 +321,112 @@ func (s *state) Write(b []byte) (int, error) { s.buf = append(s.buf, b...); retu
 func (s *state) Width() (int, bool)          { return 0, false }
 func (s *state) Precision() (int, bool)      { return 0, false }
 func (s *state) Flag(int) bool               { return false }
+
+// Errorf returns fmt.Errorf(format, args...), contained. fmt recovers a
+// panic in an operand's Error, String or Format method once and writes
+// "%!v(PANIC=...)", but it formats the panic value too, and a panic there
+// crashes the caller. On such a panic Errorf formats again with every
+// operand that is not a plain value (a boolean, a number, a string or a
+// byte slice, of a type without methods) standing in as its Sprint text,
+// so the hostile operand reads Unreadable and the rest of the message
+// stays. A %w operand stands in as an error whose Unwrap returns the
+// operand, so the result still wraps it (one level deeper); a %T or %p
+// of a stand-in names the stand-in. For a benign operand the result is
+// fmt.Errorf's own, text and type. Like Text it does not bound how long a
+// method runs.
+func Errorf(format string, args ...any) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = standInErrorf(format, args)
+		}
+	}()
+	return fmt.Errorf(format, args...)
+}
+
+// Sprintf returns fmt.Sprintf(format, args...), contained as Errorf is.
+func Sprintf(format string, args ...any) (text string) {
+	defer func() {
+		if recover() != nil {
+			text = standInSprintf(format, args)
+		}
+	}()
+	return fmt.Sprintf(format, args...)
+}
+
+// standInErrorf is Errorf's second formatting, with stand-ins. Every
+// stand-in formats contained, so it cannot panic; the recover is a last
+// guard, and an error of fixed text is what it yields.
+func standInErrorf(format string, args []any) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errors.New(Unreadable)
+		}
+	}()
+	return fmt.Errorf(format, standIns(args)...)
+}
+
+// standInSprintf is Sprintf's second formatting, guarded as standInErrorf.
+func standInSprintf(format string, args []any) (text string) {
+	defer func() {
+		if recover() != nil {
+			text = Unreadable
+		}
+	}()
+	return fmt.Sprintf(format, standIns(args)...)
+}
+
+// standIns returns args with every operand that can reach user code
+// replaced by a stand-in.
+func standIns(args []any) []any {
+	out := make([]any, len(args))
+	for i, a := range args {
+		if e, ok := a.(error); ok {
+			out[i] = &errorStandIn{err: e}
+		} else if plain(a) {
+			out[i] = a
+		} else {
+			out[i] = &standIn{v: a}
+		}
+	}
+	return out
+}
+
+// plain reports whether fmt formats a without calling a method: nil, or a
+// boolean, number, string or byte slice of a type without methods.
+func plain(a any) bool {
+	t := reflect.TypeOf(a)
+	if t == nil {
+		return true
+	}
+	if t.NumMethod() != 0 {
+		return false
+	}
+	switch k := t.Kind(); {
+	case k >= reflect.Bool && k <= reflect.Complex128, k == reflect.String:
+		return true
+	case k == reflect.Slice:
+		return t.Elem().Kind() == reflect.Uint8 && t.Elem().NumMethod() == 0
+	}
+	return false
+}
+
+// standIn formats as its value's Sprint text, under the directive's verb,
+// flags, width and precision (%w reads as %v).
+type standIn struct{ v any }
+
+func (s *standIn) Format(f fmt.State, verb rune) { formatText(f, verb, Sprint(s.v)) }
+
+// errorStandIn is a standIn for an error operand: an error itself, so %w
+// accepts it, and one that unwraps to the operand.
+type errorStandIn struct{ err error }
+
+func (s *errorStandIn) Error() string                 { return Text(s.err) }
+func (s *errorStandIn) Unwrap() error                 { return s.err }
+func (s *errorStandIn) Format(f fmt.State, verb rune) { formatText(f, verb, Sprint(s.err)) }
+
+func formatText(f fmt.State, verb rune, text string) {
+	if verb == 'w' {
+		verb = 'v'
+	}
+	fmt.Fprintf(f, fmt.FormatString(f, verb), text)
+}
