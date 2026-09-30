@@ -10,6 +10,8 @@ import (
 	"strings"
 	"text/template"
 	"unicode"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 const (
@@ -194,7 +196,7 @@ func WriteNewFile(path, kind string, content []byte) error {
 func writeNewFile(path, kind string, content []byte, write func(*os.File, []byte) (int, error)) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, defaultFileMode)
 	if err != nil {
-		if errors.Is(err, fs.ErrExist) {
+		if errchain.Is(err, fs.ErrExist) {
 			if guardErr := EnsureWritableTarget(path, kind); guardErr != nil {
 				return guardErr
 			}

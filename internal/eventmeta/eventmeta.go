@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -38,7 +39,7 @@ func ErrorText(err error) string {
 	if err == nil {
 		return ""
 	}
-	return err.Error()
+	return errchain.Text(err)
 }
 
 // TextError returns an error with text, or nil for "": an error field

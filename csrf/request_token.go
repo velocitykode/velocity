@@ -74,7 +74,7 @@ func (s *requestTokenState) tokenFor(ctx context.Context, sessionID string) (str
 		s.err = ErrNoStore
 		return "", s.err
 	}
-	token, err := c.GetToken(ctx, sessionID)
+	token, err := c.GetToken(ctx, sessionID) //lock-held-ok: token store read under s.mu, removed by the single-flight token load
 	if err != nil {
 		s.err = err
 		return "", err

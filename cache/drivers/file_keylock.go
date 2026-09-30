@@ -4,7 +4,6 @@ package drivers
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -12,6 +11,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // fileKeyLockWait bounds how long a write waits for another holder of its
@@ -104,7 +105,7 @@ func (s *FileStore) flockStripe(stripe string) (unlock func(), busy bool, err er
 	path := s.stripeLockPath(stripe)
 	for {
 		fd, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, cacheFileMode)
-		if errors.Is(err, fs.ErrNotExist) {
+		if errchain.Is(err, fs.ErrNotExist) {
 			// First write, or the directory was removed from outside.
 			if merr := os.MkdirAll(s.keyLockDir(), cacheDirMode); merr != nil {
 				return nil, false, fmt.Errorf("velocity/cache: create key lock directory: %w", merr)
@@ -132,7 +133,7 @@ func (s *FileStore) flockStripe(stripe string) (unlock func(), busy bool, err er
 			continue
 		}
 		_ = fd.Close()
-		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EINTR) {
+		if errchain.Is(err, unix.EWOULDBLOCK) || errchain.Is(err, unix.EINTR) {
 			return nil, true, nil
 		}
 		return nil, false, fmt.Errorf("velocity/cache: flock key lock: %w", err)

@@ -4,8 +4,9 @@
 package panicerr
 
 import (
-	"errors"
 	"fmt"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Error is the typed representation of a recovered panic. It is returned as
@@ -45,7 +46,7 @@ func (e *Error) Error() string {
 		return ""
 	}
 	if err, ok := e.value.(error); ok {
-		return "panic: " + err.Error()
+		return "panic: " + errchain.Text(err)
 	}
 	return fmt.Sprintf("panic: %v", e.value)
 }
@@ -80,8 +81,7 @@ func FromRecovered(r any) error {
 // AsTyped extracts a *Error from any error value, returning nil if the error
 // is not (and does not wrap) a panic-error.
 func AsTyped(err error) *Error {
-	var pe *Error
-	if errors.As(err, &pe) {
+	if pe, ok := errchain.As[*Error](err); ok {
 		return pe
 	}
 	return nil

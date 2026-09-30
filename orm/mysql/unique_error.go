@@ -1,11 +1,11 @@
 package mysql
 
 import (
-	"errors"
 	"strings"
 
 	drivermysql "github.com/go-sql-driver/mysql"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/validation"
 )
 
@@ -27,8 +27,8 @@ func init() {
 // A *mysql.MySQLError with any other errno is matched-but-not-unique so the
 // caller does not misread e.g. a foreign-key violation as a unique one.
 func classifyUniqueViolation(err error) (columnHint string, isUnique bool, matched bool) {
-	var myErr *drivermysql.MySQLError
-	if !errors.As(err, &myErr) {
+	myErr, ok := errchain.As[*drivermysql.MySQLError](err)
+	if !ok {
 		return "", false, false
 	}
 	if myErr.Number != 1062 && myErr.Number != 1586 {

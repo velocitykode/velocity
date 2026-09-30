@@ -11,6 +11,7 @@ import (
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/session"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 	"github.com/velocitykode/velocity/router"
 )
@@ -687,7 +688,7 @@ var ensureSession = func(g *SessionScheme, r *http.Request) {
 // own line naming the fix.
 var saveSessionFromMiddleware = func(g *SessionScheme, w http.ResponseWriter, s auth.Session) error {
 	if err := s.Save(w); err != nil {
-		if errors.Is(err, session.ErrCookieTooLarge) {
+		if errchain.Is(err, session.ErrCookieTooLarge) {
 			g.logWarn("velocity/auth: session not saved: the session cookie would exceed 4096 bytes, so none was sent; keep less in the session or set SESSION_STORE=server", "session_id", s.ID(), "error", err)
 			return err
 		}

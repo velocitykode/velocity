@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/storage"
 )
 
@@ -220,7 +221,7 @@ func (d *S3Driver) PutStreamCtx(ctx context.Context, path string, stream io.Read
 	// we got).
 	sniff := make([]byte, mimeSniffSize)
 	n, err := io.ReadFull(stream, sniff)
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+	if err != nil && !errchain.Is(err, io.EOF) && !errchain.Is(err, io.ErrUnexpectedEOF) {
 		return fmt.Errorf("velocity/storage: failed to read stream: %w", err)
 	}
 	sniff = sniff[:n]
@@ -289,7 +290,7 @@ func (d *S3Driver) PutStreamCtx(ctx context.Context, path string, stream io.Read
 		// wrapped it in its own error type. The cap reader emits the
 		// sentinel from Read; the uploader's chunker propagates it
 		// through one or more layers of wrapping.
-		if errors.Is(err, ErrStreamTooLarge) {
+		if errchain.Is(err, ErrStreamTooLarge) {
 			return ErrStreamTooLarge
 		}
 		return fmt.Errorf("velocity/storage: failed to upload to s3: %w", err)
@@ -391,7 +392,7 @@ func (d *S3Driver) GetStreamCtx(ctx context.Context, path string) (io.ReadCloser
 		Key:    aws.String(path),
 	})
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if errchain.Is(err, context.Canceled) || errchain.Is(err, context.DeadlineExceeded) {
 			return nil, err
 		}
 		if isNotFoundError(err) {
@@ -922,18 +923,15 @@ func isNotFoundError(err error) bool {
 		return false
 	}
 
-	var noSuchKey *types.NoSuchKey
-	if errors.As(err, &noSuchKey) {
+	if _, ok := errchain.As[*types.NoSuchKey](err); ok {
 		return true
 	}
 
-	var notFound *types.NotFound
-	if errors.As(err, &notFound) {
+	if _, ok := errchain.As[*types.NotFound](err); ok {
 		return true
 	}
 
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errchain.As[smithy.APIError](err); ok {
 		switch apiErr.ErrorCode() {
 		case "NoSuchKey", "NotFound":
 			return true

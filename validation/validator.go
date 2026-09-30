@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Validator provides validation functionality. The canonical declaration
@@ -133,7 +134,7 @@ func (v *defaultValidator) validateFieldRules(validated *ValidatedData, dataMap 
 
 	for _, rule := range fieldRules {
 		if err := v.validateField(field, value, rule, dataMap, custom, messages); err != nil {
-			validated.AddError(field, err.Error(), rule.name)
+			validated.AddError(field, errchain.Text(err), rule.name)
 			break // Stop on first error for this field
 		}
 	}

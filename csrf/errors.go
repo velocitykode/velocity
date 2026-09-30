@@ -1,10 +1,10 @@
 package csrf
 
 import (
-	"errors"
 	"net/http"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // TokenMismatchError is the error Protect returns when an unsafe request
@@ -34,7 +34,7 @@ func (e *TokenMismatchError) Error() string {
 	if e.Reason == nil {
 		return "velocity/csrf: token mismatch"
 	}
-	return "velocity/csrf: token mismatch: " + e.Reason.Error()
+	return "velocity/csrf: token mismatch: " + errchain.Text(e.Reason)
 }
 
 // StatusCode returns 419.
@@ -65,8 +65,11 @@ func (e *TokenMismatchError) reason() error {
 // RenderTokenMismatch returns true. Otherwise it writes nothing and returns
 // false, so the error pipeline renders the 419 through content negotiation.
 func RenderTokenMismatch(rc contract.RenderContext, err error, _ *contract.ErrorContext) bool {
-	var tm *TokenMismatchError
-	if rc == nil || !errors.As(err, &tm) || tm.handler == nil {
+	if rc == nil {
+		return false
+	}
+	tm, ok := errchain.As[*TokenMismatchError](err)
+	if !ok || tm == nil || tm.handler == nil {
 		return false
 	}
 	tm.handler(rc.Writer(), rc.Request(), tm.reason())

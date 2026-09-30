@@ -13,7 +13,6 @@ package redis
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -23,6 +22,7 @@ import (
 
 	"github.com/velocitykode/velocity/cache/drivers"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
@@ -355,7 +355,7 @@ func (s *RedisStore) CompareAndSwapCtx(ctx context.Context, key string, expected
 		return swapped, err
 	}
 	stored, err := s.client.Get(ctx, prefixed).Bytes()
-	if errors.Is(err, redis.Nil) {
+	if errchain.Is(err, redis.Nil) {
 		return false, nil
 	}
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
@@ -539,7 +540,7 @@ func (s *CacheStore) ListForUser(ctx context.Context, userID string) ([]*auth.Se
 	for _, id := range ids {
 		rec, err := s.live(ctx, id)
 		if err != nil {
-			if errors.Is(err, auth.ErrSessionNotFound) || errors.Is(err, auth.ErrSessionExpired) {
+			if errchain.Is(err, auth.ErrSessionNotFound) || errchain.Is(err, auth.ErrSessionExpired) {
 				stale = append(stale, id)
 				continue
 			}

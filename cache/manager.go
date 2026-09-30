@@ -11,6 +11,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/driverregistry"
 	"github.com/velocitykode/velocity/internal/buildonce"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/teardown"
 )
@@ -284,12 +285,12 @@ func disposeStore(ctx context.Context, name string, store Store) error {
 // waiter's ctx), which createStore wraps.
 type storeBuildError struct{ err error }
 
-func (e *storeBuildError) Error() string { return e.err.Error() }
+func (e *storeBuildError) Error() string { return errchain.Text(e.err) }
 func (e *storeBuildError) Unwrap() error { return e.err }
 
 func isStoreBuildError(err error) bool {
-	var b *storeBuildError
-	return errors.As(err, &b)
+	_, ok := errchain.As[*storeBuildError](err)
+	return ok
 }
 
 // DefaultStore returns the default cache store. See Store for the ctx

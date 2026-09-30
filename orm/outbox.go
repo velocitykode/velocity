@@ -42,6 +42,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/drain"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/internal/sqlerr"
@@ -1169,7 +1170,7 @@ func (r *Relay) recordFailure(ctx context.Context, row outboxRow, cause error) e
 	dead := attempts >= maxAttempts
 	delay := backoffFor(attempts, r.cfg.BackoffBase, r.cfg.BackoffMax)
 	nextAt := time.Now().UTC().Add(delay)
-	errMsg := truncate(cause.Error(), 1024)
+	errMsg := truncate(errchain.Text(cause), 1024)
 
 	var q string
 	if driverName == "postgres" {

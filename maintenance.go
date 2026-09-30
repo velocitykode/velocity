@@ -18,6 +18,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/maintpath"
 	"github.com/velocitykode/velocity/router"
@@ -74,7 +75,7 @@ func maintenanceMarkerPath(logger contract.Logger) (string, error) {
 		source := maintpath.Source()
 		msg, kvs := "maintenance marker path resolved", []any{"path", p, "source", source}
 		if err != nil {
-			msg, kvs = "maintenance marker path resolution failed", []any{"error", err.Error(), "source", source}
+			msg, kvs = "maintenance marker path resolution failed", []any{"error", errchain.Text(err), "source", source}
 		}
 		l.Warn(msg, kvs...)
 	})
@@ -96,7 +97,7 @@ type downPayload struct {
 func readDownPayload(path string) (*downPayload, bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errchain.Is(err, os.ErrNotExist) {
 			return nil, false
 		}
 		// Unreadable file. Still in maintenance, bypass unavailable.

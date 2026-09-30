@@ -23,6 +23,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/sessionclock"
@@ -1147,7 +1148,7 @@ func (g *SessionScheme) resolveAuthenticationChange(r *http.Request, session aut
 
 	if err := g.consultServerStore(r, session); err != nil {
 		switch {
-		case errors.Is(err, auth.ErrSessionExpired):
+		case errchain.Is(err, auth.ErrSessionExpired):
 			// The lifetime policy ended the session on its server record
 			// while the cookie is still live: the identity it carries is
 			// stale. A valid remember cookie signs the user back in on a
@@ -1159,7 +1160,7 @@ func (g *SessionScheme) resolveAuthenticationChange(r *http.Request, session aut
 					return recalled, true, nil
 				}
 			}
-		case errors.Is(err, auth.ErrSessionRevoked):
+		case errchain.Is(err, auth.ErrSessionRevoked):
 			// Revocation is authoritative: never revive, and burn the
 			// remember credential this revoked session presents so it
 			// cannot sign the device back in once the session cookie
@@ -1888,7 +1889,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 			if err := userStore.UpdateRememberTokenCtx(r.Context(), user, ""); err != nil {
 				g.logWarn("velocity/auth: clear remember token (logout) failed", "user_id", userID, "error", err)
 			}
-		case err != nil && !errors.Is(err, auth.ErrUserNotFound):
+		case err != nil && !errchain.Is(err, auth.ErrUserNotFound):
 			g.logWarn("velocity/auth: clear remember token (logout) failed: user lookup failed", "user_id", userID, "error", err)
 		}
 	}
@@ -2140,9 +2141,9 @@ func (g *SessionScheme) consultServerStore(r *http.Request, session auth.Session
 	}
 	if err != nil {
 		var resolved error
-		if errors.Is(err, auth.ErrSessionExpired) {
+		if errchain.Is(err, auth.ErrSessionExpired) {
 			resolved = auth.ErrSessionExpired
-		} else if errors.Is(err, auth.ErrSessionNotFound) {
+		} else if errchain.Is(err, auth.ErrSessionNotFound) {
 			resolved = auth.ErrSessionRevoked
 		} else {
 			g.logWarn("velocity/auth: server session store get failed", "session_id", sessionID, "error", err)
@@ -2196,10 +2197,10 @@ func (g *SessionScheme) maybeRefreshLastSeen(ctx context.Context, store auth.Ser
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, auth.ErrSessionExpired) {
+	if errchain.Is(err, auth.ErrSessionExpired) {
 		return auth.ErrSessionExpired
 	}
-	if errors.Is(err, auth.ErrSessionNotFound) {
+	if errchain.Is(err, auth.ErrSessionNotFound) {
 		return auth.ErrSessionRevoked
 	}
 	g.logWarn("velocity/auth: server session store touch (lastseen) failed", "session_id", rec.ID, "error", err)
@@ -2268,7 +2269,7 @@ func (g *SessionScheme) retireServerRecord(r *http.Request, id string) error {
 	if store == nil || id == "" {
 		return nil
 	}
-	if err := store.Delete(r.Context(), id); err != nil && !errors.Is(err, auth.ErrSessionNotFound) {
+	if err := store.Delete(r.Context(), id); err != nil && !errchain.Is(err, auth.ErrSessionNotFound) {
 		return err
 	}
 	return nil
@@ -2289,7 +2290,7 @@ func (g *SessionScheme) retireServerRecord(r *http.Request, id string) error {
 func (g *SessionScheme) ClearRememberTokensForUser(ctx context.Context, userID string) error {
 	userStore := g.loadUserStore()
 	user, err := userStore.FindByIDCtx(ctx, userID)
-	if errors.Is(err, auth.ErrUserNotFound) || (err == nil && user == nil) {
+	if errchain.Is(err, auth.ErrUserNotFound) || (err == nil && user == nil) {
 		return nil
 	}
 	if err != nil {

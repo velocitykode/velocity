@@ -3,6 +3,8 @@ package drivers
 import (
 	"fmt"
 	"strings"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // MySQLGrammar implements QueryGrammar for MySQL.
@@ -37,7 +39,7 @@ func (g *MySQLGrammar) CompileSelect(query *SelectQuery) (string, []any) {
 				// the database returns an error rather than
 				// running anything. The query never reaches
 				// the wire intact.
-				return "/* orm: rejected select column: " + sanitizeForComment(err.Error()) + " */ SELECT 1 WHERE 1=0", nil
+				return "/* orm: rejected select column: " + sanitizeForComment(errchain.Text(err)) + " */ SELECT 1 WHERE 1=0", nil
 			}
 			if wroteCol {
 				sql.WriteString(", ")

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/velocitykode/velocity/console/scaffold"
+	"github.com/velocitykode/velocity/internal/errchain"
 
 	"github.com/velocitykode/prism"
 )
@@ -118,7 +119,7 @@ func appendRPCToProto(path, serviceName, rpcName string, kind grpcRPCKind) error
 
 	openIdx, closeIdx, err := findServiceBlock(content, serviceName)
 	if err != nil {
-		return fmt.Errorf("%s in %s", err.Error(), path)
+		return fmt.Errorf("%s in %s", errchain.Text(err), path)
 	}
 
 	rpcLine := "  " + protoRPCLine(rpcName, kind)

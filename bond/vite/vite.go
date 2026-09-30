@@ -33,6 +33,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Default file/directory names matching the @velocitykode/velocity-vite-plugin
@@ -316,7 +318,7 @@ func (h *Helper) manifest() (manifest, error) {
 
 	st, err := os.Stat(manifestPath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errchain.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("%w: %s", ErrManifestNotFound, manifestPath)
 		}
 		return nil, fmt.Errorf("vite: stat manifest: %w", err)
@@ -397,14 +399,14 @@ func modulePreloadTag(href string) string {
 // paths and stack traces are intentionally omitted — they belong in the
 // server log, not in HTML returned to a browser.
 func errComment(err error) template.HTML {
-	msg := err.Error()
+	msg := errchain.Text(err)
 	// Trim chain noise: the leading sentinel name is enough for the
 	// page comment; the wrapping fmt.Errorf adds the path/entrypoint
 	// which we do not want to leak.
 	switch {
-	case errors.Is(err, ErrManifestNotFound):
+	case errchain.Is(err, ErrManifestNotFound):
 		msg = "manifest not found"
-	case errors.Is(err, ErrEntrypointNotInManifest):
+	case errchain.Is(err, ErrEntrypointNotInManifest):
 		msg = "entrypoint not in manifest"
 	}
 	msg = strings.ReplaceAll(msg, "-->", "--&gt;")
@@ -445,7 +447,7 @@ func RemoveHotFile(publicPath, hotName string) error {
 		publicPath = DefaultPublicPath
 	}
 	err := os.Remove(filepath.Join(publicPath, hotName))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err != nil && !errchain.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil

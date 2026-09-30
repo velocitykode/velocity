@@ -3,10 +3,10 @@ package orm
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"reflect"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm/drivers"
 )
 
@@ -123,7 +123,7 @@ func firstOrCreateWithDriver[T any](ctx context.Context, m *Manager, drv drivers
 	if err == nil {
 		return &found, nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errchain.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 
@@ -189,7 +189,7 @@ func updateOrCreateWithDriver[T any](ctx context.Context, m *Manager, drv driver
 		}
 		return &found, nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errchain.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 

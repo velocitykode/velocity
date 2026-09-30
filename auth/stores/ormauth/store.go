@@ -3,11 +3,11 @@ package ormauth
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"reflect"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm"
 )
 
@@ -204,7 +204,7 @@ func (p *Store[T]) first(ctx context.Context, column string, value any) (auth.Au
 	if err := (orm.Model[T]{}).Where(column+" = ?", value).First(ctx, &model); err != nil {
 		// orm.ErrRecordNotFound is sql.ErrNoRows; match the sentinel so
 		// a driver surfacing the bare stdlib error is covered too.
-		if errors.Is(err, sql.ErrNoRows) {
+		if errchain.Is(err, sql.ErrNoRows) {
 			return nil, auth.ErrUserNotFound
 		}
 		return nil, err

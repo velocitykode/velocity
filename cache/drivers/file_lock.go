@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Conformance assertion: FileLock satisfies the contract lock interface.
@@ -125,7 +125,7 @@ func (s *fileLockStore) guardWithin(ctx context.Context, key string, wait time.D
 // guard.
 func (s *fileLockStore) readMetadata(path string) (md fileLockMetadata, ok bool, err error) {
 	data, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
+	if errchain.Is(err, fs.ErrNotExist) {
 		return fileLockMetadata{}, false, nil
 	}
 	if err != nil {
@@ -150,7 +150,7 @@ func (s *fileLockStore) writeMetadata(path string, md fileLockMetadata) error {
 // removeMetadata removes the record at path. The caller holds the key's
 // guard.
 func (s *fileLockStore) removeMetadata(path string) error {
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := os.Remove(path); err != nil && !errchain.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	return nil

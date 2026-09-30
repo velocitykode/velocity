@@ -15,6 +15,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf/stores"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/router"
@@ -640,8 +641,7 @@ func (c *CSRF) getTokenFromRequest(w http.ResponseWriter, r *http.Request) (stri
 	buf, readErr := io.ReadAll(limited) //nolint:forbidigo // bounded by http.MaxBytesReader on `limited` above
 	if readErr != nil {
 		// MaxBytesReader returns *http.MaxBytesError on overflow.
-		var maxErr *http.MaxBytesError
-		if errors.As(readErr, &maxErr) {
+		if _, ok := errchain.As[*http.MaxBytesError](readErr); ok {
 			// Do NOT install the truncated buffer on r. Leave the
 			// original body in place; the request is rejected with
 			// 419 and the handler is not called, so the body is never
@@ -684,7 +684,7 @@ func (c *CSRF) getTokenFromRequest(w http.ResponseWriter, r *http.Request) (stri
 func (c *CSRF) getSessionID(r *http.Request) (string, error) {
 	id, err := c.config.SessionIDResolver(r)
 	if err != nil {
-		if errors.Is(err, ErrNoSession) {
+		if errchain.Is(err, ErrNoSession) {
 			c.dispatchSessionMissing(r)
 		}
 		return "", err
@@ -775,7 +775,7 @@ func (c *CSRF) RefreshHandler() http.HandlerFunc {
 			// ErrNoSession means the request has no session cookie, so no
 			// token can be bound. Return 400 (client misconfiguration),
 			// not 500 (server error) — the server is behaving correctly.
-			if errors.Is(err, ErrNoSession) {
+			if errchain.Is(err, ErrNoSession) {
 				http.Error(w, "session required to issue CSRF token", http.StatusBadRequest)
 				return
 			}
@@ -920,7 +920,7 @@ func (c *CSRF) GetToken(ctx context.Context, sessionID string) (string, error) {
 	if err == nil {
 		return token, nil
 	}
-	if !errors.Is(err, stores.ErrTokenNotFound) {
+	if !errchain.Is(err, stores.ErrTokenNotFound) {
 		// Transient store failure (network, timeout). Minting a fresh
 		// token here would overwrite the stored one and silently
 		// invalidate the token every other tab/client already holds

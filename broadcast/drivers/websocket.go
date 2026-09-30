@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/websocket"
@@ -402,12 +402,12 @@ func (d *WebSocketDriver) sendOrDrop(ctx context.Context, client *websocket.Clie
 			return nil
 		}
 	}
-	if errors.Is(err, websocket.ErrClientNotFound) {
+	if errchain.Is(err, websocket.ErrClientNotFound) {
 		d.purgeClient(client)
 	}
 	d.recordDrop(client.ID, channel, event)
 	if ctx != nil {
-		if cerr := ctx.Err(); cerr != nil && errors.Is(err, cerr) {
+		if cerr := ctx.Err(); cerr != nil && errchain.Is(err, cerr) {
 			return cerr
 		}
 	}

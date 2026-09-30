@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 	"runtime"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/drain"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -942,7 +942,7 @@ func (s *Scheduler) Jobs() []*Job {
 // The kind argument names which guard (OnOneServer or
 // WithoutOverlapping) failed so the log line is actionable.
 func logAcquireFailure(log contract.Logger, kind, jobName, key string, err error) {
-	if errors.Is(err, ErrLockHeld) {
+	if errchain.Is(err, ErrLockHeld) {
 		log.Debug(
 			"Skipping job: distributed lock held",
 			"guard", kind,

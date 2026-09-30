@@ -7,6 +7,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/trace"
@@ -434,7 +435,7 @@ func runCallbackSafe(ctx context.Context, fn TxCallback, phase string, logger co
 		}
 	case err != nil:
 		fallbacklog.Write(logger, func(l contract.Logger) {
-			l.With(fields...).Warn("velocity/orm: tx callback returned error", "phase", phase, "error", err.Error())
+			l.With(fields...).Warn("velocity/orm: tx callback returned error", "phase", phase, "error", errchain.Text(err))
 		})
 	}
 }

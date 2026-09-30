@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/velocitykode/velocity/httpclient"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/neturl"
 	"github.com/velocitykode/velocity/notification"
 )
@@ -174,7 +174,7 @@ func validateWebhookURL(rawURL string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := neturl.ValidateURLHost(ctx, nil, rawURL); err != nil {
-		if errors.Is(err, neturl.ErrPrivateHost) {
+		if errchain.Is(err, neturl.ErrPrivateHost) {
 			return fmt.Errorf("velocity/notification: webhook url must not target private or internal addresses: %w", err)
 		}
 		return fmt.Errorf("velocity/notification: invalid webhook url: %w", err)

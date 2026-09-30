@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Failure is the error a failed validation returns to the error pipeline.
@@ -44,7 +46,7 @@ func NewFailure(result *Result) *Failure {
 func (f *Failure) Error() string {
 	messages := f.Errors()
 	if len(messages) == 0 {
-		return ErrValidationFailed.Error()
+		return errchain.Text(ErrValidationFailed)
 	}
 	fields := make([]string, 0, len(messages))
 	for field := range messages {
@@ -59,7 +61,7 @@ func (f *Failure) Error() string {
 		}
 		parts = append(parts, field+": "+msg)
 	}
-	return ErrValidationFailed.Error() + ": " + strings.Join(parts, "; ")
+	return errchain.Text(ErrValidationFailed) + ": " + strings.Join(parts, "; ")
 }
 
 // StatusCode returns Status, or 422 when Status is zero.

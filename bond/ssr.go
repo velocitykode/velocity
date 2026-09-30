@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/neturl"
@@ -222,7 +223,7 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, g.URL, bytes.NewReader(body))
 	if err != nil {
 		return g.handleFailure(ctx, page, ssrServerError{
-			Error: err.Error(),
+			Error: errchain.Text(err),
 			Type:  string(SSRErrorConnection),
 		}, err)
 	}
@@ -231,7 +232,7 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 
 	if g.Client == nil {
 		return g.handleFailure(ctx, page, ssrServerError{
-			Error: ErrNoClient.Error(),
+			Error: errchain.Text(ErrNoClient),
 			Type:  string(SSRErrorConnection),
 		}, ErrNoClient)
 	}
@@ -239,7 +240,7 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 	resp, err := g.Client.Do(req)
 	if err != nil {
 		return g.handleFailure(ctx, page, ssrServerError{
-			Error: err.Error(),
+			Error: errchain.Text(err),
 			Type:  string(SSRErrorConnection),
 		}, err)
 	}
@@ -254,13 +255,13 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, ssrResponseCap+1)) //nolint:forbidigo // bounded by io.LimitReader above
 	if readErr != nil {
 		return g.handleFailure(ctx, page, ssrServerError{
-			Error: readErr.Error(),
+			Error: errchain.Text(readErr),
 			Type:  string(SSRErrorConnection),
 		}, readErr)
 	}
 	if int64(len(raw)) > ssrResponseCap {
 		return g.handleFailure(ctx, page, ssrServerError{
-			Error: ErrSSRResponseTooLarge.Error(),
+			Error: errchain.Text(ErrSSRResponseTooLarge),
 			Type:  string(SSRErrorConnection),
 		}, ErrSSRResponseTooLarge)
 	}
@@ -283,7 +284,7 @@ func (g *HTTPGateway) Dispatch(ctx context.Context, page Page) (*SSRResponse, er
 	var out SSRResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return g.handleFailure(ctx, page, ssrServerError{
-			Error: err.Error(),
+			Error: errchain.Text(err),
 			Type:  string(SSRErrorRender),
 		}, err)
 	}

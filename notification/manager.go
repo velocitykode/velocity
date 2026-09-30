@@ -11,6 +11,7 @@ import (
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/buildonce"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -193,8 +194,7 @@ func (m *Manager) Channel(name string) (Channel, error) {
 		return m.createAndRegister(name)
 	})
 	if err != nil {
-		var ce *createError
-		if errors.As(err, &ce) {
+		if ce, ok := errchain.As[*createError](err); ok {
 			return nil, ce.err
 		}
 		return nil, fmt.Errorf("velocity/notification: channel %q: %w", name, err)
@@ -260,7 +260,7 @@ func disposeChannel(name string, ch Channel) error {
 // lookup), which Channel wraps with the channel's name.
 type createError struct{ err error }
 
-func (e *createError) Error() string { return e.err.Error() }
+func (e *createError) Error() string { return errchain.Text(e.err) }
 func (e *createError) Unwrap() error { return e.err }
 
 // SetChannel explicitly sets a channel driver instance. A channel that takes

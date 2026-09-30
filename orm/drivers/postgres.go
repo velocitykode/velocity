@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // appendDollarN writes a PostgreSQL positional placeholder ("$N") into sql
@@ -56,7 +58,7 @@ func (g *PostgresGrammar) CompileSelect(query *SelectQuery) (string, []any) {
 	if len(query.Columns) > 0 {
 		for _, col := range query.Columns {
 			if err := ValidateSelectColumn(col); err != nil {
-				return "/* orm: rejected select column: " + sanitizeForComment(err.Error()) + " */ SELECT 1 WHERE 1=0", nil
+				return "/* orm: rejected select column: " + sanitizeForComment(errchain.Text(err)) + " */ SELECT 1 WHERE 1=0", nil
 			}
 			if wroteCol {
 				sql.WriteString(", ")

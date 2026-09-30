@@ -3,12 +3,12 @@ package validation
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // DefaultMaxBodyBytes is the hard cap applied to JSON / form bodies the
@@ -299,8 +299,7 @@ func extractRequestDataW(w http.ResponseWriter, r *http.Request, n int64) (map[s
 // *http.MaxBytesError in err's chain itself (ParseForm wraps it), which
 // the error pipeline answers with a 413, or else a malformed-body 400.
 func bodyError(err error) error {
-	var tooLarge *http.MaxBytesError
-	if errors.As(err, &tooLarge) {
+	if tooLarge, ok := errchain.As[*http.MaxBytesError](err); ok {
 		return tooLarge
 	}
 	return malformedBody(err)

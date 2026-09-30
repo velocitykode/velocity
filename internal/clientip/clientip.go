@@ -43,6 +43,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Extract returns the originating client IP for r given the configured
@@ -293,7 +295,7 @@ func ParseCIDRs(entries []string) ([]*net.IPNet, error) {
 		if strings.Contains(raw, "/") {
 			_, ipNet, err := net.ParseCIDR(raw)
 			if err != nil {
-				return nil, &parseError{entry: raw, reason: err.Error()}
+				return nil, &parseError{entry: raw, reason: errchain.Text(err)}
 			}
 			out = append(out, ipNet)
 			continue

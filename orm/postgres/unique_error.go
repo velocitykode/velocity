@@ -1,10 +1,9 @@
 package postgres
 
 import (
-	"errors"
-
 	"github.com/lib/pq"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/validation"
 )
 
@@ -25,8 +24,8 @@ func init() {
 // A *pq.Error that is not 23505 is matched-but-not-unique so the caller does
 // not misread e.g. a foreign-key or NOT NULL violation as a unique one.
 func classifyUniqueViolation(err error) (columnHint string, isUnique bool, matched bool) {
-	var pgErr *pq.Error
-	if !errors.As(err, &pgErr) {
+	pgErr, ok := errchain.As[*pq.Error](err)
+	if !ok {
 		return "", false, false
 	}
 	if pgErr.Code != "23505" {

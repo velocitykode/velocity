@@ -3,10 +3,10 @@ package orm
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm/drivers"
 )
 
@@ -44,7 +44,7 @@ func (q *Query[T]) Value(ctx context.Context, column string) (any, error) {
 	var result any
 	err := q.driver.QueryRowContext(ctx, sqlStr, args...).Scan(&result)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errchain.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err

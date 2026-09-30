@@ -69,6 +69,7 @@ import (
 	"golang.org/x/crypto/hkdf"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
@@ -362,7 +363,7 @@ func (d *AESDriver) DecryptBytes(payload string) ([]byte, error) {
 	// never produced by this package's encrypt path. Short-circuit so the
 	// caller sees ErrInvalidPayload, not a generic ErrDecrypt collapsed
 	// across every key attempt.
-	if errors.Is(err, ErrInvalidPayload) {
+	if errchain.Is(err, ErrInvalidPayload) {
 		return nil, ErrInvalidPayload
 	}
 
@@ -493,7 +494,7 @@ func (d *AESDriver) DecryptBytesWithAAD(payload string, aad []byte) ([]byte, err
 	// undersized tag) are key-independent: short-circuit so the caller
 	// sees ErrInvalidPayload instead of an opaque ErrAADMismatch after
 	// every rotation key also fails.
-	if errors.Is(err, ErrInvalidPayload) {
+	if errchain.Is(err, ErrInvalidPayload) {
 		return nil, ErrInvalidPayload
 	}
 
@@ -512,7 +513,7 @@ func (d *AESDriver) DecryptBytesWithAAD(payload string, aad []byte) ([]byte, err
 		if err == nil {
 			return plaintext, nil
 		}
-		if errors.Is(err, ErrInvalidPayload) {
+		if errchain.Is(err, ErrInvalidPayload) {
 			return nil, ErrInvalidPayload
 		}
 	}

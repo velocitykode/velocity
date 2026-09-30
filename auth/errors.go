@@ -1,13 +1,13 @@
 package auth
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -96,7 +96,7 @@ func (e *ForbiddenError) Error() string {
 	if e == nil || e.Err == nil {
 		return "velocity/auth: forbidden"
 	}
-	return "velocity/auth: forbidden: " + e.Err.Error()
+	return "velocity/auth: forbidden: " + errchain.Text(e.Err)
 }
 
 // StatusCode returns 403.
@@ -246,8 +246,7 @@ func (m *Manager) RenderUnauthenticated(rc contract.RenderContext, err error, _ 
 	}
 	target := ""
 	var checked []string
-	var ue *UnauthenticatedError
-	if errors.As(err, &ue) && ue != nil {
+	if ue, ok := errchain.As[*UnauthenticatedError](err); ok && ue != nil {
 		target = ue.RedirectTo
 		checked = ue.Schemes
 		if ue.manager != nil {
@@ -264,7 +263,7 @@ func (m *Manager) RenderUnauthenticated(rc contract.RenderContext, err error, _ 
 	}
 	if redirectErr := rc.Redirect(http.StatusSeeOther, target); redirectErr != nil {
 		if m != nil {
-			m.logWarn("velocity/auth: login redirect refused", "error", redirectErr.Error())
+			m.logWarn("velocity/auth: login redirect refused", "error", errchain.Text(redirectErr))
 		}
 		m.addChallenges(rc, checked)
 		return false
@@ -363,8 +362,7 @@ func (m *Manager) RenderAlreadyAuthenticated(rc contract.RenderContext, err erro
 		return false
 	}
 	target := ""
-	var ae *AlreadyAuthenticatedError
-	if errors.As(err, &ae) {
+	if ae, ok := errchain.As[*AlreadyAuthenticatedError](err); ok {
 		target = ae.RedirectTo
 	}
 	if target == "" {
@@ -372,7 +370,7 @@ func (m *Manager) RenderAlreadyAuthenticated(rc contract.RenderContext, err erro
 	}
 	if redirectErr := rc.Redirect(http.StatusSeeOther, target); redirectErr != nil {
 		if m != nil {
-			m.logWarn("velocity/auth: guest redirect refused", "error", redirectErr.Error())
+			m.logWarn("velocity/auth: guest redirect refused", "error", errchain.Text(redirectErr))
 		}
 		return false
 	}

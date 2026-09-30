@@ -1,12 +1,12 @@
 package velocity
 
 import (
-	"errors"
 	"net/http"
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/problem/routerbridge"
@@ -77,7 +77,7 @@ func installSentinelErrorRules(h *problem.Handler) {
 
 // matchSentinel returns a matcher for errors whose chain holds target.
 func matchSentinel(target error) contract.ErrorMatcher {
-	return func(err error) bool { return errors.Is(err, target) }
+	return func(err error) bool { return errchain.Is(err, target) }
 }
 
 // installErrorPageRenderer hands the error handler an appErrorPage, which

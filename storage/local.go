@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // defaultMaxFileSize is the default maximum file size for local storage (100MB)
@@ -162,7 +163,7 @@ func mapOpenError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, os.ErrNotExist) { //error-inspection-ok: os.Root error, stdlib value, no user method
 		return ErrFileNotFound
 	}
 	return err
@@ -344,7 +345,7 @@ func (d *LocalDriver) Delete(paths ...string) error {
 			if err != nil {
 				return err
 			}
-			if err := root.Remove(rel); err != nil && !errors.Is(err, os.ErrNotExist) {
+			if err := root.Remove(rel); err != nil && !errors.Is(err, os.ErrNotExist) { //error-inspection-ok: os.Root error, stdlib value, no user method
 				return fmt.Errorf("velocity/storage: delete %s: %w", path, mapOpenError(err))
 			}
 		}
@@ -479,7 +480,7 @@ func (d *LocalDriver) MimeType(path string) (string, error) {
 func sniffMimeType(r io.Reader) (string, error) {
 	buf := make([]byte, 512)
 	n, err := io.ReadFull(r, buf)
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+	if err != nil && !errchain.Is(err, io.EOF) && !errchain.Is(err, io.ErrUnexpectedEOF) {
 		return "", fmt.Errorf("velocity/storage: read file: %w", err)
 	}
 	return http.DetectContentType(buf[:n]), nil
@@ -495,7 +496,7 @@ func (d *LocalDriver) Files(directory string) ([]string, error) {
 	err = d.withRoot(func(root *os.Root) error {
 		entries, err := readDirIn(root, rel)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
+			if errors.Is(err, os.ErrNotExist) { //error-inspection-ok: os.Root error, stdlib value, no user method
 				return nil
 			}
 			return fmt.Errorf("velocity/storage: read directory: %w", mapOpenError(err))
@@ -529,7 +530,7 @@ func (d *LocalDriver) AllFiles(directory string) ([]string, error) {
 		})
 	})
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errchain.Is(err, os.ErrNotExist) {
 			return []string{}, nil
 		}
 		return nil, fmt.Errorf("velocity/storage: walk directory: %w", err)
@@ -547,7 +548,7 @@ func (d *LocalDriver) Directories(directory string) ([]string, error) {
 	err = d.withRoot(func(root *os.Root) error {
 		entries, err := readDirIn(root, rel)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
+			if errors.Is(err, os.ErrNotExist) { //error-inspection-ok: os.Root error, stdlib value, no user method
 				return nil
 			}
 			return fmt.Errorf("velocity/storage: read directory: %w", mapOpenError(err))
@@ -581,7 +582,7 @@ func (d *LocalDriver) AllDirectories(directory string) ([]string, error) {
 		})
 	})
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errchain.Is(err, os.ErrNotExist) {
 			return []string{}, nil
 		}
 		return nil, fmt.Errorf("velocity/storage: walk directory: %w", err)
@@ -651,7 +652,7 @@ func createTemp(root *os.Root, name string) (*os.File, string, error) {
 	for i := 1; ; i++ {
 		tmp := name + tempMarker + rand.Text()
 		file, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, storageFileMode)
-		if errors.Is(err, fs.ErrExist) && i < attempts {
+		if errors.Is(err, fs.ErrExist) && i < attempts { //error-inspection-ok: os.Root error, stdlib value, no user method
 			continue
 		}
 		if err != nil {
@@ -673,7 +674,7 @@ func mkdirAllIn(root *os.Root, rel string) error {
 	if rel == "." || rel == "" {
 		return nil
 	}
-	if err := root.MkdirAll(rel, storageDirMode); err != nil && !errors.Is(err, os.ErrExist) {
+	if err := root.MkdirAll(rel, storageDirMode); err != nil && !errors.Is(err, os.ErrExist) { //error-inspection-ok: os.Root error, stdlib value, no user method
 		return mapOpenError(err)
 	}
 	return nil

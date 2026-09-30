@@ -1,11 +1,11 @@
 package velocity
 
 import (
-	"errors"
 	"net/http"
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/validation"
@@ -37,8 +37,8 @@ func installValidationErrorRules(h *problem.Handler) {
 // it renders the failure as JSON through h.RenderJSON, which keeps the
 // configured JSON renderer and BeforeRender hooks.
 func renderValidationFailure(h *problem.Handler, rc contract.RenderContext, err error, ctx *contract.ErrorContext) bool {
-	var f *validation.Failure
-	if !errors.As(err, &f) || rc.WantsJSON() {
+	f, ok := errchain.As[*validation.Failure](err)
+	if !ok || rc.WantsJSON() {
 		return false
 	}
 	r := rc.Request()

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
@@ -131,9 +131,9 @@ func (s *ServerStore) Get(r *http.Request, id string) (auth.Session, error) {
 			return fresh, createErr
 		}
 		switch {
-		case errors.Is(err, auth.ErrSessionExpired):
+		case errchain.Is(err, auth.ErrSessionExpired):
 			fresh.(*ServerSession).authenticationExpired = true
-		case errors.Is(err, auth.ErrSessionNotFound):
+		case errchain.Is(err, auth.ErrSessionNotFound):
 			fresh.(*ServerSession).recordDeleted = true
 		}
 		return fresh, nil
@@ -238,7 +238,7 @@ func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
 	// writing under the new id, and fail closed when that is not possible:
 	// a captured cookie naming the old id must not keep a live record.
 	if ss.savedID != "" && ss.savedID != id {
-		if err := records.Delete(ctx, ss.savedID); err != nil && !errors.Is(err, auth.ErrSessionNotFound) {
+		if err := records.Delete(ctx, ss.savedID); err != nil && !errchain.Is(err, auth.ErrSessionNotFound) {
 			return fmt.Errorf("velocity/auth/session: retire previous session record: %w", err)
 		}
 		ss.savedID = ""
@@ -254,7 +254,7 @@ func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
 		}
 	}
 	err = records.UpdateData(ctx, id, update, now, recordEnd)
-	if errors.Is(err, auth.ErrSessionNotFound) && id != ss.savedID && ss.Get(auth.UserIDSessionKey) == nil {
+	if errchain.Is(err, auth.ErrSessionNotFound) && id != ss.savedID && ss.Get(auth.UserIDSessionKey) == nil {
 		err = records.Put(ctx, &auth.StoredSession{
 			ID:         id,
 			Data:       payload,

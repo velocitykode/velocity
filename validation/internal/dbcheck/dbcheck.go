@@ -38,6 +38,7 @@ import (
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/sqlerr"
 )
@@ -296,7 +297,7 @@ func uniqueViolationColumn(err error, classify Classifier) (string, bool) {
 	// mattn/go-sqlite3 would force CGO on every caller. The pure-Go
 	// modernc.org/sqlite driver emits the same "UNIQUE constraint failed"
 	// message via .Error(), so both are covered by the one branch.
-	msg := err.Error()
+	msg := errchain.Text(err)
 	switch {
 	case strings.Contains(msg, "SQLSTATE 23505") ||
 		strings.Contains(msg, "duplicate key value violates unique constraint"):
