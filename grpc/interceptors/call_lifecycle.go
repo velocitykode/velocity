@@ -629,9 +629,8 @@ func (c *call) panicResult(ctx context.Context, p interface{}) (err error) {
 // recovered marks a recovered panic, with its stack, and late one that
 // happened after the call ended, and reason, when set, is written as Extra
 // "reason": why the call's error could not be classified. It returns
-// whether the reporter returned
-// normally: a reporter that panics is contained, since reporting must
-// never fail the call or crash the server.
+// whether the reporter returned normally: a reporter that panics is
+// contained, since reporting must never fail the call or crash the server.
 func (c *call) report(err error, recovered bool, stack string, late bool, reason string) (reported bool) {
 	if c.cfg.Reporter == nil {
 		return false

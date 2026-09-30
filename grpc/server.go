@@ -75,9 +75,9 @@ type Server struct {
 	startTime time.Time
 
 	// tlsOpted tracks whether the caller supplied transport credentials via
-	// WithCreds. Build uses this together
-	// with the environment and the GRPC_INSECURE escape hatch to decide
-	// whether to refuse a cleartext production start.
+	// WithCreds. Build uses this together with the environment and the
+	// GRPC_INSECURE escape hatch to decide whether to refuse a cleartext
+	// production start.
 	tlsOpted bool
 
 	// stops coordinates the stops: the drain the stop that ends a running
@@ -377,8 +377,9 @@ func (s *Server) RegisterService(regFunc RegistrationFunc) *Server {
 //
 // Build also enforces the production TLS guard: when the environment is
 // "production" (APP_ENV=production or WithEnvironment("production")) and no
-// transport credentials were attached via WithCreds, Build returns an error unless GRPC_INSECURE=true opts the deployment out
-// for a known-internal mTLS mesh or a sidecar-terminated mesh. Outside
+// transport credentials were attached via WithCreds, Build returns an
+// error unless GRPC_INSECURE=true opts the deployment out for a
+// known-internal mTLS mesh or a sidecar-terminated mesh. Outside
 // production, a missing creds configuration only emits a one-shot warning.
 //
 // Authentication is opt-in. When services are registered but no auth
