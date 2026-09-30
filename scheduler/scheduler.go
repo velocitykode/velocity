@@ -151,16 +151,6 @@ func (s *Scheduler) SetEventDispatcher(fn func(ctx context.Context, event interf
 	s.events.Set(fn)
 }
 
-// dispatchEvent dispatches an event if a dispatcher is configured. The
-// caller-supplied ctx is propagated so listeners observe scheduler-job
-// scoped values. The dispatcher is read atomically and runs without
-// holding s.mu (it may take arbitrary time and must not block scheduler
-// operations). A failed dispatch is counted and its event's first failure
-// logged through the scheduler's logger (see internal/eventemit).
-func (s *Scheduler) dispatchEvent(ctx context.Context, event interface{}) {
-	s.events.Emit(ctx, event)
-}
-
 // New creates a new scheduler instance
 func New() *Scheduler {
 	s := &Scheduler{

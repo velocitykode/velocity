@@ -294,17 +294,6 @@ func (d *AESDriver) log() contract.Logger {
 	return fallbacklog.Resolve(d.logger)
 }
 
-// dispatchEvent dispatches an event if a dispatcher is configured.
-// Crypto operations operate without a request-scoped ctx (encryption is
-// CPU-bound and not request-bound), so callers pass context.Background()
-// here. Listeners that need a real ctx should plumb their own. The
-// dispatcher is called inline, as in the cache package; listeners that
-// need async behaviour opt in via queued listeners. A failed dispatch is
-// counted and its event's first failure logged (see internal/eventemit).
-func (d *AESDriver) dispatchEvent(event interface{}) {
-	d.events.Emit(context.Background(), event)
-}
-
 // Encrypt encrypts plaintext
 func (d *AESDriver) Encrypt(plaintext string) (string, error) {
 	return d.EncryptBytes([]byte(plaintext))
@@ -419,12 +408,11 @@ func (d *AESDriver) noteLegacyIfV0(version int) {
 	// Dispatch every time so operators can count/alert on the stream.
 	// The once-per-instance log is about noise, not signal. The event is
 	// built only when a dispatcher is installed.
-	if !d.events.Installed() {
-		return
-	}
-	d.dispatchEvent(&LegacyDecryptEvent{
-		EventMeta: contract.EventMeta{Context: context.Background(), At: time.Now().UTC()},
-		Cipher:    d.cipher,
+	d.events.EmitBuilt(context.Background(), func() any {
+		return &LegacyDecryptEvent{
+			EventMeta: contract.EventMeta{Context: context.Background(), At: time.Now().UTC()},
+			Cipher:    d.cipher,
+		}
 	})
 }
 

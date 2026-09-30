@@ -47,24 +47,6 @@ func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event interfac
 	m.events.Set(fn)
 }
 
-// eventDispatch returns dispatchEvent when an event dispatcher is installed
-// and nil when none is, so the mail event helpers build no event for no
-// listener.
-func (m *Manager) eventDispatch() func(ctx context.Context, event interface{}) {
-	if !m.events.Installed() {
-		return nil
-	}
-	return m.dispatchEvent
-}
-
-// dispatchEvent dispatches an event if a dispatcher is configured. The
-// caller-supplied ctx is propagated so listeners observe request-scoped
-// values. A failed dispatch is counted and its event's first failure
-// logged (see internal/eventemit); the send is unaffected.
-func (m *Manager) dispatchEvent(ctx context.Context, event interface{}) {
-	m.events.Emit(ctx, event)
-}
-
 // NewManager creates a new mail manager
 func NewManager() *Manager {
 	return &Manager{
@@ -161,11 +143,11 @@ func (m *Manager) send(ctx context.Context, channel string, msg *Message, delive
 	duration := time.Since(start)
 
 	if err != nil {
-		dispatchMailFailed(m.eventDispatch(), ctx, toEmails, subject, channel, err, duration)
+		dispatchMailFailed(&m.events, ctx, toEmails, subject, channel, err, duration)
 		return err
 	}
 
-	dispatchMailSent(m.eventDispatch(), ctx, toEmails, subject, channel, duration)
+	dispatchMailSent(&m.events, ctx, toEmails, subject, channel, duration)
 	return nil
 }
 
@@ -199,7 +181,7 @@ func (m *Manager) Broadcast(ctx context.Context, channels []string, msg *Message
 					if spanCtx == nil {
 						spanCtx, _ = trace.ContinueTrace(ctx)
 					}
-					dispatchMailFailed(m.eventDispatch(), spanCtx, toEmails, msg.GetSubject(), ch, err, 0)
+					dispatchMailFailed(&m.events, spanCtx, toEmails, msg.GetSubject(), ch, err, 0)
 					errChan <- fmt.Errorf("velocity/mail: channel %s panic: %w", ch, err)
 				}
 			}()

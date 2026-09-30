@@ -4,8 +4,9 @@
 //
 // A component holds an Emitter. The framework installs the app's dispatcher
 // on it through the component's SetEventDispatcher seam (Emitter.Set), the
-// component builds an event only when Installed reports a dispatcher, and it
-// hands the event over with Emit. When the dispatch fails (a listener
+// component hands each event over with EmitBuilt, whose builder runs only
+// when a dispatcher is installed, so no event is built that nobody would
+// receive. When the dispatch fails (a listener
 // returned an error or panicked, or the event was dropped before any
 // listener saw it), the failure goes to one policy, Failures.Record: the
 // failure is counted, the first failure of each event name is logged at warn
@@ -363,13 +364,41 @@ func (e *Emitter) Emit(ctx context.Context, event any) bool {
 	if p == nil {
 		return false
 	}
+	e.emit(ctx, *p, event)
+	return true
+}
+
+// EmitBuilt calls build and hands the event it returns to the installed
+// dispatcher, as Emit does, only when a dispatcher is installed: with none,
+// build is never called, so an event nobody would receive is never built.
+// It reports whether a dispatcher was installed. A nil Emitter has no
+// dispatcher. build runs on the caller's goroutine and is not retained.
+func (e *Emitter) EmitBuilt(ctx context.Context, build func() any) bool {
+	// Kept within the inlining budget, so the no-dispatcher path costs
+	// the caller one atomic load and no call.
+	return e != nil && e.dispatch.Load() != nil && e.emitBuilt(ctx, build)
+}
+
+// emitBuilt is EmitBuilt past its fast check. It reads the dispatcher
+// again: one removed meanwhile builds nothing.
+func (e *Emitter) emitBuilt(ctx context.Context, build func() any) bool {
+	p := e.dispatch.Load()
+	if p == nil {
+		return false
+	}
+	e.emit(ctx, *p, build())
+	return true
+}
+
+// emit hands event to dispatch under ctx (context.Background when nil) and
+// applies the failure policy to a failed dispatch.
+func (e *Emitter) emit(ctx context.Context, dispatch dispatchFunc, event any) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := DispatchContained(ctx, *p, event); err != nil {
+	if err := DispatchContained(ctx, dispatch, event); err != nil {
 		e.Fail(ctx, err, event)
 	}
-	return true
 }
 
 // Fail applies the failure policy to err, a failed dispatch of event: unless

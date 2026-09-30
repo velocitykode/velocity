@@ -124,22 +124,6 @@ func newEventEmitter(dispatch grpcevents.EventDispatchFunc, logger contract.Logg
 	return e
 }
 
-// eventsInstalled reports whether events holds a dispatcher, so an
-// interceptor builds an event only when one would receive it.
-func eventsInstalled(events *eventemit.Emitter) bool {
-	return events != nil && events.Installed()
-}
-
-// dispatchEvent hands event to the dispatcher events holds. A failed
-// dispatch, an error or a panic, goes to the emitter's failure policy
-// (counted, its event's first failure logged) and never reaches the
-// request: an event sink must never fail or panic a request.
-func dispatchEvent(ctx context.Context, events *eventemit.Emitter, event interface{}) {
-	if events != nil {
-		events.Emit(ctx, event)
-	}
-}
-
 // detectProtocol determines if the request came via HTTP gateway or direct gRPC
 func detectProtocol(ctx context.Context) grpcevents.Protocol {
 	md, ok := metadata.FromIncomingContext(ctx)

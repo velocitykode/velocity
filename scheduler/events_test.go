@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/eventemit/eventemittest"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -41,7 +42,7 @@ func TestSchedulerDispatcher(t *testing.T) {
 			return nil
 		})
 
-		s.dispatchEvent(context.Background(), &ScheduledTaskStarting{})
+		dispatchScheduledTaskStarting(&s.events, context.Background(), "t")
 
 		if !called {
 			t.Error("dispatcher was not called")
@@ -50,21 +51,21 @@ func TestSchedulerDispatcher(t *testing.T) {
 		s.SetEventDispatcher(nil)
 	})
 
-	t.Run("dispatchEvent with nil dispatcher", func(t *testing.T) {
+	t.Run("dispatch with nil dispatcher", func(t *testing.T) {
 		s := New()
 		s.SetEventDispatcher(nil)
 		// Should not panic
-		s.dispatchEvent(context.Background(), &ScheduledTaskStarting{})
+		dispatchScheduledTaskStarting(&s.events, context.Background(), "t")
 	})
 
-	t.Run("dispatchEvent with error returning dispatcher", func(t *testing.T) {
+	t.Run("dispatch with error returning dispatcher", func(t *testing.T) {
 		s := New()
 		s.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 			return errors.New("dispatcher error")
 		})
 
 		// Should not panic
-		s.dispatchEvent(context.Background(), &ScheduledTaskStarting{})
+		dispatchScheduledTaskStarting(&s.events, context.Background(), "t")
 
 		s.SetEventDispatcher(nil)
 	})
@@ -81,7 +82,7 @@ func TestDispatchScheduledTaskStarting(t *testing.T) {
 	t.Run("basic dispatch", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
-		dispatchScheduledTaskStarting(dispatch, ctx, "cleanup-old-files")
+		dispatchScheduledTaskStarting(eventemittest.Receiving(dispatch), ctx, "cleanup-old-files")
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -95,7 +96,7 @@ func TestDispatchScheduledTaskStarting(t *testing.T) {
 		captured = nil
 		ctx := trace.WithTrace(context.Background(), "trace-sched", "parent-sched")
 		ctx = trace.WithSpan(ctx, "span-sched")
-		dispatchScheduledTaskStarting(dispatch, ctx, "send-reports")
+		dispatchScheduledTaskStarting(eventemittest.Receiving(dispatch), ctx, "send-reports")
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -128,7 +129,7 @@ func TestDispatchScheduledTaskFinished(t *testing.T) {
 	t.Run("basic dispatch", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
-		dispatchScheduledTaskFinished(dispatch, ctx, "backup-database", 5*time.Second)
+		dispatchScheduledTaskFinished(eventemittest.Receiving(dispatch), ctx, "backup-database", 5*time.Second)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -145,7 +146,7 @@ func TestDispatchScheduledTaskFinished(t *testing.T) {
 		captured = nil
 		ctx := trace.WithTrace(context.Background(), "trace-done", "parent-done")
 		ctx = trace.WithSpan(ctx, "span-done")
-		dispatchScheduledTaskFinished(dispatch, ctx, "sync-data", 2*time.Second)
+		dispatchScheduledTaskFinished(eventemittest.Receiving(dispatch), ctx, "sync-data", 2*time.Second)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -171,7 +172,7 @@ func TestDispatchScheduledTaskFailed(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
 		err := errors.New("disk full")
-		dispatchScheduledTaskFailed(dispatch, ctx, "cleanup", err, 10*time.Second)
+		dispatchScheduledTaskFailed(eventemittest.Receiving(dispatch), ctx, "cleanup", err, 10*time.Second)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -190,7 +191,7 @@ func TestDispatchScheduledTaskFailed(t *testing.T) {
 	t.Run("with nil error", func(t *testing.T) {
 		captured = nil
 		ctx := context.Background()
-		dispatchScheduledTaskFailed(dispatch, ctx, "task", nil, 100*time.Millisecond)
+		dispatchScheduledTaskFailed(eventemittest.Receiving(dispatch), ctx, "task", nil, 100*time.Millisecond)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")
@@ -204,7 +205,7 @@ func TestDispatchScheduledTaskFailed(t *testing.T) {
 		captured = nil
 		ctx := trace.WithTrace(context.Background(), "trace-fail", "parent-fail")
 		ctx = trace.WithSpan(ctx, "span-fail")
-		dispatchScheduledTaskFailed(dispatch, ctx, "email-report", errors.New("smtp error"), 30*time.Second)
+		dispatchScheduledTaskFailed(eventemittest.Receiving(dispatch), ctx, "email-report", errors.New("smtp error"), 30*time.Second)
 
 		if captured == nil {
 			t.Fatal("event was not dispatched")

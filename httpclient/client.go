@@ -783,14 +783,6 @@ func (c *Client) SetEventDispatcher(fn func(ctx context.Context, event interface
 	c.events.Set(fn)
 }
 
-// dispatchEvent dispatches an event if a dispatcher is configured. The
-// caller-supplied ctx is propagated so listeners observe request-scoped
-// values. A failed dispatch is counted and its event's first failure
-// logged (see internal/eventemit); the request is unaffected.
-func (c *Client) dispatchEvent(ctx context.Context, event interface{}) {
-	c.events.Emit(ctx, event)
-}
-
 // resolveURL resolves the URL with the base URL if set
 func (c *Client) resolveURL(url string) string {
 	if c.baseURL != "" && len(url) > 0 && url[0] == '/' {

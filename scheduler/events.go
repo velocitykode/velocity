@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -94,38 +95,35 @@ func (e *ScheduledTaskFailed) FailureSource() contract.ErrorSource {
 }
 
 // dispatchScheduledTaskStarting dispatches a ScheduledTaskStarting event
-func dispatchScheduledTaskStarting(dispatch func(context.Context, interface{}), ctx context.Context, name string) {
-	if dispatch == nil {
-		return
-	}
-	dispatch(ctx, &ScheduledTaskStarting{
-		EventMeta: runEventMeta(ctx),
-		TaskName:  name,
+func dispatchScheduledTaskStarting(events *eventemit.Emitter, ctx context.Context, name string) {
+	events.EmitBuilt(ctx, func() any {
+		return &ScheduledTaskStarting{
+			EventMeta: runEventMeta(ctx),
+			TaskName:  name,
+		}
 	})
 }
 
 // dispatchScheduledTaskFinished dispatches a ScheduledTaskFinished event
-func dispatchScheduledTaskFinished(dispatch func(context.Context, interface{}), ctx context.Context, name string, duration time.Duration) {
-	if dispatch == nil {
-		return
-	}
-	dispatch(ctx, &ScheduledTaskFinished{
-		EventMeta: runEventMeta(ctx),
-		TaskName:  name,
-		Duration:  duration,
+func dispatchScheduledTaskFinished(events *eventemit.Emitter, ctx context.Context, name string, duration time.Duration) {
+	events.EmitBuilt(ctx, func() any {
+		return &ScheduledTaskFinished{
+			EventMeta: runEventMeta(ctx),
+			TaskName:  name,
+			Duration:  duration,
+		}
 	})
 }
 
 // dispatchScheduledTaskFailed dispatches a ScheduledTaskFailed event
-func dispatchScheduledTaskFailed(dispatch func(context.Context, interface{}), ctx context.Context, name string, err error, duration time.Duration) {
-	if dispatch == nil {
-		return
-	}
-	dispatch(ctx, &ScheduledTaskFailed{
-		EventMeta: runEventMeta(ctx),
-		TaskName:  name,
-		Err:       err,
-		Duration:  duration,
+func dispatchScheduledTaskFailed(events *eventemit.Emitter, ctx context.Context, name string, err error, duration time.Duration) {
+	events.EmitBuilt(ctx, func() any {
+		return &ScheduledTaskFailed{
+			EventMeta: runEventMeta(ctx),
+			TaskName:  name,
+			Err:       err,
+			Duration:  duration,
+		}
 	})
 }
 

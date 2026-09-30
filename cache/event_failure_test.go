@@ -20,7 +20,7 @@ func TestManager_FailedEventDispatchLoggedOncePerEvent(t *testing.T) {
 	m := &Manager{}
 	m.SetEventDispatcher(func(context.Context, interface{}) error { return errors.New("listener failed") })
 	for i := 0; i < 2; i++ {
-		m.dispatchEvent(context.Background(), &CacheHit{})
+		m.dispatchCacheHit(context.Background(), "k", "memory")
 	}
 	if n := strings.Count(out.String(), "WARN event dispatch failed"); n != 1 || !strings.Contains(out.String(), "event=cache.hit") {
 		t.Errorf("fallback output = %q, want one warn line naming cache.hit", out.String())
@@ -35,7 +35,7 @@ func TestManager_FailedEventDispatchLogsThroughItsLogger(t *testing.T) {
 	m := &Manager{}
 	m.SetEventDispatcher(func(context.Context, interface{}) error { return errors.New("listener failed") })
 	m.SetLogger(logdrivers.NewConsoleLoggerTo(&buf, contract.LogLevelUnset))
-	m.dispatchEvent(context.Background(), &CacheHit{})
+	m.dispatchCacheHit(context.Background(), "k", "memory")
 	if got := buf.String(); strings.Count(got, "event dispatch failed") != 1 || !strings.Contains(got, "event=cache.hit") {
 		t.Errorf("component logger got %q, want one failure line naming cache.hit", got)
 	}

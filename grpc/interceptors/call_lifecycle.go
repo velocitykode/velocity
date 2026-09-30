@@ -593,14 +593,13 @@ func (c *call) reportPanic(p interface{}, stack string, late bool) {
 // panicRecovered dispatches PanicRecovered for p under the call's
 // effective context.
 func (c *call) panicRecovered(p interface{}, stack string) {
-	if !eventsInstalled(c.cfg.events) {
-		return
-	}
-	dispatchEvent(c.ctx, c.cfg.events, &grpcevents.PanicRecovered{
-		EventMeta:  eventmeta.Current(c.ctx),
-		Method:     c.method,
-		Panic:      p,
-		StackTrace: stack,
+	c.cfg.events.EmitBuilt(c.ctx, func() any {
+		return &grpcevents.PanicRecovered{
+			EventMeta:  eventmeta.Current(c.ctx),
+			Method:     c.method,
+			Panic:      p,
+			StackTrace: stack,
+		}
 	})
 }
 
@@ -662,50 +661,72 @@ func (c *call) report(err error, recovered bool, stack string, late bool, reason
 
 // started dispatches the call's started event.
 func (c *call) started() {
-	if !c.observed || !eventsInstalled(c.cfg.events) {
+	if !c.observed {
 		return
 	}
-	var md map[string][]string
-	if inMD, ok := metadata.FromIncomingContext(c.ctx); ok {
-		md = redactMetadata(inMD)
-	}
-	meta := eventmeta.Current(c.ctx)
-	meta.At = c.start
-	protocol := detectProtocol(c.ctx)
-	var event interface{} = &grpcevents.RequestStarted{EventMeta: meta, Method: c.method, Protocol: protocol, Metadata: md}
-	if c.stream {
-		event = &grpcevents.StreamStarted{EventMeta: meta, Method: c.method, Protocol: protocol, Metadata: md}
-	}
-	dispatchEvent(c.ctx, c.cfg.events, event)
+	c.cfg.events.EmitBuilt(c.ctx, func() any {
+		var md map[string][]string
+		if inMD, ok := metadata.FromIncomingContext(c.ctx); ok {
+			md = redactMetadata(inMD)
+		}
+		meta := eventmeta.Current(c.ctx)
+		meta.At = c.start
+		protocol := detectProtocol(c.ctx)
+		if c.stream {
+			return &grpcevents.StreamStarted{EventMeta: meta, Method: c.method, Protocol: protocol, Metadata: md}
+		}
+		return &grpcevents.RequestStarted{EventMeta: meta, Method: c.method, Protocol: protocol, Metadata: md}
+	})
 }
 
 // completed dispatches the end of the call: the failed event when it
 // ended with err, then the completed event, the terminal event of every
 // call, each with code, the call's status code. The user fields come from
-// the call's claims snapshot.
+// the call's claims snapshot. Both events carry the same facts, gathered
+// by whichever builder runs first.
 func (c *call) completed(err error, code codes.Code) {
-	if !eventsInstalled(c.cfg.events) {
+	var end callEnd
+	if err != nil {
+		c.cfg.events.EmitBuilt(c.ctx, func() any {
+			end.gather(c)
+			if c.stream {
+				return &grpcevents.StreamFailed{EventMeta: end.meta, Method: c.method, Protocol: end.protocol,
+					Duration: end.duration, StatusCode: code, Err: err, UserID: end.userID, TeamID: end.teamID}
+			}
+			return &grpcevents.RequestFailed{EventMeta: end.meta, Method: c.method, Protocol: end.protocol,
+				Duration: end.duration, StatusCode: code, Err: err, UserID: end.userID, TeamID: end.teamID}
+		})
+	}
+	c.cfg.events.EmitBuilt(c.ctx, func() any {
+		end.gather(c)
+		if c.stream {
+			return &grpcevents.StreamCompleted{EventMeta: end.meta, Method: c.method, Protocol: end.protocol,
+				Duration: end.duration, StatusCode: code, UserID: end.userID, TeamID: end.teamID}
+		}
+		return &grpcevents.RequestCompleted{EventMeta: end.meta, Method: c.method, Protocol: end.protocol,
+			Duration: end.duration, StatusCode: code, UserID: end.userID, TeamID: end.teamID}
+	})
+}
+
+// callEnd holds the facts the end events of a call share.
+type callEnd struct {
+	gathered       bool
+	meta           contract.EventMeta
+	duration       time.Duration
+	protocol       grpcevents.Protocol
+	userID, teamID uint
+}
+
+// gather reads the end facts of c the first time it is called; later
+// calls keep them.
+func (e *callEnd) gather(c *call) {
+	if e.gathered {
 		return
 	}
-	meta := eventmeta.Current(c.ctx)
-	duration := meta.At.Sub(c.start)
-	protocol := detectProtocol(c.ctx)
+	e.gathered = true
+	e.meta = eventmeta.Current(c.ctx)
+	e.duration = e.meta.At.Sub(c.start)
+	e.protocol = detectProtocol(c.ctx)
 	claims := c.userClaims()
-	userID, teamID := claims.userID, claims.teamID
-	if err != nil {
-		var failed interface{} = &grpcevents.RequestFailed{EventMeta: meta, Method: c.method, Protocol: protocol,
-			Duration: duration, StatusCode: code, Err: err, UserID: userID, TeamID: teamID}
-		if c.stream {
-			failed = &grpcevents.StreamFailed{EventMeta: meta, Method: c.method, Protocol: protocol,
-				Duration: duration, StatusCode: code, Err: err, UserID: userID, TeamID: teamID}
-		}
-		dispatchEvent(c.ctx, c.cfg.events, failed)
-	}
-	var completed interface{} = &grpcevents.RequestCompleted{EventMeta: meta, Method: c.method, Protocol: protocol,
-		Duration: duration, StatusCode: code, UserID: userID, TeamID: teamID}
-	if c.stream {
-		completed = &grpcevents.StreamCompleted{EventMeta: meta, Method: c.method, Protocol: protocol,
-			Duration: duration, StatusCode: code, UserID: userID, TeamID: teamID}
-	}
-	dispatchEvent(c.ctx, c.cfg.events, completed)
+	e.userID, e.teamID = claims.userID, claims.teamID
 }

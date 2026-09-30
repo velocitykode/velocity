@@ -227,14 +227,13 @@ func authenticate(ctx context.Context, method string, cfg *AuthConfig) (context.
 // dispatchAuthFailed emits grpcevents.AuthFailed with masked token and trace
 // context. No-op when no dispatcher is configured.
 func dispatchAuthFailed(ctx context.Context, method, token string, err error, cfg *AuthConfig) {
-	if !eventsInstalled(cfg.events) {
-		return
-	}
-	dispatchEvent(ctx, cfg.events, &grpcevents.AuthFailed{
-		EventMeta: eventmeta.Current(ctx),
-		Method:    method,
-		Token:     maskToken(token),
-		Err:       err,
+	cfg.events.EmitBuilt(ctx, func() any {
+		return &grpcevents.AuthFailed{
+			EventMeta: eventmeta.Current(ctx),
+			Method:    method,
+			Token:     maskToken(token),
+			Err:       err,
+		}
 	})
 }
 

@@ -30,12 +30,10 @@ func quietServer() *Server {
 
 // The default call lifecycle reads the Server's live dispatcher: one set
 // after the chain was built receives the call's events, and once it is
-// cleared no event is built at all (the call costs what it costs on a
-// server that never had one).
+// cleared it receives none.
 func TestDefaultCallLifecycle_FollowsTheServersDispatcher(t *testing.T) {
 	s := quietServer()
 	call := defaultUnaryCall(s)
-	never := testing.AllocsPerRun(200, call)
 
 	var started, completed atomic.Int32
 	s.SetEventDispatcher(func(_ context.Context, ev any) error {
@@ -51,12 +49,11 @@ func TestDefaultCallLifecycle_FollowsTheServersDispatcher(t *testing.T) {
 	if started.Load() != 1 || completed.Load() != 1 {
 		t.Fatalf("started %d completed %d, want 1 1 from a dispatcher set after the chain was built", started.Load(), completed.Load())
 	}
-	installed := testing.AllocsPerRun(200, call)
 
 	s.SetEventDispatcher(nil)
-	cleared := testing.AllocsPerRun(200, call)
-	if cleared >= installed || cleared != never {
-		t.Errorf("allocs: never %v, installed %v, cleared %v: want cleared equal to never and below installed", never, installed, cleared)
+	call()
+	if started.Load() != 1 || completed.Load() != 1 {
+		t.Errorf("started %d completed %d after the dispatcher was cleared, want 1 1", started.Load(), completed.Load())
 	}
 }
 

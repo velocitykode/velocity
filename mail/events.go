@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 )
 
@@ -63,30 +64,28 @@ func (e *MailFailed) UnmarshalJSON(data []byte) error {
 }
 
 // dispatchMailSent dispatches a MailSent event
-func dispatchMailSent(dispatch func(context.Context, interface{}), ctx context.Context, to []string, subject, channel string, duration time.Duration) {
-	if dispatch == nil {
-		return
-	}
-	dispatch(ctx, &MailSent{
-		EventMeta: eventmeta.Current(ctx),
-		To:        to,
-		Subject:   subject,
-		Channel:   channel,
-		Duration:  duration,
+func dispatchMailSent(events *eventemit.Emitter, ctx context.Context, to []string, subject, channel string, duration time.Duration) {
+	events.EmitBuilt(ctx, func() any {
+		return &MailSent{
+			EventMeta: eventmeta.Current(ctx),
+			To:        to,
+			Subject:   subject,
+			Channel:   channel,
+			Duration:  duration,
+		}
 	})
 }
 
 // dispatchMailFailed dispatches a MailFailed event
-func dispatchMailFailed(dispatch func(context.Context, interface{}), ctx context.Context, to []string, subject, channel string, err error, duration time.Duration) {
-	if dispatch == nil {
-		return
-	}
-	dispatch(ctx, &MailFailed{
-		EventMeta: eventmeta.Current(ctx),
-		To:        to,
-		Subject:   subject,
-		Channel:   channel,
-		Err:       err,
-		Duration:  duration,
+func dispatchMailFailed(events *eventemit.Emitter, ctx context.Context, to []string, subject, channel string, err error, duration time.Duration) {
+	events.EmitBuilt(ctx, func() any {
+		return &MailFailed{
+			EventMeta: eventmeta.Current(ctx),
+			To:        to,
+			Subject:   subject,
+			Channel:   channel,
+			Err:       err,
+			Duration:  duration,
+		}
 	})
 }

@@ -482,7 +482,7 @@ func TestTypedEvent_FailureHookSeesTheEvent(t *testing.T) {
 	})
 	r.ShareEventFailures(failures)
 
-	r.dispatchInstanceEvent(context.Background(), &RequestStarted{RequestID: "abc"})
+	emitEvent(r, context.Background(), &RequestStarted{RequestID: "abc"})
 
 	if seenName != "router.request.started" {
 		t.Errorf("event.Name = %q, want router.request.started", seenName)

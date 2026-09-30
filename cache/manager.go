@@ -92,14 +92,6 @@ func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event interfac
 	m.events.Set(fn)
 }
 
-// dispatchEvent dispatches an event if a dispatcher is configured. The
-// caller-supplied ctx is propagated so listeners observe request-scoped
-// values. A failed dispatch is counted and its event's first failure
-// logged (see internal/eventemit); the cache operation is unaffected.
-func (m *Manager) dispatchEvent(ctx context.Context, event interface{}) {
-	m.events.Emit(ctx, event)
-}
-
 // Config holds cache configuration
 type Config struct {
 	Default string

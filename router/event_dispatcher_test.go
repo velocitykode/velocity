@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/eventemit"
 )
 
@@ -148,7 +149,7 @@ func TestDispatchInstanceEvent_DropsCountedAndHookInvoked(t *testing.T) {
 	r.ShareEventFailures(failures)
 
 	for i := 0; i < 7; i++ {
-		r.dispatchInstanceEvent(context.Background(), &RequestRouted{RequestID: "id"})
+		emitEvent(r, context.Background(), &RequestRouted{RequestID: "id"})
 	}
 
 	if got, want := failures.Count(), uint64(7); got != want {
@@ -169,8 +170,8 @@ func TestDispatchInstanceEvent_StandaloneCountsItsOwnDrops(t *testing.T) {
 	r := NewV2()
 	r.SetEventDispatcher(func(_ context.Context, event interface{}) error { return ErrEventBufferFull })
 
-	r.dispatchInstanceEvent(context.Background(), &RequestStarted{})
-	r.dispatchInstanceEvent(context.Background(), &RequestHandled{})
+	emitEvent(r, context.Background(), &RequestStarted{})
+	emitEvent(r, context.Background(), &RequestHandled{})
 
 	if got := r.events.FailureCount(); got != 2 {
 		t.Errorf("failed event count = %d, want 2", got)
@@ -184,16 +185,16 @@ func TestShareEventFailures_Nil(t *testing.T) {
 	r := NewV2()
 	r.ShareEventFailures(nil)
 	r.SetEventDispatcher(func(context.Context, interface{}) error { return ErrEventBufferFull })
-	r.dispatchInstanceEvent(context.Background(), &RequestStarted{})
+	emitEvent(r, context.Background(), &RequestStarted{})
 	if got := r.events.FailureCount(); got != 1 {
 		t.Fatalf("own count after ShareEventFailures(nil) = %d, want 1", got)
 	}
 
 	shared := &eventemit.Failures{}
 	r.ShareEventFailures(shared)
-	r.dispatchInstanceEvent(context.Background(), &RequestStarted{})
+	emitEvent(r, context.Background(), &RequestStarted{})
 	r.ShareEventFailures(nil)
-	r.dispatchInstanceEvent(context.Background(), &RequestStarted{})
+	emitEvent(r, context.Background(), &RequestStarted{})
 	if shared.Count() != 1 || r.events.FailureCount() != 2 {
 		t.Errorf("shared = %d, own = %d; want 1 and 2", shared.Count(), r.events.FailureCount())
 	}
@@ -241,7 +242,7 @@ func TestEventFailures_ConcurrentSetAndShareWhileDispatching(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < perSender; i++ {
-				r.dispatchInstanceEvent(context.Background(), &RequestHandled{})
+				emitEvent(r, context.Background(), &RequestHandled{})
 			}
 		}()
 	}
@@ -270,7 +271,7 @@ func TestAsyncEventDispatcher_RecordedFailureCountedOnce(t *testing.T) {
 
 	const n = 10
 	for i := 0; i < n; i++ {
-		r.dispatchInstanceEvent(context.Background(), &RequestHandled{})
+		emitEvent(r, context.Background(), &RequestHandled{})
 	}
 	if err := r.ShutdownEventDispatcher(context.Background()); err != nil {
 		t.Fatalf("ShutdownEventDispatcher: %v", err)
@@ -281,4 +282,10 @@ func TestAsyncEventDispatcher_RecordedFailureCountedOnce(t *testing.T) {
 	if got := hooked.Load(); got != n {
 		t.Errorf("hook calls = %d, want %d", got, n)
 	}
+}
+
+// emitEvent hands the ready-built event to r's dispatcher as the request
+// event helpers do.
+func emitEvent(r *VelocityRouterV2, ctx context.Context, event contract.Event) {
+	r.events.EmitBuilt(ctx, func() any { return event })
 }

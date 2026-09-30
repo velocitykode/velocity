@@ -17,7 +17,7 @@ func TestClient_FailedEventDispatchLoggedOncePerEvent(t *testing.T) {
 	c := New()
 	c.SetEventDispatcher(func(context.Context, interface{}) error { return errors.New("listener failed") })
 	for i := 0; i < 2; i++ {
-		c.dispatchEvent(context.Background(), &RequestSent{})
+		c.dispatchRequestSent(context.Background(), "GET", "https://example.test/", 200, 0, 0, 0)
 	}
 	if n := strings.Count(out.String(), "WARN event dispatch failed"); n != 1 || !strings.Contains(out.String(), "event=httpclient.request.completed") {
 		t.Errorf("fallback output = %q, want one warn line naming httpclient.request.completed", out.String())

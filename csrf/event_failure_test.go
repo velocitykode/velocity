@@ -3,6 +3,8 @@ package csrf
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -20,7 +22,7 @@ func TestCSRF_FailedEventDispatchLoggedOncePerEvent(t *testing.T) {
 	c := &CSRF{}
 	c.SetEventDispatcher(func(context.Context, interface{}) error { return errors.New("listener failed") })
 	for i := 0; i < 2; i++ {
-		c.dispatchEvent(context.Background(), &SessionMissing{})
+		c.dispatchSessionMissing(httptest.NewRequest(http.MethodPost, "/form", nil))
 	}
 	if n := strings.Count(out.String(), "WARN event dispatch failed"); n != 1 || !strings.Contains(out.String(), "event=csrf.session.missed") {
 		t.Errorf("fallback output = %q, want one warn line naming csrf.session.missed", out.String())
@@ -35,7 +37,7 @@ func TestCSRF_FailedEventDispatchLogsThroughItsLogger(t *testing.T) {
 	c := &CSRF{}
 	c.SetEventDispatcher(func(context.Context, interface{}) error { return errors.New("listener failed") })
 	c.SetLogger(logdrivers.NewConsoleLoggerTo(&buf, contract.LogLevelUnset))
-	c.dispatchEvent(context.Background(), &SessionMissing{})
+	c.dispatchSessionMissing(httptest.NewRequest(http.MethodPost, "/form", nil))
 	if got := buf.String(); strings.Count(got, "event dispatch failed") != 1 || !strings.Contains(got, "event=csrf.session.missed") {
 		t.Errorf("component logger got %q, want one failure line naming csrf.session.missed", got)
 	}

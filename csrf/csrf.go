@@ -194,15 +194,6 @@ func (c *CSRF) log(ctx context.Context) contract.Logger {
 	return fallbacklog.Resolve(c.currentLogger()).With(trace.LogFields(ctx)...)
 }
 
-// dispatchEvent fires an event if a dispatcher is configured. The
-// caller-supplied ctx is propagated so listeners observe request-scoped
-// values. A failed dispatch is counted and its event's first failure
-// logged (see internal/eventemit); CSRF validation never fails because of
-// an event sink.
-func (c *CSRF) dispatchEvent(ctx context.Context, evt interface{}) {
-	c.events.Emit(ctx, evt)
-}
-
 // Middleware returns bare net/http middleware that runs Protect on every
 // request. An accepted request reaches next carrying the request Protect
 // returned; a rejected one never does. It is answered by

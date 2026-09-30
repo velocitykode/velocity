@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventemit/eventemittest"
 )
 
 // taskRecordGone is a typed task error.
@@ -29,7 +30,7 @@ func TestScheduledTaskFailed_KeepsErrorType(t *testing.T) {
 		}
 	}
 	cause := &taskRecordGone{}
-	dispatchScheduledTaskFailed(dispatch, context.Background(), "cleanup", cause, time.Second)
+	dispatchScheduledTaskFailed(eventemittest.Receiving(dispatch), context.Background(), "cleanup", cause, time.Second)
 	if captured == nil {
 		t.Fatal("event was not dispatched")
 	}

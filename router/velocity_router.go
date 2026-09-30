@@ -396,17 +396,6 @@ func (r *VelocityRouterV2) BindEventDispatcher(fn func(ctx context.Context, even
 	r.asyncPool.setTarget(fn)
 }
 
-// dispatchInstanceEvent dispatches an event using the instance-level
-// dispatcher. The ctx is propagated to the dispatcher so listeners observe
-// the request-scoped values that ctx already carries (request ID, trace
-// IDs). A failed dispatch (a listener failed, or ErrEventBufferFull under
-// an async dispatcher with a saturated buffer) goes to the failure policy:
-// it is counted in the app's failed event count and its event's first
-// failure is logged (see internal/eventemit).
-func (r *VelocityRouterV2) dispatchInstanceEvent(ctx context.Context, event contract.Event) {
-	r.events.Emit(ctx, event)
-}
-
 // eventLogger returns the logger the router logs a failed event dispatch
 // through: its own logger (SetLogger), else its services' logger, else nil
 // (the framework's standalone fallback logger).
@@ -710,55 +699,59 @@ func durationSince(start, end time.Time) time.Duration {
 	return end.Sub(start)
 }
 
-// dispatchRequestStarted dispatches RequestStarted for req. The event is
-// built only when a dispatcher is installed.
+// The request event helpers hand their event to the instance-level
+// dispatcher under the request's context, so listeners observe the
+// request-scoped values it carries (request ID, trace IDs), and build it
+// only when a dispatcher is installed (eventemit.Emitter.EmitBuilt). A
+// failed dispatch (a listener failed, or ErrEventBufferFull under an async
+// dispatcher with a saturated buffer) goes to the failure policy: it is
+// counted in the app's failed event count and its event's first failure
+// is logged (see internal/eventemit).
+
+// dispatchRequestStarted dispatches RequestStarted for req.
 func (r *VelocityRouterV2) dispatchRequestStarted(req *http.Request, meta requestMeta) {
-	if !r.events.Installed() {
-		return
-	}
-	r.dispatchInstanceEvent(req.Context(), &RequestStarted{
-		EventMeta:  meta.eventMeta(req, meta.startedAt),
-		Method:     req.Method,
-		Path:       req.URL.Path,
-		RemoteAddr: req.RemoteAddr,
-		ClientIP:   clientIPOf(req, r.trustedProxiesOrParse()),
-		UserAgent:  req.UserAgent(),
-		RequestID:  meta.id,
+	r.events.EmitBuilt(req.Context(), func() any {
+		return &RequestStarted{
+			EventMeta:  meta.eventMeta(req, meta.startedAt),
+			Method:     req.Method,
+			Path:       req.URL.Path,
+			RemoteAddr: req.RemoteAddr,
+			ClientIP:   clientIPOf(req, r.trustedProxiesOrParse()),
+			UserAgent:  req.UserAgent(),
+			RequestID:  meta.id,
+		}
 	})
 }
 
 // dispatchRequestRouted dispatches RequestRouted for a request answered
 // without a matched route's params: a static file (route "[static]") or no
-// route at all. The event is built only when a dispatcher is installed.
+// route at all.
 func (r *VelocityRouterV2) dispatchRequestRouted(req *http.Request, meta requestMeta, route string, matched bool) {
-	if !r.events.Installed() {
-		return
-	}
-	r.dispatchInstanceEvent(req.Context(), &RequestRouted{
-		EventMeta: meta.eventMeta(req, time.Now()),
-		RequestID: meta.id,
-		Route:     route,
-		Matched:   matched,
+	r.events.EmitBuilt(req.Context(), func() any {
+		return &RequestRouted{
+			EventMeta: meta.eventMeta(req, time.Now()),
+			RequestID: meta.id,
+			Route:     route,
+			Matched:   matched,
+		}
 	})
 }
 
 // dispatchRequestHandled dispatches RequestHandled, the terminal event of
-// every answered request, with the status rw went out with. The event is
-// built only when a dispatcher is installed.
+// every answered request, with the status rw went out with.
 func (r *VelocityRouterV2) dispatchRequestHandled(req *http.Request, rw *responseWriter, meta requestMeta, route string) {
-	if !r.events.Installed() {
-		return
-	}
-	now := time.Now()
-	r.dispatchInstanceEvent(req.Context(), &RequestHandled{
-		EventMeta:    meta.eventMeta(req, now),
-		RequestID:    meta.id,
-		Method:       req.Method,
-		Path:         req.URL.Path,
-		Route:        route,
-		StatusCode:   rw.Status(),
-		BytesWritten: rw.BytesWritten(),
-		Duration:     durationSince(meta.startedAt, now),
+	r.events.EmitBuilt(req.Context(), func() any {
+		now := time.Now()
+		return &RequestHandled{
+			EventMeta:    meta.eventMeta(req, now),
+			RequestID:    meta.id,
+			Method:       req.Method,
+			Path:         req.URL.Path,
+			Route:        route,
+			StatusCode:   rw.Status(),
+			BytesWritten: rw.BytesWritten(),
+			Duration:     durationSince(meta.startedAt, now),
+		}
 	})
 }
 
@@ -802,18 +795,18 @@ func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Params/GetParams consumers share one map instead of rebuilding it.
 	rd := &routeData{result: result, services: r.services, router: r}
 
-	// Materialize the param map only when an event consumer exists; with
-	// no dispatcher wired the map is never built (R3 laziness).
-	if r.events.Installed() {
-		r.dispatchInstanceEvent(req.Context(), &RequestRouted{
+	// The param map is materialized only when an event consumer exists;
+	// with no dispatcher wired the map is never built (R3 laziness).
+	r.events.EmitBuilt(req.Context(), func() any {
+		return &RequestRouted{
 			EventMeta: meta.eventMeta(req, time.Now()),
 			RequestID: meta.id,
 			Route:     result.Path,
 			RouteName: result.Name,
 			Params:    rd.paramsMap(),
 			Matched:   true,
-		})
-	}
+		}
+	})
 
 	req = r.enrichRequest(req, rd)
 	ctx := r.acquireContext(rw, req, result)
@@ -1306,19 +1299,21 @@ type requestFailure struct {
 // dispatchRequestFailed dispatches RequestFailed for a failed request as
 // the boundary decided (see failureOf).
 func (r *VelocityRouterV2) dispatchRequestFailed(req *http.Request, meta requestMeta, failure requestFailure) {
-	if !failure.fire || !r.events.Installed() {
+	if !failure.fire {
 		return
 	}
-	now := time.Now()
-	r.dispatchInstanceEvent(req.Context(), &RequestFailed{
-		EventMeta: meta.eventMeta(req, now),
-		RequestID: meta.id,
-		Method:    req.Method,
-		Path:      req.URL.Path,
-		Err:       failure.err,
-		Stack:     failure.stack,
-		Recovered: failure.recovered,
-		Duration:  durationSince(meta.startedAt, now),
+	r.events.EmitBuilt(req.Context(), func() any {
+		now := time.Now()
+		return &RequestFailed{
+			EventMeta: meta.eventMeta(req, now),
+			RequestID: meta.id,
+			Method:    req.Method,
+			Path:      req.URL.Path,
+			Err:       failure.err,
+			Stack:     failure.stack,
+			Recovered: failure.recovered,
+			Duration:  durationSince(meta.startedAt, now),
+		}
 	})
 }
 

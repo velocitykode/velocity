@@ -40,7 +40,7 @@ func TestDispatcher(t *testing.T) {
 			return nil
 		})
 
-		client.dispatchEvent(context.Background(), &RequestSent{})
+		client.dispatchRequestSent(context.Background(), "GET", "https://example.test/", 200, 0, 0, 0)
 
 		if !called {
 			t.Error("dispatcher was not called")
@@ -49,21 +49,21 @@ func TestDispatcher(t *testing.T) {
 		client.SetEventDispatcher(nil)
 	})
 
-	t.Run("dispatchEvent with nil dispatcher", func(t *testing.T) {
+	t.Run("dispatchRequestSent with nil dispatcher", func(t *testing.T) {
 		client := New()
 		client.SetEventDispatcher(nil)
 		// Should not panic
-		client.dispatchEvent(context.Background(), &RequestSent{})
+		client.dispatchRequestSent(context.Background(), "GET", "https://example.test/", 200, 0, 0, 0)
 	})
 
-	t.Run("dispatchEvent with error returning dispatcher", func(t *testing.T) {
+	t.Run("dispatchRequestSent with error returning dispatcher", func(t *testing.T) {
 		client := New()
 		client.SetEventDispatcher(func(_ context.Context, event interface{}) error {
 			return errors.New("dispatcher error")
 		})
 
 		// Should not panic
-		client.dispatchEvent(context.Background(), &RequestSent{})
+		client.dispatchRequestSent(context.Background(), "GET", "https://example.test/", 200, 0, 0, 0)
 
 		client.SetEventDispatcher(nil)
 	})

@@ -20,7 +20,7 @@ func TestAESDriver_FailedEventDispatchLoggedOncePerEvent(t *testing.T) {
 	d := &AESDriver{}
 	d.SetEventDispatcher(func(context.Context, interface{}) error { return errors.New("listener failed") })
 	for i := 0; i < 2; i++ {
-		d.dispatchEvent(&LegacyDecryptEvent{})
+		d.noteLegacyIfV0(0)
 	}
 	if n := strings.Count(out.String(), "WARN event dispatch failed"); n != 1 || !strings.Contains(out.String(), "event=crypto.legacy.payload.decrypted") {
 		t.Errorf("fallback output = %q, want one warn line naming crypto.legacy.payload.decrypted", out.String())
@@ -35,7 +35,7 @@ func TestAESDriver_FailedEventDispatchLogsThroughItsLogger(t *testing.T) {
 	d := &AESDriver{}
 	d.SetEventDispatcher(func(context.Context, interface{}) error { return errors.New("listener failed") })
 	d.SetLogger(logdrivers.NewConsoleLoggerTo(&buf, contract.LogLevelUnset))
-	d.dispatchEvent(&LegacyDecryptEvent{})
+	d.noteLegacyIfV0(0)
 	if got := buf.String(); strings.Count(got, "event dispatch failed") != 1 || !strings.Contains(got, "event=crypto.legacy.payload.decrypted") {
 		t.Errorf("component logger got %q, want one failure line naming crypto.legacy.payload.decrypted", got)
 	}

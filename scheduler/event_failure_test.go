@@ -17,7 +17,7 @@ func TestScheduler_FailedEventDispatchLoggedOncePerEvent(t *testing.T) {
 	s := New()
 	s.SetEventDispatcher(func(context.Context, interface{}) error { return errors.New("listener failed") })
 	for i := 0; i < 2; i++ {
-		s.dispatchEvent(context.Background(), &ScheduledTaskFinished{})
+		dispatchScheduledTaskFinished(&s.events, context.Background(), "t", 0)
 	}
 	if n := strings.Count(out.String(), "WARN event dispatch failed"); n != 1 || !strings.Contains(out.String(), "event=scheduler.task.completed") {
 		t.Errorf("fallback output = %q, want one warn line naming scheduler.task.completed", out.String())

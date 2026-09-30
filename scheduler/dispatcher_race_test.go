@@ -53,7 +53,7 @@ func TestEventDispatcher_RaceFree(t *testing.T) {
 
 	// Internal event firing path: dispatchEvent is the same entry point
 	// used by job.go (Run -> dispatchScheduledTaskStarting etc.), so
-	// hammering it directly here exercises the exact field that races.
+	// hammering the helpers directly here exercises the exact field that races.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -62,7 +62,7 @@ func TestEventDispatcher_RaceFree(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				s.dispatchEvent(context.Background(), &ScheduledTaskStarting{TaskName: "race"})
+				dispatchScheduledTaskStarting(&s.events, context.Background(), "race")
 			}
 		}
 	}()
@@ -77,7 +77,7 @@ func TestEventDispatcher_RaceFree(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				s.dispatchEvent(context.Background(), &ScheduledTaskFinished{TaskName: "race"})
+				dispatchScheduledTaskFinished(&s.events, context.Background(), "race", 0)
 			}
 		}
 	}()

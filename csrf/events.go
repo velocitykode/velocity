@@ -30,12 +30,11 @@ func (e *SessionMissing) Name() string {
 // dispatchSessionMissing dispatches SessionMissing for r. The event is
 // built only when a dispatcher is installed.
 func (c *CSRF) dispatchSessionMissing(r *http.Request) {
-	if !c.events.Installed() {
-		return
-	}
-	c.dispatchEvent(r.Context(), &SessionMissing{
-		EventMeta: eventmeta.Current(r.Context()),
-		Path:      r.URL.Path,
-		Method:    r.Method,
+	c.events.EmitBuilt(r.Context(), func() any {
+		return &SessionMissing{
+			EventMeta: eventmeta.Current(r.Context()),
+			Path:      r.URL.Path,
+			Method:    r.Method,
+		}
 	})
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/drain"
+	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
@@ -96,16 +97,14 @@ type Job struct {
 	emailOutput  string
 }
 
-// getDispatch returns the event dispatch function from the parent scheduler,
-// or nil when there is none or it has no event dispatcher installed, so the
-// task event helpers build no event for no listener. The returned closure
-// captures the scheduler's dispatchEvent method so callers pass the per-job
-// ctx through to listeners.
-func (j *Job) getDispatch() func(context.Context, interface{}) {
-	if j.scheduler != nil && j.scheduler.events.Installed() {
-		return j.scheduler.dispatchEvent
+// events returns the parent scheduler's event emitter, or nil when the job
+// has no scheduler; the task event helpers build no event through a nil
+// emitter or one with no dispatcher installed.
+func (j *Job) events() *eventemit.Emitter {
+	if j.scheduler == nil {
+		return nil
 	}
-	return nil
+	return &j.scheduler.events
 }
 
 // runHookIsolated runs a single scheduler hook (Before/After/OnSuccess/
@@ -390,14 +389,14 @@ func (j *Job) runInternal(ctx, tctx context.Context, shutdownGrace time.Duration
 	// closure API itself does not accept a ctx.
 
 	// Dispatch scheduler.task.started event
-	dispatchScheduledTaskStarting(j.getDispatch(), tctx, jobName)
+	dispatchScheduledTaskStarting(j.events(), tctx, jobName)
 	startTime := time.Now()
 
 	// onHookPanic surfaces a panicking hook as a scheduler.task.failed event,
 	// matching the legacy per-hook behaviour. Shared by the Before hooks
 	// and the After/OnSuccess/OnFailure hooks run from finishSync.
 	onHookPanic := func(hookErr error) {
-		dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, hookErr, time.Since(startTime))
+		dispatchScheduledTaskFailed(j.events(), tctx, jobName, hookErr, time.Since(startTime))
 	}
 
 	// Run before callbacks. Each callback is isolated in its own
@@ -427,13 +426,13 @@ func (j *Job) runInternal(ctx, tctx context.Context, shutdownGrace time.Duration
 				runHookIsolated(onHookPanic, func() { cb(err) })
 			}
 			if !panicDispatched {
-				dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, err, duration)
+				dispatchScheduledTaskFailed(j.events(), tctx, jobName, err, duration)
 			}
 		} else {
 			for _, callback := range onSuccessCallbacks {
 				runHookIsolated(onHookPanic, callback)
 			}
-			dispatchScheduledTaskFinished(j.getDispatch(), tctx, jobName, duration)
+			dispatchScheduledTaskFinished(j.events(), tctx, jobName, duration)
 		}
 	}
 
@@ -451,7 +450,7 @@ func (j *Job) runInternal(ctx, tctx context.Context, shutdownGrace time.Duration
 			defer func() {
 				if r := recover(); r != nil {
 					err = panicerr.FromRecovered(r)
-					dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, err, time.Since(startTime))
+					dispatchScheduledTaskFailed(j.events(), tctx, jobName, err, time.Since(startTime))
 					panicDispatched = true
 				}
 			}()
@@ -464,7 +463,7 @@ func (j *Job) runInternal(ctx, tctx context.Context, shutdownGrace time.Duration
 			defer func() {
 				if r := recover(); r != nil {
 					err = panicerr.FromRecovered(r)
-					dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, err, time.Since(startTime))
+					dispatchScheduledTaskFailed(j.events(), tctx, jobName, err, time.Since(startTime))
 					panicDispatched = true
 				}
 			}()
@@ -581,9 +580,7 @@ func (j *Job) spawnBackgroundWaiter(
 		// Panic-safe: a misbehaving callback must not leak the lock.
 		defer func() {
 			if r := recover(); r != nil {
-				if dispatch := j.getDispatch(); dispatch != nil {
-					dispatchScheduledTaskFailed(dispatch, tctx, jobName, panicerr.FromRecovered(r), time.Since(startTime))
-				}
+				dispatchScheduledTaskFailed(j.events(), tctx, jobName, panicerr.FromRecovered(r), time.Since(startTime))
 			}
 			if outFile != nil {
 				_ = outFile.Close()
@@ -631,7 +628,7 @@ func (j *Job) spawnBackgroundWaiter(
 		// path) without aborting the remaining hooks or the completion
 		// event. Mirrors finishSync's onHookPanic.
 		onHookPanic := func(hookErr error) {
-			dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, hookErr, time.Since(startTime))
+			dispatchScheduledTaskFailed(j.events(), tctx, jobName, hookErr, time.Since(startTime))
 		}
 		for _, callback := range afterCallbacks {
 			runHookIsolated(onHookPanic, callback)
@@ -641,12 +638,12 @@ func (j *Job) spawnBackgroundWaiter(
 				cb := callback
 				runHookIsolated(onHookPanic, func() { cb(err) })
 			}
-			dispatchScheduledTaskFailed(j.getDispatch(), tctx, jobName, err, duration)
+			dispatchScheduledTaskFailed(j.events(), tctx, jobName, err, duration)
 		} else {
 			for _, callback := range onSuccessCallbacks {
 				runHookIsolated(onHookPanic, callback)
 			}
-			dispatchScheduledTaskFinished(j.getDispatch(), tctx, jobName, duration)
+			dispatchScheduledTaskFinished(j.events(), tctx, jobName, duration)
 		}
 	}()
 }

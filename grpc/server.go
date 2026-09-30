@@ -804,12 +804,14 @@ func (s *Server) serving(c *life) {
 	s.mu.Lock()
 	c.running = true
 	c.startTime = time.Now()
-	started := s.serverStartedLocked(c)
-	addr := c.lis.text
+	start, port, addr := c.startTime, s.port, c.lis.text
 	s.mu.Unlock()
-	if started != nil {
-		s.events.Emit(context.Background(), started)
-	}
+	s.events.EmitBuilt(context.Background(), func() any {
+		return &grpcevents.ServerStarted{
+			EventMeta: contract.EventMeta{Context: context.Background(), At: start},
+			Port:      port,
+		}
+	})
 	s.logLine(func(l contract.Logger) { l.Info("gRPC server starting", "address", addr) })
 }
 
@@ -940,12 +942,14 @@ func (s *Server) stopWork(c *life, graceful bool) func() error {
 		}
 		start, port := c.startTime, s.port
 		s.mu.Unlock()
-		if !start.IsZero() && s.events.Installed() {
-			now := time.Now()
-			s.events.Emit(context.Background(), &grpcevents.ServerStopped{
-				EventMeta: contract.EventMeta{Context: context.Background(), At: now},
-				Port:      port,
-				Duration:  now.Sub(start),
+		if !start.IsZero() {
+			s.events.EmitBuilt(context.Background(), func() any {
+				now := time.Now()
+				return &grpcevents.ServerStopped{
+					EventMeta: contract.EventMeta{Context: context.Background(), At: now},
+					Port:      port,
+					Duration:  now.Sub(start),
+				}
 			})
 		}
 		return nil
@@ -957,19 +961,6 @@ func (s *Server) stopWork(c *life, graceful bool) func() error {
 // and never skips the state change, teardown or event the line precedes.
 func (s *Server) logLine(write func(contract.Logger)) {
 	fallbacklog.Write(s.logger, write)
-}
-
-// serverStartedLocked builds the ServerStarted event for the start of c
-// just recorded, or returns nil when no event dispatcher is installed.
-// Caller must hold s.mu.
-func (s *Server) serverStartedLocked(c *life) *grpcevents.ServerStarted {
-	if !s.events.Installed() {
-		return nil
-	}
-	return &grpcevents.ServerStarted{
-		EventMeta: contract.EventMeta{Context: context.Background(), At: c.startTime},
-		Port:      s.port,
-	}
 }
 
 // Shutdown gracefully stops the server, or joins the stop already under

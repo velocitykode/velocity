@@ -101,52 +101,47 @@ func (e *CacheOperationFailed) UnmarshalJSON(data []byte) error {
 }
 
 // The dispatch helpers build their event, span ids included, only when a
-// dispatcher is installed.
+// dispatcher is installed (eventemit.Emitter.EmitBuilt).
 
 // dispatchCacheHit dispatches a CacheHit event
 func (m *Manager) dispatchCacheHit(ctx context.Context, key, store string) {
-	if !m.events.Installed() {
-		return
-	}
-	m.dispatchEvent(ctx, &CacheHit{EventMeta: eventmeta.Child(ctx), Key: key, Store: store})
+	m.events.EmitBuilt(ctx, func() any {
+		return &CacheHit{EventMeta: eventmeta.Child(ctx), Key: key, Store: store}
+	})
 }
 
 // dispatchCacheMiss dispatches a CacheMiss event
 func (m *Manager) dispatchCacheMiss(ctx context.Context, key, store string) {
-	if !m.events.Installed() {
-		return
-	}
-	m.dispatchEvent(ctx, &CacheMiss{EventMeta: eventmeta.Child(ctx), Key: key, Store: store})
+	m.events.EmitBuilt(ctx, func() any {
+		return &CacheMiss{EventMeta: eventmeta.Child(ctx), Key: key, Store: store}
+	})
 }
 
 // dispatchCacheWritten dispatches a CacheWritten event
 func (m *Manager) dispatchCacheWritten(ctx context.Context, key, store string, ttl time.Duration) {
-	if !m.events.Installed() {
-		return
-	}
-	m.dispatchEvent(ctx, &CacheWritten{EventMeta: eventmeta.Child(ctx), Key: key, Store: store, TTL: ttl})
+	m.events.EmitBuilt(ctx, func() any {
+		return &CacheWritten{EventMeta: eventmeta.Child(ctx), Key: key, Store: store, TTL: ttl}
+	})
 }
 
 // dispatchCacheForgotten dispatches a CacheForgotten event
 func (m *Manager) dispatchCacheForgotten(ctx context.Context, key, store string) {
-	if !m.events.Installed() {
-		return
-	}
-	m.dispatchEvent(ctx, &CacheForgotten{EventMeta: eventmeta.Child(ctx), Key: key, Store: store})
+	m.events.EmitBuilt(ctx, func() any {
+		return &CacheForgotten{EventMeta: eventmeta.Child(ctx), Key: key, Store: store}
+	})
 }
 
 // dispatchCacheOperationFailed dispatches a CacheOperationFailed event for a
 // failed store operation. op is one of the lowercase verbs documented on
 // CacheOperationFailed; key is empty for keyless operations (flush).
 func (m *Manager) dispatchCacheOperationFailed(ctx context.Context, store, op, key string, opErr error) {
-	if !m.events.Installed() {
-		return
-	}
-	m.dispatchEvent(ctx, &CacheOperationFailed{
-		EventMeta: eventmeta.Child(ctx),
-		Store:     store,
-		Op:        op,
-		Key:       key,
-		Err:       opErr,
+	m.events.EmitBuilt(ctx, func() any {
+		return &CacheOperationFailed{
+			EventMeta: eventmeta.Child(ctx),
+			Store:     store,
+			Op:        op,
+			Key:       key,
+			Err:       opErr,
+		}
 	})
 }
