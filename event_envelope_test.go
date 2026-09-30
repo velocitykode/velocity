@@ -212,3 +212,43 @@ func TestFrameworkEvents_JSONFormRoundTrips(t *testing.T) {
 		}
 	}
 }
+
+// TestFrameworkEvents_FieldsHydrateFromJSON requires every field of every
+// framework event to be one json.Unmarshal can rebuild, so a queued
+// listener in another process can hydrate the event: no field (or element
+// of one) is an interface with methods, other than error, which the error
+// codec carries as its text.
+func TestFrameworkEvents_FieldsHydrateFromJSON(t *testing.T) {
+	var check func(key, path string, ft reflect.Type, seen map[reflect.Type]bool)
+	check = func(key, path string, ft reflect.Type, seen map[reflect.Type]bool) {
+		switch ft.Kind() {
+		case reflect.Interface:
+			if ft != errorType && ft.NumMethod() > 0 {
+				t.Errorf("%s: field %s is %s, an interface json.Unmarshal cannot rebuild", key, path, ft)
+			}
+		case reflect.Pointer, reflect.Slice, reflect.Array:
+			check(key, path+"[]", ft.Elem(), seen)
+		case reflect.Map:
+			check(key, path+"[key]", ft.Key(), seen)
+			check(key, path+"[]", ft.Elem(), seen)
+		case reflect.Struct:
+			if seen[ft] || ft == timeType {
+				return
+			}
+			seen[ft] = true
+			for i := 0; i < ft.NumField(); i++ {
+				if f := ft.Field(i); f.IsExported() {
+					check(key, path+"."+f.Name, f.Type, seen)
+				}
+			}
+		}
+	}
+	for _, fe := range frameworkEvents {
+		key := eventTypeKey(fe.event)
+		for _, f := range ownFields(eventStructType(fe.event)) {
+			if f.IsExported() {
+				check(key, f.Name, f.Type, map[reflect.Type]bool{})
+			}
+		}
+	}
+}
