@@ -3,6 +3,8 @@ package schemes
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
@@ -55,24 +57,70 @@ func BenchmarkSessionScheme_CheckCached(b *testing.B) {
 
 // BenchmarkSessionScheme_UserParallel measures reads of the signed-in user
 // from many goroutines of one request (a handler fanning out authorization
-// checks), counting the reads that were refused.
+// checks), and reports the reads that were refused.
 func BenchmarkSessionScheme_UserParallel(b *testing.B) {
 	scheme, req := benchSignedInRequest(b, false)
+	var refused atomic.Int64
 	b.ReportAllocs()
 	b.ResetTimer()
-	var refused int64
 	b.RunParallel(func(pb *testing.PB) {
-		var n int64
 		for pb.Next() {
 			if scheme.User(req) == nil {
-				n++
+				refused.Add(1)
 			}
 		}
-		if n > 0 {
-			b.ReportMetric(float64(n), "refused")
-		}
-		_ = refused
 	})
+	b.ReportMetric(float64(refused.Load()), "refused")
+}
+
+// BenchmarkSessionScheme_UserColdRequest measures the first read of the
+// signed-in user on a request: each iteration is a new request whose
+// session is loaded but whose user is not resolved yet.
+func BenchmarkSessionScheme_UserColdRequest(b *testing.B) {
+	scheme, _ := benchSignedInRequest(b, false)
+	sess := newMockSession()
+	sess.data["user_id"] = "1"
+	base := httptest.NewRequest(http.MethodGet, "/", nil)
+	b.ReportAllocs()
+	for b.Loop() {
+		req := WithSessionContext(base)
+		req.Context().Value(sessionCtxKey{}).(*sessionHolder).setSession(sess)
+		if scheme.User(req) == nil {
+			b.Fatal("cold read returned no user")
+		}
+	}
+}
+
+// BenchmarkSessionScheme_UserColdFanOut measures four goroutines of a new
+// request reading the signed-in user at once, before any of them resolved
+// it, and reports the reads that were refused.
+func BenchmarkSessionScheme_UserColdFanOut(b *testing.B) {
+	scheme, _ := benchSignedInRequest(b, false)
+	sess := newMockSession()
+	sess.data["user_id"] = "1"
+	base := httptest.NewRequest(http.MethodGet, "/", nil)
+	const readers = 4
+	var refused atomic.Int64
+	b.ReportAllocs()
+	for b.Loop() {
+		req := WithSessionContext(base)
+		req.Context().Value(sessionCtxKey{}).(*sessionHolder).setSession(sess)
+		var start, done sync.WaitGroup
+		start.Add(1)
+		done.Add(readers)
+		for range readers {
+			go func() { //safe-goroutine: the iteration waits for every reader
+				defer done.Done()
+				start.Wait()
+				if scheme.User(req) == nil {
+					refused.Add(1)
+				}
+			}()
+		}
+		start.Done()
+		done.Wait()
+	}
+	b.ReportMetric(float64(refused.Load()), "refused")
 }
 
 // BenchmarkSessionScheme_Busy measures the refused paths: each call meets
