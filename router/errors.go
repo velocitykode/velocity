@@ -3,12 +3,12 @@ package router
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"runtime"
 	"strings"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -50,7 +50,7 @@ type ErrorInfo struct {
 // re-panicked last so net/http aborts the connection.
 func isAbortPanic(recovered any) bool {
 	err, ok := recovered.(error)
-	return ok && errors.Is(err, http.ErrAbortHandler)
+	return ok && errchain.Is(err, http.ErrAbortHandler)
 }
 
 // PanicError is a recovered panic carried as an error, with the stack
@@ -86,7 +86,7 @@ func (e *PanicError) Error() string {
 	if e == nil || e.Err == nil {
 		return "panic"
 	}
-	return e.Err.Error()
+	return errchain.Text(e.Err)
 }
 
 // Unwrap returns Err so errors.Is and errors.As reach the panic value.
@@ -174,30 +174,41 @@ type defaultResolution struct {
 	status  int
 	headers http.Header
 	message string
-	write   bool
-	level   defaultLogLevel
+	// fields are the per-field messages of a 4xx answer's problem body.
+	fields map[string][]string
+	write  bool
+	level  defaultLogLevel
 }
 
-// walkLimit bounds how many nodes deep classifyError walks an error chain
-// by hand before it hands the rest of that branch to the errors package,
-// whose answer is the same at any depth.
-const walkLimit = 64
-
-// errorFacts is what one walk of an error chain found: the first
-// StatusError, HeaderError, MessageError and *PanicError in errors.As
-// order, whether errors.As would find a contract.RecoveredPanic (panicked;
-// a *PanicError is one, and supplies the stack fields when present), and
-// whether errors.Is would match *http.MaxBytesError, context.Canceled,
-// context.DeadlineExceeded and contract.ErrResponseWritten.
+// errorFacts is what one walk of an error chain found, breadth first
+// through errchain.Walk: the first StatusError's status, the first
+// HeaderError's headers, the first MessageError's status and client
+// message, the first field messages (a value with Errors, for a 4xx
+// answer's problem body) and the first *PanicError, whether a
+// contract.RecoveredPanic is in the chain (panicked; a *PanicError is one,
+// and supplies the stack fields when present), and whether
+// *http.MaxBytesError, context.Canceled, context.DeadlineExceeded and
+// contract.ErrResponseWritten are.
+//
+// Every method of the error the classification needs (Unwrap, Is, As,
+// StatusCode, Headers, ClientMessage, Errors) is user code, and is called
+// inside the walk, bounded and contained. A walk that panicked, or that
+// errchain.Max cut short, leaves no facts at all: the error answers as an
+// unnamed 500, with no headers and no message of its own, since what it
+// would have said cannot be known.
 type errorFacts struct {
-	status   contract.StatusError
-	header   contract.HeaderError
-	message  contract.MessageError
-	panicErr *PanicError
+	headers       http.Header
+	clientMessage string
+	fields        map[string][]string
+	panicErr      *PanicError
+
+	statusCode    int
+	messageStatus int
 
 	haveStatus  bool
 	haveHeader  bool
 	haveMessage bool
+	haveFields  bool
 	panicked    bool
 	maxBytes    bool
 	canceled    bool
@@ -205,159 +216,92 @@ type errorFacts struct {
 	written     bool
 }
 
-// classifyError walks err's chain once. The walk visits nodes in the
-// order errors.As and errors.Is do and matches with type assertions, so no
-// target escapes to the heap. A node with an As method, or one deeper than
-// walkLimit, has its branch handed to errors.As (and, past the limit,
-// errors.Is), so every answer matches the errors package for any chain.
+// classifyError walks err's chain once (see errorFacts).
 func classifyError(err error) errorFacts {
 	var f errorFacts
-	f.walk(err, 0, false)
+	if errchain.Walk(err, f.visit) != errchain.Ended {
+		return errorFacts{}
+	}
 	return f
 }
 
-// walk visits err and the errors below it. skipAs is set below a node
-// whose As method already had its branch searched by errors.As.
-func (f *errorFacts) walk(err error, depth int, skipAs bool) {
-	for err != nil {
-		if depth >= walkLimit {
-			if !skipAs {
-				f.fallbackAs(err)
-			}
-			f.fallbackIs(err)
-			return
-		}
-		if !skipAs {
-			f.matchAs(err)
-			if _, ok := err.(interface{ As(any) bool }); ok {
-				f.fallbackAs(err)
-				skipAs = true
-			}
-		}
-		f.matchIs(err)
-		switch x := err.(type) {
-		case interface{ Unwrap() error }:
-			err = x.Unwrap()
-			depth++
-		case interface{ Unwrap() []error }:
-			for _, e := range x.Unwrap() {
-				if e != nil {
-					f.walk(e, depth+1, skipAs)
-				}
-			}
-			return
-		default:
-			return
-		}
-	}
-}
-
-// matchAs records the As targets err itself satisfies.
-func (f *errorFacts) matchAs(err error) {
+// visit records the facts e itself carries. It never stops the walk: a
+// later node can still carry a fact not found yet. A node answers a fact
+// by type assertion or, when it has one, through its own As or Is method,
+// as errchain.MatchesAs and errchain.Matches do; the As method is looked
+// up once per node.
+func (f *errorFacts) visit(e error) bool {
 	if !f.haveStatus {
-		if se, ok := err.(contract.StatusError); ok {
-			f.status, f.haveStatus = se, true
+		if se, ok := e.(contract.StatusError); ok {
+			f.statusCode, f.haveStatus = se.StatusCode(), true
 		}
 	}
 	if !f.haveHeader {
-		if he, ok := err.(contract.HeaderError); ok {
-			f.header, f.haveHeader = he, true
+		if he, ok := e.(contract.HeaderError); ok {
+			f.headers, f.haveHeader = he.Headers(), true
 		}
 	}
 	if !f.haveMessage {
-		if me, ok := err.(contract.MessageError); ok {
-			f.message, f.haveMessage = me, true
+		if me, ok := e.(contract.MessageError); ok {
+			f.messageStatus, f.clientMessage, f.haveMessage = me.StatusCode(), me.ClientMessage(), true
+		}
+	}
+	if !f.haveFields {
+		if fm, ok := e.(fieldMessager); ok {
+			f.fields, f.haveFields = fm.Errors(), true
 		}
 	}
 	if !f.panicked {
-		if _, ok := err.(contract.RecoveredPanic); ok {
+		_, f.panicked = e.(contract.RecoveredPanic)
+	}
+	if f.panicErr == nil {
+		f.panicErr, _ = e.(*PanicError)
+	}
+	if !f.maxBytes {
+		_, f.maxBytes = e.(*http.MaxBytesError)
+	}
+	if _, ok := e.(interface{ As(any) bool }); ok {
+		f.visitAs(e)
+	}
+	f.canceled = f.canceled || errchain.Matches(e, context.Canceled)
+	f.deadline = f.deadline || errchain.Matches(e, context.DeadlineExceeded)
+	f.written = f.written || errchain.Matches(e, contract.ErrResponseWritten)
+	return false
+}
+
+// visitAs records the facts still missing that e answers through its own
+// As method.
+func (f *errorFacts) visitAs(e error) {
+	if !f.haveStatus {
+		if se, ok := errchain.MatchesAs[contract.StatusError](e); ok && se != nil {
+			f.statusCode, f.haveStatus = se.StatusCode(), true
+		}
+	}
+	if !f.haveHeader {
+		if he, ok := errchain.MatchesAs[contract.HeaderError](e); ok && he != nil {
+			f.headers, f.haveHeader = he.Headers(), true
+		}
+	}
+	if !f.haveMessage {
+		if me, ok := errchain.MatchesAs[contract.MessageError](e); ok && me != nil {
+			f.messageStatus, f.clientMessage, f.haveMessage = me.StatusCode(), me.ClientMessage(), true
+		}
+	}
+	if !f.haveFields {
+		if fm, ok := errchain.MatchesAs[fieldMessager](e); ok && fm != nil {
+			f.fields, f.haveFields = fm.Errors(), true
+		}
+	}
+	if !f.panicked {
+		if rp, ok := errchain.MatchesAs[contract.RecoveredPanic](e); ok && rp != nil {
 			f.panicked = true
 		}
 	}
 	if f.panicErr == nil {
-		if pe, ok := err.(*PanicError); ok {
-			f.panicErr = pe
-		}
+		f.panicErr, _ = errchain.MatchesAs[*PanicError](e)
 	}
 	if !f.maxBytes {
-		if _, ok := err.(*http.MaxBytesError); ok {
-			f.maxBytes = true
-		}
-	}
-}
-
-// matchIs records the sentinels err itself matches, as errors.Is does:
-// equality, then an Is method.
-func (f *errorFacts) matchIs(err error) {
-	if !f.canceled {
-		f.canceled = isNode(err, context.Canceled)
-	}
-	if !f.deadline {
-		f.deadline = isNode(err, context.DeadlineExceeded)
-	}
-	if !f.written {
-		f.written = isNode(err, contract.ErrResponseWritten)
-	}
-}
-
-// isNode reports whether err itself (not its chain) matches target under
-// errors.Is. target must be comparable.
-func isNode(err, target error) bool {
-	if err == target {
-		return true
-	}
-	x, ok := err.(interface{ Is(error) bool })
-	return ok && x.Is(target)
-}
-
-// fallbackAs resolves the As targets still missing over err's whole
-// branch through errors.As.
-func (f *errorFacts) fallbackAs(err error) {
-	if !f.haveStatus {
-		var se contract.StatusError
-		if errors.As(err, &se) {
-			f.status, f.haveStatus = se, true
-		}
-	}
-	if !f.haveHeader {
-		var he contract.HeaderError
-		if errors.As(err, &he) {
-			f.header, f.haveHeader = he, true
-		}
-	}
-	if !f.haveMessage {
-		var me contract.MessageError
-		if errors.As(err, &me) {
-			f.message, f.haveMessage = me, true
-		}
-	}
-	if !f.panicked {
-		var rp contract.RecoveredPanic
-		f.panicked = errors.As(err, &rp)
-	}
-	if f.panicErr == nil {
-		var pe *PanicError
-		if errors.As(err, &pe) {
-			f.panicErr = pe
-		}
-	}
-	if !f.maxBytes {
-		var mbe *http.MaxBytesError
-		f.maxBytes = errors.As(err, &mbe)
-	}
-}
-
-// fallbackIs resolves the sentinels still unmatched over err's whole
-// branch through errors.Is.
-func (f *errorFacts) fallbackIs(err error) {
-	if !f.canceled {
-		f.canceled = errors.Is(err, context.Canceled)
-	}
-	if !f.deadline {
-		f.deadline = errors.Is(err, context.DeadlineExceeded)
-	}
-	if !f.written {
-		f.written = errors.Is(err, contract.ErrResponseWritten)
+		_, f.maxBytes = errchain.MatchesAs[*http.MaxBytesError](e)
 	}
 }
 
@@ -390,8 +334,8 @@ func markedWritten(err error, recovered bool) bool {
 // carriesRecoveredPanic reports whether err's chain holds a
 // contract.RecoveredPanic node.
 func carriesRecoveredPanic(err error) bool {
-	var rp contract.RecoveredPanic
-	return errors.As(err, &rp)
+	_, ok := errchain.As[contract.RecoveredPanic](err)
+	return ok
 }
 
 // answer resolves the status and headers for an error that is neither a
@@ -402,7 +346,7 @@ func carriesRecoveredPanic(err error) bool {
 func (f *errorFacts) answer() (status int, headers http.Header, named bool) {
 	switch {
 	case f.haveStatus:
-		status, named = f.status.StatusCode(), true
+		status, named = f.statusCode, true
 		if status < 100 || status > 999 {
 			status = http.StatusInternalServerError
 		}
@@ -414,7 +358,7 @@ func (f *errorFacts) answer() (status int, headers http.Header, named bool) {
 		status = http.StatusInternalServerError
 	}
 	if f.haveHeader {
-		headers = f.header.Headers()
+		headers = f.headers
 	}
 	return status, headers, named
 }
@@ -482,8 +426,11 @@ func resolveClassified(c *Context, err error, f *errorFacts, info ErrorInfo) def
 		case res.status >= http.StatusInternalServerError:
 			res.level = logError
 		}
-		if res.status < http.StatusInternalServerError && f.haveMessage && f.message.StatusCode() == res.status {
-			res.message = f.message.ClientMessage()
+		if res.status < http.StatusInternalServerError && f.haveMessage && f.messageStatus == res.status {
+			res.message = f.clientMessage
+		}
+		if res.status < http.StatusInternalServerError {
+			res.fields = f.fields
 		}
 	}
 	res.write = !info.Committed
@@ -504,7 +451,7 @@ func serverCancelled(c *Context) bool {
 		return false
 	}
 	ctx := c.Request.Context()
-	return ctx.Err() != nil && errors.Is(context.Cause(ctx), contract.ErrServerShuttingDown)
+	return ctx.Err() != nil && errchain.Is(context.Cause(ctx), contract.ErrServerShuttingDown)
 }
 
 // serverShutdownError is the answer to a request the server cancelled
@@ -614,9 +561,8 @@ func writeDefaultError(c *Context, err error, res defaultResolution, info ErrorI
 			RequestID: info.RequestID,
 			TraceID:   info.TraceID,
 		}
-		var fields fieldMessager
-		if res.status < http.StatusInternalServerError && errors.As(err, &fields) {
-			body.Errors = fields.Errors()
+		if res.status < http.StatusInternalServerError {
+			body.Errors = res.fields
 		}
 		raw, mErr := json.Marshal(body)
 		if mErr == nil {

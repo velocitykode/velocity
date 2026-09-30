@@ -2,7 +2,6 @@ package router
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -868,7 +868,7 @@ func (r *VelocityRouterV2) staticProbe(req *http.Request) bool {
 	// which is not used here), so the probe must Clean identically.
 	f, err := r.staticRoot.Open(path.Clean(upath))
 	if err != nil {
-		return !errors.Is(err, fs.ErrNotExist) && !clientShapedOpenError(err)
+		return !errchain.Is(err, fs.ErrNotExist) && !clientShapedOpenError(err)
 	}
 	_ = f.Close()
 	return true
@@ -880,7 +880,7 @@ func (r *VelocityRouterV2) staticProbe(req *http.Request) bool {
 // (ENAMETOOLONG), a file used as a directory (ENOTDIR), or a byte the file
 // system rejects (EINVAL). No file answers such a path.
 func clientShapedOpenError(err error) bool {
-	return errors.Is(err, syscall.ENAMETOOLONG) || errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.EINVAL)
+	return errchain.Is(err, syscall.ENAMETOOLONG) || errchain.Is(err, syscall.ENOTDIR) || errchain.Is(err, syscall.EINVAL)
 }
 
 // dispatchStatic runs the middleware-wrapped static handler built by

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // RequestStarted is dispatched when an HTTP request begins processing. Its
@@ -130,10 +131,7 @@ func (e *RequestFailed) UnmarshalJSON(data []byte) error {
 
 // errorText returns err's text, or "" for a nil error.
 func errorText(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
+	return errchain.Text(err)
 }
 
 // textError returns an error with text, or nil for "".

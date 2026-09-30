@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"unicode/utf8"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // ErrPathOutsideRoot is returned by OpenFileIn when the requested path
@@ -85,15 +87,15 @@ func OpenFileIn(root *os.Root, relative string) (*os.File, error) {
 // symlink loop, a path component that is not a directory, or a
 // resolution leaving the root.
 func containmentRejection(err error) bool {
-	if errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.EXDEV) {
+	if errchain.Is(err, syscall.ELOOP) || errchain.Is(err, syscall.ENOTDIR) || errchain.Is(err, syscall.EXDEV) {
 		return true
 	}
-	var pe *fs.PathError
-	if !errors.As(err, &pe) {
+	pe, ok := errchain.As[*fs.PathError](err)
+	if !ok || pe == nil {
 		return false
 	}
-	var errno syscall.Errno
-	return !errors.As(pe.Err, &errno) && !errors.Is(pe.Err, fs.ErrClosed)
+	_, errno := errchain.As[syscall.Errno](pe.Err)
+	return !errno && !errchain.Is(pe.Err, fs.ErrClosed)
 }
 
 // FileValidationOption configures file validation behavior.

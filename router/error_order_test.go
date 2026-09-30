@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // failedCapture counts RequestFailed events.
@@ -149,15 +150,18 @@ func TestDefaultErrorPath_TimeoutLogsAtWarn(t *testing.T) {
 }
 
 // classifyError must agree with errors.As and errors.Is for every chain
-// shape the walk handles by hand or hands off.
+// shape within the walk's bound whose matches sit in one branch (the walk
+// is breadth first, errors.As depth first).
 func TestClassifyError_ParityWithErrorsPackage(t *testing.T) {
+	// The deep chains end at the bound: the HTTP error's cause is the
+	// last error the walk looks at.
 	deep := error(contract.NewHTTPError(http.StatusTeapot).WithCause(context.DeadlineExceeded))
-	for i := 0; i < walkLimit+5; i++ {
+	for i := 0; i < errchain.Max-2; i++ {
 		deep = fmt.Errorf("layer %d: %w", i, deep)
 	}
 	pe := &PanicError{Err: errors.New("boom"), Stack: "stack"}
 	deepConsumer := error(&consumerRecovered{err: context.Canceled})
-	for i := 0; i < walkLimit+5; i++ {
+	for i := 0; i < errchain.Max-2; i++ {
 		deepConsumer = fmt.Errorf("layer %d: %w", i, deepConsumer)
 	}
 	tests := []struct {
@@ -172,7 +176,7 @@ func TestClassifyError_ParityWithErrorsPackage(t *testing.T) {
 		{"handled panic", contract.Handled(pe)},
 		{"panic carrying marker", &PanicError{Err: contract.ErrResponseWritten}},
 		{"as method", &asOnlyError{target: contract.NewHTTPError(http.StatusGone), inner: context.Canceled}},
-		{"beyond walk limit", deep},
+		{"at the walk bound", deep},
 		{"consumer recovered panic", &consumerRecovered{err: contract.NewHTTPError(http.StatusNotFound)}},
 		{"consumer recovered around panic error", &consumerRecovered{err: pe}},
 		{"deep consumer recovered panic", deepConsumer},
@@ -185,13 +189,13 @@ func TestClassifyError_ParityWithErrorsPackage(t *testing.T) {
 			var me contract.MessageError
 			var gotPE *PanicError
 			var mbe *http.MaxBytesError
-			if got, want := f.haveStatus, errors.As(tt.err, &se); got != want || (want && f.status != se) {
-				t.Errorf("status = %v %v, errors.As gives %v %v", got, f.status, want, se)
+			if got, want := f.haveStatus, errors.As(tt.err, &se); got != want || (want && f.statusCode != se.StatusCode()) {
+				t.Errorf("status = %v %v, errors.As gives %v %v", got, f.statusCode, want, se)
 			}
 			if got, want := f.haveHeader, errors.As(tt.err, &he); got != want {
 				t.Errorf("header = %v, errors.As gives %v", got, want)
 			}
-			if got, want := f.haveMessage, errors.As(tt.err, &me); got != want || (want && f.message != me) {
+			if got, want := f.haveMessage, errors.As(tt.err, &me); got != want || (want && (f.messageStatus != me.StatusCode() || f.clientMessage != me.ClientMessage())) {
 				t.Errorf("message = %v, errors.As gives %v", got, want)
 			}
 			var rp contract.RecoveredPanic

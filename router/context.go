@@ -24,6 +24,7 @@ import (
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/resource"
 	"github.com/velocitykode/velocity/scheduler"
 	"github.com/velocitykode/velocity/trace"
@@ -556,25 +557,39 @@ func bindDecodeErr(err error) error {
 	if err == nil {
 		return nil
 	}
-	var (
-		tooLarge     *http.MaxBytesError
-		jsonSyntax   *json.SyntaxError
-		jsonType     *json.UnmarshalTypeError
-		xmlSyntax    *xml.SyntaxError
-		xmlUnmarshal xml.UnmarshalError
-		number       *strconv.NumError
-	)
-	switch {
-	case errors.As(err, &tooLarge):
-		return err
-	case errors.Is(err, io.EOF):
-		return contract.NewHTTPError(http.StatusBadRequest, "empty request body").WithCause(err).WithOrigin(1)
-	case errors.Is(err, io.ErrUnexpectedEOF), errors.As(err, &jsonSyntax), errors.As(err, &jsonType),
-		errors.As(err, &xmlSyntax), errors.As(err, &xmlUnmarshal), errors.As(err, &number):
-		return contract.NewHTTPError(http.StatusBadRequest, "malformed request body").WithCause(err).WithOrigin(1)
-	default:
+	if _, tooLarge := errchain.As[*http.MaxBytesError](err); tooLarge {
 		return err
 	}
+	if errchain.Is(err, io.EOF) {
+		return contract.NewHTTPError(http.StatusBadRequest, "empty request body").WithCause(err).WithOrigin(1)
+	}
+	if malformedBody(err) {
+		return contract.NewHTTPError(http.StatusBadRequest, "malformed request body").WithCause(err).WithOrigin(1)
+	}
+	return err
+}
+
+// malformedBody reports whether err, from a JSON or XML decode, says the
+// body itself is malformed: it ended early, does not parse, or holds a
+// value of the wrong type or range.
+func malformedBody(err error) bool {
+	if errchain.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	if _, ok := errchain.As[*json.SyntaxError](err); ok {
+		return true
+	}
+	if _, ok := errchain.As[*json.UnmarshalTypeError](err); ok {
+		return true
+	}
+	if _, ok := errchain.As[*xml.SyntaxError](err); ok {
+		return true
+	}
+	if _, ok := errchain.As[xml.UnmarshalError](err); ok {
+		return true
+	}
+	_, ok := errchain.As[*strconv.NumError](err)
+	return ok
 }
 
 // bindFormErr maps a ParseForm failure: a body over the limit (a
@@ -582,8 +597,7 @@ func bindDecodeErr(err error) error {
 // 413; any other failure (a bad escape, a malformed pair, a Content-Type
 // that does not parse) becomes a 400 with the parse error as its Cause.
 func bindFormErr(err error) error {
-	var tooLarge *http.MaxBytesError
-	if errors.As(err, &tooLarge) {
+	if _, tooLarge := errchain.As[*http.MaxBytesError](err); tooLarge {
 		return err
 	}
 	return contract.NewHTTPError(http.StatusBadRequest, "malformed request body").WithCause(err).WithOrigin(1)
@@ -593,15 +607,13 @@ func bindFormErr(err error) error {
 // means the body ended cleanly, a body-limit error is passed through so the
 // caller still sees the 413 condition, and anything else is extra data.
 func bindRemainderErr(err error) error {
-	var tooLarge *http.MaxBytesError
-	switch {
-	case errors.Is(err, io.EOF):
+	if errchain.Is(err, io.EOF) {
 		return nil
-	case errors.As(err, &tooLarge):
-		return err
-	default:
-		return ErrBindExtraData
 	}
+	if _, tooLarge := errchain.As[*http.MaxBytesError](err); tooLarge {
+		return err
+	}
+	return ErrBindExtraData
 }
 
 // Method returns the HTTP method
@@ -1160,8 +1172,7 @@ func (c *Context) BindForm(v interface{}) error {
 // its Cause.
 func (c *Context) BindQuery(v interface{}) error {
 	err := bindValues(v, c.Request.URL.Query(), "query")
-	var number *strconv.NumError
-	if errors.As(err, &number) {
+	if _, number := errchain.As[*strconv.NumError](err); number {
 		return contract.NewHTTPError(http.StatusBadRequest, "malformed query string").WithCause(err)
 	}
 	return err
@@ -1473,7 +1484,7 @@ func (c *Context) openServedFile(path string) (*os.File, os.FileInfo, error) {
 	if err != nil {
 		// A missing file and a path the root refuses are the client's
 		// 404; any other open failure is the server's.
-		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, ErrPathOutsideRoot) {
+		if errchain.Is(err, fs.ErrNotExist) || errchain.Is(err, ErrPathOutsideRoot) {
 			return nil, nil, fileError(http.StatusNotFound, err)
 		}
 		return nil, nil, fileError(http.StatusInternalServerError, err)
@@ -2180,8 +2191,8 @@ func flashErrorsPayload(errs any) any {
 	var namer errorBagNamer
 	var fields fieldMessager
 	if err, ok := errs.(error); ok {
-		errors.As(err, &namer)
-		errors.As(err, &fields)
+		namer, _ = errchain.As[errorBagNamer](err)
+		fields, _ = errchain.As[fieldMessager](err)
 	} else {
 		namer, _ = errs.(errorBagNamer)
 		fields, _ = errs.(fieldMessager)

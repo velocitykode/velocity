@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -412,8 +413,12 @@ func TestBoundary_DeepChainMarkers(t *testing.T) {
 		wantStatus    int // 0: nothing written
 		wantRecovered bool
 	}{
-		{name: "PanicCarryingSentinelPastWalkLimit", err: wrap(&PanicError{Err: contract.ErrResponseWritten, Stack: "stack"}, walkLimit+1), wantStatus: http.StatusInternalServerError, wantRecovered: true},
-		{name: "SentinelPastWalkLimit", err: wrap(contract.ErrResponseWritten, walkLimit+1)},
+		{name: "PanicCarryingSentinelAtWalkBound", err: wrap(&PanicError{Err: contract.ErrResponseWritten, Stack: "stack"}, errchain.Max-2), wantStatus: http.StatusInternalServerError, wantRecovered: true},
+		{name: "SentinelAtWalkBound", err: wrap(contract.ErrResponseWritten, errchain.Max-1)},
+		// Past the bound the chain cannot be read: an unnamed 500, not
+		// flagged recovered, whatever it carries.
+		{name: "PanicCarryingSentinelPastWalkBound", err: wrap(&PanicError{Err: contract.ErrResponseWritten, Stack: "stack"}, errchain.Max), wantStatus: http.StatusInternalServerError},
+		{name: "SentinelPastWalkBound", err: wrap(contract.ErrResponseWritten, errchain.Max), wantStatus: http.StatusInternalServerError},
 		{name: "SentinelPastMarkerCap", err: wrap(contract.ErrResponseWritten, 1025), wantStatus: http.StatusInternalServerError},
 	}
 	for _, tt := range tests {

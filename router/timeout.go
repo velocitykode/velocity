@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -315,8 +316,8 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 				// aborted it), then mirror any values the handler
 				// stashed back onto the pooled parent so downstream
 				// middleware observes them.
-				var aborted *handlerAbort
-				if !errors.As(err, &aborted) {
+				aborted, _ := errchain.As[*handlerAbort](err)
+				if aborted == nil {
 					tw.flushBuffered()
 				}
 				mergeValues(c.values, clone.values)

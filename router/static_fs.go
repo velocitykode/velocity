@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // staticIndexPage is the file http.FileServer serves for a directory,
@@ -62,7 +64,7 @@ func (n noListingFS) Open(name string) (http.File, error) {
 func (n noListingFS) checkIndex(name string) error {
 	idx, err := n.root.Open(strings.TrimSuffix(name, "/") + staticIndexPage)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
+		if errchain.Is(err, fs.ErrNotExist) {
 			return &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
 		}
 		return err
