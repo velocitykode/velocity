@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/ownctx"
 )
 
 // migrationLockKey is a fixed 64-bit integer used with pg_advisory_lock.
@@ -218,10 +220,19 @@ func (m *Migrator) withMigrationLock(fn func() error) error {
 		return fn()
 	}
 
-	m.lockMu.Lock()
-	if m.lockDepth > 0 {
-		m.lockDepth++
-		m.lockMu.Unlock()
+	// The driver primitive's statements run under lockMu on a context that
+	// holds their observation (the pool's statement observer and query
+	// logger, user code) until it is released: explicitly once lockMu is
+	// released, before fn runs, and on the defer when a panic unwinds the
+	// locked section.
+	owned, held := ownctx.Hold(context.Background())
+	defer held.Release()
+	reentrant, err := m.enterMigrationLock(owned)
+	held.Release()
+	if err != nil {
+		return fmt.Errorf("velocity/orm: failed to acquire migration lock: %w", err)
+	}
+	if reentrant {
 		defer func() {
 			m.lockMu.Lock()
 			m.lockDepth--
@@ -229,18 +240,6 @@ func (m *Migrator) withMigrationLock(fn func() error) error {
 		}()
 		return fn()
 	}
-
-	// Outermost acquire. We hold lockMu while taking the driver
-	// primitive so a concurrent re-entrant caller on this instance does
-	// not race past us and treat the half-acquired state as held.
-	release, err := m.acquireMigrationLock()
-	if err != nil {
-		m.lockMu.Unlock()
-		return fmt.Errorf("velocity/orm: failed to acquire migration lock: %w", err)
-	}
-	m.lockDepth = 1
-	m.lockRelease = release
-	m.lockMu.Unlock()
 
 	defer func() {
 		m.lockMu.Lock()
@@ -258,6 +257,28 @@ func (m *Migrator) withMigrationLock(fn func() error) error {
 	}()
 
 	return fn()
+}
+
+// enterMigrationLock takes this instance's side of the migration lock
+// under lockMu: a nested call only counts itself in (reentrant), the
+// outermost acquires the driver primitive, its statements on ctx. lockMu
+// is held while the primitive is taken, so a concurrent re-entrant caller
+// on this instance does not race past and treat the half-acquired state
+// as held; the unlock is deferred, so a panic releases it.
+func (m *Migrator) enterMigrationLock(ctx context.Context) (reentrant bool, err error) {
+	m.lockMu.Lock()
+	defer m.lockMu.Unlock()
+	if m.lockDepth > 0 {
+		m.lockDepth++
+		return true, nil
+	}
+	release, err := m.acquireMigrationLock(ctx)
+	if err != nil {
+		return false, err
+	}
+	m.lockDepth = 1
+	m.lockRelease = release
+	return false, nil
 }
 
 // runUp is the migration-execution body; acquireMigrationLock guarantees
@@ -376,7 +397,10 @@ func (m *Migrator) runMigrationUp(migration Migration, batch int) error {
 //     transaction because SQLite's single-writer model would deadlock
 //     the migration body (which opens its own connection) against the
 //     lock transaction.
-func (m *Migrator) acquireMigrationLock() (release func(), err error) {
+//
+// ctx is the context its statements run on: withMigrationLock's holding
+// context, since it runs under lockMu.
+func (m *Migrator) acquireMigrationLock(ctx context.Context) (release func(), err error) {
 	switch m.driver {
 	case "postgres":
 		// pg_advisory_lock / pg_advisory_unlock are SESSION-scoped: the
@@ -386,7 +410,6 @@ func (m *Migrator) acquireMigrationLock() (release func(), err error) {
 		// with no affinity between successive Exec calls, so we must
 		// pin a dedicated *sql.Conn for the duration of the migration
 		// run and route every subsequent query through it.
-		ctx := context.Background()
 		conn, connErr := m.db.Conn(ctx)
 		if connErr != nil {
 			return nil, fmt.Errorf("velocity/orm: pin migration conn: %w", connErr)
@@ -400,30 +423,30 @@ func (m *Migrator) acquireMigrationLock() (release func(), err error) {
 			// Release on the SAME conn that took the lock. Postgres
 			// also drops session locks when the conn closes, so the
 			// Close below is a defensive backstop if Exec fails.
-			_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", migrationLockKey)
+			_, _ = conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", migrationLockKey)
 			m.conn = nil
 			_ = conn.Close()
 		}, nil
 
 	case "mysql":
-		if err := m.ensureLockTable(); err != nil {
+		if err := m.ensureLockTable(ctx); err != nil {
 			return nil, err
 		}
-		tx, err := m.db.Begin()
+		tx, err := m.db.BeginTx(ctx, nil)
 		if err != nil {
 			return nil, fmt.Errorf("velocity/orm: begin lock tx: %w", err)
 		}
 		lockTable := quoteIdentifier(migrationsLockTableName, m.driver)
 		colID := quoteIdentifier("id", m.driver)
 		colLocked := quoteIdentifier("locked", m.driver)
-		if _, err := tx.Exec(
-			"INSERT IGNORE INTO " + lockTable + " (" + colID + ", " + colLocked + ") VALUES (1, 0)",
+		if _, err := tx.ExecContext(ctx,
+			"INSERT IGNORE INTO "+lockTable+" ("+colID+", "+colLocked+") VALUES (1, 0)",
 		); err != nil {
 			_ = tx.Rollback()
 			return nil, fmt.Errorf("velocity/orm: seed lock row: %w", err)
 		}
-		if _, err := tx.Exec(
-			"SELECT " + colID + " FROM " + lockTable + " WHERE " + colID + " = 1 FOR UPDATE",
+		if _, err := tx.ExecContext(ctx,
+			"SELECT "+colID+" FROM "+lockTable+" WHERE "+colID+" = 1 FOR UPDATE",
 		); err != nil {
 			_ = tx.Rollback()
 			return nil, fmt.Errorf("velocity/orm: select for update lock: %w", err)
@@ -435,13 +458,13 @@ func (m *Migrator) acquireMigrationLock() (release func(), err error) {
 		}, nil
 
 	case "sqlite":
-		if err := m.ensureLockTable(); err != nil {
+		if err := m.ensureLockTable(ctx); err != nil {
 			return nil, err
 		}
-		if err := m.seedLockRow(); err != nil {
+		if err := m.seedLockRow(ctx); err != nil {
 			return nil, err
 		}
-		if err := m.sqliteAcquireLock(); err != nil {
+		if err := m.sqliteAcquireLock(ctx); err != nil {
 			return nil, err
 		}
 		return func() {
@@ -464,14 +487,14 @@ func (m *Migrator) acquireMigrationLock() (release func(), err error) {
 // seedLockRow inserts the single-row lock record if it does not already
 // exist. Safe to call concurrently: the SELECT guard keeps the INSERT
 // idempotent even when two callers race.
-func (m *Migrator) seedLockRow() error {
+func (m *Migrator) seedLockRow(ctx context.Context) error {
 	lockTable := quoteIdentifier(migrationsLockTableName, m.driver)
 	colID := quoteIdentifier("id", m.driver)
 	colLocked := quoteIdentifier("locked", m.driver)
-	_, err := m.db.Exec(
-		"INSERT INTO " + lockTable +
-			" (" + colID + ", " + colLocked + ") SELECT 1, 0 WHERE NOT EXISTS (SELECT 1 FROM " +
-			lockTable + " WHERE " + colID + " = 1)",
+	_, err := m.db.ExecContext(ctx,
+		"INSERT INTO "+lockTable+
+			" ("+colID+", "+colLocked+") SELECT 1, 0 WHERE NOT EXISTS (SELECT 1 FROM "+
+			lockTable+" WHERE "+colID+" = 1)",
 	)
 	if err != nil {
 		return fmt.Errorf("velocity/orm: seed lock row: %w", err)
@@ -501,7 +524,7 @@ const sqliteLockStaleAfter = 10 * time.Minute
 //
 // Timeout is generous (30s) to accommodate long-running migrations without
 // pathological lockups.
-func (m *Migrator) sqliteAcquireLock() error {
+func (m *Migrator) sqliteAcquireLock(ctx context.Context) error {
 	const (
 		attemptCap    = 600
 		backoffMs     = 50
@@ -514,7 +537,7 @@ func (m *Migrator) sqliteAcquireLock() error {
 	for i := 0; i < attemptCap; i++ {
 		now := time.Now().Unix()
 		staleCutoff := now - int64(sqliteLockStaleAfter/time.Second)
-		res, err := m.db.Exec(
+		res, err := m.db.ExecContext(ctx,
 			"UPDATE "+table+
 				" SET "+colLocked+" = 1, "+colLockedAt+" = ? WHERE "+colID+
 				" = 1 AND ("+colLocked+" = 0 OR "+colLockedAt+" < ?)",
@@ -539,7 +562,7 @@ func (m *Migrator) sqliteAcquireLock() error {
 // SQLite advisory-lock strategies. Safe to call concurrently. On SQLite it
 // also backfills the locked_at crash-recovery column on tables created
 // before that column existed.
-func (m *Migrator) ensureLockTable() error {
+func (m *Migrator) ensureLockTable(ctx context.Context) error {
 	var createSQL string
 	lockTable := quoteIdentifier(migrationsLockTableName, m.driver)
 	colID := quoteIdentifier("id", m.driver)
@@ -553,11 +576,11 @@ func (m *Migrator) ensureLockTable() error {
 	default:
 		return nil
 	}
-	if _, err := m.db.Exec(createSQL); err != nil {
+	if _, err := m.db.ExecContext(ctx, createSQL); err != nil {
 		return fmt.Errorf("velocity/orm: ensure lock table: %w", err)
 	}
 	if m.driver == "sqlite" {
-		if err := m.ensureSqliteLockedAtColumn(); err != nil {
+		if err := m.ensureSqliteLockedAtColumn(ctx); err != nil {
 			return err
 		}
 	}
@@ -573,9 +596,9 @@ func (m *Migrator) ensureLockTable() error {
 // (epoch). The stale-steal predicate in sqliteAcquireLock treats that as
 // immediately reclaimable: any lock still held at upgrade time is assumed
 // abandoned, recovering a row a crashed old runner left stuck at locked = 1.
-func (m *Migrator) ensureSqliteLockedAtColumn() error {
+func (m *Migrator) ensureSqliteLockedAtColumn(ctx context.Context) error {
 	table := quoteIdentifier(migrationsLockTableName, m.driver)
-	rows, err := m.db.Query("PRAGMA table_info(" + table + ")")
+	rows, err := m.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
 	if err != nil {
 		return fmt.Errorf("velocity/orm: inspect lock table: %w", err)
 	}
@@ -601,7 +624,7 @@ func (m *Migrator) ensureSqliteLockedAtColumn() error {
 	if hasLockedAt {
 		return nil
 	}
-	if _, err := m.db.Exec("ALTER TABLE " + table + " ADD COLUMN " + quoteIdentifier("locked_at", m.driver) + " INTEGER NOT NULL DEFAULT 0"); err != nil {
+	if _, err := m.db.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN "+quoteIdentifier("locked_at", m.driver)+" INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return fmt.Errorf("velocity/orm: add locked_at column: %w", err)
 	}
 	return nil

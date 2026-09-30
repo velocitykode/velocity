@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -14,10 +15,10 @@ import (
 func TestMigrator_SqliteLock_StealsStaleLock(t *testing.T) {
 	db := openSQLiteForLockTest(t)
 	m := NewMigrator(db, "sqlite")
-	if err := m.ensureLockTable(); err != nil {
+	if err := m.ensureLockTable(context.Background()); err != nil {
 		t.Fatalf("ensureLockTable: %v", err)
 	}
-	if err := m.seedLockRow(); err != nil {
+	if err := m.seedLockRow(context.Background()); err != nil {
 		t.Fatalf("seedLockRow: %v", err)
 	}
 
@@ -30,7 +31,7 @@ func TestMigrator_SqliteLock_StealsStaleLock(t *testing.T) {
 	}
 
 	before := time.Now().Unix()
-	if err := m.sqliteAcquireLock(); err != nil {
+	if err := m.sqliteAcquireLock(context.Background()); err != nil {
 		t.Fatalf("acquire did not steal stale lock: %v", err)
 	}
 
@@ -54,10 +55,10 @@ func TestMigrator_SqliteLock_StealsStaleLock(t *testing.T) {
 func TestMigrator_SqliteLock_FreshLockNotStolen(t *testing.T) {
 	db := openSQLiteForLockTest(t)
 	m := NewMigrator(db, "sqlite")
-	if err := m.ensureLockTable(); err != nil {
+	if err := m.ensureLockTable(context.Background()); err != nil {
 		t.Fatalf("ensureLockTable: %v", err)
 	}
-	if err := m.seedLockRow(); err != nil {
+	if err := m.seedLockRow(context.Background()); err != nil {
 		t.Fatalf("seedLockRow: %v", err)
 	}
 
@@ -69,7 +70,7 @@ func TestMigrator_SqliteLock_FreshLockNotStolen(t *testing.T) {
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- m.sqliteAcquireLock() }()
+	go func() { done <- m.sqliteAcquireLock(context.Background()) }()
 
 	select {
 	case err := <-done:
@@ -108,7 +109,7 @@ func TestMigrator_SqliteLock_BackfillsLockedAt(t *testing.T) {
 	}
 
 	m := NewMigrator(db, "sqlite")
-	if err := m.ensureLockTable(); err != nil {
+	if err := m.ensureLockTable(context.Background()); err != nil {
 		t.Fatalf("ensureLockTable (should backfill locked_at): %v", err)
 	}
 
@@ -122,7 +123,7 @@ func TestMigrator_SqliteLock_BackfillsLockedAt(t *testing.T) {
 	}
 
 	// The stuck pre-upgrade lock must be reclaimable now.
-	if err := m.sqliteAcquireLock(); err != nil {
+	if err := m.sqliteAcquireLock(context.Background()); err != nil {
 		t.Fatalf("could not reclaim stuck pre-upgrade lock after backfill: %v", err)
 	}
 }

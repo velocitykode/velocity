@@ -29,9 +29,16 @@ import (
 // path under t.TempDir() so parallel subtests cannot collide.
 func newSQLiteQueueDB(t testing.TB) (*DatabaseDriver, func()) {
 	t.Helper()
+	return newSQLiteQueueDBOpenedBy(t, func(dsn string) (*sql.DB, error) { return sql.Open("sqlite3", dsn) })
+}
+
+// newSQLiteQueueDBOpenedBy is newSQLiteQueueDB over the pool open returns
+// for the database's DSN.
+func newSQLiteQueueDBOpenedBy(t testing.TB, open func(dsn string) (*sql.DB, error)) (*DatabaseDriver, func()) {
+	t.Helper()
 
 	dsn := "file:" + t.TempDir() + "/queue.db?_busy_timeout=5000&_journal_mode=WAL"
-	db, err := sql.Open("sqlite3", dsn)
+	db, err := open(dsn)
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

@@ -266,8 +266,12 @@ func (d *DatabaseDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupe
 // when the key was already held).
 func (d *DatabaseDriver) claimAndInsert(ctx context.Context, db *sql.DB, dedupeKey, name string, payload []byte) (bool, error) {
 	// The statements run on a context the driver owns, read from ctx
-	// before the lock: ctx's own methods are user code (see ownctx).
-	owned := ownctx.Bridge(ctx)
+	// before the lock: ctx's own methods are user code (see ownctx). It
+	// holds their observation (the pool's statement observer and query
+	// logger, user code) until the release, deferred before the unlock
+	// so it runs after it.
+	owned, held := ownctx.Hold(ctx)
+	defer held.Release() // after the unlock: the statements' observer runs off the lock
 	// Hold d.mu across the whole claim+insert transaction so a concurrent
 	// Clear cannot interleave between the jobs and job_dedupe deletes and
 	// strand a dedupe-less jobs row (which would let a later same-key push
@@ -503,7 +507,8 @@ func (d *DatabaseDriver) popSelect(ctx context.Context, queueName string, mode p
 // under d.mu only on single-writer backends; on postgres/mysql concurrent
 // pops isolate via FOR UPDATE SKIP LOCKED (see lockWorkerPath).
 func (d *DatabaseDriver) reserveNext(ctx context.Context, queueName string) (JobRecord, ReservationToken, error) {
-	owned := ownctx.Bridge(ctx)
+	owned, held := ownctx.Hold(ctx)
+	defer held.Release() // after the unlock: the statements' observer runs off the lock
 	unlock := d.lockWorkerPath()
 	defer unlock()
 
@@ -562,7 +567,7 @@ func (d *DatabaseDriver) reserveNext(ctx context.Context, queueName string) (Job
 
 	var rec JobRecord
 	row := tx.QueryRowContext(owned, selectQuery, queueName, now, reclaimCutoff)
-	if err := scanJobRecord(row, &rec); err != nil {
+	if err := row.Scan(rec.scanDest()...); err != nil {
 		// Row.Scan returns sql.ErrNoRows itself, unwrapped: comparing by
 		// identity runs no method of a driver error under d.mu.
 		if err == sql.ErrNoRows {
@@ -639,7 +644,8 @@ func hydrateRecord(rec JobRecord) (job Job, tc TraceContext, poisonErr error) {
 // row whose lease was reclaimed, or that was cleared, is left alone and
 // the call returns ErrLeaseLost. op names the step in errors.
 func (d *DatabaseDriver) deleteReserved(ctx context.Context, token ReservationToken, op string) error {
-	owned := ownctx.Bridge(ctx)
+	owned, held := ownctx.Hold(ctx)
+	defer held.Release() // after the unlock: the statements' observer runs off the lock
 	unlock := d.lockWorkerPath()
 	defer unlock()
 
@@ -687,7 +693,8 @@ func (d *DatabaseDriver) ReleaseCtx(ctx context.Context, token ReservationToken,
 	if delay < 0 {
 		delay = 0
 	}
-	owned := ownctx.Bridge(ctx)
+	owned, held := ownctx.Hold(ctx)
+	defer held.Release() // after the unlock: the statements' observer runs off the lock
 	unlock := d.lockWorkerPath()
 	defer unlock()
 
@@ -755,7 +762,8 @@ func (d *DatabaseDriver) FailReservedCtx(ctx context.Context, token ReservationT
 // failed_jobs row, recording exception, in one transaction under the
 // worker-path lock (see FailReservedCtx for the fencing).
 func (d *DatabaseDriver) commitFailedReservation(ctx context.Context, token ReservationToken, exception string, queueName string, payload []byte) error {
-	owned := ownctx.Bridge(ctx)
+	owned, held := ownctx.Hold(ctx)
+	defer held.Release() // after the unlock: the statements' observer runs off the lock
 	unlock := d.lockWorkerPath()
 	defer unlock()
 
@@ -858,14 +866,9 @@ func (d *DatabaseDriver) Clear(queueName string) error {
 	// its text is read through errchain.Text, never under d.mu.
 	query := d.rewriteQuery("DELETE FROM jobs WHERE queue = $1")
 	dedupeQuery := d.rewriteQuery("DELETE FROM job_dedupe WHERE queue = $1")
-	d.mu.Lock()
-	_, err := d.db.Exec(query, queueName)
-	var dedupeErr error
-	if err == nil {
-		_, dedupeErr = d.db.Exec(dedupeQuery, queueName)
-	}
-	d.mu.Unlock()
-
+	owned, held := ownctx.Hold(context.Background())
+	defer held.Release() // after clearLocked's unlock: the statements' observer runs off the lock
+	err, dedupeErr := d.clearLocked(owned, query, dedupeQuery, queueName)
 	if err != nil {
 		return fmt.Errorf("velocity/queue: failed to clear queue: %w", err)
 	}
@@ -873,6 +876,18 @@ func (d *DatabaseDriver) Clear(queueName string) error {
 		return fmt.Errorf("velocity/queue: failed to clear queue dedupe keys: %w", dedupeErr)
 	}
 	return nil
+}
+
+// clearLocked runs Clear's two deletes under d.mu, the unlock deferred so
+// a panic in them releases it, and returns their errors.
+func (d *DatabaseDriver) clearLocked(owned context.Context, query, dedupeQuery, queueName string) (err, dedupeErr error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, err = d.db.ExecContext(owned, query, queueName); err != nil {
+		return err, nil
+	}
+	_, dedupeErr = d.db.ExecContext(owned, dedupeQuery, queueName)
+	return nil, dedupeErr
 }
 
 // dedupeTableMissing reports whether err from the job_dedupe delete in
@@ -1017,7 +1032,7 @@ func setPopQuarantineCommitHookForTest(hook func()) (restore func()) {
 // exception is poisonErr's text, which may come from the job factory: the
 // caller reads it before this takes the worker-path lock.
 //
-// The transaction runs on a context the driver owns (ownctx.Detached): it
+// The transaction runs on a context the driver owns (ownctx.HoldDetached): it
 // carries the caller's correlation ids but not its cancellation, and no
 // method of the caller's ctx runs under the lock. It is bounded by
 // quarantinePoisonTimeout: once hydration failed, the move lands even when
@@ -1037,8 +1052,9 @@ func setPopQuarantineCommitHookForTest(hook func()) (restore func()) {
 // them verbatim into the long-lived failed_jobs table would bypass the
 // at-rest confidentiality QUEUE_ENCRYPT promises.
 func (d *DatabaseDriver) quarantineReserved(ctx context.Context, token ReservationToken, rec JobRecord, queueName string, poisonErr error, exception string) error {
-	owned, cancel := context.WithTimeout(ownctx.Detached(ctx), quarantinePoisonTimeout)
+	owned, cancel, held := ownctx.HoldDetached(ctx, quarantinePoisonTimeout)
 	defer cancel()
+	defer held.Release() // after the unlock: the statements' observer runs off the lock
 	storedPayload, _ := sealQuarantineBlob(rec.Payload)
 
 	unlock := d.lockWorkerPath()
@@ -1080,9 +1096,11 @@ func (d *DatabaseDriver) quarantineReserved(ctx context.Context, token Reservati
 // jobs and is quarantined by the pop that reclaims it after its lease.
 const quarantinePoisonTimeout = 10 * time.Second
 
-// scanJobRecord scans a database row into a JobRecord
-func scanJobRecord(row *sql.Row, job *JobRecord) error {
-	return row.Scan(
+// scanDest returns the scan destinations of a jobs row, in column order,
+// for Row.Scan. The scan stays at the query's call site, where the
+// checker sees the row was queried on a holding context (ownctx.Hold).
+func (job *JobRecord) scanDest() []any {
+	return []any{
 		&job.ID,
 		&job.Queue,
 		&job.Payload,
@@ -1094,5 +1112,5 @@ func scanJobRecord(row *sql.Row, job *JobRecord) error {
 		&job.FailedReason,
 		&job.CreatedAt,
 		&job.UpdatedAt,
-	)
+	}
 }

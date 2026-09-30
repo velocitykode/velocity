@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"sync"
@@ -82,7 +83,7 @@ func openSQLiteForLockTest(t *testing.T) *sql.DB {
 // tests below without depending on goroutine scheduling order.
 func holdLock(t *testing.T, m *Migrator) func() {
 	t.Helper()
-	release, err := m.acquireMigrationLock()
+	release, err := m.acquireMigrationLock(context.Background())
 	if err != nil {
 		t.Fatalf("acquireMigrationLock: %v", err)
 	}

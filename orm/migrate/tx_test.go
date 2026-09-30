@@ -126,7 +126,7 @@ func TestMigrator_Postgres_MigrationRollsBackOnFailure(t *testing.T) {
 
 	// Pin the advisory-lock conn so useTx() is satisfied and the tx lives
 	// on the same backend.
-	release, err := m.acquireMigrationLock()
+	release, err := m.acquireMigrationLock(context.Background())
 	if err != nil {
 		t.Fatalf("acquire lock: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestMigrator_Postgres_MigrationCommitsOnSuccess(t *testing.T) {
 	if err := m.createMigrationsTable(); err != nil {
 		t.Fatalf("create migrations table: %v", err)
 	}
-	release, err := m.acquireMigrationLock()
+	release, err := m.acquireMigrationLock(context.Background())
 	if err != nil {
 		t.Fatalf("acquire lock: %v", err)
 	}
