@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -46,5 +47,27 @@ func TestErrorText_RoundTrips(t *testing.T) {
 	}
 	if got := TextError(ErrorText(errors.New("boom"))); got == nil || got.Error() != "boom" {
 		t.Errorf("TextError(ErrorText(boom)) = %v, want boom", got)
+	}
+}
+
+// textPanics is an error whose Error panics.
+type textPanics struct{}
+
+func (textPanics) Error() string { panic("Error broke") }
+
+// An event's error field whose Error panics reads as the fixed text: the
+// event is still built and dispatched.
+func TestErrorText_UnreadableError(t *testing.T) {
+	var got string
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				t.Fatalf("ErrorText panicked: %v", p)
+			}
+		}()
+		got = ErrorText(textPanics{})
+	}()
+	if got != errchain.Unreadable {
+		t.Fatalf("ErrorText = %q, want the fixed text", got)
 	}
 }
