@@ -32,6 +32,10 @@ type script struct {
 	prepareErr error
 	// nextResultSetErr fails the move to a second result set.
 	nextResultSetErr error
+	// nextErr fails the read after the first row, in place of io.EOF.
+	nextErr error
+	// closeErr fails every result set's Close.
+	closeErr error
 }
 
 var (
@@ -107,9 +111,12 @@ type scriptRows struct {
 }
 
 func (r *scriptRows) Columns() []string { return []string{"n"} }
-func (r *scriptRows) Close() error      { return nil }
+func (r *scriptRows) Close() error      { return r.s.closeErr }
 func (r *scriptRows) Next(dest []driver.Value) error {
 	if r.done {
+		if r.s.nextErr != nil {
+			return r.s.nextErr
+		}
 		return io.EOF
 	}
 	r.done = true
@@ -126,7 +133,7 @@ func (r *scriptRows) NextResultSet() error {
 
 // openScripted opens an instrumented pool over s with an observer and the
 // query log on, returning both recorders.
-func openScripted(t *testing.T, s *script) (*sql.DB, *observerBinding, *statementRecorder, *queryLog) {
+func openScripted(t testing.TB, s *script) (*sql.DB, *observerBinding, *statementRecorder, *queryLog) {
 	t.Helper()
 	registerScript.Do(func() { sql.Register(scriptDriverName, scriptDriver{}) })
 	dsn := t.Name()

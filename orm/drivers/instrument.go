@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/latency"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -268,8 +269,17 @@ func (b *observerBinding) queryLogger() contract.Logger {
 // statement path then runs and reports its own event), and driver.ErrBadConn
 // means "retry on a fresh connection". Reporting either as orm.query.failed would
 // fabricate failures for statements that go on to succeed.
+//
+// err is the driver's and its methods are user code: the chain is walked by
+// errchain.Walk, bounded and contained, because record runs inside a
+// database/sql driver callback, possibly on database/sql's own goroutine,
+// before the connection is released. A chain whose Unwrap or Is panics, or
+// that the walk cuts short before a sentinel, is not a control error, so
+// the statement is recorded as failed.
 func isControlErr(err error) bool {
-	return errors.Is(err, driver.ErrSkip) || errors.Is(err, driver.ErrBadConn)
+	return errchain.Walk(err, func(e error) bool {
+		return errchain.Matches(e, driver.ErrSkip) || errchain.Matches(e, driver.ErrBadConn)
+	}) == errchain.Stopped
 }
 
 // openInstrumented opens a database handle whose every statement is reported
