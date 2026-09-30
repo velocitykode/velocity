@@ -1,6 +1,7 @@
 package schemes
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -121,6 +122,39 @@ func BenchmarkSessionScheme_UserColdFanOut(b *testing.B) {
 		done.Wait()
 	}
 	b.ReportMetric(float64(refused.Load()), "refused")
+}
+
+// BenchmarkSessionScheme_UserContended measures a read that meets another
+// goroutine's resolve in progress (the resolve has just published, so the
+// read does not block): the self-wait check that walks the reader's
+// stack, and the wait. It runs from the benchmark's own depth and from 30
+// frames deeper, since the walk grows with the stack.
+func BenchmarkSessionScheme_UserContended(b *testing.B) {
+	for _, extra := range []int{0, 30} {
+		b.Run(fmt.Sprintf("depth+%d", extra), func(b *testing.B) {
+			scheme, req := benchSignedInRequest(b, false)
+			if scheme.User(req) == nil {
+				b.Fatal("premise: the request is not signed in")
+			}
+			holder := req.Context().Value(sessionCtxKey{}).(*sessionHolder)
+			done := make(chan struct{})
+			close(done)
+			holder.mu.Lock()
+			holder.busy = true
+			holder.resolving = true
+			holder.resolution = &resolution{done: done, ident: holder.ident}
+			holder.ident = nil
+			holder.mu.Unlock()
+			b.ReportAllocs()
+			for b.Loop() {
+				atDepth(extra, func() {
+					if scheme.User(req) == nil {
+						b.Fatal("contended read returned no user")
+					}
+				})
+			}
+		})
+	}
 }
 
 // BenchmarkSessionScheme_Busy measures the refused paths: each call meets

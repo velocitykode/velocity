@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -148,13 +149,12 @@ func (p *pausingCASStore) CompareAndSwapRememberToken(ctx context.Context, u aut
 
 // A remember-me recall is one transition: while it is in flight (paused at
 // its remember-token compare-and-swap) it holds the request's
-// authentication gate, so another reader of the same request fails closed
-// with auth.ErrOperationInProgress at once instead of seeing the
-// provisional user or waiting, and the response committed meanwhile
-// returns at once and saves nothing. When the swap then loses, nothing of
-// the recall survives: both readers see no user and the session is
-// signed out.
-func TestRememberRecall_ReadersAndCommitDuringTheTransitionAreRefused(t *testing.T) {
+// authentication gate. Another goroutine's reader of the same request
+// waits for the recall instead of seeing the provisional user, and gets
+// the recall's outcome; the response committed meanwhile returns at once
+// and saves nothing. When the swap then loses, nothing of the recall
+// survives: both readers see no user and the session is signed out.
+func TestRememberRecall_ReaderWaitsAndCommitIsRefusedDuringTheTransition(t *testing.T) {
 	for _, mode := range lifetimeModes {
 		t.Run(mode.name, func(t *testing.T) {
 			clock := installLifetimeClock(t)
@@ -180,7 +180,19 @@ func TestRememberRecall_ReadersAndCommitDuringTheTransitionAreRefused(t *testing
 					read.Store(ok)
 					readErr.Store(&err)
 				}()
-				hostile.Within(t, hostile.Deadline, func() { <-readDone })
+				// Evidence the reader waits on the recall, not a timer.
+				h := req.Context().Value(sessionCtxKey{}).(*sessionHolder)
+				hostile.Within(t, hostile.Deadline, func() {
+					for {
+						h.mu.RLock()
+						n := h.waiters
+						h.mu.RUnlock()
+						if n == 1 {
+							return
+						}
+						runtime.Gosched()
+					}
+				})
 
 				commitDone := make(chan struct{})
 				go func() {
@@ -213,8 +225,8 @@ func TestRememberRecall_ReadersAndCommitDuringTheTransitionAreRefused(t *testing
 			if p := readErr.Load(); p != nil {
 				got = *p
 			}
-			if !errors.Is(got, auth.ErrOperationInProgress) {
-				t.Errorf("a reader during the recall got %v, want auth.ErrOperationInProgress", got)
+			if got != nil {
+				t.Errorf("a reader that waited for the recall got %v, want the recall's outcome (signed out, no error)", got)
 			}
 			if b.liveCookie(rememberCookieName) != nil {
 				t.Error("a remember cookie was delivered for a recall that lost its swap")

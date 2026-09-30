@@ -98,18 +98,31 @@ type sessionHolder struct {
 	queueClosed bool
 
 	// busy is the request's authentication gate (see gate.go): set while
-	// an operation (Login, Logout, a remember-me recall or burn, the
-	// commit) holds it. A reader of the signed-in user, or another
-	// operation, fails closed while it is set, so none sees the
-	// provisional identity of a transition in flight, and the commit
-	// never saves a session halfway through one. The commit frees it
-	// before it delivers the queued writes, so a write may read the
-	// signed-in user.
+	// an operation (a read of the user resolving it, ResolveSession,
+	// Login, LoginByID, Attempt, Logout, the commit) holds it. Another
+	// operation fails closed while it is set, and a read of the user waits
+	// only for a read on another goroutine, so none sees the provisional
+	// identity of a transition in flight, and the commit never saves a
+	// session halfway through one. The commit frees it before it delivers
+	// the queued writes, so a write may read the signed-in user.
 	busy bool
 	// torn is set when an operation was unwound by a panic after it began
 	// changing the session: no read uses the session and the commit does
 	// not save it until a later sign-in or logout publishes a whole state.
 	torn bool
+	// ident is the request's published identity (see gate.go): the
+	// outcome of the read of the signed-in user that resolved it, returned
+	// by every later read. Nil when none is published; cleared whenever
+	// an operation that may change the session reserves the gate, and by
+	// an operation torn by a panic.
+	ident *resolvedIdentity
+	// resolving marks the gate as held by the request's resolver (a read
+	// of the user, or ResolveSession) for its turn resolution. Another
+	// goroutine's read waits for the turn to end; waiters counts the
+	// reads doing so.
+	resolving  bool
+	resolution *resolution
+	waiters    int
 	// ended is set when a Logout of the request published: the holder's
 	// session is ended, whatever the session object reports (a custom
 	// auth.Session may not say it was invalidated). It is never saved as
@@ -935,11 +948,25 @@ func (g *SessionScheme) logWarn(msg string, kvs ...any) {
 }
 
 // Check reports whether the request is authenticated. When a server-side
-// session store has been installed, it is consulted on every call: a
-// revoked or expired record causes Check to return false even though the
-// cookie itself is still valid. Errors (including ErrSessionRevoked) are
-// swallowed; callers that need to distinguish causes should use
-// CheckWithError instead.
+// session store has been installed, it is consulted: a revoked or expired
+// record causes Check to return false even though the cookie itself is
+// still valid.
+//
+// Inside the session middleware (or with WithSessionContext) the request
+// is authenticated once between operations that may change its session:
+// the first read of a request resolves the user and later reads (Check,
+// CheckWithError, User, ID) return that answer without asking the stores
+// again, until a Login, Logout or the commit changes it. A user deleted
+// in the store mid-request stays signed in for the rest of that request.
+// Reads on several goroutines of one request share the one resolution: a
+// read that arrives while another goroutine's resolves waits for it, or
+// for the end of the request's context. A cycle through goroutines the
+// user code creates (a store that starts a goroutine which reads the user
+// and waits for it) is not supported: it ends when the request's context
+// does.
+//
+// Errors (including ErrSessionRevoked) are swallowed; callers that need to
+// distinguish causes should use CheckWithError instead.
 func (g *SessionScheme) Check(r *http.Request) bool {
 	ok, _ := g.CheckWithError(r)
 	return ok
@@ -961,9 +988,12 @@ func (g *SessionScheme) Check(r *http.Request) bool {
 //     gone for any reason; a remember cookie never revives it and the
 //     remember credential it presents is burned
 //   - auth.ErrOperationInProgress: another authentication operation of
-//     the same request (a Login, Logout or remember-me recall on another
-//     goroutine, or the one whose store is calling back) is in flight;
-//     fail-closed, without waiting
+//     the same request (a Login, Logout or the commit on another
+//     goroutine, or the operation or read whose store is calling back)
+//     is in flight; fail-closed, without waiting. A read of the user on
+//     another goroutine is waited for instead (see Check); a read that
+//     gives up waiting because the request's context ended returns this
+//     error too
 //   - any other error: server-side store lookup failed; fail-closed
 //     (returns false). The underlying error is logged when a logger is
 //     configured.
@@ -1002,18 +1032,16 @@ func (g *SessionScheme) CheckWithError(r *http.Request) (bool, error) {
 //     cookie as in step 2b; without a valid remember cookie the expiry is
 //     returned.
 //
-// A signed-in session its record vouches for resolves without taking the
-// request's authentication gate, so readers run together, but never while
-// an operation (a recall, Login, Logout, the commit) holds it: the
-// identity a recall writes before its remember-token swap is provisional,
-// so a reader meanwhile fails closed with auth.ErrOperationInProgress. It
-// does not wait. Every other outcome may change the session (recall,
-// burn, expiry fall-through), so it is decided holding the gate, after
-// re-reading the session: goroutines of one request that read the user
-// together recall once, and the others fail closed while it runs or see
-// the recalled user after it. No lock is held while the user store and
-// the stores run. A request an operation was torn on (see gate.go) reads
-// as signed out.
+// The ladder runs once per request between operations that may change
+// the session: the first read reserves the request's authentication gate,
+// walks it with no lock held, and publishes the outcome (see gate.go);
+// later reads return the published outcome. A read on another goroutine
+// of the request waits while the first one runs; a read that re-enters
+// it, or that meets a Login, Logout or commit in flight, fails closed with
+// auth.ErrOperationInProgress. A request an operation was torn on reads as
+// signed out. Without a session holder on the request (the scheme driven
+// outside SessionMiddleware and WithSessionContext) there is nothing to
+// publish into, and each read walks the ladder on the session it loads.
 //
 // Returns the resolved user, whether the request is authenticated, and
 // the reason it is not (nil on the ordinary unauthenticated paths). Error
@@ -1021,88 +1049,63 @@ func (g *SessionScheme) CheckWithError(r *http.Request) (bool, error) {
 // swallows everything to nil.
 func (g *SessionScheme) resolveAuthenticatedUser(r *http.Request) (auth.Authenticatable, bool, error) {
 	holder, _ := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
-	if user, ok, decided, err := g.resolveVouchedSession(r, holder); decided {
-		return user, ok, err
+	if holder == nil {
+		session := g.getSession(r)
+		if session == nil {
+			return nil, false, nil
+		}
+		var op gateOp
+		return g.resolveAuthenticationChange(r, session, &op)
 	}
-
+	if id, err, ok := holder.published(); ok {
+		if err != nil {
+			return nil, false, err
+		}
+		return id.user, id.ok, id.err
+	}
 	var op gateOp
-	if err := holder.reserve(&op); err != nil {
+	id, err := holder.readTurn(r, &op, true)
+	if err != nil {
 		return nil, false, err
 	}
-	finished := false
-	defer func() {
-		if !finished {
-			op.abort()
-		}
-	}()
+	if id != nil {
+		return id.user, id.ok, id.err
+	}
+	return g.resolveReserved(r, &op)
+}
+
+// resolveReserved is resolveAuthenticatedUser's turn: it walks the ladder
+// holding the request's gate for op as the request's resolver, publishes
+// the outcome and frees the gate. A read that meets it from its own
+// goroutine is refused by its frame (see onResolvePath).
+func (g *SessionScheme) resolveReserved(r *http.Request, op *gateOp) (auth.Authenticatable, bool, error) {
+	defer op.abort()
 	var (
-		user    auth.Authenticatable
-		ok      bool
-		err     error
+		res     resolvedIdentity
 		session = g.getSession(r)
 	)
-	if holder.isTorn() {
-		session = nil
-	}
 	if session != nil {
-		user, ok, err = g.resolveAuthenticationChange(r, session, &op)
+		res.user, res.ok, res.err = g.resolveAuthenticationChange(r, session, op)
 	}
-	finished = true
-	if !op.publish(true) {
+	op.identity = &res
+	// A read that changed nothing (no recall) is published even after the
+	// commit sealed the request: it only reports the saved state.
+	if !op.apply(op.mutated) {
 		// The response was committed while the recall ran: nothing it
 		// changed is saved, so the request is not signed in by it.
-		if ok {
+		if res.ok {
+			op.beginMutation()
 			session.Remove(auth.UserIDSessionKey)
 		}
+		op.release()
 		return nil, false, nil
 	}
-	return user, ok, err
+	op.release()
+	return res.user, res.ok, res.err
 }
 
-// resolveVouchedSession is resolveAuthenticatedUser's shared-lock step: it
-// decides a request with no session, a signed-in session whose user is
-// gone, and a signed-in session its record vouches for (or whose record
-// lookup failed), and reports decided false for everything that may
-// change the session.
-func (g *SessionScheme) resolveVouchedSession(r *http.Request, holder *sessionHolder) (user auth.Authenticatable, ok, decided bool, err error) {
-	var session auth.Session
-	if holder != nil {
-		s, busy, torn := holder.sessionForRead()
-		switch {
-		case busy:
-			return nil, false, true, auth.ErrOperationInProgress
-		case torn:
-			return nil, false, true, nil
-		}
-		session = s
-	}
-	if session == nil {
-		session = g.getSession(r)
-	}
-	if session == nil {
-		return nil, false, true, nil
-	}
-	userID := session.Get(auth.UserIDSessionKey)
-	if userID == nil {
-		return nil, false, false, nil
-	}
-	user, err = g.loadUserStore().FindByIDCtx(r.Context(), userID)
-	if err != nil || user == nil {
-		return nil, false, true, nil
-	}
-	err = g.consultServerStore(r, session)
-	if err == nil {
-		return user, true, true, nil
-	}
-	if !errors.Is(err, auth.ErrSessionExpired) && !errors.Is(err, auth.ErrSessionRevoked) {
-		return nil, false, true, err
-	}
-	return nil, false, false, nil
-}
-
-// resolveAuthenticationChange is resolveAuthenticatedUser's ladder for a
-// session that is not a vouched-for signed-in session. The caller holds
-// the request's gate for op.
+// resolveAuthenticationChange is resolveAuthenticatedUser's ladder for
+// session. The caller holds the request's gate for op.
 func (g *SessionScheme) resolveAuthenticationChange(r *http.Request, session auth.Session, op *gateOp) (auth.Authenticatable, bool, error) {
 	userID := session.Get(auth.UserIDSessionKey)
 	if userID == nil {
@@ -1202,7 +1205,9 @@ func (g *SessionScheme) burnPresentedRememberToken(r *http.Request) {
 // User returns the authenticated user, or nil when the request is not
 // authenticated. When a server-side session store is configured, a revoked
 // or missing record causes User to return nil even when the cookie is
-// otherwise valid.
+// otherwise valid. The request is authenticated once between operations
+// that may change its session, and later reads return the same user (the
+// same object) without asking the stores again; see Check.
 //
 // Remember-cookie revival (H-08 fix): when the session does not yet carry
 // a user_id but the remember cookie is valid, the request is treated as a
@@ -1497,9 +1502,9 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 	// The session middleware saves the session and then writes the
 	// cookies bound to it. Outside it, this login is its own save scope
 	// and commits the same way before returning.
-	holder, standalone := seamHolder(r)
 	var op gateOp
-	if err := holder.reserve(&op); err != nil {
+	holder, standalone, err := reserveOperation(r, &op)
+	if err != nil {
 		return fmt.Errorf("velocity/auth: login refused: %w", err)
 	}
 	defer op.abort()
@@ -1683,9 +1688,9 @@ func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, us
 // from a store that operation calls, it returns
 // auth.ErrOperationInProgress without calling the store.
 func (g *SessionScheme) LoginByID(w http.ResponseWriter, r *http.Request, id interface{}, remember ...bool) error {
-	holder, standalone := seamHolder(r)
 	var op gateOp
-	if err := holder.reserve(&op); err != nil {
+	holder, standalone, err := reserveOperation(r, &op)
+	if err != nil {
 		return fmt.Errorf("velocity/auth: login refused: %w", err)
 	}
 	defer op.abort()
@@ -1723,9 +1728,9 @@ func (g *SessionScheme) LoginByID(w http.ResponseWriter, r *http.Request, id int
 // user store or password work. Reads of the signed-in user on the request
 // fail closed while the attempt runs, its timed floor included.
 func (g *SessionScheme) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
-	holder, standalone := seamHolder(r)
 	var op gateOp
-	if err := holder.reserve(&op); err != nil {
+	holder, standalone, err := reserveOperation(r, &op)
+	if err != nil {
 		return false, fmt.Errorf("velocity/auth: attempt refused: %w", err)
 	}
 	defer op.abort()
@@ -1785,9 +1790,9 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	// The session middleware writes the delete cookie for the
 	// invalidated session. Outside it, this logout is its own save scope
 	// and commits the same way below.
-	holder, standalone := seamHolder(r)
 	var op gateOp
-	if err := holder.reserve(&op); err != nil {
+	holder, standalone, err := reserveOperation(r, &op)
+	if err != nil {
 		return fmt.Errorf("velocity/auth: logout refused: %w", err)
 	}
 	defer op.abort()
@@ -1983,7 +1988,41 @@ func (g *SessionScheme) Session(r *http.Request) auth.Session {
 // auth.ErrSessionRevoked and an expired one auth.ErrSessionExpired, so a
 // session signed out or revoked on another instance is refused here too.
 // Remember-me recall is not attempted.
+//
+// It runs under the request's authentication reservation, as a read of the
+// user does (see gate.go): while an operation that may change the session
+// is in flight, or from the goroutine of the read in progress, it returns
+// auth.ErrOperationInProgress; on a request an operation was torn on it
+// returns auth.ErrSessionNotFound.
 func (g *SessionScheme) ResolveSession(r *http.Request) (auth.Session, error) {
+	holder, _ := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
+	if holder == nil {
+		return g.resolveSessionReserved(r)
+	}
+	var op gateOp
+	if _, err := holder.readTurn(r, &op, false); err != nil {
+		return nil, err
+	}
+	return g.resolveSessionTurn(r, holder, &op)
+}
+
+// resolveSessionTurn is ResolveSession's turn: its body, run holding the
+// request's gate for op as the request's resolver. A read that meets it
+// from its own goroutine is refused by its frame (see onResolvePath).
+func (g *SessionScheme) resolveSessionTurn(r *http.Request, holder *sessionHolder, op *gateOp) (auth.Session, error) {
+	defer op.abort()
+	if holder.isTorn() {
+		op.publish(false)
+		return nil, auth.ErrSessionNotFound
+	}
+	sess, err := g.resolveSessionReserved(r)
+	op.publish(false)
+	return sess, err
+}
+
+// resolveSessionReserved is ResolveSession's body, run holding the
+// request's gate when the request has a holder.
+func (g *SessionScheme) resolveSessionReserved(r *http.Request) (auth.Session, error) {
 	sess := sessionFromHolder(r)
 	if sess == nil || sess.ID() == "" {
 		sess = g.getSession(r)

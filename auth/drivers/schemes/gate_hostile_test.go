@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"runtime"
 	"sync/atomic"
 	"testing"
 
@@ -72,15 +73,21 @@ func TestSessionScheme_OperationUserCodeRunsWithTheGateOnly(t *testing.T) {
 		arm          func(rg *rig, hook func())
 		prepare      func(rg *rig)
 		method, path string
+		// read marks a read of the user: another goroutine's read waits
+		// for it instead of failing closed.
+		read bool
 	}{
 		{"Logout user lookup", func(rg *rig, hook func()) { rg.users.onFind.Store(&hook) }, func(rg *rig) {
 			rg.b.do(http.MethodPost, "/login")
-		}, http.MethodPost, "/logout"},
+		}, http.MethodPost, "/logout", false},
 		{"recall remember-token swap", func(rg *rig, hook func()) { rg.users.onSwap.Store(&hook) }, func(rg *rig) {
 			rg.b.do(http.MethodPost, "/login")
 			rg.b.replayRememberOnly(*rg.b.cookies[rememberCookieName])
-		}, http.MethodGet, "/read"},
-		{"Login CSRF rotation", func(rg *rig, hook func()) { rg.rotator.onRotate.Store(&hook) }, func(*rig) {}, http.MethodPost, "/login"},
+		}, http.MethodGet, "/read", true},
+		{"read user lookup", func(rg *rig, hook func()) { rg.users.onFind.Store(&hook) }, func(rg *rig) {
+			rg.b.do(http.MethodPost, "/login")
+		}, http.MethodGet, "/read", true},
+		{"Login CSRF rotation", func(rg *rig, hook func()) { rg.rotator.onRotate.Store(&hook) }, func(*rig) {}, http.MethodPost, "/login", false},
 		{"commit session save", func(rg *rig, hook func()) {
 			orig := saveSessionFromMiddleware
 			saveSessionFromMiddleware = func(g *SessionScheme, w http.ResponseWriter, s auth.Session) error {
@@ -88,7 +95,7 @@ func TestSessionScheme_OperationUserCodeRunsWithTheGateOnly(t *testing.T) {
 				return orig(g, w, s)
 			}
 			t.Cleanup(func() { saveSessionFromMiddleware = orig })
-		}, func(*rig) {}, http.MethodGet, "/touch"},
+		}, func(*rig) {}, http.MethodGet, "/touch", false},
 	}
 	for _, mode := range hostile.Modes() {
 		for _, e := range entries {
@@ -154,6 +161,36 @@ func TestSessionScheme_OperationUserCodeRunsWithTheGateOnly(t *testing.T) {
 						rg.b.do(e.method, e.path)
 					}()
 					<-code.Entered()
+					if e.read {
+						// Another goroutine's read waits for the blocked
+						// read and then returns what it resolved.
+						req := rg.req.Load()
+						sibling := make(chan error, 1)
+						go func() { //safe-goroutine: the test releases the block below and waits for it
+							_, err := scheme.CheckWithError(req)
+							sibling <- err
+						}()
+						h := req.Context().Value(sessionCtxKey{}).(*sessionHolder)
+						hostile.Within(t, hostile.Deadline, func() {
+							for {
+								h.mu.RLock()
+								n := h.waiters
+								h.mu.RUnlock()
+								if n == 1 {
+									return
+								}
+								runtime.Gosched()
+							}
+						})
+						code.Release()
+						hostile.Within(t, hostile.Deadline, func() { <-done })
+						hostile.Within(t, hostile.Deadline, func() {
+							if err := <-sibling; errors.Is(err, auth.ErrOperationInProgress) {
+								t.Errorf("a read that waited for the blocked read = %v, want its outcome", err)
+							}
+						})
+						break
+					}
 					hostile.Within(t, hostile.Deadline, func() {
 						if _, err := scheme.CheckWithError(rg.req.Load()); !errors.Is(err, auth.ErrOperationInProgress) {
 							t.Errorf("a read of the request while its operation blocks = %v, want auth.ErrOperationInProgress", err)
