@@ -1489,33 +1489,39 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 	if err := holder.reserve(&op); err != nil {
 		return fmt.Errorf("velocity/auth: login refused: %w", err)
 	}
-	finished := false
-	defer func() {
-		if !finished {
-			op.abort()
-		}
-	}()
-	session, err := g.loginReserved(r, holder, user, &op, remember...)
-	finished = true
+	defer op.abort()
+	return g.signInReserved(w, r, holder, standalone, &op, user, nil, remember...)
+}
+
+// signInReserved is the sign-in Login, LoginByID and Attempt share, run
+// holding the request's gate for op: it signs user in (loginReserved),
+// applies the result, commits it when the operation is its own save scope
+// (standalone), runs then (when set) once the sign-in succeeded, and frees
+// the gate. The commit and then run under op's reservation, so a store
+// they call that asks the scheme about the request is refused.
+func (g *SessionScheme) signInReserved(w http.ResponseWriter, r *http.Request, holder *sessionHolder, standalone bool, op *gateOp, user auth.Authenticatable, then func(), remember ...bool) error {
+	session, err := g.loginReserved(r, holder, user, op, remember...)
 	if err != nil {
 		// A sign-in that failed installs no session: after a Logout the
 		// request stays ended.
 		op.fresh = nil
-	}
-	published := op.publish(true)
-	if err != nil {
+		op.publish(true)
 		return err
 	}
-	if !published {
+	if !op.apply(true) {
+		op.release()
 		return errSessionSaved
 	}
 	if standalone {
-		// The holder is this Login's own: nothing else reaches it, so its
-		// commit runs with the gate free.
+		// The holder is this sign-in's own: nothing else reaches it.
 		holder.setSession(session)
-		return commitStandalone(g, r, w, holder)
+		err = commitStandalone(g, r, w, holder)
 	}
-	return nil
+	if err == nil && then != nil {
+		then()
+	}
+	op.release()
+	return err
 }
 
 // loginReserved is Login's body, run holding the request's gate for op. It
@@ -1657,20 +1663,31 @@ func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, us
 	return session, nil
 }
 
-// LoginByID logs in a user by ID
+// LoginByID signs in the user the user store finds for id, as Login does.
+// It takes the request's authentication gate before it looks the user up:
+// while another authentication operation of the request is in flight, or
+// from a store that operation calls, it returns
+// auth.ErrOperationInProgress without calling the store.
 func (g *SessionScheme) LoginByID(w http.ResponseWriter, r *http.Request, id interface{}, remember ...bool) error {
+	holder, standalone := seamHolder(r)
+	var op gateOp
+	if err := holder.reserve(&op); err != nil {
+		return fmt.Errorf("velocity/auth: login refused: %w", err)
+	}
+	defer op.abort()
 	user, err := g.loadUserStore().FindByIDCtx(r.Context(), id)
 	if err != nil {
+		op.publish(false)
 		return err
 	}
 	// FindByID may return (nil, nil) for an unknown id. Surface that as an
-	// error here so we never pass a nil user into Login (which would panic
-	// on the user_id deref).
+	// error here so we never sign in a nil user (the user_id deref would
+	// panic).
 	if user == nil {
+		op.publish(false)
 		return auth.ErrUserNotFound
 	}
-
-	return g.Login(w, r, user, remember...)
+	return g.signInReserved(w, r, holder, standalone, &op, user, nil, remember...)
 }
 
 // Attempt attempts to log in with credentials. The configured LoginThrottler
@@ -1683,7 +1700,22 @@ func (g *SessionScheme) LoginByID(w http.ResponseWriter, r *http.Request, id int
 // scheme still runs the configured hasher against a dummy bcrypt hash so
 // the CPU cost also matches; without this an attacker can probe valid
 // emails by measuring response time even with a constant-time floor.
+//
+// Attempt takes the request's authentication gate before anything else
+// and holds it through the credential check, the sign-in and the
+// throttle's success record: while another authentication operation of
+// the request is in flight, or from a store that operation calls, it
+// returns false and auth.ErrOperationInProgress at once, with no throttle,
+// user store or password work. Reads of the signed-in user on the request
+// fail closed while the attempt runs, its timed floor included.
 func (g *SessionScheme) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
+	holder, standalone := seamHolder(r)
+	var op gateOp
+	if err := holder.reserve(&op); err != nil {
+		return false, fmt.Errorf("velocity/auth: attempt refused: %w", err)
+	}
+	defer op.abort()
+
 	// Snapshot throttler, user store, and hasher once so the credential
 	// check and the success tail below see consistent references even if
 	// a concurrent Set* call swaps one mid-call.
@@ -1691,13 +1723,17 @@ func (g *SessionScheme) Attempt(w http.ResponseWriter, r *http.Request, credenti
 	hasher := g.effectiveHasher()
 	user, keys, ok, err := attemptCredentials(r, credentials, g.loadUserStore(), hasher, throttler, g.effectiveAttemptFloor(), g.getTrustedProxies(), &g.loginAdmitter, g.getLoginChallenge())
 	if !ok {
+		op.publish(false)
 		return false, err
 	}
 
-	// Login user (post-timebox; the success path's residual delay is
-	// the login pipeline itself, which is the same on every successful
-	// auth so timing here is not a privacy concern).
-	if err := g.Login(w, r, user, remember...); err != nil {
+	// Sign the user in (post-timebox; the success path's residual delay
+	// is the login pipeline itself, which is the same on every successful
+	// auth so timing here is not a privacy concern). The throttle's
+	// success record runs under the reservation, as its checks did.
+	if err := g.signInReserved(w, r, holder, standalone, &op, user, func() {
+		recordAttemptSuccess(r, keys, throttler, &g.loginAdmitter)
+	}, remember...); err != nil {
 		return false, err
 	}
 
@@ -1706,10 +1742,9 @@ func (g *SessionScheme) Attempt(w http.ResponseWriter, r *http.Request, credenti
 	// BcryptCost from 10 to 14), emit a PasswordNeedsRehashEvent so
 	// listeners can re-hash on the next login. The event carries the
 	// user identifier only; the plaintext stays inside this stack
-	// frame and is not surfaced to subscribers.
+	// frame and is not surfaced to subscribers. It is emitted once the
+	// gate is free, so a listener may read the signed-in user.
 	maybeEmitRehashEvent(r.Context(), &g.events, hasher, user, "session")
-
-	recordAttemptSuccess(r, keys, throttler, &g.loginAdmitter)
 	return true, nil
 }
 
@@ -1724,12 +1759,14 @@ type sessionRevoker interface {
 
 // Logout logs out the user.
 //
-// Logout holds the request's authentication gate (see gate.go) until the
-// session is invalidated: a Logout while another authentication operation
-// of the request is in flight, or from a store that operation calls,
-// returns auth.ErrOperationInProgress without waiting and changes nothing.
-// The server-side teardown that follows (the cookie store's revocation,
-// the server record deletes) runs with the gate free.
+// Logout holds the request's authentication gate (see gate.go) from start
+// to end: a Logout while another authentication operation of the request
+// is in flight, or from a store that operation calls, returns
+// auth.ErrOperationInProgress without waiting and changes nothing, and a
+// store the Logout calls, the server-side teardown after the session is
+// invalidated included (the cookie store's revocation, the server record
+// deletes, a standalone Logout's save), gets the same answer when it asks
+// the scheme about the request.
 func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	// The session middleware writes the delete cookie for the
 	// invalidated session. Outside it, this logout is its own save scope
@@ -1831,12 +1868,12 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	// an earlier transition of the request queued, so a remember-me
 	// sign-in earlier in the request never issues its credential after
 	// the logout cleared it. The session is whole again (ended), so the
-	// transition is published and the gate freed: the teardown below runs
-	// with no reservation, and a standalone logout's commit, on the
-	// holder that is this logout's own, with nothing held.
+	// transition is applied; the teardown below, and a standalone
+	// logout's commit on the holder that is this logout's own, still run
+	// under the reservation, which is freed once they are done.
 	op.beginTransition()
 	op.endsSession = true
-	op.publish(false)
+	op.apply(false)
 
 	// The session middleware saves the invalidated session, which
 	// writes the delete cookie because the session is now marked
@@ -1869,6 +1906,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 			}
 		}
 	}
+	op.release()
 
 	// Surface the earliest hard error: invalidate first (the
 	// upstream entropy failure callers most care about), then save.

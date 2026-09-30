@@ -51,9 +51,14 @@ type gateOp struct {
 	// request's session (see beginMutation): a panic from then on leaves
 	// the session possibly half-changed, so abort marks the request torn.
 	mutated bool
-	// ended is set once op published or aborted; a later end is a no-op,
-	// so an operation may publish as soon as its state is whole and run
-	// the rest of its work with the gate free.
+	// applied is set once op's changes were applied to the holder (see
+	// apply); op still holds the gate until it is released.
+	applied bool
+	// refused is set when apply refused op's changes (the request was
+	// sealed meanwhile).
+	refused bool
+	// ended is set once op released the gate or aborted; a later end is a
+	// no-op.
 	ended bool
 	// endsSession marks a Logout: publishing marks the holder's session
 	// ended (sessionHolder.ended).
@@ -65,9 +70,10 @@ type gateOp struct {
 
 // reserve takes the gate for op, or returns auth.ErrOperationInProgress
 // when another operation holds it. It never waits. A nil holder has no
-// gate: op then runs unguarded, as it has nothing to publish.
+// gate: op then runs unguarded, as it has nothing to publish. A refused op
+// holds nothing, so ending it (publish, release, abort) is a no-op and
+// never frees the gate the other operation holds.
 func (h *sessionHolder) reserve(op *gateOp) error {
-	op.h = h
 	if h == nil {
 		return nil
 	}
@@ -77,6 +83,7 @@ func (h *sessionHolder) reserve(op *gateOp) error {
 		return auth.ErrOperationInProgress
 	}
 	h.busy = true
+	op.h = h
 	return nil
 }
 
@@ -146,23 +153,38 @@ func (op *gateOp) queueCredentialWrite(e afterSaveWrite) {
 	op.staged = append(op.staged, e)
 }
 
-// publish ends op: it applies op's transitions and queued writes to the
-// holder in one step and frees the gate, and reports true. With
-// refuseSealed, an operation whose request was sealed meanwhile (the
-// response was committed while op ran, so nothing op changed can be saved)
-// is refused instead: nothing is applied, the undo steps of the writes op
-// queued run once the gate is free, and publish reports false. A published
-// transition ends a torn state: the session is whole again.
+// publish ends op: it applies op's changes (see apply) and frees the gate,
+// and reports whether the changes were applied.
 func (op *gateOp) publish(refuseSealed bool) bool {
+	applied := op.apply(refuseSealed)
+	op.release()
+	return applied
+}
+
+// apply applies op's transitions and queued writes to the holder in one
+// step and reports true; op keeps the gate until it is released, so the
+// work that follows a whole state (a Logout's server-side teardown, the
+// commit of an operation outside the session middleware) still runs under
+// op's reservation. With refuseSealed, an operation whose request was
+// sealed meanwhile (the response was committed while op ran, so nothing op
+// changed can be saved) is refused instead: nothing is applied, the undo
+// steps of the writes op queued run, still under op's reservation, and
+// apply reports false. A published transition ends a torn state: the
+// session is whole again. apply runs once; a later call reports whether
+// the first applied anything.
+func (op *gateOp) apply(refuseSealed bool) bool {
 	h := op.h
-	if h == nil || op.ended {
+	if h == nil {
 		return true
 	}
-	op.ended = true
+	if op.applied || op.ended {
+		return !op.refused
+	}
+	op.applied = true
 	h.mu.Lock()
 	if refuseSealed && h.sealed {
-		h.busy = false
 		h.mu.Unlock()
+		op.refused = true
 		for _, e := range op.staged {
 			if e.undo != nil {
 				e.undo()
@@ -182,19 +204,36 @@ func (op *gateOp) publish(refuseSealed bool) bool {
 	if op.bumps > 0 {
 		h.torn = false
 	}
-	h.busy = false
 	h.mu.Unlock()
 	return true
 }
 
-// abort ends op unwound by a panic: nothing op staged is applied, the gate
-// is freed, and when op had begun changing the session (see
-// beginMutation) the request is marked torn, so no scheme read uses the
-// session and the commit does not save it. The undo steps of the writes op
-// queued run, each contained, so the panic goes on unchanged.
+// release frees the gate op holds. A later release or abort is a no-op.
+func (op *gateOp) release() {
+	h := op.h
+	if h == nil || op.ended {
+		return
+	}
+	op.ended = true
+	h.mu.Lock()
+	h.busy = false
+	h.mu.Unlock()
+}
+
+// abort ends op unwound by a panic. Before op applied its changes, nothing
+// op staged is applied and, when op had begun changing the session (see
+// beginMutation), the request is marked torn, so no scheme read uses the
+// session and the commit does not save it; the undo steps of the writes op
+// queued run, each contained, so the panic goes on unchanged. After op
+// applied its changes the session is whole, so abort only frees the gate.
+// Deferred by every operation, it is a no-op once op released the gate.
 func (op *gateOp) abort() {
 	h := op.h
 	if h == nil || op.ended {
+		return
+	}
+	if op.applied {
+		op.release()
 		return
 	}
 	op.ended = true

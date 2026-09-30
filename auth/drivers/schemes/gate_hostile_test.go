@@ -269,14 +269,13 @@ func (p *parkingRecords) Delete(ctx context.Context, id string) error {
 	return p.ServerSessionStore.Delete(ctx, id)
 }
 
-// Logout frees the request's gate once the session is invalidated, and
-// its server-side teardown then deletes only the ids it captured before:
-// a Login of the same request while that teardown is parked is not
-// touched by it. The old session's record is gone and its remember
-// credential no longer signs in, while the record Login wrote for its new
-// id, and the stored remember token, are the same after the teardown as
-// before it.
-func TestSessionScheme_LogoutTeardownLeavesARacingLoginAlone(t *testing.T) {
+// Logout holds the request's reservation through its server-side
+// teardown: a Login of the same request while that teardown is parked is
+// refused with auth.ErrOperationInProgress and changes nothing (no new
+// session id, no record, the stored remember token as it was). Once the
+// Logout returns, a Login of the request signs in on a fresh session. The
+// old session's record is gone and neither old credential signs in.
+func TestSessionScheme_LogoutTeardownRefusesARacingLogin(t *testing.T) {
 	installLifetimeClock(t)
 	scheme, mem := newLifetimeSchemeFor(t, 120, 0, lifetimeModes[0])
 	users := userStoreOf(t, scheme)
@@ -296,15 +295,17 @@ func TestSessionScheme_LogoutTeardownLeavesARacingLoginAlone(t *testing.T) {
 	scheme.SetServerSessionStore(records)
 
 	var (
-		oldID, newID            string
+		oldID, parkedID, newID  string
+		loggedOutID             string
 		tokenBefore, tokenAfter string
-		newBefore, newAfter     error
-		logoutErr, loginErr     error
+		logoutErr, racingErr    error
+		loginErr                error
 	)
 	r := router.New()
 	r.Use(scheme.SessionMiddleware())
 	r.Post("/switch", func(c *router.Context) error {
 		oldID = scheme.Session(c.Request).ID()
+		tokenBefore = users.token("u1")
 		logoutDone := make(chan struct{})
 		go func() {
 			defer close(logoutDone)
@@ -312,15 +313,15 @@ func TestSessionScheme_LogoutTeardownLeavesARacingLoginAlone(t *testing.T) {
 		}()
 		hostile.Within(t, hostile.Deadline, func() { <-records.entered })
 		hostile.Within(t, hostile.Deadline, func() {
-			loginErr = scheme.Login(c.Response, c.Request, &revokeTestUser{id: "u1"}, true)
+			racingErr = scheme.Login(c.Response, c.Request, &revokeTestUser{id: "u1"}, true)
 		})
-		newID = scheme.Session(c.Request).ID()
-		_, newBefore = mem.Get(context.Background(), newID)
-		tokenBefore = users.token("u1")
+		parkedID = scheme.Session(c.Request).ID()
+		tokenAfter = users.token("u1")
 		close(records.release)
 		hostile.Within(t, hostile.Deadline, func() { <-logoutDone })
-		_, newAfter = mem.Get(context.Background(), newID)
-		tokenAfter = users.token("u1")
+		loggedOutID = scheme.Session(c.Request).ID()
+		loginErr = scheme.Login(c.Response, c.Request, &revokeTestUser{id: "u1"}, true)
+		newID = scheme.Session(c.Request).ID()
 		return c.String(http.StatusOK, "switched")
 	})
 	r.Get("/check", func(c *router.Context) error {
@@ -332,23 +333,29 @@ func TestSessionScheme_LogoutTeardownLeavesARacingLoginAlone(t *testing.T) {
 	b.handler = r
 	b.do(http.MethodPost, "/switch")
 
-	if logoutErr != nil || loginErr != nil {
-		t.Fatalf("Logout = %v, Login = %v; want both nil", logoutErr, loginErr)
+	if logoutErr != nil {
+		t.Fatalf("Logout = %v, want nil", logoutErr)
+	}
+	if !errors.Is(racingErr, auth.ErrOperationInProgress) {
+		t.Fatalf("Login while the logout's teardown was parked = %v, want auth.ErrOperationInProgress", racingErr)
 	}
 	if p := records.deleted.Load(); p == nil || *p != oldID {
 		t.Fatalf("the parked delete was %v, want the old session id %q", p, oldID)
 	}
+	if parkedID != loggedOutID {
+		t.Errorf("the session id moved while the refused Login ran: %q while parked, %q once the logout ended", parkedID, loggedOutID)
+	}
+	if tokenAfter != "" || tokenBefore == "" {
+		t.Errorf("premise or refused Login: remember token %q before the logout, %q while its teardown was parked; want set, then cleared by the logout alone", tokenBefore, tokenAfter)
+	}
+	if loginErr != nil {
+		t.Fatalf("Login after the Logout returned = %v, want nil", loginErr)
+	}
 	if newID == "" || newID == oldID {
-		t.Fatalf("premise: Login did not move the session to a new id (old %q, new %q)", oldID, newID)
+		t.Fatalf("Login after the Logout did not move the session to a new id (old %q, new %q)", oldID, newID)
 	}
-	if newBefore != nil {
-		t.Fatalf("premise: Login wrote no record for its new id: %v", newBefore)
-	}
-	if newAfter != nil {
-		t.Errorf("the logout's teardown removed the record Login wrote for its new id: %v", newAfter)
-	}
-	if tokenAfter != tokenBefore {
-		t.Errorf("the logout's teardown changed the stored remember token: %q before, %q after", tokenBefore, tokenAfter)
+	if _, err := mem.Get(context.Background(), newID); err != nil {
+		t.Errorf("the record Login wrote for its new id is missing: %v", err)
 	}
 	if _, err := mem.Get(context.Background(), oldID); err == nil {
 		t.Error("the old session's record survived the logout")
