@@ -8,6 +8,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/teardown"
 )
 
 // Manager handles multiple logger channels for advanced logging scenarios.
@@ -95,8 +96,9 @@ func (m *Manager) Default() (Logger, error) {
 // Shutdown closes every channel logger that implements Shutdowner and clears
 // the channel registry. Loggers that hold no resources do not implement the
 // interface and are skipped. Every opted-in channel gets a Shutdown attempt
-// even if an earlier one fails, and the errors are aggregated via errors.Join
-// so no partial failure is masked. Clearing the registry makes a second call a
+// even if an earlier one fails or panics (a panic is that channel's error),
+// and the errors are aggregated via errors.Join so no partial failure is
+// masked. Clearing the registry makes a second call a
 // no-op returning nil.
 //
 // A Manager-built stack channel references shared, manager-owned children, so
@@ -113,11 +115,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 
 	var errs []error
 	for name, logger := range channels {
-		sd, ok := logger.(Shutdowner)
-		if !ok {
-			continue
-		}
-		if err := sd.Shutdown(ctx); err != nil {
+		if err := teardown.Close(ctx, logger); err != nil {
 			errs = append(errs, fmt.Errorf("velocity/log: shutdown channel %q: %w", name, err))
 		}
 	}
@@ -334,22 +332,22 @@ func (s *StackLogger) Level() contract.LogLevel {
 }
 
 // Shutdown closes all underlying loggers that support it, honoring the
-// context deadline. A stack that does not own its children (a Manager-built
+// context deadline. Every child gets a Shutdown attempt even if an earlier
+// one fails or panics (a panic is that child's error), and every error is
+// returned, joined. A stack that does not own its children (a Manager-built
 // stack referencing shared channels) shuts nothing down here, leaving those
 // channels to be closed via their own entries.
 func (s *StackLogger) Shutdown(ctx context.Context) error {
 	if !s.ownsChildren {
 		return nil
 	}
-	var firstErr error
+	var errs []error
 	for _, l := range s.loggers {
-		if shutdowner, ok := l.(Shutdowner); ok {
-			if err := shutdowner.Shutdown(ctx); err != nil && firstErr == nil {
-				firstErr = err
-			}
+		if err := teardown.Close(ctx, l); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	return firstErr
+	return errors.Join(errs...)
 }
 
 // NullLogger discards all log messages without any output.
