@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"net/http"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -40,4 +41,21 @@ func admission(run *drain.Run, outer interceptors.InterceptorPair) interceptors.
 			return outer.Stream(srv, ss, info, h)
 		},
 	}
+}
+
+// admitRequests returns next behind admission into run, the outermost
+// handler of a gateway: a request admitted before the stop began holds
+// the run until next returns, so a nil Shutdown comes only once it has;
+// a request that arrives after is refused with 503 Service Unavailable
+// ("server is stopping") without reaching next. It calls no application
+// code.
+func admitRequests(run *drain.Run, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !run.Admit() {
+			http.Error(w, "server is stopping", http.StatusServiceUnavailable)
+			return
+		}
+		defer run.Release()
+		next.ServeHTTP(w, r)
+	})
 }

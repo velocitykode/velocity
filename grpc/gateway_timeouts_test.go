@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -19,15 +20,15 @@ func buildGateway(t *testing.T, opts ...GatewayOption) *Gateway {
 	if err := g.Build(context.Background()); err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
-	if g.httpServer == nil {
-		t.Fatal("Build() did not populate httpServer")
+	if gatewayServer(g) == nil {
+		t.Fatal("Build() did not publish its http.Server")
 	}
 	return g
 }
 
 func TestGatewayDefaultServerTimeouts(t *testing.T) {
 	g := buildGateway(t)
-	srv := g.httpServer
+	srv := gatewayServer(g)
 
 	if got, want := srv.ReadHeaderTimeout, 10*time.Second; got != want {
 		t.Errorf("ReadHeaderTimeout = %v, want %v", got, want)
@@ -62,7 +63,7 @@ func TestGatewayServerTimeoutOptions(t *testing.T) {
 			name:   "ReadTimeout",
 			option: GatewayWithReadTimeout(5 * time.Second),
 			check: func(t *testing.T, g *Gateway) {
-				if got, want := g.httpServer.ReadTimeout, 5*time.Second; got != want {
+				if got, want := gatewayServer(g).ReadTimeout, 5*time.Second; got != want {
 					t.Errorf("ReadTimeout = %v, want %v", got, want)
 				}
 			},
@@ -71,7 +72,7 @@ func TestGatewayServerTimeoutOptions(t *testing.T) {
 			name:   "WriteTimeout",
 			option: GatewayWithWriteTimeout(7 * time.Second),
 			check: func(t *testing.T, g *Gateway) {
-				if got, want := g.httpServer.WriteTimeout, 7*time.Second; got != want {
+				if got, want := gatewayServer(g).WriteTimeout, 7*time.Second; got != want {
 					t.Errorf("WriteTimeout = %v, want %v", got, want)
 				}
 			},
@@ -80,7 +81,7 @@ func TestGatewayServerTimeoutOptions(t *testing.T) {
 			name:   "IdleTimeout",
 			option: GatewayWithIdleTimeout(11 * time.Second),
 			check: func(t *testing.T, g *Gateway) {
-				if got, want := g.httpServer.IdleTimeout, 11*time.Second; got != want {
+				if got, want := gatewayServer(g).IdleTimeout, 11*time.Second; got != want {
 					t.Errorf("IdleTimeout = %v, want %v", got, want)
 				}
 			},
@@ -89,7 +90,7 @@ func TestGatewayServerTimeoutOptions(t *testing.T) {
 			name:   "MaxHeaderBytes",
 			option: GatewayWithMaxHeaderBytes(4096),
 			check: func(t *testing.T, g *Gateway) {
-				if got, want := g.httpServer.MaxHeaderBytes, 4096; got != want {
+				if got, want := gatewayServer(g).MaxHeaderBytes, 4096; got != want {
 					t.Errorf("MaxHeaderBytes = %v, want %v", got, want)
 				}
 			},
@@ -102,4 +103,15 @@ func TestGatewayServerTimeoutOptions(t *testing.T) {
 			tt.check(t, g)
 		})
 	}
+}
+
+// gatewayServer returns the http.Server the built gateway serves, nil when
+// no Build has published one.
+func gatewayServer(g *Gateway) *http.Server {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	if c := g.publishedLocked(); c != nil {
+		return c.srv
+	}
+	return nil
 }

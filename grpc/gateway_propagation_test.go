@@ -206,7 +206,7 @@ func buildEchoGateway(t *testing.T, rig *echoRig, middleware ...func(http.Handle
 	if err := g.Build(context.Background()); err != nil {
 		t.Fatalf("gateway Build: %v", err)
 	}
-	return g.httpServer.Handler
+	return gatewayServer(g).Handler
 }
 
 var twentyHex = regexp.MustCompile(`^[0-9a-f]{20}$`)

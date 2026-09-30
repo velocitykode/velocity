@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -19,7 +20,6 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/interceptors"
 	"github.com/velocitykode/velocity/internal/drain"
@@ -44,27 +44,22 @@ const (
 // Gateway wraps an HTTP gateway that proxies to a gRPC server
 type Gateway struct {
 	mu           sync.RWMutex
-	mux          *runtime.ServeMux
-	httpServer   *http.Server
 	port         string
 	grpcEndpoint string
 	dialOptions  []grpc.DialOption
-	running      bool
 	logger       contract.Logger
 
-	// building is set while a Build constructs the gateway outside the
-	// lock, so a concurrent or re-entrant Build returns ErrBuildInProgress
-	// instead of constructing a second one. Guarded by mu.
-	building bool
+	// own is the gateway's own work: the goroutines running a Build, a
+	// serve loop or a stop, each of which may call user code (a
+	// registration, a middleware constructor, the logger) that calls a
+	// stop back. A stop entered from there does not wait on it.
+	own drain.Owner
 
-	// stops coordinates the stops: the drain the stop that ends a running
-	// gateway owns, closed when its net/http Close or Shutdown returns,
-	// which an overlapping Shutdown waits on or its own ctx, and the
-	// goroutines running the stop line, so a stop called back from there
-	// does not wait on it. Its drain is guarded by mu.
-	stops drain.Coordinator
+	// cur is the gateway's current life (see gatewayLife), nil until the
+	// first Build. Guarded by mu.
+	cur *gatewayLife
 
-	// HTTP server timeout/header bounds applied to httpServer in Build().
+	// HTTP server timeout/header bounds applied to the http.Server Build makes.
 	// Defaulted in NewGateway() to the conservative package constants so a
 	// zero-option Gateway is secure by default; overridable via GatewayWith*.
 	readTimeout    time.Duration
@@ -380,18 +375,27 @@ func (g *Gateway) RegisterHandler(handler GatewayRegistrationFunc) *Gateway {
 // constructing the gateway, concurrently or from that application code,
 // returns ErrBuildInProgress at once; a Build after a completed one
 // returns nil. A Build that fails publishes nothing, so a later Build
-// runs again.
+// runs again. A stop, called from that application code or anywhere
+// else, ends a Build in progress: the Build publishes nothing and
+// returns http.ErrServerClosed, so a Start that called it returns that
+// too instead of serving past the stop; a Shutdown waits for the Build
+// to return. A later Build constructs the gateway afresh.
 func (g *Gateway) Build(ctx context.Context) error {
-	b, err := g.beginBuild()
-	if b == nil {
+	var err error
+	g.own.Do(func() { err = g.build(ctx) })
+	return err
+}
+
+// build is Build, run as the gateway's own work.
+func (g *Gateway) build(ctx context.Context) error {
+	c, b, err := g.beginBuild()
+	if c == nil {
 		return err
 	}
 	published := false
 	defer func() {
 		if !published {
-			g.mu.Lock()
-			g.building = false
-			g.mu.Unlock()
+			g.abortBuild(c)
 		}
 	}()
 
@@ -428,8 +432,9 @@ func (g *Gateway) Build(ctx context.Context) error {
 		handler = b.middleware[i](handler)
 	}
 	// Correlation wraps everything, so application middleware already sees
-	// the request id and trace.
-	handler = correlateGatewayRequest(handler)
+	// the request id and trace, and admission wraps correlation, so no
+	// request runs any of it once the stop began.
+	handler = admitRequests(c.run, correlateGatewayRequest(handler))
 
 	// Create HTTP server
 	server := &http.Server{
@@ -443,12 +448,51 @@ func (g *Gateway) Build(ctx context.Context) error {
 	}
 
 	g.mu.Lock()
-	g.mux = mux
-	g.httpServer = server
-	g.building = false
+	if c.run.Stopping() {
+		// A stop began while this Build constructed the gateway: publish
+		// nothing.
+		g.mu.Unlock()
+		return http.ErrServerClosed
+	}
+	c.mux, c.srv, c.building = mux, server, false
 	g.mu.Unlock()
+	c.run.Release()
 	published = true
 	return nil
+}
+
+// gatewayLife is one construction of the gateway, from the Build that
+// makes it to the stop that ends it: the mux and net/http server that
+// Build made, the listener a Start bound, the run they serve in, and
+// whether it served. Every unit of its work is admitted into run: the
+// Build, the serve loop and each request (see admitRequests). A life a
+// stop ended before it served is discarded, and the next Build starts
+// another; a life that served stays the gateway's last, since net/http
+// cannot serve a closed server again. Its fields are guarded by the
+// gateway's mu.
+type gatewayLife struct {
+	run *drain.Run
+
+	// building is set while the Build that makes this life runs.
+	building bool
+	// mux and srv are what the Build published, nil until it has.
+	mux *runtime.ServeMux
+	srv *http.Server
+	// lis is the listener a Start bound, nil until it has.
+	lis *serveListener
+	// served is set while a Start has the serve loop admitted into run.
+	served bool
+	// running is set at the serve loop's first Accept.
+	running bool
+	// discarded is set once a life that never served has ended: the next
+	// Build starts another.
+	discarded bool
+
+	// started is closed after the first Accept published the start, and
+	// serveDone once Serve returned, with serveErr.
+	started   chan struct{}
+	serveDone chan struct{}
+	serveErr  error
 }
 
 // gatewayBuildPlan is the configuration one Build constructs the gateway
@@ -466,23 +510,23 @@ type gatewayBuildPlan struct {
 }
 
 // beginBuild runs Build's checks under the lock and, when they pass,
-// marks a Build in progress and returns the plan to construct from. It
-// returns a nil plan with a nil error when the gateway is already built,
-// and with an error when a Build is in progress or a check fails. It
-// calls no application code.
-func (g *Gateway) beginBuild() (*gatewayBuildPlan, error) {
+// starts a new life with the Build admitted into its run, and returns it
+// with the plan to construct from. It returns a nil life with a nil error
+// when the gateway is already built, and with an error when a Build is in
+// progress or a check fails. It calls no application code.
+func (g *Gateway) beginBuild() (*gatewayLife, *gatewayBuildPlan, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	if g.mux != nil {
-		return nil, nil // Already built
-	}
-	if g.building {
-		return nil, ErrBuildInProgress
+	if c := g.cur; c != nil && !c.discarded {
+		if c.building || (!c.served && c.run.Stopping()) {
+			return nil, nil, ErrBuildInProgress
+		}
+		return nil, nil, nil // Already built
 	}
 
 	if g.configErr != nil {
-		return nil, g.configErr
+		return nil, nil, g.configErr
 	}
 
 	// Enforce the production TLS guard before any other validation so the
@@ -493,7 +537,7 @@ func (g *Gateway) beginBuild() (*gatewayBuildPlan, error) {
 		// are refused alongside "production". A typo'd APP_ENV cannot
 		// silently downgrade the gateway to insecure dial credentials.
 		if contract.IsProductionEnv(g.environment) {
-			return nil, fmt.Errorf("velocity/grpc: gateway TLS credentials are required in production. Use GatewayWithTLS, GatewayWithTransportConfig, or GatewayWithInsecure to opt out for a known-internal mesh")
+			return nil, nil, fmt.Errorf("velocity/grpc: gateway TLS credentials are required in production. Use GatewayWithTLS, GatewayWithTransportConfig, or GatewayWithInsecure to opt out for a known-internal mesh")
 		}
 		warnInsecure = true
 		g.dialOptions = []grpc.DialOption{
@@ -502,16 +546,23 @@ func (g *Gateway) beginBuild() (*gatewayBuildPlan, error) {
 	}
 
 	if g.grpcEndpoint == "" {
-		return nil, ErrNoEndpoint
+		return nil, nil, ErrNoEndpoint
 	}
 
 	// Validate endpoint format (must be host:port)
 	if _, _, err := net.SplitHostPort(g.grpcEndpoint); err != nil {
-		return nil, fmt.Errorf("velocity/grpc: invalid grpc endpoint %q: expected host:port format: %w", g.grpcEndpoint, err)
+		return nil, nil, fmt.Errorf("velocity/grpc: invalid grpc endpoint %q: expected host:port format: %w", g.grpcEndpoint, err)
 	}
 
-	g.building = true
-	return &gatewayBuildPlan{
+	c := &gatewayLife{
+		run:       g.own.NewRun(),
+		building:  true,
+		started:   make(chan struct{}),
+		serveDone: make(chan struct{}),
+	}
+	c.run.Admit() // a new run admits: the Build is its first unit
+	g.cur = c
+	return c, &gatewayBuildPlan{
 		logger:         g.logger,
 		port:           g.port,
 		grpcEndpoint:   g.grpcEndpoint,
@@ -525,6 +576,21 @@ func (g *Gateway) beginBuild() (*gatewayBuildPlan, error) {
 		maxHeaderBytes: g.maxHeaderBytes,
 		warnInsecure:   warnInsecure,
 	}, nil
+}
+
+// abortBuild ends the Build of c without publishing it (a registration
+// failed or panicked, or a stop began during it): c is discarded, so a
+// later Build runs again, and when no stop began, the Build ends c's run
+// itself.
+func (g *Gateway) abortBuild(c *gatewayLife) {
+	g.mu.Lock()
+	c.building, c.discarded = false, true
+	g.mu.Unlock()
+	owner := c.run.Close()
+	c.run.Release()
+	if owner {
+		c.run.Finish(nil)
+	}
 }
 
 // correlateGatewayRequest gives a gateway request the request id and trace
@@ -652,171 +718,313 @@ func (g *Gateway) Start() error {
 	return g.StartWithContext(ctx)
 }
 
-// StartWithContext builds and starts the HTTP gateway with a context. A
-// gateway a stop has ended does not start again: it returns
-// http.ErrServerClosed, as does StartAsyncWithContext.
+// StartWithContext builds and starts the HTTP gateway with a context. It
+// binds the gateway's port, returning the error when it cannot, and
+// serves until the gateway is stopped, returning http.ErrServerClosed
+// then. A gateway a stop has ended does not start again: it returns
+// http.ErrServerClosed, as does StartAsyncWithContext. A serve loop that
+// fails stops the gateway, and StartWithContext returns that failure.
 func (g *Gateway) StartWithContext(ctx context.Context) error {
-	if err := g.Build(ctx); err != nil {
+	c, err := g.admitServe(ctx)
+	if err != nil {
 		return err
 	}
-
-	g.mu.Lock()
-	if g.running {
-		g.mu.Unlock()
-		return ErrServerAlreadyRunning
-	}
-	if g.stops.Ended() != nil {
-		// A stop ended this gateway; net/http cannot serve it again.
-		g.mu.Unlock()
-		return http.ErrServerClosed
-	}
-	g.running = true
-	g.mu.Unlock()
-
-	g.logStarting()
-	return g.httpServer.ListenAndServe()
+	g.own.Do(func() { err = g.serve(c, false) })
+	return err
 }
 
-// StartAsync builds and starts the HTTP gateway in a goroutine.
-// Returns immediately. Use Stop() or Shutdown() to stop the gateway.
+// StartAsync builds and starts the HTTP gateway on a goroutine of its
+// own; see StartAsyncWithContext.
 func (g *Gateway) StartAsync() error {
 	ctx := context.Background()
 	return g.StartAsyncWithContext(ctx)
 }
 
-// StartAsyncWithContext builds and starts the HTTP gateway in a goroutine with a context.
+// StartAsyncWithContext builds the HTTP gateway, binds its port on the
+// calling goroutine, returning the error when it cannot, and serves on a
+// goroutine of its own. It returns once the gateway is taking
+// connections: net/http has registered the listener and entered its first
+// Accept, the gateway reports running and the starting line is written.
+// When net/http refuses to serve because a stop came first, it returns
+// http.ErrServerClosed and the gateway never reports running. A serve
+// loop that fails later stops the gateway. Use Stop() or Shutdown() to
+// stop the gateway.
 func (g *Gateway) StartAsyncWithContext(ctx context.Context) error {
-	if err := g.Build(ctx); err != nil {
+	c, err := g.admitServe(ctx)
+	if err != nil {
 		return err
 	}
-
-	g.mu.Lock()
-	if g.running {
-		g.mu.Unlock()
-		return ErrServerAlreadyRunning
+	g.own.Go(func() { _ = g.serve(c, true) })
+	select {
+	case <-c.started:
+		return nil
+	case <-c.serveDone:
 	}
-	if g.stops.Ended() != nil {
-		// A stop ended this gateway; net/http cannot serve it again.
-		g.mu.Unlock()
-		return http.ErrServerClosed
-	}
-	g.running = true
-	g.mu.Unlock()
-
-	// Run through async.GoWithRecover so the recover path flows through
-	// the canonical async package (and trips the forbidigo rule only if
-	// someone regresses to `go func`). The custom recovery handler resets
-	// the running flag so the gateway can be restarted after a crash.
-	async.GoWithRecover(func() {
-		g.logStarting()
-		if err := g.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fallbacklog.Write(g.logger, func(l contract.Logger) { l.Error("HTTP gateway error", "error", err) })
-		}
-	}, func(r any) {
-		fallbacklog.Write(g.logger, func(l contract.Logger) { l.Error("HTTP gateway panic recovered", "error", panicerr.FromRecovered(r)) })
-		g.mu.Lock()
-		g.running = false
-		g.mu.Unlock()
-	})
-
-	return nil
-}
-
-// Stop stops the HTTP gateway immediately. It changes the gateway's state
-// under its lock, then logs and closes the server without it, so the
-// logger may call the gateway's accessors. During a Shutdown it closes the
-// gateway, cutting the requests that Shutdown is draining.
-func (g *Gateway) Stop() {
-	server, owner, drained := g.beginStop()
-	switch {
-	case owner:
-		g.stops.Run(func() {
-			fallbacklog.Write(g.logger, func(l contract.Logger) { l.Info("HTTP gateway stopping") })
-		})
-		g.stops.Drain(drained, func() { _ = server.Close() })
-	case server != nil:
-		_ = server.Close()
-	}
-}
-
-// Shutdown gracefully shuts down the HTTP gateway: it stops accepting
-// requests and waits for those in flight to finish until ctx is done. At
-// the deadline it returns the ctx error and closes the gateway, cutting
-// the requests still in flight. A Shutdown that overlaps one already
-// draining waits for that drain the same way, so a nil return always
-// means the requests in flight have finished.
-//
-// A Shutdown called from the gateway's own stop line cannot wait on the
-// stop it runs in: that stop goes on, and the call returns an error
-// wrapping http.ErrServerClosed at once. A Shutdown called from a request handler waits for that handler
-// until its ctx is done.
-func (g *Gateway) Shutdown(ctx context.Context) error {
-	nested := g.stops.Nested()
-	server, owner, drained := g.beginStop()
-	if server == nil {
+	if drain.Closed(c.started) {
 		return nil
 	}
-	if !owner {
-		if nested && !drain.Closed(drained) {
-			return fmt.Errorf("velocity/grpc: Shutdown called from inside a stop of this gateway: %w: %w", contract.ErrStopFromOwnWork, http.ErrServerClosed)
-		}
-		return g.stops.Await(ctx, drained, func() { _ = server.Close() })
-	}
-	// The owner's whole stop (its line and the drain) runs on a goroutine
-	// of its own, with a context no caller owns, so an overlapping
-	// Shutdown with a later deadline still waits for the drain, and a
-	// logger that blocks cannot hold this Shutdown past ctx.
-	var drainErr error
-	finished := make(chan struct{})
-	async.Go(func() {
-		defer close(finished)
-		g.stops.Run(func() {
-			fallbacklog.Write(g.logger, func(l contract.Logger) { l.Info("HTTP gateway gracefully shutting down") })
-		})
-		g.stops.Drain(drained, func() { drainErr = server.Shutdown(context.Background()) })
-	})
-	if err := g.stops.Await(ctx, finished, func() { _ = server.Close() }); err != nil {
-		return err
-	}
-	return drainErr // read after finished closed, which its write precedes
+	return c.serveErr
 }
 
-// beginStop records a stop under the lock. A running gateway stops
-// running, and this stop owns its drain: server is returned with owner
-// set and a fresh drained. A gateway a stop already ended returns server
-// and that stop's drained, for a Shutdown to wait on and a Stop to force.
-// Otherwise server is nil. It calls no application code.
-func (g *Gateway) beginStop() (server *http.Server, owner bool, drained chan struct{}) {
+// admitServe builds the gateway if it is not built, admits a serve loop
+// into the current life's run and binds the gateway's port, returning the
+// life to serve. It refuses a gateway that serves already, one a stop has
+// ended, and one a rebuild is constructing. A bind that fails gives the
+// admission back, so a later start may try again.
+func (g *Gateway) admitServe(ctx context.Context) (*gatewayLife, error) {
+	if err := g.Build(ctx); err != nil {
+		return nil, err
+	}
 	g.mu.Lock()
-	defer g.mu.Unlock()
+	c := g.cur
 	switch {
-	case g.httpServer != nil && g.running:
-		g.running = false
-		return g.httpServer, true, g.stops.Begin()
-	case g.httpServer != nil && g.stops.Ended() != nil:
-		return g.httpServer, false, g.stops.Ended()
+	case c == nil || c.discarded:
+		g.mu.Unlock()
+		return nil, http.ErrServerClosed
+	case c.building:
+		g.mu.Unlock()
+		return nil, ErrBuildInProgress
+	case c.served && !c.run.Stopping():
+		g.mu.Unlock()
+		return nil, ErrServerAlreadyRunning
+	case c.srv == nil || !c.run.Admit():
+		// A stop ended this gateway; net/http cannot serve it again.
+		g.mu.Unlock()
+		return nil, http.ErrServerClosed
 	}
-	return nil, false, nil
+	c.served = true
+	addr := c.srv.Addr
+	g.mu.Unlock()
+
+	raw, err := net.Listen("tcp", addr)
+	if err != nil {
+		g.mu.Lock()
+		c.served = false
+		g.mu.Unlock()
+		c.run.Release()
+		return nil, fmt.Errorf("velocity/grpc: gateway failed to listen on %s: %w", addr, err)
+	}
+	lis := newServeListener(raw, func() { g.serving(c) }, g.logLine, "HTTP gateway")
+	g.mu.Lock()
+	c.lis = lis
+	g.mu.Unlock()
+	return c, nil
 }
 
-// logStarting writes the starting line through fallbacklog.Write, so a
-// panicking logger never skips the serve that follows it.
-func (g *Gateway) logStarting() {
-	fallbacklog.Write(g.logger, func(l contract.Logger) {
+// serve runs c's serve loop, as the gateway's own work, and releases its
+// unit of c's run when Serve returns. A loop that failed (its listener's
+// Accept did, or net/http panicked) stops the gateway. A Serve a stop
+// ended returns http.ErrServerClosed and needs nothing. logFailure writes
+// the failure as an error line, for StartAsyncWithContext, whose caller
+// has returned.
+func (g *Gateway) serve(c *gatewayLife, logFailure bool) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("velocity/grpc: gateway serve loop panicked: %w", panicerr.FromRecovered(p))
+		}
+		c.serveErr = err
+		close(c.serveDone)
+		c.run.Release()
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			return
+		}
+		if logFailure {
+			g.logLine(func(l contract.Logger) { l.Error("HTTP gateway error", "error", err) })
+		}
+		g.own.Signal(c.run, g.stopWork(c, false))
+	}()
+	return c.srv.Serve(c.lis)
+}
+
+// serving runs at the first Accept of c's serve loop. net/http calls it
+// only once Serve has registered the listener, so from here on a stop
+// closes it: the gateway is taking connections. It publishes that before
+// StartAsyncWithContext returns: the gateway reports running and the
+// starting line is written, on the serve loop's goroutine, as the
+// gateway's own work.
+func (g *Gateway) serving(c *gatewayLife) {
+	defer close(c.started)
+	g.mu.Lock()
+	c.running = true
+	addr, endpoint := c.srv.Addr, g.grpcEndpoint
+	g.mu.Unlock()
+	g.logLine(func(l contract.Logger) {
 		l.Info("HTTP gateway starting",
-			"address", g.httpServer.Addr,
-			"grpc_endpoint", g.grpcEndpoint,
+			"address", addr,
+			"grpc_endpoint", endpoint,
 		)
 	})
+}
+
+// Stop stops the HTTP gateway immediately: it begins the gateway's stop
+// (see Shutdown), closes the net/http server, which closes every
+// connection and so cuts the requests in flight, and returns once the
+// gateway has stopped accepting, its listener closed. It does not wait
+// for the handlers in flight to return: a Shutdown returns nil only once
+// they have. During a Shutdown it closes the gateway, cutting the
+// requests that Shutdown is draining; during a Build it ends that Build
+// (see Build) and returns at once. Stop logs and closes without holding
+// the gateway's lock, so the logger may call the gateway's accessors.
+// Called from the gateway's own work (a registration, a middleware
+// constructor, the logger's lines), it begins the stop and closes the
+// server on a goroutine of its own, and returns without waiting.
+func (g *Gateway) Stop() {
+	nested := g.own.Nested()
+	c, srv, lis := g.signal(false)
+	if srv == nil {
+		return
+	}
+	closeServer := func() { _ = srv.Close() }
+	if nested {
+		g.own.Go(closeServer)
+		return
+	}
+	g.own.Do(closeServer)
+	if lis != nil {
+		awaitClosed(lis, c.run.Finished())
+	}
+}
+
+// Shutdown gracefully shuts down the HTTP gateway, or joins the stop
+// already under way, and waits for it until ctx is done.
+//
+// Every stop of the gateway (Stop, Shutdown, and a failed serve loop) is
+// one stop of the gateway's current run, which the first of them begins:
+// the gateway stops accepting, a request that reaches it after is
+// refused with 503 Service Unavailable ("server is stopping"), and the
+// stop waits for the Build in progress, the serve loop and every request
+// admitted before it began. Shutdown returns only then, and so does
+// every Shutdown, overlapping or later, of the same run: nil, or the
+// error net/http's Shutdown returned closing the listener. At ctx it
+// returns the ctx error and closes the gateway, cutting the requests
+// still in flight, once however many Shutdowns time out; a handler that
+// ignores its request's context may still run after Shutdown returns.
+// The stop and its line run on a goroutine of their own, so a logger that
+// blocks cannot hold Shutdown past ctx.
+//
+// A Shutdown called from the gateway's own work (a registration, a
+// middleware constructor, the logger's lines) cannot wait on the work it
+// runs in: it begins the stop and returns at once an error wrapping
+// contract.ErrStopFromOwnWork and http.ErrServerClosed, or the stop's
+// result when it has finished. A Shutdown called from a request handler
+// waits for that handler until its ctx is done.
+func (g *Gateway) Shutdown(ctx context.Context) error {
+	g.mu.RLock()
+	c := g.cur
+	g.mu.RUnlock()
+	if c == nil {
+		return nil
+	}
+	work := g.stopWork(c, true)
+	if g.own.Nested() {
+		g.own.Signal(c.run, work)
+		err := g.own.Stop(ctx, c.run, nil, nil)
+		if errors.Is(err, contract.ErrStopFromOwnWork) {
+			err = fmt.Errorf("velocity/grpc: %w: %w", err, http.ErrServerClosed)
+		}
+		return err
+	}
+	return g.own.Stop(ctx, c.run, work, func() {
+		g.mu.RLock()
+		srv := c.srv
+		g.mu.RUnlock()
+		if srv != nil {
+			_ = srv.Close()
+		}
+	})
+}
+
+// signal begins the stop of the gateway's current life, when it has one
+// and no stop began it, and returns that life with the server its Build
+// published and the listener a Start bound: nil when there is none.
+func (g *Gateway) signal(graceful bool) (*gatewayLife, *http.Server, *serveListener) {
+	g.mu.RLock()
+	c := g.cur
+	g.mu.RUnlock()
+	if c == nil {
+		return nil, nil, nil
+	}
+	g.own.Signal(c.run, g.stopWork(c, graceful))
+	// Read after the signal: a Build that publishes from here on saw the
+	// stop, and publishes nothing.
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return c, c.srv, c.lis
+}
+
+// stopWork returns the stop of c, which the first stop of c's run runs as
+// the gateway's own work, on a goroutine of its own
+// (drain.Owner.Signal):
+//
+//  1. the stopping line, for a gateway that started;
+//  2. the transport stop, for a gateway a Start admitted: net/http's
+//     Shutdown (graceful), which closes the listener and waits for the
+//     connections to go idle, or Close;
+//  3. the wait for c's run to go idle: the Build, the serve loop and
+//     every admitted request have returned.
+//
+// The run finishes with the Shutdown's error when the work returns, so a
+// Shutdown returns only after all three. A stop that begins during a
+// Build finds nothing published: the Build, seeing the stop, publishes
+// nothing.
+func (g *Gateway) stopWork(c *gatewayLife, graceful bool) func() error {
+	return func() error {
+		g.mu.RLock()
+		srv, served, running := c.srv, c.served, c.running
+		g.mu.RUnlock()
+		if running {
+			line := "HTTP gateway stopping"
+			if graceful {
+				line = "HTTP gateway gracefully shutting down"
+			}
+			g.logLine(func(l contract.Logger) { l.Info(line) })
+		}
+		var err error
+		switch {
+		case srv == nil || !served:
+		case graceful:
+			err = srv.Shutdown(context.Background())
+		default:
+			_ = srv.Close()
+		}
+		<-c.run.Idle()
+		g.mu.Lock()
+		if !c.served {
+			c.discarded = true
+		}
+		lis := c.lis
+		g.mu.Unlock()
+		if lis != nil {
+			lis.logClosePanic()
+		}
+		return err
+	}
+}
+
+// logLine writes one Start or stop diagnostic through the gateway's
+// logger with fallbacklog.Write: a logger that panics falls back and
+// never skips the serve or teardown the line precedes.
+func (g *Gateway) logLine(write func(contract.Logger)) {
+	fallbacklog.Write(g.logger, write)
+}
+
+// publishedLocked returns the current life when its Build published it
+// and a stop has not taken it before it served, nil otherwise. Caller
+// holds g.mu.
+func (g *Gateway) publishedLocked() *gatewayLife {
+	c := g.cur
+	if c == nil || c.srv == nil || (!c.served && c.run.Stopping()) {
+		return nil
+	}
+	return c
 }
 
 // Address returns the address the gateway is listening on
 func (g *Gateway) Address() string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-
-	if g.httpServer != nil {
-		return g.httpServer.Addr
+	if c := g.publishedLocked(); c != nil {
+		return c.srv.Addr
 	}
 	return ""
 }
@@ -835,11 +1043,13 @@ func (g *Gateway) GRPCEndpoint() string {
 	return g.grpcEndpoint
 }
 
-// IsRunning returns true if the gateway is currently running
+// IsRunning reports whether the gateway is taking connections: it has
+// entered its first Accept and no stop has begun.
 func (g *Gateway) IsRunning() bool {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	return g.running
+	c := g.cur
+	return c != nil && c.running && !c.run.Stopping()
 }
 
 // Mux returns the underlying runtime.ServeMux.
@@ -847,5 +1057,8 @@ func (g *Gateway) IsRunning() bool {
 func (g *Gateway) Mux() *runtime.ServeMux {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	return g.mux
+	if c := g.publishedLocked(); c != nil {
+		return c.mux
+	}
+	return nil
 }

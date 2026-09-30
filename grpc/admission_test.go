@@ -2,6 +2,9 @@ package grpc
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	grpcgo "google.golang.org/grpc"
@@ -100,5 +103,39 @@ func BenchmarkAdmission(b *testing.B) {
 				}
 			})
 		})
+	}
+}
+
+// A gateway request admitted before the stop began holds the run until
+// the handler returns; a request that arrives after is refused with 503
+// and never reaches the handler.
+func TestAdmitRequests_HoldsTheRunAndRefusesOnceTheStopBegan(t *testing.T) {
+	var own drain.Owner
+	run := own.NewRun()
+	idleDuringRequest, ran := true, false
+	first := true
+	h := admitRequests(run, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		ran = true
+		if first {
+			run.Close() // the stop begins while the request runs
+			idleDuringRequest = drain.Closed(run.Idle())
+		}
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	if idleDuringRequest {
+		t.Error("the run went idle while an admitted request ran")
+	}
+	if !drain.Closed(run.Idle()) {
+		t.Error("the run is not idle once the request returned")
+	}
+
+	first, ran = false, false
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if ran {
+		t.Error("a request that arrived after the stop began ran")
+	}
+	if rec.Code != http.StatusServiceUnavailable || strings.TrimSpace(rec.Body.String()) != "server is stopping" {
+		t.Errorf("refused request = %d %q, want 503 \"server is stopping\"", rec.Code, rec.Body.String())
 	}
 }
