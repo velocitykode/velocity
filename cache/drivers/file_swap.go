@@ -65,11 +65,8 @@ func (s *FileStore) CompareAndSwapCtx(ctx context.Context, key string, expected,
 			return false, err
 		}
 	}
-	valueData, err := MarshalValue(value)
+	valueData, err := s.encodeValue(value)
 	if err != nil {
-		return false, fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
-	}
-	if err := s.checkValueSize(valueData); err != nil {
 		return false, err
 	}
 	want, wantErr := expectedShape(expected)

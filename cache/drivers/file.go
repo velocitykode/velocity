@@ -588,6 +588,34 @@ func (s *FileStore) lockKeyForPlainWrite(ctx context.Context, key string) (func(
 	return unlock, err
 }
 
+// encodeValue encodes value as a cache entry's Value, refusing a value
+// over the size cap. A write calls it before it takes the key's write
+// lock or the store mutex: the value's MarshalJSON (or MarshalText) is
+// user code, which may read or write this store, block, or panic, and
+// must not do so while this store holds a lock. A panic in it reaches the
+// caller with no lock held.
+func (s *FileStore) encodeValue(value interface{}) ([]byte, error) {
+	valueData, err := MarshalValue(value)
+	if err != nil {
+		return nil, fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
+	}
+	if err := s.checkValueSize(valueData); err != nil {
+		return nil, err
+	}
+	return valueData, nil
+}
+
+// encodeItem encodes an entry holding valueData (from encodeValue) and
+// expiring at expiration (nil: never). It runs no user code, so a write
+// calls it under its locks, where the expiration is computed.
+func encodeItem(valueData []byte, expiration *time.Time) ([]byte, error) {
+	data, err := json.Marshal(fileCacheItem{Value: valueData, Expiration: expiration})
+	if err != nil {
+		return nil, fmt.Errorf("velocity/cache: failed to marshal cache item: %w", err)
+	}
+	return data, nil
+}
+
 // GetCtx retrieves a value from the cache. The file store performs only
 // local disk I/O that is not cancellable through context, so ctx is
 // honoured as a pre-flight cancellation check but otherwise unused.
@@ -690,6 +718,10 @@ func (s *FileStore) PutCtx(ctx context.Context, key string, value interface{}, t
 			return err
 		}
 	}
+	valueData, err := s.encodeValue(value)
+	if err != nil {
+		return err
+	}
 	unlock, err := s.lockKeyForPlainWrite(ctx, key)
 	if err != nil {
 		return err
@@ -698,27 +730,12 @@ func (s *FileStore) PutCtx(ctx context.Context, key string, value interface{}, t
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Marshal the value
-	valueData, err := MarshalValue(value) //lock-held-ok: runs the value's MarshalJSON, user code, under the key lock and s.mu; the fix is filed
-	if err != nil {
-		return fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
-	}
-	if err := s.checkValueSize(valueData); err != nil {
-		return err
-	}
-
 	// ttl <= 0 means store forever (nil expiration), matching ForeverCtx;
 	// computing time.Now().Add(ttl) unconditionally would persist an
 	// already-expired entry for ttl=0.
-	item := fileCacheItem{
-		Value:      valueData,
-		Expiration: expirationFor(ttl),
-	}
-
-	// Marshal the cache item
-	data, err := json.Marshal(item)
+	data, err := encodeItem(valueData, expirationFor(ttl))
 	if err != nil {
-		return fmt.Errorf("velocity/cache: failed to marshal cache item: %w", err)
+		return err
 	}
 
 	// Write to file
@@ -770,6 +787,10 @@ func (s *FileStore) AddCtx(ctx context.Context, key string, value interface{}, t
 			return false, err
 		}
 	}
+	valueData, err := s.encodeValue(value)
+	if err != nil {
+		return false, err
+	}
 	unlock, err := s.lockKeyForWrite(ctx, key)
 	keyLocked := err == nil
 	if errors.Is(err, ErrLockNotSupported) {
@@ -783,22 +804,11 @@ func (s *FileStore) AddCtx(ctx context.Context, key string, value interface{}, t
 	defer s.mu.Unlock()
 
 	path := s.getCacheFilePath(key)
-	valueData, err := MarshalValue(value) //lock-held-ok: runs the value's MarshalJSON, user code, under the key lock and s.mu; the fix is filed
-	if err != nil {
-		return false, fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
-	}
-	if err := s.checkValueSize(valueData); err != nil {
-		return false, err
-	}
 	// ttl <= 0 means store forever (nil expiration); an Add with ttl=0 must
 	// insert a retrievable entry, not an already-expired one.
-	item := fileCacheItem{
-		Value:      valueData,
-		Expiration: expirationFor(ttl),
-	}
-	data, err := json.Marshal(item)
+	data, err := encodeItem(valueData, expirationFor(ttl))
 	if err != nil {
-		return false, fmt.Errorf("velocity/cache: failed to marshal cache item: %w", err)
+		return false, err
 	}
 
 	// Atomic create-if-absent: the kernel refuses the hard link (or the
@@ -866,6 +876,10 @@ func (s *FileStore) ForeverCtx(ctx context.Context, key string, value interface{
 			return err
 		}
 	}
+	valueData, err := s.encodeValue(value)
+	if err != nil {
+		return err
+	}
 	unlock, err := s.lockKeyForPlainWrite(ctx, key)
 	if err != nil {
 		return err
@@ -874,24 +888,9 @@ func (s *FileStore) ForeverCtx(ctx context.Context, key string, value interface{
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Marshal the value
-	valueData, err := MarshalValue(value) //lock-held-ok: runs the value's MarshalJSON, user code, under the key lock and s.mu; the fix is filed
+	data, err := encodeItem(valueData, nil)
 	if err != nil {
-		return fmt.Errorf("velocity/cache: failed to marshal value: %w", err)
-	}
-	if err := s.checkValueSize(valueData); err != nil {
 		return err
-	}
-
-	item := fileCacheItem{
-		Value:      valueData,
-		Expiration: nil,
-	}
-
-	// Marshal the cache item
-	data, err := json.Marshal(item)
-	if err != nil {
-		return fmt.Errorf("velocity/cache: failed to marshal cache item: %w", err)
 	}
 
 	// Write to file
