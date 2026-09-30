@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // Many goroutines asking for one key at once: one build, one value.
@@ -168,12 +169,43 @@ func TestDo_PanicFreesTheKey(t *testing.T) {
 	if p := <-panicked; p != hostile.PanicValue {
 		t.Fatalf("the builder's caller got %v, want the panic", p)
 	}
-	if err := <-waiterErr; err == nil || !strings.Contains(err.Error(), "panicked") {
-		t.Fatalf("waiter err = %v, want the panic as an error", err)
+	var pe *panicerr.Error
+	if err := <-waiterErr; !errors.As(err, &pe) || pe.Recovered() != hostile.PanicValue {
+		t.Fatalf("waiter err = %v, want the panic as a *panicerr.Error", err)
 	}
 	v, err := g.Do(context.Background(), "k", func() (int, error) { return 4, nil })
 	if err != nil || v != 4 {
 		t.Fatalf("retry = %d, %v", v, err)
+	}
+}
+
+// A build that panics with a value whose String blocks frees the key: the
+// panic value is kept as it is, never formatted before the key is freed,
+// so the next Do for the key builds anew.
+func TestDo_PanicValueIsNotFormattedBeforeTheKeyIsFreed(t *testing.T) {
+	var g Group[int]
+	code := hostile.New(t, hostile.Block, nil)
+	value := hostile.NewValue(code, "blocking panic value")
+	panicked := make(chan any, 1)
+	go func() {
+		defer func() { panicked <- recover() }()
+		_, _ = g.Do(context.Background(), "k", func() (int, error) { panic(value) })
+	}()
+	var p any
+	hostile.Within(t, hostile.Deadline, func() { p = <-panicked })
+	if p != value {
+		t.Fatalf("the builder's caller got %v, want the panic value", p)
+	}
+	var v int
+	var err error
+	hostile.Within(t, hostile.Deadline, func() {
+		v, err = g.Do(context.Background(), "k", func() (int, error) { return 5, nil })
+	})
+	if err != nil || v != 5 {
+		t.Fatalf("retry = %d, %v", v, err)
+	}
+	if code.Calls() != 0 {
+		t.Errorf("the panic value was formatted %d times by Do", code.Calls())
 	}
 }
 
@@ -207,8 +239,8 @@ func TestDo_NilCtx(t *testing.T) {
 	}
 }
 
-// TestImports keeps the package a leaf: the standard library and
-// internal/goroutine only.
+// TestImports keeps the package a leaf: the standard library,
+// internal/goroutine and internal/panicerr only.
 func TestImports(t *testing.T) {
 	fset := token.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool {
@@ -221,7 +253,7 @@ func TestImports(t *testing.T) {
 		for name, f := range pkg.Files {
 			for _, imp := range f.Imports {
 				p, _ := strconv.Unquote(imp.Path.Value)
-				if p == "github.com/velocitykode/velocity/internal/goroutine" {
+				if p == "github.com/velocitykode/velocity/internal/goroutine" || p == "github.com/velocitykode/velocity/internal/panicerr" {
 					continue
 				}
 				if first, _, _ := strings.Cut(p, "/"); strings.Contains(first, ".") {

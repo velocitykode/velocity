@@ -5,16 +5,17 @@
 // can call back into the component: holding the component's lock across
 // it deadlocks, and building twice under a race runs user code twice.
 //
-// It imports the standard library and internal/goroutine only.
+// It imports the standard library, internal/goroutine and
+// internal/panicerr only.
 package buildonce
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 
 	"github.com/velocitykode/velocity/internal/goroutine"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // Group builds values by key. The zero value is ready to use. Safe for
@@ -44,7 +45,8 @@ type call[V any] struct {
 // Once a build returns, the key is free again: the next Do builds anew, so
 // the caller publishes a successful value where later lookups find it
 // before build returns. A build that panics frees the key too: the panic
-// reaches Do's caller, and concurrent waiters get it as an error.
+// reaches Do's caller, and concurrent waiters get it as a *panicerr.Error
+// holding the raw panic value.
 //
 // The errors Do returns itself (a re-entrant call, a panicked build) do not
 // name the key: the caller wraps them with what the key names.
@@ -90,7 +92,9 @@ func (g *Group[V]) Do(ctx context.Context, key string, build func() (V, error)) 
 			g.finish(key, c)
 			return
 		}
-		c.err = fmt.Errorf("the build panicked: %v", p)
+		// The raw value, formatted only when the error is read: a value
+		// whose String or Error blocks must not keep the key held.
+		c.err = panicerr.FromRecovered(p)
 		g.finish(key, c)
 		panic(p)
 	}()
