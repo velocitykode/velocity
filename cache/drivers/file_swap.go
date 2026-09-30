@@ -55,6 +55,10 @@ func (s *FileStore) writeItemLocked(path string, item fileCacheItem) error {
 // platform without flock the swap returns an error wrapping
 // ErrLockNotSupported, since the store mutex alone cannot exclude another
 // process.
+//
+// expected is encoded before either lock is taken: its MarshalJSON is user
+// code, which may read or write this store. An expected value that cannot
+// be encoded is an error only where a live value is there to compare.
 func (s *FileStore) CompareAndSwapCtx(ctx context.Context, key string, expected, value interface{}, ttl time.Duration) (bool, error) {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
@@ -68,6 +72,7 @@ func (s *FileStore) CompareAndSwapCtx(ctx context.Context, key string, expected,
 	if err := s.checkValueSize(valueData); err != nil {
 		return false, err
 	}
+	want, wantErr := expectedShape(expected)
 	unlock, err := s.lockKeyForWrite(ctx, key)
 	if err != nil {
 		return false, fmt.Errorf("velocity/cache: FileStore.CompareAndSwap: %w", err)
@@ -87,15 +92,15 @@ func (s *FileStore) CompareAndSwapCtx(ctx context.Context, key string, expected,
 			return false, nil
 		}
 	} else {
-		if _, err := UnmarshalValue(item.Value); err != nil {
+		have, err := UnmarshalValue(item.Value)
+		if err != nil {
 			// A read reports this entry as a miss: nothing to match.
 			return false, nil
 		}
-		same, err := MatchesStoredValue(item.Value, expected)
-		if err != nil {
-			return false, fmt.Errorf("velocity/cache: failed to compare expected value: %w", err)
+		if wantErr != nil {
+			return false, fmt.Errorf("velocity/cache: failed to compare expected value: %w", wantErr)
 		}
-		if !same {
+		if !reflect.DeepEqual(have, want) {
 			return false, nil
 		}
 	}

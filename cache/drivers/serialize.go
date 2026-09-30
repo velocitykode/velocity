@@ -80,13 +80,25 @@ func MatchesStoredValue(stored []byte, expected interface{}) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("decode stored value: %w", err)
 	}
+	want, err := expectedShape(expected)
+	if err != nil {
+		return false, err
+	}
+	return reflect.DeepEqual(have, want), nil
+}
+
+// expectedShape returns expected in the shape a read of a serializing
+// store returns it (see MatchesStoredValue): encoded, then decoded again.
+// Encoding runs expected's own MarshalJSON, user code, so a store calls
+// this before it takes any lock.
+func expectedShape(expected interface{}) (interface{}, error) {
 	encoded, err := MarshalValue(expected)
 	if err != nil {
-		return false, fmt.Errorf("encode expected value: %w", err)
+		return nil, fmt.Errorf("encode expected value: %w", err)
 	}
 	want, err := UnmarshalValue(encoded)
 	if err != nil {
-		return false, fmt.Errorf("decode expected value: %w", err)
+		return nil, fmt.Errorf("decode expected value: %w", err)
 	}
-	return reflect.DeepEqual(have, want), nil
+	return want, nil
 }
