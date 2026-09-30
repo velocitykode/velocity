@@ -135,6 +135,29 @@ jobs:
             exit 1
           fi
 
+  # Rejects testing.AllocsPerRun outside a benchmark: it reads the
+  # process-wide malloc count, so a test comparing it fails whenever
+  # anything else allocates. Tests observe their contract directly; an
+  # allocation budget lives in a benchmark the benchmarks job checks.
+  alloc-average-lint:
+    name: allocation-average lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+      - name: Test the allocation-average checker against its golden cases
+        run: go test -count=1 ./scripts/ci/check-alloc-averages/
+      - name: Check for AllocsPerRun outside a benchmark
+        run: |
+          set -e
+          if ! scripts/ci/check-alloc-averages.sh; then
+            echo "::error::testing.AllocsPerRun used outside a benchmark; observe the contract directly in the test, or move the allocation budget into a benchmark listed in scripts/ci/check-zero-alloc-benchmarks.sh"
+            exit 1
+          fi
+
   # Reports calls to user code (loggers, func values, values formatted
   # through their own String/Error) made while framework code holds a lock
   # or runs inside a sync.Once. A go/types walker, stdlib only; see the
