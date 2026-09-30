@@ -129,7 +129,10 @@ type Batch struct {
 
 	dispatchEvent func(ctx context.Context, event interface{})
 
-	mu sync.RWMutex // protects finishedAt and lastError
+	// mu protects finishedAt and lastError, and serializes the in-memory
+	// repository's counter transitions (settleSlot) so a batch is never
+	// seen finished before every counted outcome is in its counters.
+	mu sync.RWMutex
 }
 
 // finishedAtSnapshot returns finishedAt under the lock. Every reader

@@ -273,24 +273,9 @@ func (r *inMemoryBatchRepository) IncrementSuccess(ctx context.Context, id Batch
 	if b == nil {
 		return nil, false, nil
 	}
-	// Conditional increment: only bump completed_jobs when we actually
-	// consumed a pending slot. Under duplicate delivery (worker crashed
-	// after marking the job done but before deleting the queue row, then
-	// a sibling worker re-popped it) the second IncrementSuccess would
-	// otherwise push completed_jobs above total_jobs and lie about
-	// progress. The atomic.Int32 CAS loop reserves exactly one slot.
-	if !decrementPendingIfPositive(&b.pendingJobs) {
-		return b, false, nil
-	}
-	b.completedJobs.Add(1)
-	justFinished := false
-	if b.pendingJobs.Load() <= 0 && b.finished.CompareAndSwap(false, true) {
-		b.mu.Lock()
-		b.finishedAt = time.Now()
-		b.mu.Unlock()
-		justFinished = true
-	}
-	return b, justFinished, nil
+	// The slot, the counter and the terminal claim move in one section:
+	// see settleSlot.
+	return b, b.settleSlot(1, 0, nil), nil
 }
 
 func (r *inMemoryBatchRepository) IncrementFailure(ctx context.Context, id BatchID, jobErr error) (*Batch, bool, error) {
@@ -303,30 +288,12 @@ func (r *inMemoryBatchRepository) IncrementFailure(ctx context.Context, id Batch
 	}
 	// The job's error is user code: its text is taken before the counters
 	// move and before the batch's lock.
-	var errText string
+	var errText *string
 	if jobErr != nil {
-		errText = jobErr.Error()
+		text := jobErr.Error()
+		errText = &text
 	}
-	// Conditional increment: same rationale as IncrementSuccess. A
-	// duplicate failure (e.g. the same job rerun by another worker on
-	// retry exhaustion) must not push failed_jobs past total_jobs.
-	if !decrementPendingIfPositive(&b.pendingJobs) {
-		return b, false, nil
-	}
-	b.failedJobs.Add(1)
-	if jobErr != nil {
-		b.mu.Lock()
-		b.lastError = errText
-		b.mu.Unlock()
-	}
-	justFinished := false
-	if b.pendingJobs.Load() <= 0 && b.finished.CompareAndSwap(false, true) {
-		b.mu.Lock()
-		b.finishedAt = time.Now()
-		b.mu.Unlock()
-		justFinished = true
-	}
-	return b, justFinished, nil
+	return b, b.settleSlot(0, 1, errText), nil
 }
 
 func (r *inMemoryBatchRepository) Cancel(ctx context.Context, id BatchID) (*Batch, error) {
@@ -349,20 +316,7 @@ func (r *inMemoryBatchRepository) DecrementPending(ctx context.Context, id Batch
 	if b == nil {
 		return nil, false, nil
 	}
-	// Same clamp as IncrementSuccess/Failure: a no-op when pending is
-	// already zero so duplicate skip notifications cannot drive the
-	// counter negative.
-	if !decrementPendingIfPositive(&b.pendingJobs) {
-		return b, false, nil
-	}
-	justFinished := false
-	if b.pendingJobs.Load() <= 0 && b.finished.CompareAndSwap(false, true) {
-		b.mu.Lock()
-		b.finishedAt = time.Now()
-		b.mu.Unlock()
-		justFinished = true
-	}
-	return b, justFinished, nil
+	return b, b.settleSlot(0, 0, nil), nil
 }
 
 func (r *inMemoryBatchRepository) Delete(ctx context.Context, id BatchID) error {
@@ -501,31 +455,38 @@ func ctxErr(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// decrementPendingIfPositive atomically decrements an atomic.Int32 only
-// when its current value is > 0. Returns true when the decrement was
-// applied, false when the counter was already zero (or negative, which
-// should be impossible but is treated as the same no-op case).
+// settleSlot records the outcome of one job of b: it takes one of b's
+// pending slots, adds completed and failed to their counters, records
+// errText as the last error when it is not nil, and reports whether this
+// call finished the batch. It does nothing, reporting false, when no slot
+// is pending, so a job delivered twice cannot push
 //
-// The CAS loop is needed because plain Add(-1) followed by a Load can
-// race with sibling workers and silently push the counter below zero.
-// Used by the in-memory batch repository to make duplicate
-// IncrementSuccess / IncrementFailure / DecrementPending calls safe:
-// the success / failure counter is only bumped when this call actually
-// consumed a pending slot, so the invariant
+//	completed_jobs + failed_jobs
 //
-//	completed_jobs + failed_jobs <= total_jobs
+// past total_jobs.
 //
-// holds even when the queue layer delivers the same job twice.
-func decrementPendingIfPositive(p *atomic.Int32) bool {
-	for {
-		cur := p.Load()
-		if cur <= 0 {
-			return false
-		}
-		if p.CompareAndSwap(cur, cur-1) {
-			return true
-		}
+// All of it happens in one critical section under b.mu, so no caller sees
+// the batch finished before every counted outcome is in its counters: a
+// failure is never missing when the terminal callbacks choose between Then
+// and Catch, or when BatchCompleted reads the counters. The lock is held
+// only for these fields; no user code runs under it.
+func (b *Batch) settleSlot(completed, failed int32, errText *string) (justFinished bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.pendingJobs.Load() <= 0 {
+		return false
 	}
+	b.pendingJobs.Add(-1)
+	b.completedJobs.Add(completed)
+	b.failedJobs.Add(failed)
+	if errText != nil {
+		b.lastError = *errText
+	}
+	if b.pendingJobs.Load() == 0 && b.finished.CompareAndSwap(false, true) {
+		b.finishedAt = time.Now()
+		return true
+	}
+	return false
 }
 
 // ----- default repository accessor ------------------------------------------
