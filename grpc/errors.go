@@ -1,11 +1,12 @@
 package grpc
 
 import (
-	"errors"
 	"sync"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 var (
@@ -131,7 +132,7 @@ func WrapError(err error) error {
 	}
 
 	if isDebugMode() {
-		return status.Error(codes.Internal, err.Error())
+		return status.Error(codes.Internal, errchain.Text(err))
 	}
 	return status.Error(codes.Internal, "internal server error")
 }
@@ -157,7 +158,7 @@ func WrapErrorWithCode(err error, code codes.Code) error {
 		}
 	}
 
-	return status.Error(code, err.Error())
+	return status.Error(code, errchain.Text(err))
 }
 
 // Code extracts the gRPC status code from an error.
@@ -187,7 +188,7 @@ func Message(err error) string {
 		return s.Message()
 	}
 
-	return err.Error()
+	return errchain.Text(err)
 }
 
 // IsCode checks if an error has a specific gRPC status code
@@ -246,5 +247,5 @@ func ErrorIs(err, target error) bool {
 			errStatus.Message() == targetStatus.Message()
 	}
 
-	return errors.Is(err, target)
+	return errchain.Is(err, target)
 }

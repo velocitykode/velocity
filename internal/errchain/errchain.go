@@ -213,16 +213,24 @@ const Unreadable = "text unavailable: its Error, String or Format method panicke
 // Error method panics. It does not bound how long Error runs or how long
 // its text is: an Error that blocks delays only its caller, which must not
 // hold a lock while calling Text.
-func Text(err error) (text string) {
+func Text(err error) string {
+	text, _ := ReadText(err)
+	return text
+}
+
+// ReadText is Text that also reports whether err's Error method returned:
+// ok is false, and text Unreadable, when it panicked. For a caller whose
+// outcome changes when the text cannot be read.
+func ReadText(err error) (text string, ok bool) {
 	if err == nil {
-		return ""
+		return "", true
 	}
 	defer func() {
 		if recover() != nil {
-			text = Unreadable
+			text, ok = Unreadable, false
 		}
 	}()
-	return err.Error()
+	return err.Error(), true
 }
 
 // Sprint returns fmt.Sprint(v) with v's own formatting method called

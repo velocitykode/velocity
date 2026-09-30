@@ -2,7 +2,6 @@ package grpc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -19,6 +18,7 @@ import (
 	"github.com/velocitykode/velocity/grpc/interceptors"
 	"github.com/velocitykode/velocity/grpc/internal/callhook"
 	"github.com/velocitykode/velocity/internal/drain"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -782,7 +782,7 @@ func (s *Server) serve(c *life, logFailure bool) (err error) {
 		c.serveErr = err
 		close(c.serveDone)
 		c.run.Release()
-		if err == nil || errors.Is(err, grpc.ErrServerStopped) {
+		if err == nil || errchain.Is(err, grpc.ErrServerStopped) {
 			return
 		}
 		if logFailure {
@@ -1009,7 +1009,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.own.Nested() {
 		s.own.Signal(c.run, work)
 		err := s.own.Stop(ctx, c.run, nil, nil)
-		if errors.Is(err, contract.ErrStopFromOwnWork) {
+		if errchain.Is(err, contract.ErrStopFromOwnWork) {
 			err = fmt.Errorf("velocity/grpc: %w: %w", err, grpc.ErrServerStopped)
 		}
 		return err

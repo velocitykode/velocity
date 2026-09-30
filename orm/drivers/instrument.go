@@ -799,7 +799,7 @@ func (r *instrumentedRows) Next(dest []driver.Value) error {
 	switch {
 	case err == nil:
 		r.count.Add(1)
-	case errors.Is(err, io.EOF):
+	case errchain.Is(err, io.EOF):
 		// Normal exhaustion; the close that follows reports the event.
 	default:
 		r.recordStreamErr(err)
@@ -860,7 +860,7 @@ func (r *instrumentedRows) NextResultSet() error {
 		return io.EOF
 	}
 	err := nrs.NextResultSet()
-	if err != nil && !errors.Is(err, io.EOF) {
+	if err != nil && !errchain.Is(err, io.EOF) {
 		r.recordStreamErr(err)
 	}
 	return err

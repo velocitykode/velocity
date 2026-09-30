@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -23,6 +22,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc/interceptors"
 	"github.com/velocitykode/velocity/internal/drain"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
@@ -825,7 +825,7 @@ func (g *Gateway) serve(c *gatewayLife, logFailure bool) (err error) {
 		c.serveErr = err
 		close(c.serveDone)
 		c.run.Release()
-		if err == nil || errors.Is(err, http.ErrServerClosed) {
+		if err == nil || errchain.Is(err, http.ErrServerClosed) {
 			return
 		}
 		if logFailure {
@@ -919,7 +919,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	if g.own.Nested() {
 		g.own.Signal(c.run, work)
 		err := g.own.Stop(ctx, c.run, nil, nil)
-		if errors.Is(err, contract.ErrStopFromOwnWork) {
+		if errchain.Is(err, contract.ErrStopFromOwnWork) {
 			err = fmt.Errorf("velocity/grpc: %w: %w", err, http.ErrServerClosed)
 		}
 		return err

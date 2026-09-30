@@ -388,3 +388,23 @@ func TestSprint_HostileSweep(t *testing.T) {
 		})
 	}
 }
+
+func TestReadText(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		want   string
+		wantOK bool
+	}{
+		{"nil", nil, "", true},
+		{"plain", io.EOF, "EOF", true},
+		{"text equal to Unreadable", errors.New(Unreadable), Unreadable, true},
+		{"panicking Error", panicky{}, Unreadable, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, ok := ReadText(tc.err); got != tc.want || ok != tc.wantOK {
+				t.Fatalf("ReadText = %q, %v; want %q, %v", got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}

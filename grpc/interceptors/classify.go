@@ -111,11 +111,8 @@ func classify(ctx context.Context, err error) (o outcome) {
 			if gs, ok := e.(grpcStatus); ok {
 				// The walk visits err itself first.
 				matched, atRoot, found = true, visited == 1, gs.GRPCStatus()
-			} else if x, ok := e.(interface{ As(any) bool }); ok {
-				var gs grpcStatus
-				if x.As(&gs) && gs != nil {
-					matched, found = true, gs.GRPCStatus()
-				}
+			} else if gs, ok := errchain.MatchesAs[grpcStatus](e); ok && gs != nil {
+				matched, found = true, gs.GRPCStatus()
 			}
 		}
 		deadline = deadline || errchain.Matches(e, context.DeadlineExceeded)
@@ -129,20 +126,24 @@ func classify(ctx context.Context, err error) (o outcome) {
 	case walked == errchain.Truncated && !matched:
 		return unclassifiable(reasonBudgetExhausted)
 	}
-	var st *status.Status
-	switch {
-	case found != nil && atRoot:
-		st = found
-	case found != nil:
-		p := found.Proto()
-		p.Message = err.Error()
-		st = status.FromProto(p)
-	case deadline:
-		st = status.New(codes.DeadlineExceeded, err.Error())
-	case canceled:
-		st = status.New(codes.Canceled, err.Error())
-	default:
-		st = status.New(codes.Unknown, err.Error())
+	st := found
+	if found == nil || !atRoot {
+		msg, ok := errchain.ReadText(err)
+		if !ok {
+			return unclassifiable(reasonPanicked)
+		}
+		switch {
+		case found != nil:
+			p := found.Proto()
+			p.Message = msg
+			st = status.FromProto(p)
+		case deadline:
+			st = status.New(codes.DeadlineExceeded, msg)
+		case canceled:
+			st = status.New(codes.Canceled, msg)
+		default:
+			st = status.New(codes.Unknown, msg)
+		}
 	}
 	o = outcome{code: st.Code(), ctxEnded: ctxErrInside}
 	if o.code == codes.OK {
