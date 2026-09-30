@@ -128,18 +128,25 @@ func (m *Manager) ConfigureWithContext(ctx context.Context, config Config) error
 func (m *Manager) Disk(name string) (Driver, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
-	if driver, ok := m.disks[name]; ok {
-		return driver, nil
-	}
-
-	return nil, fmt.Errorf("velocity/storage: disk %q not found: %w", name, ErrDiskNotFound)
+	return m.diskLocked(name)
 }
 
 // Default returns the default disk driver.
 // Returns ErrDiskNotFound if the default disk has not been configured.
+// The default's name and its disk are read under one lock, so a
+// concurrent SetDefault or Configure is seen whole or not at all.
 func (m *Manager) Default() (Driver, error) {
-	return m.Disk(m.defaultDisk)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.diskLocked(m.defaultDisk)
+}
+
+// diskLocked returns the disk name. The caller holds m.mu.
+func (m *Manager) diskLocked(name string) (Driver, error) {
+	if driver, ok := m.disks[name]; ok {
+		return driver, nil
+	}
+	return nil, fmt.Errorf("velocity/storage: disk %q not found: %w", name, ErrDiskNotFound)
 }
 
 // AddDisk adds a new disk to the manager
