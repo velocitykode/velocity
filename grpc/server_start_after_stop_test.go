@@ -31,7 +31,10 @@ func TestServerStart_AfterAStopReturnsErrServerStopped(t *testing.T) {
 				}
 				return nil
 			})
-			startHealth(t, s)
+			client := startHealth(t, s)
+			// StartAsync dispatches ServerStarted from its serve goroutine;
+			// a call completing proves that dispatch returned.
+			served(t, client)
 			s.Stop()
 
 			var err error

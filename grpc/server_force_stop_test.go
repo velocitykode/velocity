@@ -52,7 +52,8 @@ func TestServerStop_IndependentForceRunsAsStopWork(t *testing.T) {
 	lis := &nestedListener{Listener: loopback(t), nested: nested}
 	s := grpc.NewServer(grpc.WithListener(lis), grpc.WithLogger(logger))
 	nested.server.Store(s)
-	startHealth(t, s)
+	// Stop closes the listener through grpc-go only once grpc-go serves it.
+	served(t, startHealth(t, s))
 
 	owner := make(chan struct{})
 	go func() {

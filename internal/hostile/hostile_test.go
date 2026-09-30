@@ -43,6 +43,26 @@ func TestCode_Panic(t *testing.T) {
 	}
 }
 
+// A Run after Disarm counts but is not entered: the behaviour did not
+// run, so there is nothing for a test that waits on Entered to wait for.
+func TestCode_DisarmedRunIsNotEntered(t *testing.T) {
+	for _, mode := range Modes() {
+		c := New(t, mode, func() {})
+		c.Disarm()
+		if p := Within(t, Deadline, c.Run); p != nil {
+			t.Fatalf("%s: a disarmed Run panicked: %v", mode, p)
+		}
+		select {
+		case <-c.Entered():
+			t.Fatalf("%s: Entered is closed after a disarmed Run", mode)
+		default:
+		}
+		if c.Calls() != 1 {
+			t.Fatalf("%s: Calls() = %d, want 1", mode, c.Calls())
+		}
+	}
+}
+
 func TestCode_BlockUntilRelease(t *testing.T) {
 	c := New(t, Block, nil)
 	returned := make(chan struct{})

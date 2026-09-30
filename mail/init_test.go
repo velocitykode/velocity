@@ -50,6 +50,9 @@ func TestRegisterDriver(t *testing.T) {
 	mail.Drivers().Register("custom", func(_ context.Context, cfg mail.MailConfig) (mail.Mailer, error) {
 		return &mockMailer{}, nil
 	})
+	// The registry is process-wide: remove the driver so a rerun
+	// (-count) can register it again.
+	t.Cleanup(func() { mail.Drivers().Override("custom", nil) })
 
 	mailer, err := mail.NewMailer(mail.MailConfig{Driver: "custom"})
 	if err != nil {

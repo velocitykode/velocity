@@ -245,6 +245,9 @@ func TestManager_ChannelConcurrentLoserShutdown(t *testing.T) {
 		<-release
 		return &countingLogger{shutdowns: &shutdowns}, nil
 	})
+	// The registry is process-wide: remove the driver so a rerun
+	// (-count) can register it again.
+	t.Cleanup(func() { Drivers().Override(driverName, nil) })
 	// Safety valve: never hang the suite if overlap somehow fails to occur.
 	go func() {
 		time.Sleep(2 * time.Second)
@@ -327,6 +330,9 @@ func TestManager_ChannelConcurrentStackLoserNonDestructiveShutdown(t *testing.T)
 		<-release
 		return &countingLogger{shutdowns: &childShutdowns}, nil
 	})
+	// The registry is process-wide: remove the driver so a rerun
+	// (-count) can register it again.
+	t.Cleanup(func() { Drivers().Override(childDriver, nil) })
 	go func() {
 		time.Sleep(2 * time.Second)
 		once.Do(func() { close(release) })

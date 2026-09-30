@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/hostile"
 )
 
 // startTestServer spins up a Server with the run loop active and registers a
@@ -264,9 +266,11 @@ func TestHandleBroadcast_ConcurrentRegistrationNotBlocked(t *testing.T) {
 	}
 	s.mu.Unlock()
 
-	// Drain every client's Send so buffers never wedge during the storm.
+	// Drain every client's Send so buffers never wedge during the storm,
+	// counting the clients a fence has reached (see below).
 	stopDrain := make(chan struct{})
 	var drainWG sync.WaitGroup
+	var fenced atomic.Int64
 	drainWG.Add(1)
 	go func() {
 		defer drainWG.Done()
@@ -276,15 +280,20 @@ func TestHandleBroadcast_ConcurrentRegistrationNotBlocked(t *testing.T) {
 			chans = append(chans, c.send)
 		}
 		s.mu.RUnlock()
+		seen := make([]bool, len(chans))
 		for {
 			select {
 			case <-stopDrain:
 				return
 			default:
 			}
-			for _, ch := range chans {
+			for i, ch := range chans {
 				select {
-				case <-ch:
+				case msg := <-ch:
+					if msg.Type == "fence" && !seen[i] {
+						seen[i] = true
+						fenced.Add(1)
+					}
 				default:
 				}
 			}
@@ -295,6 +304,7 @@ func TestHandleBroadcast_ConcurrentRegistrationNotBlocked(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Broadcast storm.
+	var storms atomic.Int64
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -304,6 +314,7 @@ func TestHandleBroadcast_ConcurrentRegistrationNotBlocked(t *testing.T) {
 				return
 			default:
 				s.Broadcast(Message{Type: "storm"})
+				storms.Add(1)
 			}
 		}
 	}()
@@ -313,6 +324,7 @@ func TestHandleBroadcast_ConcurrentRegistrationNotBlocked(t *testing.T) {
 	// the fan-out.
 	var joinLeave int64
 	const writers = 4
+	var cycles [writers]atomic.Int64
 	for w := 0; w < writers; w++ {
 		wg.Add(1)
 		go func(w int) {
@@ -333,6 +345,7 @@ func TestHandleBroadcast_ConcurrentRegistrationNotBlocked(t *testing.T) {
 						return
 					}
 					atomic.AddInt64(&joinLeave, 1)
+					cycles[w].Add(1)
 				}
 			}
 		}(w)
@@ -352,9 +365,40 @@ func TestHandleBroadcast_ConcurrentRegistrationNotBlocked(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the thing, not a duration: once the storm is broadcasting,
+	// every writer completes a join/leave cycle.
+	hostile.Eventually(t, hostile.Deadline, "the storm broadcasting", func() bool {
+		return storms.Load() > 0
+	})
+	var base [writers]int64
+	for w := range cycles {
+		base[w] = cycles[w].Load()
+	}
+	hostile.Eventually(t, hostile.Deadline, "every writer cycling during the storm", func() bool {
+		for w := range cycles {
+			if cycles[w].Load() <= base[w] {
+				return false
+			}
+		}
+		return true
+	})
 	close(stop)
 	wg.Wait()
+
+	// The fan-out delivers broadcasts in order, off the run loop, and may
+	// still hold a backlog of storm jobs. A fence broadcast reaching every
+	// client proves that backlog delivered; stopping the drain before then
+	// leaves the fan-out warning about full queues into later tests'
+	// fallback capture, as the cleanup's Shutdown gives up on its deadline.
+	// A fence is dropped for a client whose queue is full when it arrives,
+	// so send another on every check until each client has had one.
+	hostile.Eventually(t, hostile.Deadline, "a fence reaching every client", func() bool {
+		if fenced.Load() == n {
+			return true
+		}
+		s.Broadcast(Message{Type: "fence"})
+		return false
+	})
 	close(stopDrain)
 	drainWG.Wait()
 

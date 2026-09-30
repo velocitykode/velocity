@@ -87,19 +87,24 @@ func New(t testing.TB, mode Mode, reenter func()) *Code {
 }
 
 // Run is the behaviour: the fakes call it before their own work. It counts
-// the call, marks the code entered, then, unless the code is disarmed,
-// panics, blocks until Release, or calls the re-entry func. The re-entry
-// func runs at the first Run only, so a component that calls the same user
-// code again from the re-entered call cannot recurse without end.
+// the call and, unless the code is disarmed, marks the code entered and
+// then panics, blocks until Release, or calls the re-entry func. A
+// disarmed Run only counts: it is not entered, so a test that sees Entered
+// knows the behaviour ran and can wait for what it does (the re-entry's
+// return, say), and a Run that lands after Disarm, as one a component
+// makes from a goroutine after its entry point returned can, leaves
+// nothing to wait for. The re-entry func runs at the first Run only, so a
+// component that calls the same user code again from the re-entered call
+// cannot recurse without end.
 func (c *Code) Run() {
 	if c == nil {
 		return
 	}
 	c.calls.Add(1)
-	c.enteredOnce.Do(func() { close(c.entered) })
 	if c.disarmed.Load() {
 		return
 	}
+	c.enteredOnce.Do(func() { close(c.entered) })
 	switch c.mode {
 	case Panic:
 		panic(PanicValue)
@@ -112,9 +117,10 @@ func (c *Code) Run() {
 	}
 }
 
-// Entered returns a channel closed when Run first starts, so a test can
-// wait until the user code is running (for example, blocked) before it
-// calls the component's other entry points.
+// Entered returns a channel closed when the behaviour first runs, so a
+// test can wait until the user code is running (for example, blocked)
+// before it calls the component's other entry points. A Run after Disarm
+// does not close it.
 func (c *Code) Entered() <-chan struct{} { return c.entered }
 
 // Release unblocks every Run blocked now and every later one. Idempotent.

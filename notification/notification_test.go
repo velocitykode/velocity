@@ -422,6 +422,9 @@ func TestChannelRegistry(t *testing.T) {
 	Drivers().Register("test-channel", func(_ context.Context, _ ChannelConfig) (Channel, error) {
 		return &testChannel{}, nil
 	})
+	// The registry is process-wide: remove the driver so a rerun
+	// (-count) can register it again.
+	t.Cleanup(func() { Drivers().Override("test-channel", nil) })
 
 	names := RegisteredChannels()
 	found := false
@@ -484,6 +487,9 @@ func TestChannelLazyInitConcurrent(t *testing.T) {
 		factoryMu.Unlock()
 		return &testChannel{}, nil
 	})
+	// The registry is process-wide: remove the driver so a rerun
+	// (-count) can register it again.
+	t.Cleanup(func() { Drivers().Override("lazy-test", nil) })
 
 	mgr := NewManager()
 
