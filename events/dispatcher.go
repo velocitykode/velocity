@@ -599,10 +599,13 @@ func (d *DefaultDispatcher) dispatchDetached(ctx context.Context, event interfac
 			err = panicerr.FromRecovered(p)
 		}
 	}()
-	return d.dispatchToListeners(event, func(listener Listener) error {
+	// The name is resolved once, with the listeners: a listener's failure
+	// is reported under it, and the event's Name is not called again.
+	name, listeners := d.resolveListeners(event)
+	return deliverEach(listeners, func(listener Listener) error {
 		err := deliverContained(deliver, listener)
 		if err != nil {
-			d.dispatchListenerFailure(ctx, event, listener, err)
+			d.dispatchListenerFailure(ctx, name, event, listener, err)
 		}
 		return err
 	})
@@ -669,15 +672,16 @@ func (d *DefaultDispatcher) SetDetachedFailureRecorder(fn func(ctx context.Conte
 }
 
 // dispatchListenerFailure dispatches the AsyncFailed for listener, which
-// failed with err during a detached delivery of event under ctx. The
+// failed with err during a detached delivery of event, named name, under
+// ctx. The
 // failure is reported through the failure-report bridge here, once, under
 // ctx, which carries the caller's trace IDs; then the AsyncFailed is
 // delivered to its own listeners detached, so a listener of AsyncFailed
 // that fails in turn is reported as well. A failure while delivering an
 // AsyncFailed is reported but not dispatched again, so a listener that
 // fails on every event cannot loop.
-func (d *DefaultDispatcher) dispatchListenerFailure(ctx context.Context, event interface{}, listener Listener, err error) {
-	failed := newAsyncFailed(ctx, event, listener, err)
+func (d *DefaultDispatcher) dispatchListenerFailure(ctx context.Context, name string, event interface{}, listener Listener, err error) {
+	failed := newAsyncFailed(ctx, name, listener, err)
 	ctx = d.reportDetached(ctx, failed)
 	if _, nested := event.(*AsyncFailed); nested {
 		return
@@ -869,6 +873,13 @@ func (d *DefaultDispatcher) GetListeners(event interface{}) []Listener {
 // returned slice as read-only: it is shared with the cache. The only in-place
 // mutator, PriorityDispatcher.getListenersForEvent, clones before sorting.
 func (d *DefaultDispatcher) getListenersForEvent(event interface{}) []Listener {
+	_, listeners := d.resolveListeners(event)
+	return listeners
+}
+
+// resolveListeners returns event's name and its listeners (see
+// getListenersForEvent).
+func (d *DefaultDispatcher) resolveListeners(event interface{}) (string, []Listener) {
 	eventName := d.getEventName(event)
 	cacheKey := resolvedKey{name: eventName, typ: reflect.TypeOf(event)}
 
@@ -879,7 +890,7 @@ func (d *DefaultDispatcher) getListenersForEvent(event interface{}) []Listener {
 	// never return a pre-mutation slice once a writer has bumped the epoch.
 	if cached, ok := d.resolvedCache.Load(cacheKey); ok {
 		if entry := cached.(resolvedListeners); entry.epoch == epoch {
-			return entry.listeners
+			return eventName, entry.listeners
 		}
 	}
 
@@ -893,7 +904,7 @@ func (d *DefaultDispatcher) getListenersForEvent(event interface{}) []Listener {
 	// Re-check under the lock: a concurrent miss may have populated it.
 	if cached, ok := d.resolvedCache.Load(cacheKey); ok {
 		if entry := cached.(resolvedListeners); entry.epoch == epoch {
-			return entry.listeners
+			return eventName, entry.listeners
 		}
 	}
 
@@ -936,7 +947,7 @@ func (d *DefaultDispatcher) getListenersForEvent(event interface{}) []Listener {
 	}
 
 	d.resolvedCache.Store(cacheKey, resolvedListeners{epoch: epoch, listeners: result})
-	return result
+	return eventName, result
 }
 
 // getEventName extracts the event name from various types.
@@ -967,8 +978,14 @@ func matchesPattern(name, pattern string) bool {
 // listener result. Each listener's delivery is contained (see
 // deliverContained): a panic in fn fails that listener only.
 func (d *DefaultDispatcher) dispatchToListeners(event interface{}, fn func(Listener) error) error {
+	return deliverEach(d.getListenersForEvent(event), fn)
+}
+
+// deliverEach applies fn to each listener, contained (see
+// deliverContained), and returns their failures joined.
+func deliverEach(listeners []Listener, fn func(Listener) error) error {
 	var errs []error
-	for _, listener := range d.getListenersForEvent(event) {
+	for _, listener := range listeners {
 		if err := deliverContained(fn, listener); err != nil {
 			errs = append(errs, err)
 		}

@@ -73,11 +73,13 @@ func (e *AsyncFailed) FailureSource() contract.ErrorSource {
 }
 
 // newAsyncFailed returns the AsyncFailed for listener, which failed with
-// err while handling event under ctx.
-func newAsyncFailed(ctx context.Context, event interface{}, listener Listener, err error) *AsyncFailed {
+// err while handling the event named eventName under ctx. The name is the
+// one the event's listeners were resolved by: the event's Name is user
+// code, and calling it again could fail or answer differently.
+func newAsyncFailed(ctx context.Context, eventName string, listener Listener, err error) *AsyncFailed {
 	return &AsyncFailed{
 		EventMeta:    eventmeta.Current(ctx),
-		EventName:    resolveEventName(event),
+		EventName:    eventName,
 		ListenerName: fmt.Sprintf("%T", listener),
 		Err:          err,
 	}
