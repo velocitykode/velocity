@@ -600,7 +600,7 @@ func (r *RedisDriver) FailedCtx(ctx context.Context, job queue.Job, err error, q
 	// Add failure information
 	failedData := map[string]interface{}{
 		"payload":   payload,
-		"error":     err.Error(),
+		"error":     errchain.Text(err),
 		"failed_at": time.Now(),
 	}
 
@@ -710,7 +710,7 @@ func (r *RedisDriver) Shutdown(ctx context.Context) error {
 	// it here so sibling drivers (e.g. apps that fan out to multiple
 	// Redis hosts) keep working after one driver shuts down.
 	err := r.client.Close()
-	if err != nil && errors.Is(err, redis.ErrClosed) {
+	if err != nil && errchain.Is(err, redis.ErrClosed) {
 		return nil
 	}
 	return err

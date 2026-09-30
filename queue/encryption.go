@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // Payload encryption (opt-in via QUEUE_ENCRYPT=true) protects job state at
@@ -158,7 +159,7 @@ func sealPayload(p *Payload) error {
 		// Fail closed on non-AEAD ciphers: without AAD the ciphertext is
 		// not bound to the job type, so a sealed Data blob could be
 		// replayed under a different job type. No EncryptBytes fallback.
-		if errors.Is(err, contract.ErrInvalidCipher) {
+		if errchain.Is(err, contract.ErrInvalidCipher) {
 			return fmt.Errorf("velocity/queue: payload encryption requires an AEAD cipher (AES-GCM) to bind ciphertext to the job type; set CRYPTO_CIPHER to a GCM cipher or disable QUEUE_ENCRYPT: %w", err)
 		}
 		return fmt.Errorf("velocity/queue: failed to encrypt payload data: %w", err)

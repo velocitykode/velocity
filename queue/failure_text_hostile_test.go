@@ -89,8 +89,10 @@ func TestBatchRepository_IncrementFailureWithHostileError(t *testing.T) {
 				fail()
 				read()
 			})
-			if mode == hostile.Panic && b.FailedJobs() != 1 {
-				t.Fatalf("FailedJobs = %d after a panicked and a clean failure, want 1", b.FailedJobs())
+			// An Error that panics records the failure with the fixed
+			// text: both failures count.
+			if mode == hostile.Panic && b.FailedJobs() != 2 {
+				t.Fatalf("FailedJobs = %d after a panicked and a clean failure, want 2", b.FailedJobs())
 			}
 		})
 	}

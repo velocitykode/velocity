@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 )
@@ -292,7 +293,7 @@ func (b *Batch) recordFailure(ctx context.Context, jobErr error) {
 		entry.fireCatch(b, jobErr)
 	}
 	if name := b.useCatchName(updated); name != "" {
-		dispatchBatchCallbackJob(ctx, name, CallbackCatch, b.id, jobErr.Error())
+		dispatchBatchCallbackJob(ctx, name, CallbackCatch, b.id, errchain.Text(jobErr))
 	}
 
 	// Auto-cancel when failures are not allowed. Idempotent at the

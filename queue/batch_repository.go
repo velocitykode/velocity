@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // BatchRepository is the persistent store for batch metadata and counters.
@@ -290,7 +291,7 @@ func (r *inMemoryBatchRepository) IncrementFailure(ctx context.Context, id Batch
 	// move and before the batch's lock.
 	var errText *string
 	if jobErr != nil {
-		text := jobErr.Error()
+		text := errchain.Text(jobErr)
 		errText = &text
 	}
 	return b, b.settleSlot(0, 1, errText), nil

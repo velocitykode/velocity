@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // ErrBatchRepositoryClosed is returned when an operation hits a closed
@@ -344,7 +345,7 @@ func (r *DatabaseBatchRepository) Find(ctx context.Context, id BatchID) (*Batch,
 
 	b, err := scanBatchRow(row)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errchain.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("velocity/queue: batch find: %w", err)
@@ -425,7 +426,7 @@ func (r *DatabaseBatchRepository) IncrementSuccess(ctx context.Context, id Batch
 func (r *DatabaseBatchRepository) IncrementFailure(ctx context.Context, id BatchID, jobErr error) (*Batch, bool, error) {
 	var truncated string
 	if jobErr != nil {
-		truncated = truncateErrorText(jobErr.Error(), 4096)
+		truncated = truncateErrorText(errchain.Text(jobErr), 4096)
 	}
 	return r.incrementCounter(ctx, id, false, true, &truncated)
 }

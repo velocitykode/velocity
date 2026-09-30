@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -13,6 +12,7 @@ import (
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/drain"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -325,9 +325,9 @@ func (w *Worker) work(id int) {
 				// Stop cancelled the worker's context is not an error: Stop
 				// can land between the Done check above and the driver's
 				// own context check.
-				var failed *jobFailedError
-				stopped := w.ctx.Err() != nil && errors.Is(err, w.ctx.Err())
-				if !errors.Is(err, ErrNoJobAvailable) && !errors.As(err, &failed) && !stopped {
+				_, failed := errchain.As[*jobFailedError](err)
+				stopped := w.ctx.Err() != nil && errchain.Is(err, w.ctx.Err())
+				if !errchain.Is(err, ErrNoJobAvailable) && !failed && !stopped {
 					w.logger.Error("Worker error", "id", id, "error", err)
 				}
 				// Back off on errors
@@ -346,7 +346,7 @@ type jobFailedError struct {
 	err error
 }
 
-func (e *jobFailedError) Error() string { return e.err.Error() }
+func (e *jobFailedError) Error() string { return errchain.Text(e.err) }
 func (e *jobFailedError) Unwrap() error { return e.err }
 
 // jobLogger returns the worker's logger bound to one job: its type under
@@ -487,7 +487,7 @@ func (w *Worker) processJob() error {
 			// done counts as shutdown. The job is not retried, not marked
 			// failed, and not routed through Failed(); the leased row stays
 			// reserved and the next worker (after retryAfter) reclaims it.
-			if (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) && w.ctx.Err() != nil {
+			if (errchain.Is(err, context.Canceled) || errchain.Is(err, context.DeadlineExceeded)) && w.ctx.Err() != nil {
 				log.Info("Job aborted by worker shutdown",
 					"duration_ms", duration.Milliseconds(),
 				)
@@ -607,7 +607,7 @@ func (w *Worker) ackReservation(log contract.Logger, token ReservationToken) boo
 	switch err := rd.AckCtx(ackCtx, token); {
 	case err == nil:
 		return true
-	case errors.Is(err, ErrLeaseLost):
+	case errchain.Is(err, ErrLeaseLost):
 		log.Warn("Lease lost before ack; the new owner will record success",
 			"token", token.ID,
 		)
@@ -737,7 +737,7 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 		}
 		pushCancel()
 		if requeueErr != nil {
-			if errors.Is(requeueErr, ErrLeaseLost) {
+			if errchain.Is(requeueErr, ErrLeaseLost) {
 				// Lease lost between handler return and release: another
 				// worker already owns the row. Do not failJob (that
 				// would write a duplicate failed_jobs row for a lease
@@ -844,7 +844,7 @@ func (w *Worker) failJob(ctx context.Context, log contract.Logger, job Job, jobT
 		switch failErr := rd.FailReservedCtx(cleanupCtx, reservation, job, err, w.queueName); {
 		case failErr == nil:
 			// Ownership confirmed; safe to fire side effects below.
-		case errors.Is(failErr, ErrFailedHookPanicked):
+		case errchain.Is(failErr, ErrFailedHookPanicked):
 			// Ownership confirmed and the failure recorded; only the
 			// job's Failed hook panicked. Log it and run the side
 			// effects below as for a clean record, so the batch and the
@@ -852,7 +852,7 @@ func (w *Worker) failJob(ctx context.Context, log contract.Logger, job Job, jobT
 			log.Error("Job Failed hook panicked after the failure was recorded",
 				"error", failErr,
 			)
-		case errors.Is(failErr, ErrLeaseLost):
+		case errchain.Is(failErr, ErrLeaseLost):
 			// Another worker reclaimed the row; the new owner is now
 			// responsible for it. Log and stop -- do NOT bump batch
 			// counters or fire JobFailed; the new owner will when its
@@ -879,7 +879,7 @@ func (w *Worker) failJob(ctx context.Context, log contract.Logger, job Job, jobT
 		// failed_jobs sink itself is degraded.
 		switch failErr := w.queue.FailedCtx(cleanupCtx, job, err, w.queueName); {
 		case failErr == nil:
-		case errors.Is(failErr, ErrFailedHookPanicked):
+		case errchain.Is(failErr, ErrFailedHookPanicked):
 			log.Error("Job Failed hook panicked after the failure was recorded",
 				"error", failErr,
 			)
