@@ -53,7 +53,8 @@ type Server struct {
 	// goroutine drain the whole queue), so signalling is non-blocking too. This
 	// replaces the earlier bounded `fanout chan broadcastJob`, whose 256-slot
 	// buffer let a backed-up fan-out block the run loop's enqueue and starve
-	// register/unregister.
+	// register/unregister. A stopped server discards what the queue still
+	// holds (see drainFanout).
 	fanoutMu  sync.Mutex
 	fanoutQ   []broadcastJob
 	fanoutSig chan struct{}
@@ -305,6 +306,10 @@ func (s *Server) serveWork(fn func()) {
 // pump, the broadcast fan-out, a connection's Close during the drain)
 // cannot wait for the goroutine it runs on: it stops the server and returns
 // an error wrapping ErrServerClosed at once.
+//
+// Broadcasts still queued for the fan-out when the server stops are
+// discarded, not delivered: their clients' pumps are ending. One Info line
+// counts them. A broadcast whose delivery has begun finishes.
 //
 // Shutdown is terminal: it marks the server stopped so a later Start returns
 // ErrServerClosed. The lifecycle is one-shot - create a new Server with New to
@@ -740,6 +745,10 @@ func (s *Server) fanoutLoop() {
 // the batch with the lock released, so handleBroadcast's concurrent append never
 // waits on a send. Re-checking after each batch catches jobs appended while the
 // previous batch was in flight.
+//
+// Once the server has stopped, the jobs not yet begun are discarded: their
+// clients' pumps are ending, so every send would fail. A job whose delivery
+// has begun finishes.
 func (s *Server) drainFanout() {
 	for {
 		s.fanoutMu.Lock()
@@ -751,9 +760,36 @@ func (s *Server) drainFanout() {
 		s.fanoutQ = nil
 		s.fanoutMu.Unlock()
 
-		for _, job := range batch {
+		for i, job := range batch {
+			if s.stopping() {
+				s.discardFanout(len(batch) - i)
+				return
+			}
 			s.callWithRecover("fanout", func() { s.deliver(job) })
 		}
+	}
+}
+
+// discardFanout drops the fan-out queue at shutdown, and writes one line
+// counting the broadcasts discarded (n from the fan-out's own batch plus
+// the queued ones) when there are any.
+func (s *Server) discardFanout(n int) {
+	s.fanoutMu.Lock()
+	n += len(s.fanoutQ)
+	s.fanoutQ = nil
+	s.fanoutMu.Unlock()
+	if n > 0 {
+		s.logInfo("websocket: fan-out backlog discarded at shutdown", "broadcasts", n)
+	}
+}
+
+// stopping reports whether Shutdown has closed the stop channel.
+func (s *Server) stopping() bool {
+	select {
+	case <-s.stopChan:
+		return true
+	default:
+		return false
 	}
 }
 
