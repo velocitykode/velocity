@@ -146,15 +146,16 @@ func TestParseAccept(t *testing.T) {
 	}
 }
 
-func TestPreferredMediaRange_DoesNotAllocate(t *testing.T) {
+// BenchmarkPreferredMediaRange holds PreferredMediaRange to no allocation
+// per call; the CI zero-allocation check runs it.
+func BenchmarkPreferredMediaRange(b *testing.B) {
 	accept := "text/html;q=0.9, application/json, */*;q=0.1"
-	allocs := testing.AllocsPerRun(100, func() {
-		if PreferredMediaRange(accept) != "application/json" {
-			t.Fatal("wrong preferred range")
-		}
-	})
-	if allocs != 0 {
-		t.Errorf("PreferredMediaRange allocated %v times, want 0", allocs)
+	if PreferredMediaRange(accept) != "application/json" {
+		b.Fatal("wrong preferred range")
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = PreferredMediaRange(accept)
 	}
 }
 

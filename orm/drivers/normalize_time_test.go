@@ -190,17 +190,11 @@ func TestNormalizeTimeArgs(t *testing.T) {
 		}
 	})
 
-	t.Run("no time args returns same slice without alloc", func(t *testing.T) {
+	t.Run("no time args returns same slice", func(t *testing.T) {
 		args := []any{"a", 1, 2.5, []byte("b"), nil}
 		out := NormalizeTimeArgs(args)
 		if &out[0] != &args[0] {
 			t.Error("slice copied despite no time args")
-		}
-		allocs := testing.AllocsPerRun(100, func() {
-			_ = NormalizeTimeArgs(args)
-		})
-		if allocs != 0 {
-			t.Errorf("fast path allocs = %v, want 0", allocs)
 		}
 	})
 
@@ -219,4 +213,14 @@ func TestNormalizeTimeArgs(t *testing.T) {
 			t.Errorf("input slice mutated: location %v", got.Location())
 		}
 	})
+}
+
+// BenchmarkNormalizeTimeArgs_NoTimeArgs holds the fast path, arguments with
+// no time value, to no allocation; the CI zero-allocation check runs it.
+func BenchmarkNormalizeTimeArgs_NoTimeArgs(b *testing.B) {
+	args := []any{"a", 1, 2.5, []byte("b"), nil}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = NormalizeTimeArgs(args)
+	}
 }

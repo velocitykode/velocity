@@ -135,7 +135,9 @@ func TestMarkReported_AroundAMarkedPanic(t *testing.T) {
 	}
 }
 
-func TestMarkerPredicates_Allocations(t *testing.T) {
+// BenchmarkMarkerPredicates holds the marker predicates to no allocation
+// per call; the CI zero-allocation check runs it.
+func BenchmarkMarkerPredicates(b *testing.B) {
 	base := errors.New("disk full")
 	tests := []struct {
 		name string
@@ -153,14 +155,12 @@ func TestMarkerPredicates_Allocations(t *testing.T) {
 		{"unmarked", fmt.Errorf("x: %w", base)},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			allocs := testing.AllocsPerRun(100, func() {
+		b.Run(tt.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
 				_ = IsReported(tt.err)
 				_ = IsResponseWritten(tt.err)
 				_ = HandledCause(tt.err)
-			})
-			if allocs != 0 {
-				t.Errorf("marker predicates allocated %.0f times per call, want 0", allocs)
 			}
 		})
 	}

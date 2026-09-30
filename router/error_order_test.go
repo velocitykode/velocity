@@ -238,8 +238,9 @@ func (e *asOnlyError) As(target any) bool {
 	return false
 }
 
-// The unmatched path classifies once and allocates nothing for it.
-func TestClassifyError_Allocations(t *testing.T) {
+// BenchmarkClassifyError_Unmatched holds the unmatched path's single
+// classification to no allocation; the CI zero-allocation check runs it.
+func BenchmarkClassifyError_Unmatched(b *testing.B) {
 	tests := []struct {
 		name string
 		err  error
@@ -249,13 +250,11 @@ func TestClassifyError_Allocations(t *testing.T) {
 		{"wrapped", fmt.Errorf("w: %w", contract.NewHTTPError(http.StatusForbidden))},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			allocs := testing.AllocsPerRun(100, func() {
+		b.Run(tt.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
 				f := classifyError(tt.err)
 				_, _, _ = f.answer()
-			})
-			if allocs != 0 {
-				t.Errorf("classifyError allocated %.0f times, want 0", allocs)
 			}
 		})
 	}

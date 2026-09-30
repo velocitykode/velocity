@@ -198,8 +198,9 @@ jobs:
     runs-on: ubuntu-latest
     # Skip on the weekly cron - benchmarks against an unchanged tree
     # produce no new signal. Smoke only: ensures benchmarks still
-    # compile and run. A benchstat-based regression gate (compare PR
-    # HEAD vs main baseline) remains a follow-up.
+    # compile and run, plus the zero-allocation benchmarks, which fail on
+    # any allocs/op. A benchstat-based regression gate (compare PR HEAD vs
+    # main baseline) remains a follow-up.
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v5
@@ -211,6 +212,8 @@ jobs:
         run: |
           go test -run='^$' -bench='BenchmarkRouter_(StaticHit|DynamicHit|MissFallback)' \
             -benchtime=5000x -benchmem ./router/
+      - name: Check the zero-allocation benchmarks
+        run: scripts/ci/check-zero-alloc-benchmarks.sh
 
   vulncheck:
     name: govulncheck

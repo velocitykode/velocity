@@ -118,7 +118,9 @@ func TestStatusOf_ParityWithErrorsAs(t *testing.T) {
 	}
 }
 
-func TestStatusOf_Allocations(t *testing.T) {
+// BenchmarkStatusOf holds StatusOf to no allocation per call; the CI
+// zero-allocation check runs it.
+func BenchmarkStatusOf(b *testing.B) {
 	tests := []struct {
 		name string
 		err  error
@@ -129,12 +131,10 @@ func TestStatusOf_Allocations(t *testing.T) {
 		{"joined", errors.Join(errors.New("x"), NewHTTPError(http.StatusConflict))},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			allocs := testing.AllocsPerRun(100, func() {
+		b.Run(tt.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
 				_, _, _ = StatusOf(tt.err)
-			})
-			if allocs != 0 {
-				t.Errorf("StatusOf allocated %.0f times per call, want 0", allocs)
 			}
 		})
 	}
