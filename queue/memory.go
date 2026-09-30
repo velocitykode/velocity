@@ -555,7 +555,7 @@ func (m *MemoryDriver) FailReservedCtx(ctx context.Context, token ReservationTok
 		return err
 	}
 	// The job's error is user code: its text is taken before the lock.
-	errText := jobErr.Error()
+	errText := errchain.Text(jobErr)
 
 	m.mu.Lock()
 	r, ok := m.reservations[token.ID]
@@ -694,7 +694,7 @@ func (m *MemoryDriver) FailedCtx(ctx context.Context, job Job, err error, queueN
 		return serr
 	}
 	// The job's error is user code: its text is taken before the lock.
-	errText := err.Error()
+	errText := errchain.Text(err)
 
 	m.mu.Lock()
 

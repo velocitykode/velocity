@@ -44,12 +44,12 @@ package eventemit
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -274,23 +274,19 @@ func DispatchContained(ctx context.Context, dispatch func(ctx context.Context, e
 // recordedError marks a dispatch failure a Failures already recorded.
 type recordedError struct{ err error }
 
-func (e *recordedError) Error() string { return e.err.Error() }
+func (e *recordedError) Error() string { return errchain.Text(e.err) }
 func (e *recordedError) Unwrap() error { return e.err }
 
 // Recorded reports whether err, or an error it wraps, is a failure a
 // Failures already recorded (a dispatch function built by
 // Failures.Recording returned it). The walk calls the Unwrap and As
-// methods of the errors err wraps, which may be user code: a panic in one
-// is contained, and err then counts as not recorded, so the failure is
-// recorded rather than lost.
-func Recorded(err error) (recorded bool) {
-	defer func() {
-		if recover() != nil {
-			recorded = false
-		}
-	}()
-	var r *recordedError
-	return errors.As(err, &r)
+// methods of the errors err wraps, which may be user code, through
+// errchain.As: bounded and contained, so a panic in one, or a chain that
+// loops, counts as not recorded, and the failure is recorded rather than
+// lost.
+func Recorded(err error) bool {
+	_, recorded := errchain.As[*recordedError](err)
+	return recorded
 }
 
 // EventName returns the name failures of event are logged under: the

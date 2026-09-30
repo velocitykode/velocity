@@ -563,7 +563,9 @@ func (d *DatabaseDriver) reserveNext(ctx context.Context, queueName string) (Job
 	var rec JobRecord
 	row := tx.QueryRowContext(owned, selectQuery, queueName, now, reclaimCutoff)
 	if err := scanJobRecord(row, &rec); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		// Row.Scan returns sql.ErrNoRows itself, unwrapped: comparing by
+		// identity runs no method of a driver error under d.mu.
+		if err == sql.ErrNoRows {
 			return JobRecord{}, ReservationToken{}, nil // No jobs available
 		}
 		return JobRecord{}, ReservationToken{}, fmt.Errorf("velocity/queue: failed to fetch job: %w", err)

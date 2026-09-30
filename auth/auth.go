@@ -15,6 +15,7 @@ import (
 	"github.com/velocitykode/velocity/auth/internal/identity"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
 
@@ -191,7 +192,7 @@ type RememberClearError struct {
 
 // Error describes the partial failure and its causes.
 func (e *RememberClearError) Error() string {
-	return ErrRememberClearPartial.Error() + ": " + e.Err.Error()
+	return errchain.Text(ErrRememberClearPartial) + ": " + errchain.Text(e.Err)
 }
 
 // Unwrap returns ErrRememberClearPartial and the joined causes.
@@ -1105,7 +1106,7 @@ func (m *Manager) RevokeSession(ctx context.Context, sessionID string) error {
 				}
 			}
 		}
-	case errors.Is(err, ErrSessionNotFound), errors.Is(err, ErrSessionExpired):
+	case errchain.Is(err, ErrSessionNotFound), errchain.Is(err, ErrSessionExpired):
 		// No live record, so no owner whose credential this session holds.
 	default:
 		m.logWarn("velocity/auth: revoke session: record read failed; remember-me not cleared", "session_id", sessionID, "error", err)

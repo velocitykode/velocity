@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/internal/errchain"
 )
 
 // DefaultFileCleanupInterval is the default period between expired-file sweeps.
@@ -100,11 +101,11 @@ func createFileExclusive(path string, data []byte) (created bool, err error) {
 	if lerr == nil {
 		return true, nil
 	}
-	if errors.Is(lerr, fs.ErrExist) {
+	if errors.Is(lerr, fs.ErrExist) { //error-inspection-ok: os file error, stdlib value, no user method
 		return false, nil
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, cacheFileMode)
-	if errors.Is(err, fs.ErrExist) {
+	if errors.Is(err, fs.ErrExist) { //error-inspection-ok: os file error, stdlib value, no user method
 		return false, nil
 	}
 	if err != nil {
@@ -483,7 +484,7 @@ func (s *FileStore) tryLockFileStripe(path string) (unlock func(), ok bool) {
 		return func() {}, true
 	}
 	unlock, busy, err := s.flockStripe(stripe)
-	if errors.Is(err, ErrLockNotSupported) {
+	if errchain.Is(err, ErrLockNotSupported) {
 		return func() {}, true
 	}
 	if err != nil || busy {
@@ -582,7 +583,7 @@ func (s *FileStore) entryStripe(path string) (stripe string, ok bool) {
 // these writes.
 func (s *FileStore) lockKeyForPlainWrite(ctx context.Context, key string) (func(), error) {
 	unlock, err := s.lockKeyForWrite(ctx, key)
-	if errors.Is(err, ErrLockNotSupported) {
+	if errchain.Is(err, ErrLockNotSupported) {
 		return func() {}, nil
 	}
 	return unlock, err
@@ -664,7 +665,7 @@ func (s *FileStore) GetCtx(ctx context.Context, key string) (interface{}, bool) 
 // does there.
 func (s *FileStore) removeExpired(key, path string) {
 	unlock, busy, err := s.flockStripe(s.keyStripe(key))
-	if errors.Is(err, ErrLockNotSupported) {
+	if errchain.Is(err, ErrLockNotSupported) {
 		unlock, busy, err = func() {}, false, nil
 	}
 	if err != nil || busy {
@@ -793,7 +794,7 @@ func (s *FileStore) AddCtx(ctx context.Context, key string, value interface{}, t
 	}
 	unlock, err := s.lockKeyForWrite(ctx, key)
 	keyLocked := err == nil
-	if errors.Is(err, ErrLockNotSupported) {
+	if errchain.Is(err, ErrLockNotSupported) {
 		unlock, err = func() {}, nil
 	}
 	if err != nil {
@@ -1052,7 +1053,7 @@ func (s *FileStore) flushStripe(ctx context.Context, stripe string, g *flushGrou
 	if len(g.entries) > 0 {
 		var err error
 		unlock, err = s.lockStripe(ctx, stripe, "stripe "+stripe)
-		if errors.Is(err, ErrLockNotSupported) {
+		if errchain.Is(err, ErrLockNotSupported) {
 			unlock, err = func() {}, nil
 		}
 		if err != nil {
