@@ -79,7 +79,7 @@ func TestEvents(t *testing.T) {
 		_, name, _ := strings.Cut(e, ": ")
 		got = append(got, name)
 	}
-	want := []string{"m.Base", "m.Embedding", "m.Generic", "m.Named", "m.Typed", "m.Untyped", "m.WithErrCodec"}
+	want := []string{"m.Bare", "m.BareByNew", "m.Base", "m.Embedder", "m.Embedding", "m.Enveloped", "m.Generic", "m.Named", "m.Typed", "m.Unbuilt", "m.Untyped", "m.WithErrCodec"}
 	sort.Strings(got)
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("events = %v, want %v", got, want)

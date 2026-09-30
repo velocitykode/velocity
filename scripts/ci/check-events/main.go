@@ -1,4 +1,4 @@
-// check-events reports framework event code that breaks one of two rules.
+// check-events reports framework event code that breaks one of three rules.
 //
 // Rule "field": an event field whose type does not survive the queue
 // codec. A queued listener receives its event after a JSON round trip: the
@@ -22,6 +22,18 @@
 // error when the event does not declare its own MarshalJSON and
 // UnmarshalJSON (the framework's error codec: the text crosses as a string
 // and decodes back to an error with that text).
+//
+// Rule "envelope": an event the framework builds that does not embed
+// contract.EventMeta. Every framework event carries the envelope (the
+// context it was dispatched under, its trace, span and parent span ids, and
+// when it happened), and code that handles framework events reads it one
+// way (Meta()); the queued listener path carries it across the codec. An
+// event is reported when it has no envelope and some non-test package of
+// the module builds a value of it: a composite literal of its type (or its
+// address), or new of it. A literal that fills an embedded field of an
+// enclosing literal builds part of that value, not an event of its own, so
+// a type the framework only offers for applications to embed (a base event
+// with a Name method) is not reported.
 //
 // Rule "emitter": a failure an eventemit.Emitter records on a path of its
 // own (Fail or FailLater) while the emitter never shares the app's
@@ -75,12 +87,14 @@ import (
 )
 
 const (
-	ruleField   = "field"
-	ruleEmitter = "emitter"
+	ruleField    = "field"
+	ruleEmitter  = "emitter"
+	ruleEnvelope = "envelope"
 )
 
 var fixes = []struct{ rule, fix string }{
 	{ruleField, "field: carry metadata with a concrete type (a string ID, a formatted message, a type label); an error field needs the event's MarshalJSON/UnmarshalJSON pair (eventmeta.ErrorText / eventmeta.TextError)"},
+	{ruleEnvelope, "envelope: embed contract.EventMeta in the event and fill it from the context the event is built under (eventmeta.Current, or eventmeta.Child for an operation that runs as a span of its own)"},
 	{ruleEmitter, "emitter: have the framework hand the emitter the app's Failures (Share, or SetShared for a process-wide emitter) where it wires the component's dispatcher"},
 }
 
@@ -141,6 +155,10 @@ type checker struct {
 	root   string
 	module string
 	result
+	// bare holds the events without the envelope, built the event types
+	// some package builds, both by package path and type name.
+	bare  map[string]bareEvent
+	built map[string]bool
 }
 
 // unit is one type-checked package.
@@ -231,7 +249,9 @@ func check(dir string, patterns []string) (result, error) {
 		u.pkg = pkg
 		c.fields(u)
 		c.emitters(u)
+		c.envelopes(u)
 	}
+	c.reportEnvelopes()
 	sort.Strings(c.hits)
 	sort.Strings(c.events)
 	return c.result, nil

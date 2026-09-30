@@ -2,11 +2,19 @@ package events
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"sync"
+
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/eventmeta"
 )
+
+// errNilModel is returned for a model event fired without a model: there
+// is no type to name the event by or to find the observers of.
+var errNilModel = errors.New("velocity/events: model event fired with a nil model")
 
 // ModelObserver interface for observing model lifecycle events. Each callback
 // receives the caller-supplied ctx so observers see request-scoped values
@@ -87,10 +95,14 @@ func (r *ObserverRegistry) GetObservers(modelType string) []ModelObserver {
 	return result
 }
 
-// Fire fires a model event to all registered observers
+// Fire fires a model event to all registered observers. A nil model
+// returns an error and reaches no observer.
 func (r *ObserverRegistry) Fire(ctx context.Context, event string, model interface{}) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if model == nil {
+		return errNilModel
 	}
 	modelType := r.getModelType(model)
 	observers := r.GetObservers(modelType)
@@ -132,9 +144,14 @@ func (r *ObserverRegistry) fireEvent(ctx context.Context, observer ModelObserver
 	}
 }
 
-// getModelType extracts the type name from a model instance
+// getModelType extracts the type name from a model instance: the name of
+// its type, or of the type it points to. It reads the type only, never the
+// model's methods, and returns "" for a nil model or an unnamed type.
 func (r *ObserverRegistry) getModelType(model interface{}) string {
 	t := reflect.TypeOf(model)
+	if t == nil {
+		return ""
+	}
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
@@ -189,7 +206,9 @@ func (d *ObservableDispatcher) ObserveModel(model interface{}, observer ModelObs
 	d.registry.ObserveModel(model, observer)
 }
 
-// FireModelEvent fires a model lifecycle event
+// FireModelEvent fires a model lifecycle event: to the model's observers,
+// then as a ModelEvent to the dispatcher's listeners. A nil model returns
+// an error and fires neither.
 func (d *ObservableDispatcher) FireModelEvent(ctx context.Context, event string, model interface{}) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -200,21 +219,27 @@ func (d *ObservableDispatcher) FireModelEvent(ctx context.Context, event string,
 	}
 
 	// Also dispatch as a regular event
-	modelType := d.registry.getModelType(model)
-	eventName := fmt.Sprintf("%s.%s", strings.ToLower(modelType), event)
+	return d.Dispatch(ctx, newModelEvent(ctx, event, d.registry.getModelType(model)))
+}
 
-	return d.Dispatch(ctx, &ModelEvent{
-		BaseEvent: BaseEvent{EventName: eventName},
-		Action:    event,
+// newModelEvent returns the ModelEvent for action on a model of type
+// modelType under ctx, named "<lowercased type>.<action>".
+func newModelEvent(ctx context.Context, action, modelType string) *ModelEvent {
+	return &ModelEvent{
+		EventMeta: eventmeta.Current(ctx),
+		BaseEvent: BaseEvent{EventName: strings.ToLower(modelType) + "." + action},
+		Action:    action,
 		ModelType: modelType,
-	})
+	}
 }
 
 // ModelEvent represents a model lifecycle event. It names the model's
 // type and the action, as diagnostics that survive the queue's JSON codec
 // unchanged; the model itself does not cross the event. Model observers
-// (Observe, ObserveModel) receive the live model.
+// (Observe, ObserveModel) receive the live model. EventMeta's Context is
+// the context FireModelEvent was called with.
 type ModelEvent struct {
+	contract.EventMeta
 	BaseEvent
 	Action    string // creating, created, updating, etc.
 	ModelType string
