@@ -178,8 +178,13 @@ func (a *App) serveHTTP() error {
 // on a goroutine of its own, with ctx handed to every step; Shutdown waits
 // for it or for ctx. At ctx it returns ctx.Err() and the teardown goes on
 // in the background, still in order, so no service closes beneath a step
-// that is still running. A step that never returns leaves every step after
-// it unrun. A Shutdown that overlaps or follows the first waits for that
+// that is still running. A step that drains admitted work (the event
+// dispatcher, the scheduler, the outbox relay) and returns at ctx with that
+// work still running is waited for until the work ends before any later
+// step runs, so the queue, cache and database are not closed beneath a
+// task, listener or dispatch; the steps after it are handed ctx, already
+// done, and force their stops at once. A step, or admitted work, that
+// never returns leaves every step after it unrun. A Shutdown that overlaps or follows the first waits for that
 // same teardown, or for its own ctx, and returns its result; none starts a
 // second teardown. A Shutdown called from inside the teardown (a module's
 // Shutdown, say) would wait on itself: the teardown goes on, and the call
@@ -228,6 +233,23 @@ func (a *App) teardownSteps(ctx context.Context) error {
 	// runs one that returns none.
 	step := func(fn func() error) { collect(teardown.Step(fn)) }
 	do := func(fn func()) { step(func() error { fn(); return nil }) }
+	// drainStep stops a child that drains admitted work (the event
+	// dispatcher, the scheduler, the outbox relay), bounded by ctx, so the
+	// child forces what it forces at the caller's deadline. When ctx ended
+	// first, the work is still running: the step then waits for the child's
+	// drain to finish (the same stop, detached from ctx's cancellation;
+	// each child keeps its drain's result for every later stop), so no
+	// service closes beneath that work. The step's result is the child's
+	// own; an expired ctx is the caller's error only.
+	drainStep := func(stop func(context.Context) error) {
+		step(func() error {
+			err := stop(ctx)
+			if err != nil && ctx.Err() != nil {
+				return stop(context.WithoutCancel(ctx))
+			}
+			return err
+		})
+	}
 
 	// 1. Stop accepting new connections and drain the in-flight requests
 	// until they finish or ctx ends. Then cancel the shutdown context,
@@ -244,7 +266,7 @@ func (a *App) teardownSteps(ctx context.Context) error {
 
 	// 2. Drain async event dispatcher workers (no-op if running sync).
 	if a.Router != nil {
-		step(func() error { return a.Router.ShutdownEventDispatcher(ctx) })
+		drainStep(a.Router.ShutdownEventDispatcher)
 		// 2a. Release the *os.Root file descriptor used by Context.File,
 		// Context.Download and Context.SaveFile. Idempotent; safe even
 		// if no file root was ever opened.
@@ -253,13 +275,13 @@ func (a *App) teardownSteps(ctx context.Context) error {
 
 	// 3. Stop scheduler
 	if a.Scheduler != nil {
-		step(func() error { return a.Scheduler.Shutdown(ctx) })
+		drainStep(a.Scheduler.Shutdown)
 	}
 
 	// 3a. Stop outbox relay (must run before queue/DB teardown so in-flight
 	// dispatches reach the queue and DB before they close).
 	if a.outboxRelay != nil {
-		step(func() error { return a.outboxRelay.Stop(ctx) })
+		drainStep(a.outboxRelay.Stop)
 	}
 
 	// 4. Shutdown chain modules in reverse order, then WithModules
