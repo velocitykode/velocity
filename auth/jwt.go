@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/velocitykode/velocity/auth/internal/identity"
 )
 
 // ErrUnsupportedSigningMethod is returned when the configured JWT algorithm
@@ -489,6 +491,10 @@ func (j *JWTManager) verificationKey() interface{} {
 
 // GenerateToken generates a JWT token for a user
 func (j *JWTManager) GenerateToken(user Authenticatable, customClaims ...map[string]interface{}) (string, error) {
+	id, subject, err := identity.Of(user)
+	if err != nil {
+		return "", err
+	}
 	now := time.Now()
 	expiresAt := now.Add(time.Duration(j.config.TTL) * time.Minute)
 
@@ -501,13 +507,13 @@ func (j *JWTManager) GenerateToken(user Authenticatable, customClaims ...map[str
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        jti,
-			Subject:   fmt.Sprintf("%v", user.GetAuthIdentifier()),
+			Subject:   subject,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			NotBefore: jwt.NewNumericDate(now),
 			Issuer:    j.config.Issuer,
 		},
-		UserID:    user.GetAuthIdentifier(),
+		UserID:    id,
 		TokenType: "access",
 	}
 	if j.config.Audience != "" {
@@ -549,6 +555,10 @@ func (j *JWTManager) GenerateToken(user Authenticatable, customClaims ...map[str
 // gracefully to "act as if user has no prior generation"; subsequent
 // Logout-driven bumps still invalidate the token.
 func (j *JWTManager) GenerateRefreshToken(user Authenticatable) (string, error) {
+	id, userID, err := identity.Of(user)
+	if err != nil {
+		return "", err
+	}
 	now := time.Now()
 	expiresAt := now.Add(time.Duration(j.config.RefreshTTL) * time.Minute)
 
@@ -557,22 +567,18 @@ func (j *JWTManager) GenerateRefreshToken(user Authenticatable) (string, error) 
 		return "", err
 	}
 
-	userID, _ := user.GetAuthIdentifier().(string)
-	if userID == "" {
-		userID = fmt.Sprintf("%v", user.GetAuthIdentifier())
-	}
 	generation, _ := j.refreshGenStore().Current(userID)
 
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        jti,
-			Subject:   fmt.Sprintf("%v", user.GetAuthIdentifier()),
+			Subject:   userID,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			NotBefore: jwt.NewNumericDate(now),
 			Issuer:    j.config.Issuer,
 		},
-		UserID:            user.GetAuthIdentifier(),
+		UserID:            id,
 		TokenType:         "refresh",
 		RefreshGeneration: generation,
 	}

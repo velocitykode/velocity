@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/velocitykode/velocity/auth/internal/identity"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
@@ -144,6 +145,15 @@ var (
 	ErrSchemeNotFound     = errors.New("scheme not found")
 	ErrNotInitialized     = errors.New("auth manager not initialized")
 	ErrInvalidSession     = errors.New("invalid session")
+
+	// ErrIdentifierUnreadable is returned by an operation that keys on a
+	// user's identifier (issuing a JWT or refresh token, signing in,
+	// recalling a remember-me session, minting a remember-me credential)
+	// when the identifier cannot be read: the user's GetAuthIdentifier
+	// panicked, or the identifier's own String, Error or Format method did.
+	// The operation writes nothing: an unreadable identifier never stands
+	// in as a text two users could share.
+	ErrIdentifierUnreadable = identity.ErrUnreadable
 
 	// ErrRememberClearPartial is matched (errors.Is) by the
 	// *RememberClearError Manager.RevokeSession and

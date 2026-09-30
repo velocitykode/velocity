@@ -408,3 +408,78 @@ func TestReadText(t *testing.T) {
 		})
 	}
 }
+
+// ReadValue reports whether it could read the value: a panicking formatting
+// method gives "" and false, never a text that could stand in for the
+// value, and a value whose own text is Unreadable is still read as it is.
+func TestReadValue(t *testing.T) {
+	var nilPtr *codeErr
+	for _, tc := range []struct {
+		name   string
+		v      any
+		want   string
+		wantOK bool
+	}{
+		{"nil", nil, "<nil>", true},
+		{"integer", uint(7), "7", true},
+		{"string", "alice", "alice", true},
+		{"stringer", stringerFunc(func() string { return "s" }), "s", true},
+		{"text equal to Unreadable", stringerFunc(func() string { return Unreadable }), Unreadable, true},
+		{"panicking Error", panicky{}, "", false},
+		{"panicking String", stringerFunc(func() string { panic("broke") }), "", false},
+		{"panicking Format", formatterFunc(func() string { panic("broke") }), "", false},
+		{"nil pointer receiver", nilPtr, "", false},
+		{"nested panic fmt re-raises", []any{nestedPanic{}}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ReadValue(tc.v)
+			if got != tc.want || ok != tc.wantOK {
+				t.Fatalf("ReadValue = %q, %v; want %q, %v", got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
+// The hostile sweep for ReadValue: a String method that panics, blocks or
+// calls back into ReadValue.
+func TestReadValue_HostileSweep(t *testing.T) {
+	for _, mode := range hostile.Modes() {
+		t.Run(mode.String(), func(t *testing.T) {
+			var inner string
+			var innerOK bool
+			code := hostile.New(t, mode, func() { inner, innerOK = ReadValue(io.EOF) })
+			type result struct {
+				text string
+				ok   bool
+			}
+			done := make(chan result, 1)
+			go func() { text, ok := ReadValue(hostileStringer{code: code}); done <- result{text, ok} }()
+			switch mode {
+			case hostile.Panic:
+				if got := <-done; got.ok || got.text != "" {
+					t.Fatalf("ReadValue after a panic = %q, %v; want \"\", false", got.text, got.ok)
+				}
+			case hostile.Block:
+				if !code.AwaitEntered(t) {
+					return
+				}
+				hostile.Within(t, hostile.Deadline, func() {
+					if text, ok := ReadValue(io.EOF); text != "EOF" || !ok {
+						t.Errorf("a concurrent ReadValue = %q, %v while another was blocked", text, ok)
+					}
+				})
+				code.Release()
+				if got := <-done; got.text != "hostile stringer" || !got.ok {
+					t.Fatalf("ReadValue once released = %q, %v", got.text, got.ok)
+				}
+			case hostile.Reenter:
+				if got := <-done; got.text != "hostile stringer" || !got.ok {
+					t.Fatalf("ReadValue after a re-entry = %q, %v", got.text, got.ok)
+				}
+				if inner != "EOF" || !innerOK {
+					t.Fatalf("the re-entered ReadValue = %q, %v, want EOF, true", inner, innerOK)
+				}
+			}
+		})
+	}
+}

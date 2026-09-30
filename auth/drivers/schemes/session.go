@@ -19,6 +19,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/session"
+	"github.com/velocitykode/velocity/auth/internal/identity"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/internal/clientip"
@@ -1253,6 +1254,15 @@ func (g *SessionScheme) anchorRecalledUser(r *http.Request, session auth.Session
 	// reached from both User() and CheckWithError() (G2's H-08).
 	oldSessionID := session.ID()
 
+	// The recalled user's identifier is the session's key to the user:
+	// read it before anything changes, so an unreadable one revives
+	// nothing and leaves the presented credential as it is.
+	userID, _, err := identity.Of(user)
+	if err != nil {
+		g.logWarn("velocity/auth: remember-cookie revival refused", "error", err)
+		return false
+	}
+
 	// A recall after the request's session was saved could not deliver
 	// the replacement credential its rotation mints, so it is refused and
 	// the presented credential stays as it is.
@@ -1304,7 +1314,7 @@ func (g *SessionScheme) anchorRecalledUser(r *http.Request, session auth.Session
 		}
 	}
 
-	session.Put(auth.UserIDSessionKey, user.GetAuthIdentifier())
+	session.Put(auth.UserIDSessionKey, userID)
 
 	// Write the new session to the server-side store on revival so
 	// administrative revocation surfaces actually have a record to
@@ -1553,6 +1563,13 @@ func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, us
 	if holder.isSealed() {
 		return nil, errSessionSaved
 	}
+	// The user's identifier is the session's key to the user: read it
+	// before anything changes, so an unreadable one signs nobody in and
+	// leaves the session as it was.
+	userID, _, err := identity.Of(user)
+	if err != nil {
+		return nil, err
+	}
 
 	session := g.getSession(r)
 	switch {
@@ -1641,7 +1658,7 @@ func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, us
 	}
 
 	// Store user ID in session
-	session.Put(auth.UserIDSessionKey, user.GetAuthIdentifier())
+	session.Put(auth.UserIDSessionKey, userID)
 
 	// Handle remember me as best-effort, after the session save. A
 	// failure here (e.g. the users table lacks a remember_token column,
@@ -2221,9 +2238,10 @@ func (g *SessionScheme) recordServerSession(r *http.Request, session auth.Sessio
 		g.logWarn("velocity/auth: server session store skipped (empty session id)")
 		return
 	}
-	userID, ok := user.GetAuthIdentifier().(string)
-	if !ok {
-		userID = fmt.Sprintf("%v", user.GetAuthIdentifier())
+	_, userID, err := identity.Of(user)
+	if err != nil {
+		g.logWarn("velocity/auth: server session store skipped", "error", err)
+		return
 	}
 	now := sessionclock.Now()
 	rec := &auth.StoredSession{
@@ -2375,6 +2393,10 @@ func (g *SessionScheme) issueRememberCookie(ctx context.Context, user auth.Authe
 // the user: overwriting the stored hash while unable to deliver the
 // replacement cookie would silently sign the device out.
 func (g *SessionScheme) mintRememberCookie(user auth.Authenticatable, persist func(hashed string) error) (*http.Cookie, error) {
+	_, userID, err := identity.Of(user)
+	if err != nil {
+		return nil, err
+	}
 	ttl := g.config.RememberTimeout()
 
 	// Generate remember token.
@@ -2390,7 +2412,7 @@ func (g *SessionScheme) mintRememberCookie(user auth.Authenticatable, persist fu
 	// accepts either form. A bare .(string) assertion here silently broke
 	// remember-me for every integer-PK app (the default shape).
 	issuedAt := sessionclock.Now()
-	value := rememberPayload(fmt.Sprint(user.GetAuthIdentifier()), issuedAt, token)
+	value := rememberPayload(userID, issuedAt, token)
 
 	// Encrypt value. The encryptor authenticates the payload, so the
 	// issue time cannot be altered.

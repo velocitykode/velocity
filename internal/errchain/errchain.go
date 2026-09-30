@@ -241,29 +241,41 @@ func ReadText(err error) (text string, ok bool) {
 // too) yields Unreadable as well; one fmt contains itself stays fmt's own
 // "%!v(PANIC=...)" text. A nil pointer whose method panics yields
 // Unreadable too, where fmt writes "<nil>". Like Text it does not bound how long the method
-// runs or how long its text is.
-func Sprint(v any) (text string) {
+// runs or how long its text is. Sprint is ReadValue with Unreadable for a
+// value ReadValue cannot read.
+func Sprint(v any) string {
+	if text, ok := ReadValue(v); ok {
+		return text
+	}
+	return Unreadable
+}
+
+// ReadValue returns v's text as Sprint formats it and true, or "" and false
+// when a formatting method panicked. It is the form for text that must not
+// stand in for a value it could not read: an identity derived from user
+// code, where two unreadable values sharing one text would share one key.
+func ReadValue(v any) (text string, ok bool) {
 	defer func() {
 		if recover() != nil {
-			text = Unreadable
+			text, ok = "", false
 		}
 	}()
 	switch x := v.(type) {
 	case nil:
-		return fmt.Sprint(nil)
+		return fmt.Sprint(nil), true
 	case fmt.Formatter:
 		var s state
 		x.Format(&s, 'v')
-		return string(s.buf)
+		return string(s.buf), true
 	case error:
-		return x.Error()
+		return x.Error(), true
 	case fmt.Stringer:
-		return x.String()
+		return x.String(), true
 	}
-	return fmt.Sprint(v)
+	return fmt.Sprint(v), true
 }
 
-// state is the fmt.State Sprint hands a Formatter: the plain %v verb, no
+// state is the fmt.State ReadValue hands a Formatter: the plain %v verb, no
 // width, precision or flags.
 type state struct{ buf []byte }
 
