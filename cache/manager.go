@@ -631,20 +631,17 @@ func (m *Manager) rememberWith(
 		return nil, addErr
 	}
 	if won {
-		// We are the populater. Run the callback, write the real value to
-		// the value key, then drop the lock. On callback error, drop the
-		// lock so the next caller can re-elect.
-		value, cbErr := rememberCallback(callback, unlockFn)
+		// We are the populater: run the callback and write the real value
+		// to the value key with the lock held; populate drops the lock
+		// however they end, before any event is dispatched.
+		value, cbErr, writeErr := rememberPopulate(callback, writeFn, unlockFn)
 		if cbErr != nil {
-			_ = unlockFn()
 			return nil, cbErr
 		}
-		if err := writeFn(value); err != nil {
-			_ = unlockFn()
-			m.dispatchCacheOperationFailed(ctx, m.defaultStore, "put", key, err)
-			return nil, err
+		if writeErr != nil {
+			m.dispatchCacheOperationFailed(ctx, m.defaultStore, "put", key, writeErr)
+			return nil, writeErr
 		}
-		_ = unlockFn()
 		m.dispatchCacheWritten(ctx, key, m.defaultStore, writtenTTL)
 		return value, nil
 	}
@@ -676,20 +673,19 @@ func (m *Manager) rememberWith(
 	return value, nil
 }
 
-// rememberCallback runs the populater's callback, user code run while the
-// populate lock is held. When the callback panics it drops the lock before
-// the panic goes on to the caller, so the next caller re-elects at once
-// instead of waiting out the lock's TTL.
-func rememberCallback(callback func() (interface{}, error), unlockFn func() error) (interface{}, error) {
-	returned := false
-	defer func() {
-		if !returned {
-			_ = unlockFn()
-		}
-	}()
-	value, err := callback()
-	returned = true
-	return value, err
+// rememberPopulate runs the populater's callback, then writes its value
+// when it returns no error, both while the populate lock is held. The
+// callback is user code, and so is the write (a store's serialization runs
+// a value's MarshalJSON): the lock is dropped however either ends, a panic
+// included, so the next caller re-elects at once instead of waiting out
+// the lock's TTL. A panic goes on to the caller.
+func rememberPopulate(callback func() (interface{}, error), writeFn func(interface{}) error, unlockFn func() error) (value interface{}, cbErr, writeErr error) {
+	defer func() { _ = unlockFn() }()
+	value, cbErr = callback()
+	if cbErr != nil {
+		return nil, cbErr, nil
+	}
+	return value, nil, writeFn(value)
 }
 
 // RememberForever gets from default cache or computes and stores forever. See
