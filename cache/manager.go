@@ -196,7 +196,8 @@ func (m *Manager) StoreWithContext(ctx context.Context, name string) (Store, err
 // concurrent first uses of one name wait for that build (or their ctx),
 // and a lookup of a name from inside its own build returns an error at
 // once. A store whose build finishes after a Shutdown that began after it
-// started is shut down, not published, and the caller gets an error.
+// started, or whose Start panics, is shut down, not published, and the
+// caller gets an error holding that store's Shutdown error too.
 func (m *Manager) createStore(ctx context.Context, name string) (Store, error) {
 	store, err := m.builds.Do(ctx, name, func() (Store, error) {
 		return m.buildStore(ctx, name)
@@ -250,21 +251,37 @@ func (m *Manager) buildStore(ctx context.Context, name string) (Store, error) {
 		return nil, &storeBuildError{fmt.Errorf("velocity/cache: store %q: %w", name, err)}
 	}
 
+	// Start is user code too: a panic in it is the build's error, and the
+	// store, never published, is shut down.
 	if starter, ok := store.(interface{ Start() }); ok {
-		starter.Start()
+		if err := teardown.Step(func() error { starter.Start(); return nil }); err != nil {
+			return nil, &storeBuildError{errors.Join(
+				fmt.Errorf("velocity/cache: store %q: start: %w", name, err),
+				disposeStore(ctx, name, store),
+			)}
+		}
 	}
 
 	m.mu.Lock()
 	if m.generation != generation {
 		m.mu.Unlock()
-		if sd, ok := store.(contract.ShutdownAware); ok {
-			_ = sd.Shutdown(ctx)
-		}
-		return nil, &storeBuildError{fmt.Errorf("velocity/cache: store %q: the manager was shut down while the store was built", name)}
+		return nil, &storeBuildError{errors.Join(
+			fmt.Errorf("velocity/cache: store %q: the manager was shut down while the store was built", name),
+			disposeStore(ctx, name, store),
+		)}
 	}
 	m.stores[name] = store
 	m.mu.Unlock()
 	return store, nil
+}
+
+// disposeStore shuts down a store the manager built but never published,
+// contained, and returns its error, which the caller returns with its own.
+func disposeStore(ctx context.Context, name string, store Store) error {
+	if err := teardown.Close(ctx, store); err != nil {
+		return fmt.Errorf("velocity/cache: shut down unpublished store %q: %w", name, err)
+	}
+	return nil
 }
 
 // storeBuildError marks an error buildStore returned, which already names

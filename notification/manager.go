@@ -162,7 +162,10 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 // Each name is still created once at a time: concurrent first uses wait
 // for that creation, and a lookup of a name from inside its own creation
 // returns an error at once. A channel whose creation finishes after a
-// Shutdown that began after it started is not registered.
+// Shutdown that began after it started is not registered: it is shut
+// down, and the error holds its Shutdown error too. A channel created while
+// SetChannel registered another under its name is shut down as well, and
+// the lookup returns the one set.
 func (m *Manager) Channel(name string) (Channel, error) {
 	// Fast path: check under read lock.
 	m.mu.RLock()
@@ -205,12 +208,22 @@ func (m *Manager) createAndRegister(name string) (Channel, error) {
 	m.mu.Lock()
 	if m.generation != generation {
 		m.mu.Unlock()
-		return nil, &createError{fmt.Errorf("velocity/notification: channel %q: the manager was shut down while the channel was created", name)}
+		return nil, &createError{errors.Join(
+			fmt.Errorf("velocity/notification: channel %q: the manager was shut down while the channel was created", name),
+			disposeChannel(name, ch),
+		)}
 	}
 	if existing, ok := m.channels[name]; ok {
 		// SetChannel registered one meanwhile: it wins, as it would have
-		// under the old write lock had it come first.
+		// under the old write lock had it come first. The channel created
+		// here is shut down; the lookup succeeds, so a failure to shut it
+		// down is written as a warning instead.
 		m.mu.Unlock()
+		if err := disposeChannel(name, ch); err != nil {
+			fallbacklog.Write(m.log(), func(l contract.Logger) {
+				l.Warn("velocity/notification: a channel created while another was set under its name failed to shut down", "channel", name, "error", err)
+			})
+		}
 		return existing, nil
 	}
 	m.channels[name] = ch
@@ -218,6 +231,15 @@ func (m *Manager) createAndRegister(name string) (Channel, error) {
 	// Handed after it is registered, never before: see handLogger.
 	m.handLogger(ch)
 	return ch, nil
+}
+
+// disposeChannel shuts down a channel the manager created but never
+// registered, contained, and returns its error.
+func disposeChannel(name string, ch Channel) error {
+	if err := teardown.Close(context.Background(), ch); err != nil {
+		return fmt.Errorf("velocity/notification: shut down unregistered channel %q: %w", name, err)
+	}
+	return nil
 }
 
 // createError marks an error createAndRegister returned, which Channel
