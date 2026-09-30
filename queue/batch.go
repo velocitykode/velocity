@@ -221,12 +221,10 @@ func (b *Batch) CancelCtx(ctx context.Context) {
 	// Persist the cancellation via the repository so cross-process
 	// workers see it.
 	if updated, err := DefaultBatchRepository().Cancel(ctx, b.id); err == nil && updated != nil {
-		// Mirror DB-side counter values into the local Batch so a
+		// Mirror the repository's counters onto the local Batch so a
 		// subsequent FailedJobs() reflects whatever else changed
 		// between our last read and the cancel.
-		b.failedJobs.Store(updated.failedJobs.Load())
-		b.completedJobs.Store(updated.completedJobs.Load())
-		b.pendingJobs.Store(updated.pendingJobs.Load())
+		b.copyCountersFrom(updated)
 	}
 	dispatchBatchEvent(ctx, b.dispatchEvent, func(meta contract.EventMeta) contract.Event {
 		return &BatchCancelled{
@@ -352,31 +350,56 @@ func (b *Batch) useFinallyName(updated *Batch) string {
 // because those are owned by the dispatcher process (closures) or by
 // the repository row already loaded into the receiver (names); clobbering
 // them on the dispatcher would break terminal callback firing.
+//
+// A readback is the receiver itself for the in-memory repository, whose
+// counters are already current: storing what was just loaded would lose
+// an outcome settled in between, so there is nothing to mirror. A distinct
+// readback (the database repository's) may arrive after a newer one
+// another goroutine already mirrored, so the counters only move forward:
+// pending takes the smaller value, completed and failed the larger. The
+// repository's counters only ever move that way, so the newest readback
+// dominates every field and the merge is always one real readback, never
+// a stale count written back. The merge runs in one section under b.mu,
+// the lock settleSlot holds, and runs no user code.
 func (b *Batch) copyCountersFrom(src *Batch) {
 	if src == nil || src == b {
 		return
 	}
-	b.pendingJobs.Store(src.pendingJobs.Load())
-	b.completedJobs.Store(src.completedJobs.Load())
-	b.failedJobs.Store(src.failedJobs.Load())
-	if src.cancelled.Load() {
+	// Snapshot src under its own lock BEFORE taking the receiver's mu so
+	// we never hold two batch locks at once.
+	pending, completed, failed := src.pendingJobs.Load(), src.completedJobs.Load(), src.failedJobs.Load()
+	cancelled, finished := src.cancelled.Load(), src.finished.Load()
+	var srcFinishedAt time.Time
+	var srcLastError string
+	if finished {
+		srcFinishedAt = src.finishedAtSnapshot()
+		srcLastError = src.lastErrorSnapshot()
+	}
+
+	b.mu.Lock()
+	if pending < b.pendingJobs.Load() {
+		b.pendingJobs.Store(pending)
+	}
+	if completed > b.completedJobs.Load() {
+		b.completedJobs.Store(completed)
+	}
+	if failed > b.failedJobs.Load() {
+		b.failedJobs.Store(failed)
+	}
+	if cancelled {
 		b.cancelled.Store(true)
 	}
-	if src.finished.Load() {
+	if finished {
 		b.finished.Store(true)
-		// Snapshot src under its own lock BEFORE taking the receiver's mu
-		// so we never hold two batch locks at once.
-		srcFinishedAt := src.finishedAtSnapshot()
-		srcLastError := src.lastErrorSnapshot()
-		b.mu.Lock()
 		if b.finishedAt.IsZero() {
 			b.finishedAt = srcFinishedAt
 		}
 		if srcLastError != "" {
 			b.lastError = srcLastError
 		}
-		b.mu.Unlock()
 	}
+	b.mu.Unlock()
+
 	// Names: copy if we don't already have one (the receiver was
 	// constructed without going through Save, e.g. on a remote worker
 	// that just called FindBatch).
