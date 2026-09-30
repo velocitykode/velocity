@@ -28,12 +28,15 @@ var (
 
 // DefaultDispatcher is the default event dispatcher implementation
 type DefaultDispatcher struct {
-	mu           sync.RWMutex
-	listeners    map[string][]listenerEntry
-	wildcards    map[string][]listenerEntry
-	queue        QueueDispatcher // Optional queue dispatcher for async events
-	nextID       int             // Counter for generating listener IDs
-	listenerByID map[int]string  // Maps listener ID to event name for removal
+	mu        sync.RWMutex
+	listeners map[string][]listenerEntry
+	wildcards map[string][]listenerEntry
+	queue     QueueDispatcher // Optional queue dispatcher for async events
+	nextID    int             // Counter for generating listener IDs
+	// keysByID holds every name or pattern a listener ID was registered
+	// under (a []string key registers one ID under several), in
+	// registration order, repeats kept, so Off removes it everywhere.
+	keysByID map[int][]string
 
 	// typed holds the listeners registered under an EventType key, in
 	// registration order. They are matched against an event's Go type, not
@@ -48,16 +51,25 @@ type DefaultDispatcher struct {
 	// rather than data guarded by d.mu so the common cache-hit path needs no
 	// d.mu at all.
 	//
+	// It is bounded: every listener mutation (Listen, Off, Flush) empties
+	// it under d.mu.Lock, and it holds at most maxResolvedEntries entries,
+	// counted in cacheLen; past that a name is resolved on each dispatch
+	// and not stored. Entries are stored only under d.mu.RLock, so none
+	// built before a mutation survives it, and a removed listener is not
+	// kept reachable. A long-lived dispatcher that sees unbounded distinct
+	// event names (dynamic names matched by a wildcard) stays bounded.
+	//
 	// Each entry is tagged with the cacheEpoch under which it was built.
-	// Every listener/wildcard mutation (Listen, Off, Flush) bumps cacheEpoch
-	// under d.mu.Lock BEFORE it mutates listener state, so a concurrent
-	// cache-hit dispatch (which bypasses d.mu) observing the new epoch finds
-	// its entry stale and falls back to the locked resolve path -- where it
-	// blocks behind the writer and sees the completed mutation. This restores
-	// the pre-cache property that a dispatch starting after a writer takes
-	// d.mu.Lock cannot fire a removed listener or miss a newly added one.
+	// Every mutation bumps cacheEpoch under d.mu.Lock BEFORE it mutates
+	// listener state, so a concurrent cache-hit dispatch (which bypasses
+	// d.mu) holding an entry it loaded before the mutation finds it stale and
+	// falls back to the locked resolve path -- where it blocks behind the
+	// writer and sees the completed mutation. A dispatch starting after a
+	// writer takes d.mu.Lock cannot fire a removed listener or miss a newly
+	// added one.
 	resolvedCache sync.Map // resolvedKey -> resolvedListeners
 	cacheEpoch    atomic.Uint64
+	cacheLen      atomic.Int64
 
 	// failureReporter, when set, receives every dispatched event that
 	// implements contract.FailureEvent, synchronously, before listener
@@ -92,6 +104,11 @@ type typedEntry struct {
 	listener Listener
 }
 
+// maxResolvedEntries bounds resolvedCache. Framework and application event
+// names are a small fixed set in practice; the bound only matters for names
+// built at run time.
+const maxResolvedEntries = 1024
+
 // resolvedKey is a resolvedCache key. The Go type is part of it because
 // EventType listeners match by type, so two events that share a name can
 // reach different listeners.
@@ -117,9 +134,9 @@ type QueueDispatcher interface {
 // NewDispatcher creates a new event dispatcher
 func NewDispatcher() *DefaultDispatcher {
 	return &DefaultDispatcher{
-		listeners:    make(map[string][]listenerEntry),
-		wildcards:    make(map[string][]listenerEntry),
-		listenerByID: make(map[int]string),
+		listeners: make(map[string][]listenerEntry),
+		wildcards: make(map[string][]listenerEntry),
+		keysByID:  make(map[int][]string),
 	}
 }
 
@@ -258,7 +275,7 @@ func (d *DefaultDispatcher) Listen(key interface{}, listener Listener) int {
 
 	// Invalidate the resolved cache before touching listener state so a
 	// concurrent fast-path dispatch cannot keep using a pre-mutation slice.
-	d.cacheEpoch.Add(1)
+	d.invalidateResolved()
 
 	// Generate a unique ID for this listener
 	d.nextID++
@@ -293,43 +310,75 @@ func (d *DefaultDispatcher) addListener(event string, listener Listener, id int)
 		d.listeners[event] = append(d.listeners[event], entry)
 	}
 
-	// Track ID to event mapping for removal
-	d.listenerByID[id] = event
+	// Track every key of the ID for removal
+	d.keysByID[id] = append(d.keysByID[id], event)
 }
 
-// Off removes a listener by its ID.
-// Returns true if the listener was found and removed, false otherwise.
+// invalidateResolved empties the resolved cache before a listener
+// mutation. Caller must hold d.mu.Lock.
+func (d *DefaultDispatcher) invalidateResolved() {
+	d.cacheEpoch.Add(1)
+	d.resolvedCache.Clear()
+	d.cacheLen.Store(0)
+}
+
+// Off removes a listener by its ID, under every name and pattern it was
+// registered for. Returns true if the listener was found and removed,
+// false otherwise.
 func (d *DefaultDispatcher) Off(id int) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	eventName, exists := d.listenerByID[id]
+	keys, exists := d.keysByID[id]
 	if !exists {
 		return d.removeTyped(id)
 	}
 
 	// Invalidate the resolved cache before mutating listener state.
-	d.cacheEpoch.Add(1)
+	d.invalidateResolved()
 
-	// Remove from the appropriate map based on whether it's a wildcard
-	var removed bool
-	if strings.Contains(eventName, "*") {
-		d.wildcards[eventName], removed = d.removeListenerByID(d.wildcards[eventName], id)
-		if len(d.wildcards[eventName]) == 0 {
-			delete(d.wildcards, eventName)
-		}
-	} else {
-		d.listeners[eventName], removed = d.removeListenerByID(d.listeners[eventName], id)
-		if len(d.listeners[eventName]) == 0 {
-			delete(d.listeners, eventName)
+	for _, key := range keys {
+		d.removeEntries(key, id)
+	}
+	delete(d.keysByID, id)
+	return true
+}
+
+// removeEntries removes every entry of listener id registered under key, a
+// name or a pattern. Caller must hold d.mu.Lock.
+func (d *DefaultDispatcher) removeEntries(key string, id int) {
+	m := d.listeners
+	if strings.Contains(key, "*") {
+		m = d.wildcards
+	}
+	kept := m[key][:0]
+	for _, entry := range m[key] {
+		if entry.id != id {
+			kept = append(kept, entry)
 		}
 	}
-
-	if removed {
-		delete(d.listenerByID, id)
+	if len(kept) == 0 {
+		delete(m, key)
+		return
 	}
+	m[key] = kept
+}
 
-	return removed
+// forgetKey drops key from the keys listener id was registered under, after
+// Flush removed its entries there. Caller must hold d.mu.Lock.
+func (d *DefaultDispatcher) forgetKey(id int, key string) {
+	keys := d.keysByID[id]
+	kept := keys[:0]
+	for _, k := range keys {
+		if k != key {
+			kept = append(kept, k)
+		}
+	}
+	if len(kept) == 0 {
+		delete(d.keysByID, id)
+		return
+	}
+	d.keysByID[id] = kept
 }
 
 // removeTyped removes the EventType listener with the given ID. Caller must
@@ -338,22 +387,12 @@ func (d *DefaultDispatcher) removeTyped(id int) bool {
 	for i, entry := range d.typed {
 		if entry.id == id {
 			// Invalidate the resolved cache before mutating listener state.
-			d.cacheEpoch.Add(1)
+			d.invalidateResolved()
 			d.typed = append(d.typed[:i], d.typed[i+1:]...)
 			return true
 		}
 	}
 	return false
-}
-
-// removeListenerByID removes a listener entry by ID from a slice
-func (d *DefaultDispatcher) removeListenerByID(entries []listenerEntry, id int) ([]listenerEntry, bool) {
-	for i, entry := range entries {
-		if entry.id == id {
-			return append(entries[:i], entries[i+1:]...), true
-		}
-	}
-	return entries, false
 }
 
 // Subscribe registers an event subscriber
@@ -819,13 +858,12 @@ func (d *DefaultDispatcher) Flush(event string) {
 	defer d.mu.Unlock()
 
 	// Invalidate the resolved cache before mutating listener state.
-	d.cacheEpoch.Add(1)
+	d.invalidateResolved()
 
-	// Remove listener ID mappings for this event
-	if entries, ok := d.listeners[event]; ok {
-		for _, entry := range entries {
-			delete(d.listenerByID, entry.id)
-		}
+	// A listener also registered under other keys stays there, and Off
+	// still finds it.
+	for _, entry := range d.listeners[event] {
+		d.forgetKey(entry.id, event)
 	}
 	delete(d.listeners, event)
 
@@ -833,7 +871,7 @@ func (d *DefaultDispatcher) Flush(event string) {
 	for pattern, entries := range d.wildcards {
 		if matchesPattern(event, pattern) {
 			for _, entry := range entries {
-				delete(d.listenerByID, entry.id)
+				d.forgetKey(entry.id, pattern)
 			}
 			delete(d.wildcards, pattern)
 		}
@@ -946,8 +984,24 @@ func (d *DefaultDispatcher) resolveListeners(event interface{}) (string, []Liste
 		}
 	}
 
-	d.resolvedCache.Store(cacheKey, resolvedListeners{epoch: epoch, listeners: result})
+	d.storeResolved(cacheKey, resolvedListeners{epoch: epoch, listeners: result})
 	return eventName, result
+}
+
+// storeResolved stores entry under key unless the cache holds
+// maxResolvedEntries entries already. Caller must hold d.mu.RLock, so no
+// mutation can clear the cache between the check and the store.
+func (d *DefaultDispatcher) storeResolved(key resolvedKey, entry resolvedListeners) {
+	for n := d.cacheLen.Load(); n < maxResolvedEntries; n = d.cacheLen.Load() {
+		if !d.cacheLen.CompareAndSwap(n, n+1) {
+			continue
+		}
+		if _, loaded := d.resolvedCache.LoadOrStore(key, entry); loaded {
+			// A concurrent resolve of the same key stored it first.
+			d.cacheLen.Add(-1)
+		}
+		return
+	}
 }
 
 // getEventName extracts the event name from various types.
