@@ -382,39 +382,19 @@ func TestC01_DatabaseDriver_MalformedJSONIsQuarantined(t *testing.T) {
 	}
 }
 
-// TestC01_DatabaseDriver_PoisonRowSurvivesCallerCancellation documents the
-// known caller-cancellation limitation of the C-01 quarantine path, driving
-// the real PopCtxWithTrace end-to-end via the popQuarantineCommitHook
-// test seam so a future regression in the pop function itself (mis-routing
-// the Commit error, accidentally returning ErrPoisonJob on a cancelled
-// commit, etc.) is caught.
+// TestC01_DatabaseDriver_PoisonQuarantineLandsAfterCallerCancel drives the
+// real PopCtx end-to-end through the popQuarantineCommitHook test seam: the
+// hook cancels the caller's ctx between the quarantine writes and the
+// commit. The quarantine transaction does not take the caller's
+// cancellation, so the quarantine still lands.
 //
-// Setup: a poison row in `jobs`, no entries in `failed_jobs`. We install a
-// hook that fires once: it cancels the caller ctx between the quarantine
-// writes and tx.Commit(). database/sql keeps the BeginTx ctx tied to the
-// transaction lifetime, so Commit fails with `context canceled` and the
-// deferred Rollback discards the quarantine writes.
+// Asserted:
 //
-// Asserted invariants in the cancelled branch (driven by PopCtxWithTrace,
-// NOT by direct calls to quarantinePoisonLocked):
-//
-//   - PopCtxWithTrace returns an error that is NOT ErrPoisonJob. The worker
-//     thus does not falsely report a quarantine that never landed.
-//   - The poison row remains live in `jobs` (deferred Rollback discarded
-//     the DELETE).
-//   - `failed_jobs` is unchanged (deferred Rollback discarded the INSERT).
-//
-// We then re-run PopCtxWithTrace with a fresh ctx (no hook) and assert
-// quarantine completes correctly: row gone from `jobs`, row landed in
-// `failed_jobs`, ErrPoisonJob returned. The worker's normal retry
-// behaviour (any pop error -> back off -> pop again) closes the gap on
-// its own.
-//
-// True caller-cancel-resistant quarantine would require rebeginning the
-// tx with a detached ctx (or splitting quarantine into a second tx).
-// Neither is implemented; this test guards against accidental regressions
-// to the documented behaviour.
-func TestC01_DatabaseDriver_PoisonRowSurvivesCallerCancellation(t *testing.T) {
+//   - PopCtx returns ErrPoisonJob and no job;
+//   - the poison row is gone from jobs and recorded once in failed_jobs;
+//   - a later pop finds nothing, so the row is not left reserved for its
+//     lease to expire.
+func TestC01_DatabaseDriver_PoisonQuarantineLandsAfterCallerCancel(t *testing.T) {
 	saveAndRestoreSigningState(t)
 	SetSigningKey(nil)
 
@@ -436,20 +416,13 @@ func TestC01_DatabaseDriver_PoisonRowSurvivesCallerCancellation(t *testing.T) {
 		t.Fatalf("insert poison: %v", err)
 	}
 
-	// Install the test hook: cancel the caller ctx exactly once, AFTER
-	// quarantine writes succeed and BEFORE tx.Commit(). setPopQuarantineCommitHookForTest
-	// returns a restore func that we register with t.Cleanup so sibling
-	// tests are unaffected and so the hook is cleared even on early
-	// t.Fatalf paths.
+	// The hook fires once, inside the quarantine transaction, and cancels
+	// the caller's ctx before the commit.
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel() // safety net; the hook also calls cancel.
+	defer cancel()
 
 	var hookFired atomic.Int32
 	restore := setPopQuarantineCommitHookForTest(func() {
-		// Re-entrancy guard: PopCtxWithTrace must invoke the hook at
-		// most once per call. If a future refactor accidentally invokes
-		// it twice the second call sees hookFired > 0 and we surface
-		// the bug rather than double-cancel.
 		if hookFired.Add(1) != 1 {
 			t.Errorf("popQuarantineCommitHook fired more than once: %d", hookFired.Load())
 			return
@@ -459,58 +432,33 @@ func TestC01_DatabaseDriver_PoisonRowSurvivesCallerCancellation(t *testing.T) {
 	t.Cleanup(restore)
 
 	job, popErr := driver.PopCtx(ctx, "cancel-test")
-	if popErr == nil {
-		t.Fatalf("PopCtx succeeded after caller ctx cancel: job=%T", job)
-	}
-	if errors.Is(popErr, ErrPoisonJob) {
-		t.Errorf("PopCtx returned ErrPoisonJob despite the Commit being aborted: %v", popErr)
-	}
-	if job != nil {
-		t.Errorf("PopCtx returned non-nil job alongside cancel error: %T", job)
-	}
 	if hookFired.Load() != 1 {
 		t.Fatalf("hook did not fire: count=%d (test cannot guarantee it exercised the right path)", hookFired.Load())
 	}
+	if job != nil {
+		t.Errorf("PopCtx returned a job for a poison row: %T", job)
+	}
+	if !errors.Is(popErr, ErrPoisonJob) {
+		t.Errorf("PopCtx = %v, want ErrPoisonJob: the caller's cancel must not abort the quarantine", popErr)
+	}
 
-	// Assert: poison row still live in jobs, failed_jobs unchanged.
 	var liveCount, failedCount int
 	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "cancel-test").Scan(&liveCount); err != nil {
 		t.Fatalf("count jobs: %v", err)
 	}
-	if liveCount != 1 {
-		t.Errorf("after cancelled commit: jobs count = %d, want 1 (deferred Rollback should have preserved the row)", liveCount)
+	if liveCount != 0 {
+		t.Errorf("jobs count = %d, want 0 (the quarantine removes the row)", liveCount)
 	}
 	if err := driver.db.QueryRow("SELECT COUNT(*) FROM failed_jobs WHERE queue = ?", "cancel-test").Scan(&failedCount); err != nil {
 		t.Fatalf("count failed_jobs: %v", err)
 	}
-	if failedCount != 0 {
-		t.Errorf("after cancelled commit: failed_jobs count = %d, want 0 (deferred Rollback should have discarded the INSERT)", failedCount)
+	if failedCount != 1 {
+		t.Errorf("failed_jobs count = %d, want 1", failedCount)
 	}
 
-	// Symmetry check: PopCtx on a fresh ctx (no hook) must succeed in
-	// quarantining the row. This proves the caller-cancel branch is not a
-	// permanent quarantine-killer; the worker's normal retry behaviour
-	// heals it on the next pop. We restore the hook to nil now (the
-	// t.Cleanup-registered restore will run again on exit, which is fine:
-	// reinstalling the same prior state twice is idempotent).
 	restore()
-	retryJob, retryErr := driver.PopCtx(context.Background(), "cancel-test")
-	if retryErr == nil {
-		t.Fatalf("retry pop succeeded on poison row: job=%T", retryJob)
-	}
-	if !errors.Is(retryErr, ErrPoisonJob) {
-		t.Errorf("retry pop error did not wrap ErrPoisonJob: %v", retryErr)
-	}
-	if err := driver.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE queue = ?", "cancel-test").Scan(&liveCount); err != nil {
-		t.Fatalf("count jobs after retry: %v", err)
-	}
-	if liveCount != 0 {
-		t.Errorf("retry pop did not quarantine: jobs count = %d, want 0", liveCount)
-	}
-	if err := driver.db.QueryRow("SELECT COUNT(*) FROM failed_jobs WHERE queue = ?", "cancel-test").Scan(&failedCount); err != nil {
-		t.Fatalf("count failed_jobs after retry: %v", err)
-	}
-	if failedCount != 1 {
-		t.Errorf("retry pop did not record: failed_jobs count = %d, want 1", failedCount)
+	next, nextErr := driver.PopCtx(context.Background(), "cancel-test")
+	if next != nil || nextErr != nil {
+		t.Errorf("a later PopCtx = %T, %v; want nothing", next, nextErr)
 	}
 }

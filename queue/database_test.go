@@ -24,10 +24,10 @@ import (
 // connection on which the tx was running, and SQLite in-memory databases
 // live on that single connection. After the cancel, follow-up queries open
 // a fresh connection and see an empty DB ("no such table: jobs"), which
-// flaked TestC01_DatabaseDriver_PoisonRowSurvivesCallerCancellation under
+// flaked TestC01_DatabaseDriver_PoisonQuarantineLandsAfterCallerCancel under
 // -race. File-backed schema survives reconnects. Each call gets a unique
 // path under t.TempDir() so parallel subtests cannot collide.
-func newSQLiteQueueDB(t *testing.T) (*DatabaseDriver, func()) {
+func newSQLiteQueueDB(t testing.TB) (*DatabaseDriver, func()) {
 	t.Helper()
 
 	dsn := "file:" + t.TempDir() + "/queue.db?_busy_timeout=5000&_journal_mode=WAL"
