@@ -15,14 +15,15 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
-// newTestGateway returns a gateway on a free loopback port, with reg as
-// its one registration, and its address.
-func newTestGateway(t *testing.T, logger contract.Logger, reg grpc.GatewayRegistrationFunc) (*grpc.Gateway, string) {
+// newTestGateway returns a gateway serving on a loopback listener of the
+// test's own, with reg as its one registration, and that listener.
+func newTestGateway(t *testing.T, logger contract.Logger, reg grpc.GatewayRegistrationFunc) (*grpc.Gateway, *acceptTracker) {
 	t.Helper()
-	port := freePort(t)
-	g := grpc.NewGateway(grpc.GatewayWithPort(port), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
+	lis := &acceptTracker{Listener: testnet.Loopback(t)}
+	g := grpc.NewGateway(grpc.GatewayWithListener(lis), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
 		grpc.GatewayWithEnvironment("development"), grpc.GatewayWithLogger(logger))
 	if reg == nil {
 		reg = func(context.Context, *runtime.ServeMux, string, []grpcgo.DialOption) error { return nil }
@@ -34,21 +35,25 @@ func newTestGateway(t *testing.T, logger contract.Logger, reg grpc.GatewayRegist
 		g.Stop()
 		_ = g.Shutdown(ctx)
 	})
-	return g, "127.0.0.1:" + port
+	return g, lis
 }
 
-// accepting reports whether something accepts connections at addr.
-func accepting(addr string) bool {
-	c, err := net.Dial("tcp", addr)
-	if err == nil {
-		_ = c.Close()
-	}
-	return err == nil
+// acceptTracker records whether a serve loop called Accept on the
+// listener: whether the gateway took connections from it. The listener is
+// the test's, so the answer does not depend on who else holds a port.
+type acceptTracker struct {
+	net.Listener
+	accepted atomic.Bool
+}
+
+func (l *acceptTracker) Accept() (net.Conn, error) {
+	l.accepted.Store(true)
+	return l.Listener.Accept()
 }
 
 // A stop during the Build a start runs is not lost: the Build publishes
 // nothing, the start returns http.ErrServerClosed instead of serving, and
-// nothing listens on the gateway's port. The stop comes from outside
+// the gateway never takes a connection from its listener. The stop comes from outside
 // (Stop, which does not wait on the Build) or from the Build's own
 // registration (Shutdown, refused there but begun).
 func TestGatewayStart_StopDuringItsBuildIsNotLost(t *testing.T) {
@@ -61,7 +66,7 @@ func TestGatewayStart_StopDuringItsBuildIsNotLost(t *testing.T) {
 				entered, release := make(chan struct{}), make(chan struct{})
 				var ref atomic.Pointer[grpc.Gateway]
 				var nestedErr error
-				g, addr := newTestGateway(t, &gatewayLogger{gateway: &atomic.Pointer[grpc.Gateway]{}},
+				g, lis := newTestGateway(t, &gatewayLogger{gateway: &atomic.Pointer[grpc.Gateway]{}},
 					func(context.Context, *runtime.ServeMux, string, []grpcgo.DialOption) error {
 						if stopper == "registration Shutdown" {
 							nestedErr = ref.Load().Shutdown(context.Background())
@@ -96,7 +101,7 @@ func TestGatewayStart_StopDuringItsBuildIsNotLost(t *testing.T) {
 				if stopper == "registration Shutdown" && !errors.Is(nestedErr, contract.ErrStopFromOwnWork) {
 					t.Errorf("Shutdown from the registration = %v, want contract.ErrStopFromOwnWork", nestedErr)
 				}
-				if accepting(addr) || g.IsRunning() {
+				if lis.accepted.Load() || g.IsRunning() {
 					t.Error("the gateway serves after a stop during its Build")
 				}
 			})
@@ -111,7 +116,7 @@ func TestGatewayStart_StopDuringItsBuildIsNotLost(t *testing.T) {
 func TestGatewayStop_StoppedOnlyOnceTheAdmittedRequestsReturn(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	var done atomic.Bool
-	g, addr := newTestGateway(t, &gatewayLogger{gateway: &atomic.Pointer[grpc.Gateway]{}}, nil)
+	g, lis := newTestGateway(t, &gatewayLogger{gateway: &atomic.Pointer[grpc.Gateway]{}}, nil)
 	g.Use(func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			close(entered)
@@ -123,7 +128,7 @@ func TestGatewayStop_StoppedOnlyOnceTheAdmittedRequestsReturn(t *testing.T) {
 		t.Fatalf("StartAsync: %v", err)
 	}
 	go func() {
-		if resp, err := http.Get("http://" + addr + "/"); err == nil {
+		if resp, err := http.Get("http://" + lis.Addr().String() + "/"); err == nil {
 			_ = resp.Body.Close()
 		}
 	}()
@@ -186,11 +191,11 @@ func TestGatewayStartAsync_ReturnsTheBindError(t *testing.T) {
 func TestGatewayStartAsync_PublishesTheStartBeforeReturning(t *testing.T) {
 	for range 50 {
 		log := &startLog{}
-		g, addr := newTestGateway(t, gatewayStartLog{log}, nil)
+		g, lis := newTestGateway(t, gatewayStartLog{log}, nil)
 		if err := g.StartAsync(); err != nil {
 			t.Fatalf("StartAsync: %v", err)
 		}
-		up, running, lines := accepting(addr), g.IsRunning(), log.all()
+		up, running, lines := lis.accepted.Load(), g.IsRunning(), log.all()
 		g.Stop()
 		if !up || !running || len(lines) != 1 {
 			t.Fatalf("at StartAsync's return: accepting %v, running %v, lines %v: want all published", up, running, lines)

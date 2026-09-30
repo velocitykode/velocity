@@ -14,6 +14,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // stopPanicLogger panics on every stop diagnostic and counts the other
@@ -65,7 +66,7 @@ func TestServerStop_PanickingLoggerStillStops(t *testing.T) {
 		"Shutdown":     func(s *grpc.Server) { _ = s.Shutdown(context.Background()) },
 	} {
 		t.Run(name, func(t *testing.T) {
-			lis := &closeTracker{Listener: loopback(t)}
+			lis := &closeTracker{Listener: testnet.Loopback(t)}
 			s := grpc.NewServer(grpc.WithListener(lis), grpc.WithLogger(&stopPanicLogger{}))
 			counter := &stoppedCounter{}
 			s.SetEventDispatcher(counter.dispatch)
@@ -90,31 +91,22 @@ func TestServerStop_PanickingLoggerStillStops(t *testing.T) {
 	}
 }
 
-// freePort returns a loopback port nothing listens on.
-func freePort(t *testing.T) string {
-	t.Helper()
-	lis := loopback(t)
-	_, port, _ := net.SplitHostPort(lis.Addr().String())
-	_ = lis.Close()
-	return port
-}
-
 // A gateway logger that panics on the stop line does not leave the HTTP
-// server serving: the port is released, and a retry is harmless.
+// server serving: its listener is closed, and a retry is harmless.
 func TestGatewayStop_PanickingLoggerStillStops(t *testing.T) {
 	for name, stop := range map[string]func(*grpc.Gateway){
 		"Stop":     (*grpc.Gateway).Stop,
 		"Shutdown": func(g *grpc.Gateway) { _ = g.Shutdown(context.Background()) },
 	} {
 		t.Run(name, func(t *testing.T) {
-			port := freePort(t)
-			g := grpc.NewGateway(grpc.GatewayWithPort(port), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
+			lis := &closeTracker{Listener: testnet.Loopback(t)}
+			g := grpc.NewGateway(grpc.GatewayWithListener(lis), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
 				grpc.GatewayWithEnvironment("development"), grpc.GatewayWithLogger(&stopPanicLogger{}))
 			g.RegisterHandler(func(context.Context, *runtime.ServeMux, string, []grpcgo.DialOption) error { return nil })
 			if err := g.StartAsync(); err != nil {
 				t.Fatalf("StartAsync: %v", err)
 			}
-			addr := "127.0.0.1:" + port
+			addr := lis.Addr().String()
 			up := false
 			for range 200 {
 				if c, err := net.Dial("tcp", addr); err == nil {
@@ -136,6 +128,9 @@ func TestGatewayStop_PanickingLoggerStillStops(t *testing.T) {
 			})
 
 			noPanic(t, name, func() { stop(g) })
+			if !lis.closed.Load() {
+				t.Error("the gateway's listener is still open after the stop")
+			}
 			if c, err := net.Dial("tcp", addr); err == nil {
 				_ = c.Close()
 				t.Error("gateway still accepting connections after the stop")

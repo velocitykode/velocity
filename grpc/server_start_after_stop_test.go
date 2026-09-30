@@ -12,6 +12,7 @@ import (
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // A server a stop ended does not start again: Start and StartAsync return
@@ -23,7 +24,7 @@ func TestServerStart_AfterAStopReturnsErrServerStopped(t *testing.T) {
 		"StartAsync": (*grpc.Server).StartAsync,
 	} {
 		t.Run(name, func(t *testing.T) {
-			s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+			s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 			var started atomic.Int32
 			s.SetEventDispatcher(func(_ context.Context, ev any) error {
 				if _, ok := ev.(*grpcevents.ServerStarted); ok {

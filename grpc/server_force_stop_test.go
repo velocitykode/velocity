@@ -9,6 +9,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // pausingLogger blocks on the first line containing match until release
@@ -49,7 +50,7 @@ func (l *pausingLogger) With(...any) contract.Logger { return l }
 func TestServerStop_IndependentForceRunsAsStopWork(t *testing.T) {
 	logger := newPausingLogger("gracefully stopping")
 	nested := newNestedStop(stopCalls["Shutdown"])
-	lis := &nestedListener{Listener: loopback(t), nested: nested}
+	lis := &nestedListener{Listener: testnet.Loopback(t), nested: nested}
 	s := grpc.NewServer(grpc.WithListener(lis), grpc.WithLogger(logger))
 	nested.server.Store(s)
 	// Stop closes the listener through grpc-go only once grpc-go serves it.

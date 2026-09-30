@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/grpc"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // valueListener is a listener whose dynamic value is not comparable: it
@@ -21,7 +22,7 @@ type valueListener struct {
 func TestServerBuild_NonComparableListenerLeavesNoBuildInProgress(t *testing.T) {
 	var fail atomic.Bool
 	fail.Store(true)
-	s := grpc.NewServer(grpc.WithListener(valueListener{Listener: loopback(t), tags: []string{"a"}}),
+	s := grpc.NewServer(grpc.WithListener(valueListener{Listener: testnet.Loopback(t), tags: []string{"a"}}),
 		grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	s.RegisterService(func(any) {
 		if fail.Load() {

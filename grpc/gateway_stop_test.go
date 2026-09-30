@@ -16,6 +16,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // slowGateway is a started gateway whose every request blocks until
@@ -30,9 +31,9 @@ type slowGateway struct {
 
 func startSlowGateway(t *testing.T, logger contract.Logger) *slowGateway {
 	t.Helper()
-	port := freePort(t)
-	sg := &slowGateway{addr: "127.0.0.1:" + port, entered: make(chan struct{}, 8), release: make(chan struct{})}
-	sg.g = grpc.NewGateway(grpc.GatewayWithPort(port), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
+	lis := testnet.Loopback(t)
+	sg := &slowGateway{addr: lis.Addr().String(), entered: make(chan struct{}, 8), release: make(chan struct{})}
+	sg.g = grpc.NewGateway(grpc.GatewayWithListener(lis), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
 		grpc.GatewayWithEnvironment("development"), grpc.GatewayWithLogger(logger))
 	sg.g.RegisterHandler(func(context.Context, *runtime.ServeMux, string, []grpcgo.DialOption) error { return nil })
 	sg.g.Use(func(http.Handler) http.Handler {

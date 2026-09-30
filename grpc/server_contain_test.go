@@ -17,6 +17,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // probeReports counts the reports a probe server makes, and the late ones.
@@ -40,7 +41,7 @@ func (r *probeReports) Report(_ error, ec *contract.ErrorContext) {
 // panic was reported once (late when it came after the call ended).
 func runContainProbe(t *testing.T, kind, when string) {
 	reports := &probeReports{}
-	s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}), grpc.WithReporter(reports))
+	s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}), grpc.WithReporter(reports))
 	returned, finished := make(chan struct{}), make(chan struct{})
 	var finishOnce sync.Once
 	finish := func() { finishOnce.Do(func() { close(finished) }) }

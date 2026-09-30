@@ -14,6 +14,7 @@ import (
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // hangingCall starts a call whose handler ignores its context until
@@ -55,7 +56,7 @@ func shutdownOnTime(t *testing.T, shutdown func(context.Context) error) {
 // timed-out Shutdown past its deadline: the event comes once the drain
 // has ended.
 func TestServerShutdown_StoppedListenerDoesNotHoldTheDeadline(t *testing.T) {
-	s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	var stopped atomic.Int32
 	s.SetEventDispatcher(func(_ context.Context, ev any) error {
 		if _, ok := ev.(*grpcevents.ServerStopped); ok {
@@ -75,13 +76,13 @@ func TestServerShutdown_StoppedListenerDoesNotHoldTheDeadline(t *testing.T) {
 func TestServerShutdown_BlockingUserCodeDoesNotHoldTheDeadline(t *testing.T) {
 	t.Run("logger", func(t *testing.T) {
 		logger := newPausingLogger("gracefully stopping")
-		s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(logger))
+		s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(logger))
 		startHealth(t, s)
 		defer close(logger.release)
 		shutdownOnTime(t, s.Shutdown)
 	})
 	t.Run("dispatcher", func(t *testing.T) {
-		s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+		s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 		block := make(chan struct{})
 		defer close(block)
 		s.SetEventDispatcher(func(_ context.Context, ev any) error {

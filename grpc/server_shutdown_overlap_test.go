@@ -12,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // A Shutdown that overlaps one already draining does not report success
@@ -20,7 +21,7 @@ import (
 func TestServerShutdown_OverlappingShutdownWaitsForTheDrain(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	var handlerDone atomic.Bool
-	s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	s.Use(func(ctx context.Context, req any, _ *grpcgo.UnaryServerInfo, h grpcgo.UnaryHandler) (any, error) {
 		close(entered)
 		<-release
@@ -70,7 +71,7 @@ func TestServerShutdown_OverlappingShutdownWaitsForTheDrain(t *testing.T) {
 // error, not nil.
 func TestServerShutdown_OverlappingShutdownReturnsItsDeadline(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
-	s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	s.Use(func(ctx context.Context, req any, _ *grpcgo.UnaryServerInfo, h grpcgo.UnaryHandler) (any, error) {
 		close(entered)
 		<-release // ignores ctx

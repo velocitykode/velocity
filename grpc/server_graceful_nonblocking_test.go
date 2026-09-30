@@ -12,6 +12,7 @@ import (
 
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // A handler that calls GracefulStop gets it back at once: GracefulStop
@@ -21,7 +22,7 @@ func TestServerGracefulStop_FromAHandlerReturns(t *testing.T) {
 	var ref atomic.Pointer[grpc.Server]
 	returned := make(chan struct{})
 	var once sync.Once
-	s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	ref.Store(s)
 	s.Use(func(ctx context.Context, req any, _ *grpcgo.UnaryServerInfo, h grpcgo.UnaryHandler) (any, error) {
 		once.Do(func() {
@@ -52,7 +53,7 @@ func TestServerGracefulStop_ReturnsAtOnceAndShutdownWaits(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	var handlerDone atomic.Bool
 	var once sync.Once
-	s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	s.Use(func(ctx context.Context, req any, _ *grpcgo.UnaryServerInfo, h grpcgo.UnaryHandler) (any, error) {
 		once.Do(func() { close(entered) })
 		<-release

@@ -13,6 +13,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // warningStopLogger stops its server from the unauthenticated-surface
@@ -40,7 +41,7 @@ func TestServerStart_StoppedAfterBuildReturnsErrServerStopped(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			var ref atomic.Pointer[grpc.Server]
-			s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&warningStopLogger{server: &ref}))
+			s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&warningStopLogger{server: &ref}))
 			ref.Store(s)
 			s.RegisterService(regNoopExternal)
 			stopOnCleanup(t, s)
@@ -71,7 +72,7 @@ func regNoopExternal(any) {}
 // server or leave a listener open once a last Stop has run.
 func TestServerStart_RacingBuildStartStop(t *testing.T) {
 	for range 30 {
-		lis := &closeTracker{Listener: loopback(t)}
+		lis := &closeTracker{Listener: testnet.Loopback(t)}
 		s := grpc.NewServer(grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 		var wg sync.WaitGroup
 		for i := range 9 {

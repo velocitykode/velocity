@@ -3,6 +3,8 @@ package grpc_test
 import (
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	grpcgo "google.golang.org/grpc"
 
 	"github.com/velocitykode/velocity/grpc"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // buildBlockedStop starts a Build whose registration blocks, stops the
@@ -53,12 +56,22 @@ func buildBlockedStop(t *testing.T, s *grpc.Server) error {
 
 // A Stop during a Build in progress leaves nothing live behind: the Build
 // publishes no server, and the listener it bound is closed.
+//
+// The server binds its own listener here (the path a caller's listener
+// does not take), on a unix socket in a directory private to the test: no
+// other process can hold that address, so a dial that reaches it is the
+// Build's listener. Closing a unix listener removes its socket file.
 func TestServerStop_DuringBuildReleasesItsListener(t *testing.T) {
-	port := freePort(t)
-	s := grpc.NewServer(grpc.WithBindAddress("tcp", "127.0.0.1:"+port), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	dir, err := os.MkdirTemp("", "vel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "s.sock")
+	s := grpc.NewServer(grpc.WithBindAddress("unix", sock), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	stopOnCleanup(t, s)
 	_ = buildBlockedStop(t, s)
-	if c, err := net.Dial("tcp", "127.0.0.1:"+port); err == nil {
+	if c, err := net.Dial("unix", sock); err == nil {
 		_ = c.Close()
 		t.Error("the Build's listener is still open after Stop")
 	}
@@ -70,7 +83,7 @@ func TestServerStop_DuringBuildReleasesItsListener(t *testing.T) {
 // A caller-supplied listener is closed by a Stop during Build too, as
 // Stop closes it on a built server.
 func TestServerStop_DuringBuildClosesASuppliedListener(t *testing.T) {
-	lis := &closeTracker{Listener: loopback(t)}
+	lis := &closeTracker{Listener: testnet.Loopback(t)}
 	s := grpc.NewServer(grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	stopOnCleanup(t, s)
 	_ = buildBlockedStop(t, s)
@@ -100,7 +113,7 @@ func TestServerBuild_StoppedBuildReturnsErrServerStopped(t *testing.T) {
 // ErrServerStopped. Under -race there is no data race.
 func TestServerStop_RacingBuildsLeaveNoListenerOpen(t *testing.T) {
 	for range 50 {
-		lis := &closeTracker{Listener: loopback(t)}
+		lis := &closeTracker{Listener: testnet.Loopback(t)}
 		s := grpc.NewServer(grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 		s.RegisterService(func(any) {})
 		done := make(chan struct{})

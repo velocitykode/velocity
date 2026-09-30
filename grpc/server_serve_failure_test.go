@@ -14,6 +14,7 @@ import (
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // A serve loop that fails (its supplied listener is already closed)
@@ -23,7 +24,7 @@ import (
 func TestServer_FailedServeStopsTheServer(t *testing.T) {
 	for _, start := range []string{"StartAsync", "Start"} {
 		t.Run(start, func(t *testing.T) {
-			lis := loopback(t)
+			lis := testnet.Loopback(t)
 			_ = lis.Close()
 			s := grpc.NewServer(grpc.WithListener(lis))
 			var stopped atomic.Int32

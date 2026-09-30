@@ -18,6 +18,7 @@ import (
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // gateListener's Close signals entered and blocks until release.
@@ -29,7 +30,7 @@ type gateListener struct {
 }
 
 func newGateListener(t *testing.T) *gateListener {
-	return &gateListener{Listener: loopback(t), entered: make(chan struct{}), release: make(chan struct{})}
+	return &gateListener{Listener: testnet.Loopback(t), entered: make(chan struct{}), release: make(chan struct{})}
 }
 
 func (l *gateListener) Close() error {
@@ -100,7 +101,7 @@ func TestServerStop_NestedStopFromAnUnservedListenersClose(t *testing.T) {
 		for nestedName, nestedCall := range stopCalls {
 			t.Run(outerName+"/"+nestedName, func(t *testing.T) {
 				nested := newNestedStop(nestedCall)
-				lis := &nestedListener{Listener: loopback(t), nested: nested}
+				lis := &nestedListener{Listener: testnet.Loopback(t), nested: nested}
 				s := grpc.NewServer(grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 				nested.server.Store(s)
 				stopOnCleanup(t, s)
@@ -173,7 +174,7 @@ func TestServerStop_StoppedOnlyOnceTheAdmittedCallsReturn(t *testing.T) {
 			name = "stream"
 		}
 		t.Run(name, func(t *testing.T) {
-			s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+			s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 			var stopped, early atomic.Int32
 			var done *atomic.Bool
 			s.SetEventDispatcher(func(_ context.Context, ev any) error {
@@ -263,7 +264,7 @@ func (l *startLog) With(...any) contract.Logger { return l }
 func TestServerStartAsync_PublishesTheStartBeforeReturning(t *testing.T) {
 	for range 50 {
 		log := &startLog{}
-		s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(log))
+		s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(log))
 		s.SetEventDispatcher(log.dispatch)
 		if err := s.StartAsync(); err != nil {
 			t.Fatalf("StartAsync: %v", err)
@@ -282,7 +283,7 @@ func TestServerStartAsync_PublishesTheStartBeforeReturning(t *testing.T) {
 func TestServerStartAsync_ServerStartedPrecedesServerStopped(t *testing.T) {
 	for range 200 {
 		log := &startLog{}
-		s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+		s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 		s.SetEventDispatcher(log.dispatch)
 		if err := s.StartAsync(); err != nil {
 			t.Fatalf("StartAsync: %v", err)
@@ -308,7 +309,7 @@ func (addrPanicListener) Addr() net.Addr { panic("listener Addr broke") }
 // loop nor leaves that lock held: the server serves, reports an empty
 // address, and stops.
 func TestServer_ListenerAddrPanicIsContained(t *testing.T) {
-	raw := loopback(t)
+	raw := testnet.Loopback(t)
 	addr := raw.Addr().String()
 	s := grpc.NewServer(grpc.WithListener(addrPanicListener{raw}), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	s.RegisterService(regHealth)
@@ -342,7 +343,7 @@ func (acceptPanicListener) Accept() (net.Conn, error) { panic("listener Accept b
 func TestServer_ListenerAcceptPanicStopsTheServer(t *testing.T) {
 	for _, start := range []string{"Start", "StartAsync"} {
 		t.Run(start, func(t *testing.T) {
-			s := grpc.NewServer(grpc.WithListener(acceptPanicListener{loopback(t)}), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+			s := grpc.NewServer(grpc.WithListener(acceptPanicListener{testnet.Loopback(t)}), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 			counter := &stoppedCounter{}
 			s.SetEventDispatcher(counter.dispatch)
 			stopOnCleanup(t, s)
@@ -387,7 +388,7 @@ func (l closePanicListener) Close() error {
 // panics there does not escape the stop, and leaves the stop to finish:
 // Stop returns, ServerStopped is dispatched once and Shutdown returns nil.
 func TestServer_ListenerClosePanicIsContained(t *testing.T) {
-	s := grpc.NewServer(grpc.WithListener(closePanicListener{loopback(t)}), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s := grpc.NewServer(grpc.WithListener(closePanicListener{testnet.Loopback(t)}), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	counter := &stoppedCounter{}
 	s.SetEventDispatcher(counter.dispatch)
 	served(t, startHealth(t, s))

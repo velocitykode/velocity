@@ -19,6 +19,7 @@ import (
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/grpc/interceptors"
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // stopOnCleanup stops s when the test ends, without hanging the suite
@@ -35,16 +36,6 @@ func stopOnCleanup(t *testing.T, s *grpc.Server) {
 		case <-time.After(time.Second):
 		}
 	})
-}
-
-// loopback returns a listener on an ephemeral loopback port.
-func loopback(t *testing.T) net.Listener {
-	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	return lis
 }
 
 // reentrantLogger calls back into the server from every line it writes.
@@ -75,7 +66,7 @@ func TestServerBuild_UserCodeMayCallTheServer(t *testing.T) {
 	logger := &reentrantLogger{server: &ref}
 	var optionRan, registrationRan atomic.Bool
 	s := grpc.NewServer(
-		grpc.WithListener(loopback(t)),
+		grpc.WithListener(testnet.Loopback(t)),
 		grpc.WithLogger(logger),
 		grpc.WithReflection(true),
 		grpc.WithEnvironment("development"),
@@ -119,7 +110,7 @@ func TestServerBuild_ReentrantBuildReturnsAnError(t *testing.T) {
 	var ref atomic.Pointer[grpc.Server]
 	var inner error
 	var registrations atomic.Int32
-	s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &ref}))
+	s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &ref}))
 	s.RegisterService(func(any) {
 		registrations.Add(1)
 		inner = ref.Load().Build()
@@ -151,7 +142,7 @@ func TestServerBuild_ReentrantBuildReturnsAnError(t *testing.T) {
 func TestServerBuild_ConcurrentBuildsBuildOnce(t *testing.T) {
 	for range 20 {
 		var registrations atomic.Int32
-		s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+		s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 		s.RegisterService(func(any) { registrations.Add(1) })
 		var wg sync.WaitGroup
 		for range 16 {
@@ -231,7 +222,7 @@ func startHealth(t *testing.T, s *grpc.Server) grpc_health_v1.HealthClient {
 func TestServerGracefulStop_InFlightCallMayCallTheServer(t *testing.T) {
 	var ref atomic.Pointer[grpc.Server]
 	entered, stopping := make(chan struct{}), make(chan struct{})
-	s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	s.Use(func(ctx context.Context, req any, _ *grpcgo.UnaryServerInfo, h grpcgo.UnaryHandler) (any, error) {
 		close(entered)
 		<-stopping
@@ -277,7 +268,7 @@ func TestServerGracefulStop_InFlightCallMayCallTheServer(t *testing.T) {
 func TestServerShutdown_ReturnsAtItsDeadlineWithAHangingCall(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	handlerDone := make(chan struct{})
-	s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	s.Use(func(ctx context.Context, req any, _ *grpcgo.UnaryServerInfo, h grpcgo.UnaryHandler) (any, error) {
 		defer close(handlerDone)
 		close(entered)
@@ -316,7 +307,7 @@ func TestServerShutdown_ReturnsAtItsDeadlineWithAHangingCall(t *testing.T) {
 // transport close once Shutdown's deadline passes.
 func TestServerShutdown_DeadlineCancelsAHandlerThatHonoursItsContext(t *testing.T) {
 	entered, handlerDone := make(chan struct{}), make(chan struct{})
-	s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	s.Use(func(ctx context.Context, req any, _ *grpcgo.UnaryServerInfo, h grpcgo.UnaryHandler) (any, error) {
 		defer close(handlerDone)
 		close(entered)
@@ -362,7 +353,7 @@ func TestServerStop_RacingStopsDispatchServerStoppedOnce(t *testing.T) {
 	for range 10 {
 		entered, release := make(chan struct{}), make(chan struct{})
 		var enteredOnce sync.Once
-		s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+		s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 		counter := &stoppedCounter{}
 		s.SetEventDispatcher(counter.dispatch)
 		s.Use(func(ctx context.Context, req any, _ *grpcgo.UnaryServerInfo, h grpcgo.UnaryHandler) (any, error) {
@@ -427,7 +418,7 @@ func TestServerStop_ListenerCloseMayCallTheServer(t *testing.T) {
 	for name, stop := range map[string]func(*grpc.Server){"Stop": (*grpc.Server).Stop, "GracefulStop": (*grpc.Server).GracefulStop} {
 		t.Run(name, func(t *testing.T) {
 			var ref atomic.Pointer[grpc.Server]
-			lis := &reentrantListener{Listener: loopback(t), server: &ref}
+			lis := &reentrantListener{Listener: testnet.Loopback(t), server: &ref}
 			s := grpc.NewServer(grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 			ref.Store(s)
 			if err := s.Build(); err != nil {

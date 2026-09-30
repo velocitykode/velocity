@@ -17,7 +17,6 @@ package grpc_test
 import (
 	"context"
 	"fmt"
-	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -32,6 +31,7 @@ import (
 
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/grpc/interceptors"
+	"github.com/velocitykode/velocity/internal/testnet"
 	"github.com/velocitykode/velocity/log"
 )
 
@@ -85,21 +85,14 @@ type testRig struct {
 func startRig(t *testing.T, configure func(s *grpc.Server, p *panickingHealth)) *testRig {
 	t.Helper()
 
-	// Reserve a port by binding a listener, then immediately close so the
-	// grpc.Server can bind the same one. There is a tiny race where
-	// another test could bind in the gap, but since tests in this file
-	// are sequential and each uses t.Cleanup to release, it's fine.
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	port := fmt.Sprintf("%d", l.Addr().(*net.TCPAddr).Port)
-	_ = l.Close()
+	// The server serves on the test's own listener, so the port is never
+	// released for anyone else to take.
+	lis := testnet.Loopback(t)
 
 	logger, _ := log.NewLogger(log.LogConfig{Driver: "null"})
 	panicSvc := &panickingHealth{}
 	s := grpc.NewServer(
-		grpc.WithPort(port),
+		grpc.WithListener(lis),
 		grpc.WithLogger(logger),
 	)
 
@@ -125,7 +118,7 @@ func startRig(t *testing.T, configure func(s *grpc.Server, p *panickingHealth)) 
 	// failure, not a hung suite. `NewClient` opens the connection
 	// lazily, so a trip through the interceptor chain happens on the
 	// first RPC.
-	conn, err := grpcgo.NewClient("127.0.0.1:"+port, grpcgo.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpcgo.NewClient(lis.Addr().String(), grpcgo.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

@@ -4,6 +4,7 @@ package velocity
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/testnet"
 	"github.com/velocitykode/velocity/scheduler"
 )
 
@@ -34,15 +36,9 @@ func (l serveLinePanicLogger) Info(msg string, kvs ...any) {
 // they announce: the server listens, the in-process scheduler runs, and
 // SIGTERM still shuts the app down.
 func TestServeHTTP_PanickingLinesSkipNothing(t *testing.T) {
-	probe, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, port, _ := net.SplitHostPort(probe.Addr().String())
-	_ = probe.Close()
-
+	lis := testnet.Loopback(t)
 	rec := &shutdownRecorder{}
-	a, err := NewTestApp(WithSchedulerInProcess(), WithPort(port), WithModules(rec))
+	a, err := NewTestApp(WithSchedulerInProcess(), WithListener(lis), WithModules(rec))
 	if err != nil {
 		t.Fatalf("NewTestApp: %v", err)
 	}
@@ -63,7 +59,7 @@ func TestServeHTTP_PanickingLinesSkipNothing(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	listening := false
 	for time.Now().Before(deadline) && !(listening && ticked.Load() > 0) {
-		if c, err := net.Dial("tcp", "127.0.0.1:"+port); err == nil {
+		if c, err := net.Dial("tcp", lis.Addr().String()); err == nil {
 			_ = c.Close()
 			listening = true
 		}
@@ -89,6 +85,12 @@ func TestServeHTTP_PanickingLinesSkipNothing(t *testing.T) {
 	}
 	if rec.shutdowns.Load() != 1 {
 		t.Errorf("module Shutdown ran %d times, want 1: the app was not shut down", rec.shutdowns.Load())
+	}
+	// A closed listener's Accept fails at once with net.ErrClosed; an
+	// open one would wait out the deadline.
+	_ = lis.(*net.TCPListener).SetDeadline(time.Now().Add(time.Second))
+	if _, err := lis.Accept(); !errors.Is(err, net.ErrClosed) {
+		t.Errorf("Accept on the listener handed to WithListener = %v after the shutdown, want net.ErrClosed", err)
 	}
 }
 

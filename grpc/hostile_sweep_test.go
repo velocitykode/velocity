@@ -17,6 +17,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // armedLogger passes each line to a hostile logger while armed and drops
@@ -211,7 +212,7 @@ func TestServer_HostileUserCodeSweep(t *testing.T) {
 					defer cancel()
 					_ = s.Shutdown(ctx)
 				})
-				opts := []grpc.ServerOption{grpc.WithListener(loopback(t))}
+				opts := []grpc.ServerOption{grpc.WithListener(testnet.Loopback(t))}
 				if site == siteLogger {
 					opts = append(opts, grpc.WithLogger(armedLogger{armed: &armed, h: hostile.NewLogger(code)}))
 				}
@@ -372,9 +373,9 @@ func gatewaySweepCase(t *testing.T, e gatewayEntry, mode hostile.Mode) {
 		defer cancel()
 		_ = g.Shutdown(ctx)
 	})
-	port := freePort(t)
-	addr := "127.0.0.1:" + port
-	g = grpc.NewGateway(grpc.GatewayWithPort(port), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
+	lis := testnet.Loopback(t)
+	addr := lis.Addr().String()
+	g = grpc.NewGateway(grpc.GatewayWithListener(lis), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
 		grpc.GatewayWithEnvironment("development"),
 		grpc.GatewayWithLogger(armedLogger{armed: &armed, h: hostile.NewLogger(code)}))
 	g.RegisterHandler(func(context.Context, *runtime.ServeMux, string, []grpcgo.DialOption) error { return nil })

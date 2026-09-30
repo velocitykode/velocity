@@ -10,6 +10,7 @@ import (
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/grpc/interceptors"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // callEventCounter counts a call's started and completed events.
@@ -30,7 +31,7 @@ func (c *callEventCounter) dispatch(_ context.Context, ev any) error {
 // the call's events go to it and not to the server's.
 func TestServer_RawCallOptionDispatcherWins(t *testing.T) {
 	custom, server := &callEventCounter{}, &callEventCounter{}
-	s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}),
+	s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}),
 		grpc.WithCallOptions(func(c *interceptors.CallConfig) {
 			c.SkipHealthChecks = false
 			c.EventDispatcher = custom.dispatch
@@ -52,7 +53,7 @@ func TestServer_RawCallOptionDispatcherWins(t *testing.T) {
 // the default chain even while the server has a dispatcher.
 func TestServer_WithEventDispatcherNilTurnsCallEventsOff(t *testing.T) {
 	server := &callEventCounter{}
-	s := grpc.NewServer(grpc.WithListener(loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}),
+	s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}),
 		grpc.WithCallOptions(
 			func(c *interceptors.CallConfig) { c.SkipHealthChecks = false },
 			interceptors.WithEventDispatcher(nil),

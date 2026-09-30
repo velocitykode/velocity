@@ -206,6 +206,28 @@ jobs:
             exit 1
           fi
 
+  # Reports a test that takes a port from a listener it closes and hands
+  # the port on, racing every other process for the port. A go/ast walker,
+  # stdlib only; see the package comment of scripts/ci/check-released-ports.
+  released-ports-lint:
+    name: released port lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+      - name: Test the released port checker against its golden cases
+        run: go test -count=1 ./scripts/ci/check-released-ports/
+      - name: Check tests hand servers their listener, not a released port
+        run: |
+          set -e
+          if ! scripts/ci/check-released-ports.sh; then
+            echo "::error::a test closes a listener and hands its port on; keep the listener and pass it to the server"
+            exit 1
+          fi
+
   # Reports framework code that inspects an error outside internal/errchain
   # (errors.Is, errors.As, errors.Unwrap, or an Error, Unwrap, Is or As call
   # on an interface value): those methods are user code and may panic or
@@ -305,7 +327,7 @@ jobs:
     # Release only on direct push to main. PRs and the weekly cron
     # don't publish anything.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [vet, windows-build, staticcheck, race-tests, skip-lint, goroutine-lint, lock-held-lint, events-lint, error-inspection-lint, golangci-lint, coverage-floors]
+    needs: [vet, windows-build, staticcheck, race-tests, skip-lint, goroutine-lint, lock-held-lint, events-lint, released-ports-lint, error-inspection-lint, golangci-lint, coverage-floors]
     runs-on: ubuntu-latest
     permissions:
       contents: write

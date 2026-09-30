@@ -16,6 +16,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // stopCalls are the three ways to stop a server, each returning Shutdown's
@@ -115,7 +116,7 @@ func TestServerStop_NestedStopFromTheStopLineDoesNotWaitOnItself(t *testing.T) {
 				}
 				t.Run(name, func(t *testing.T) {
 					nested := newNestedStop(nestedCall)
-					lis := &closeTracker{Listener: loopback(t)}
+					lis := &closeTracker{Listener: testnet.Loopback(t)}
 					s := grpc.NewServer(grpc.WithListener(lis), grpc.WithLogger(&stopLineLogger{nested: nested}))
 					nested.server.Store(s)
 					counter := &stoppedCounter{}
@@ -177,7 +178,7 @@ func TestServerStop_NestedStopFromTheListenersCloseDoesNotWaitOnItself(t *testin
 		for nestedName, nestedCall := range stopCalls {
 			t.Run(outerName+"/"+nestedName, func(t *testing.T) {
 				nested := newNestedStop(nestedCall)
-				lis := &nestedListener{Listener: loopback(t), nested: nested}
+				lis := &nestedListener{Listener: testnet.Loopback(t), nested: nested}
 				s := grpc.NewServer(grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 				nested.server.Store(s)
 				counter := &stoppedCounter{}

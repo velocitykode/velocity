@@ -5,6 +5,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/grpc"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // warnPanicLogger panics on every warning.
@@ -22,7 +23,7 @@ func (l warnPanicLogger) With(...any) contract.Logger { return l }
 func TestNewServer_PanickingLoggerOnAConfigWarning(t *testing.T) {
 	t.Setenv("GRPC_MAX_RECV_SIZE", "not-a-number")
 	var s *grpc.Server
-	noPanic(t, "NewServer", func() { s = grpc.NewServer(grpc.WithLogger(warnPanicLogger{}), grpc.WithListener(loopback(t))) })
+	noPanic(t, "NewServer", func() { s = grpc.NewServer(grpc.WithLogger(warnPanicLogger{}), grpc.WithListener(testnet.Loopback(t))) })
 	if s == nil {
 		t.Fatal("no server")
 	}

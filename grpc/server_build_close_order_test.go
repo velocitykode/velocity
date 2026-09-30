@@ -11,6 +11,7 @@ import (
 
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // buildingListener runs onClose, once armed, from its Close before it
@@ -44,7 +45,7 @@ func closeRebuild(lis *buildingListener, s *atomic.Pointer[grpc.Server]) *error 
 // ErrBuildInProgress, and nothing is published over the closed listener.
 func TestServerBuild_StoppedAbortHoldsTheBuildUntilItsCloseEnds(t *testing.T) {
 	var ref atomic.Pointer[grpc.Server]
-	lis := &buildingListener{Listener: loopback(t)}
+	lis := &buildingListener{Listener: testnet.Loopback(t)}
 	s := grpc.NewServer(grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	ref.Store(s)
 	stopOnCleanup(t, s)
@@ -75,7 +76,7 @@ func TestServerBuild_StoppedAbortHoldsTheBuildUntilItsCloseEnds(t *testing.T) {
 // served server.
 func TestServerStop_UnservedCloseHoldsOffABuild(t *testing.T) {
 	var ref atomic.Pointer[grpc.Server]
-	lis := &buildingListener{Listener: loopback(t)}
+	lis := &buildingListener{Listener: testnet.Loopback(t)}
 	s := grpc.NewServer(grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	ref.Store(s)
 	stopOnCleanup(t, s)
@@ -98,7 +99,7 @@ func TestServerStop_UnservedCloseHoldsOffABuild(t *testing.T) {
 // until the Close has ended.
 func TestServerBuild_RacingTheStoppedAbortsCloseIsHeldOff(t *testing.T) {
 	var ref atomic.Pointer[grpc.Server]
-	lis := &buildingListener{Listener: loopback(t)}
+	lis := &buildingListener{Listener: testnet.Loopback(t)}
 	s := grpc.NewServer(grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	ref.Store(s)
 	stopOnCleanup(t, s)

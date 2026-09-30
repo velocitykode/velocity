@@ -11,6 +11,7 @@ import (
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
 	"github.com/velocitykode/velocity/internal/hostile"
+	"github.com/velocitykode/velocity/internal/testnet"
 )
 
 // acceptFails is a listener whose Accept returns err.
@@ -53,7 +54,7 @@ func TestServer_FailedServeWithHostileAcceptErrorStops(t *testing.T) {
 			{"chain loops", &acceptLoop{}},
 		} {
 			t.Run(start+"/"+tc.name, func(t *testing.T) {
-				s := grpc.NewServer(grpc.WithListener(acceptFails{Listener: loopback(t), err: tc.err}))
+				s := grpc.NewServer(grpc.WithListener(acceptFails{Listener: testnet.Loopback(t), err: tc.err}))
 				var stopped atomic.Int32
 				s.SetEventDispatcher(func(_ context.Context, ev any) error {
 					if _, ok := ev.(*grpcevents.ServerStopped); ok {
