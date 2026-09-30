@@ -154,8 +154,8 @@ func TestRedisDriver_TamperedCiphertextQuarantinedBeforeDecrypt(t *testing.T) {
 	if strings.Contains(rec.Exception, "decrypt") {
 		t.Fatalf("decryptor must not run on tampered bytes, got: %s", rec.Exception)
 	}
-	if len(snapshot()) == 0 {
-		t.Fatal("expected a JobFailed event for the quarantined entry")
+	if n := len(snapshot()); n != 0 {
+		t.Fatalf("JobFailed events = %d, want 0: a poison job never ran", n)
 	}
 }
 

@@ -70,8 +70,8 @@ func readRedisFailedQuarantineRecord(t *testing.T, driver *RedisDriver, queueNam
 // unmarshal must (a) surface ErrPoisonJob to the caller so the worker
 // treats the failure as recoverable, (b) land in the per-queue
 // failed-jobs list with the raw bytes preserved verbatim (base64 so
-// non-UTF-8 bytes survive a round trip), and (c) emit a JobFailed event
-// so observers can alert. Before the fix BLPop consumed the entry and
+// non-UTF-8 bytes survive a round trip), and (c) emit no JobFailed
+// event, since the job never ran. Before the fix BLPop consumed the entry and
 // the function returned an error with no breadcrumbs.
 func TestRedisDriver_PopCtxWithTrace_MalformedJSONQuarantined(t *testing.T) {
 	saveAndRestoreSigningState(t)
@@ -120,16 +120,9 @@ func TestRedisDriver_PopCtxWithTrace_MalformedJSONQuarantined(t *testing.T) {
 		t.Errorf("exception does not name the cause: %q", rec.Exception)
 	}
 
-	// JobFailed dispatched so observers see the poison.
-	failedEvents := snapshot()
-	if len(failedEvents) != 1 {
-		t.Fatalf("JobFailed events = %d, want 1", len(failedEvents))
-	}
-	if failedEvents[0].Queue != queueName {
-		t.Errorf("JobFailed.Queue = %q, want %q", failedEvents[0].Queue, queueName)
-	}
-	if err := failedEvents[0].Err; err == nil || !strings.Contains(err.Error(), "failed to unmarshal payload") {
-		t.Errorf("JobFailed.Err did not include unmarshal cause: %v", err)
+	// The job never ran, so no queue.job.failed event is dispatched.
+	if n := len(snapshot()); n != 0 {
+		t.Errorf("JobFailed events = %d, want 0: a poison job never ran", n)
 	}
 }
 
@@ -137,7 +130,7 @@ func TestRedisDriver_PopCtxWithTrace_MalformedJSONQuarantined(t *testing.T) {
 // integrity-mismatch branch (verifyPayload error after a successful
 // JSON unmarshal). With signing enabled but the wire bytes tampered,
 // verifyPayload returns a mismatch error; the entry must land in the
-// failed-jobs list and dispatch JobFailed.
+// failed-jobs list, with no JobFailed event.
 func TestRedisDriver_PopCtxWithTrace_BadSignatureQuarantined(t *testing.T) {
 	saveAndRestoreSigningState(t)
 	queue.SetSigningKey([]byte("test-key-for-poison-redis"))
@@ -193,13 +186,9 @@ func TestRedisDriver_PopCtxWithTrace_BadSignatureQuarantined(t *testing.T) {
 		t.Errorf("preserved payload mismatch:\nwant %q\ngot  %q", string(raw), string(rawBytes))
 	}
 
-	failedEvents := snapshot()
-	if len(failedEvents) != 1 {
-		t.Fatalf("JobFailed events = %d, want 1", len(failedEvents))
-	}
-	if failedEvents[0].JobType != "TamperedJob" {
-		t.Errorf("JobFailed.JobType = %q, want %q (payload.Type should propagate)",
-			failedEvents[0].JobType, "TamperedJob")
+	// The job never ran, so no queue.job.failed event is dispatched.
+	if n := len(snapshot()); n != 0 {
+		t.Errorf("JobFailed events = %d, want 0: a poison job never ran", n)
 	}
 }
 
@@ -258,12 +247,63 @@ func TestRedisDriver_PopCtxWithTrace_UnregisteredJobTypeQuarantined(t *testing.T
 		t.Errorf("exception does not name the cause: %q", rec.Exception)
 	}
 
-	failedEvents := snapshot()
-	if len(failedEvents) != 1 {
-		t.Fatalf("JobFailed events = %d, want 1", len(failedEvents))
+	// The job never ran, so no queue.job.failed event is dispatched.
+	if n := len(snapshot()); n != 0 {
+		t.Errorf("JobFailed events = %d, want 0: a poison job never ran", n)
 	}
-	if failedEvents[0].JobType != "RedisPoisonNeverRegisteredJob" {
-		t.Errorf("JobFailed.JobType = %q, want %q",
-			failedEvents[0].JobType, "RedisPoisonNeverRegisteredJob")
+}
+
+// redisPanicFactoryJob's registered factory panics: the factory is user
+// code, and the pop that rebuilds it must not let the panic unwind.
+type redisPanicFactoryJob struct{}
+
+func (*redisPanicFactoryJob) Handle() error { return nil }
+func (*redisPanicFactoryJob) Failed(error)  {}
+
+var registerRedisPanicFactory sync.Once
+
+// A payload whose factory panics is poison like any other: BLPop already
+// consumed it, so it lands in the failed-jobs list with the fixed rebuild
+// panic text (the panic value is never formatted), the pop returns
+// ErrPoisonJob instead of panicking, and no JobFailed event is dispatched.
+func TestRedisDriver_PopCtxWithTrace_PanickingFactoryQuarantined(t *testing.T) {
+	saveAndRestoreSigningState(t)
+	queue.SetSigningKey(nil)
+	registerRedisPanicFactory.Do(func() {
+		queue.RegisterJob(func([]byte) (*redisPanicFactoryJob, error) { panic("factory exploded") })
+	})
+
+	driver, _ := newMiniRedisDriver(t)
+	snapshot := captureRedisJobFailed(driver)
+	const queueName = "poison-panic"
+	if err := driver.PushCtx(context.Background(), &redisPanicFactoryJob{}, queueName); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	var (
+		job queue.Job
+		err error
+	)
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				t.Fatalf("PopCtxWithTrace let the factory's panic reach the caller: %v", p)
+			}
+		}()
+		job, _, err = driver.PopCtxWithTrace(context.Background(), queueName)
+	}()
+	if job != nil || !errors.Is(err, queue.ErrPoisonJob) {
+		t.Fatalf("PopCtxWithTrace = %T, %v; want no job and ErrPoisonJob", job, err)
+	}
+
+	rec := readRedisFailedQuarantineRecord(t, driver, queueName)
+	if !rec.Poison || !strings.Contains(rec.Exception, "rebuilding the job panicked") {
+		t.Errorf("quarantine record = %+v; want the poison breadcrumb with the fixed panic text", rec)
+	}
+	if strings.Contains(rec.Exception, "factory exploded") {
+		t.Errorf("exception %q formats the panic value", rec.Exception)
+	}
+	if n := len(snapshot()); n != 0 {
+		t.Errorf("JobFailed events = %d, want 0: a poison job never ran", n)
 	}
 }

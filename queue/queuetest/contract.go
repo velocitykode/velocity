@@ -258,6 +258,13 @@ func RunDriverContractTests(t *testing.T, factory DriverFactory) {
 		}
 	})
 
+	t.Run("PopCtx_UnrebuildableJob_IsPoison", func(t *testing.T) {
+		runPoisonContract(t, factory, func(d queue.Driver, q string) (queue.Job, queue.ReservationToken, error) {
+			job, err := d.PopCtx(context.Background(), q)
+			return job, queue.ReservationToken{}, err
+		})
+	})
+
 	t.Run("Shutdown_Idempotent", func(t *testing.T) {
 		d := factory(t)
 		// First Shutdown.
@@ -358,6 +365,16 @@ func RunReservationDriverContract(t *testing.T, factory DriverFactory) {
 		if !token.IsZero() {
 			t.Fatalf("expected zero token on empty queue, got %+v", token)
 		}
+	})
+
+	t.Run("PopCtxReserved_UnrebuildableJob_IsPoison", func(t *testing.T) {
+		if _, ok := factory(t).(queue.ReservationDriver); !ok {
+			t.Skip("driver does not implement queue.ReservationDriver")
+		}
+		runPoisonContract(t, factory, func(d queue.Driver, q string) (queue.Job, queue.ReservationToken, error) {
+			job, token, _, err := d.(queue.ReservationDriver).PopCtxReserved(context.Background(), q)
+			return job, token, err
+		})
 	})
 
 	t.Run("PopCtxReserved_IncrementsAttempts", func(t *testing.T) {

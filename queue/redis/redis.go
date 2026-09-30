@@ -359,12 +359,14 @@ func (r *RedisDriver) PopCtx(ctx context.Context, queueName string) (queue.Job, 
 // hydration runs, so any unrecoverable failure during Unmarshal /
 // verifyPayload / registry.Deserialize would silently drop the payload
 // without the operator-visible breadcrumb the DB driver provides via its
-// quarantineAndReturn path. To preserve parity with the DB driver, every
-// such failure is routed through [RedisDriver.quarantinePoisonedPayload]:
-// the raw bytes are written to a failed-jobs list keyed off the queue
-// (`velocity:queue:<name>:failed`), a JobFailed event is dispatched so
-// observers can alert, and the wrapped error includes ErrPoisonJob so
-// workers treat it as a recoverable pop error rather than a hard failure.
+// quarantine path. To preserve parity with the DB driver, every such
+// failure, including a factory that panics (the registry contains it), is
+// routed through [RedisDriver.quarantinePoisonedPayload]: the raw bytes
+// are written to a failed-jobs list keyed off the queue
+// (`velocity:queue:<name>:failed`), and the wrapped error includes
+// ErrPoisonJob so workers treat it as a recoverable pop error rather than
+// a hard failure. The job never ran, so no queue.job.failed event is
+// dispatched.
 func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (queue.Job, queue.TraceContext, error) {
 	var tc queue.TraceContext
 	if err := ctx.Err(); err != nil {
@@ -394,7 +396,7 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (qu
 
 	var payload queue.Payload
 	if err := json.Unmarshal([]byte(rawPayload), &payload); err != nil {
-		return r.quarantinePoisonedPayload(ctx, queueName, rawPayload, "unknown",
+		return r.quarantinePoisonedPayload(queueName, rawPayload,
 			fmt.Errorf("velocity/queue: failed to unmarshal payload: %w", err))
 	}
 
@@ -403,11 +405,11 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (qu
 	payload.Signature = "" // Remove signature before verification
 	verifyData, err := json.Marshal(payload)
 	if err != nil {
-		return r.quarantinePoisonedPayload(ctx, queueName, rawPayload, payload.Type,
+		return r.quarantinePoisonedPayload(queueName, rawPayload,
 			fmt.Errorf("velocity/queue: failed to marshal payload for verification: %w", err))
 	}
 	if err := queue.VerifyPayload(verifyData, sig); err != nil {
-		return r.quarantinePoisonedPayload(ctx, queueName, rawPayload, payload.Type,
+		return r.quarantinePoisonedPayload(queueName, rawPayload,
 			fmt.Errorf("velocity/queue: queue integrity check failed: %w", err))
 	}
 
@@ -417,7 +419,7 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (qu
 	// above, which gates the legacy-plaintext transition path inside
 	// OpenPayload.
 	if err := queue.OpenPayload(&payload, sig != ""); err != nil {
-		return r.quarantinePoisonedPayload(ctx, queueName, rawPayload, payload.Type, err)
+		return r.quarantinePoisonedPayload(queueName, rawPayload, err)
 	}
 
 	tc = queue.TraceContext{TraceID: payload.TraceID, SpanID: payload.SpanID, ParentID: payload.ParentID}
@@ -435,7 +437,7 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (qu
 	// Deserialize the job using the registry
 	job, err := queue.Deserialize(&payload)
 	if err != nil {
-		j, qtc, qerr := r.quarantinePoisonedPayload(ctx, queueName, rawPayload, payload.Type,
+		j, qtc, qerr := r.quarantinePoisonedPayload(queueName, rawPayload,
 			fmt.Errorf("velocity/queue: failed to deserialize job: %w", err))
 		// Preserve the trace context recovered from the verified payload
 		// even though the job itself could not be hydrated; observers
@@ -454,9 +456,8 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (qu
 // shape for the Redis driver: a raw BLPop payload that fails hydration
 // (Unmarshal / verifyPayload / registry.Deserialize) is preserved in a
 // per-queue failed-jobs list so an operator can inspect the bytes that
-// poisoned the queue, a JobFailed event is dispatched so observers can
-// alert, and the returned error wraps ErrPoisonJob so the worker treats
-// the failure as recoverable (the entry is already gone from the live
+// poisoned the queue, and the returned error wraps ErrPoisonJob so the
+// worker treats the failure as recoverable (the entry is already gone from the live
 // list; the next pop picks up the next eligible job).
 //
 // The payload (sealed first when encryption is on; see below) is
@@ -475,7 +476,7 @@ func (r *RedisDriver) PopCtxWithTrace(ctx context.Context, queueName string) (qu
 // loop in an infinite cycle or risk an additional duplicate; preserving
 // the original error chain lets the worker log a complete forensic
 // trail while still making progress on the next pop.
-func (r *RedisDriver) quarantinePoisonedPayload(ctx context.Context, queueName, rawPayload, jobType string, poisonErr error) (queue.Job, queue.TraceContext, error) {
+func (r *RedisDriver) quarantinePoisonedPayload(queueName, rawPayload string, poisonErr error) (queue.Job, queue.TraceContext, error) {
 	var tc queue.TraceContext
 
 	failedKey := r.getFailedKey(queueName)
@@ -520,16 +521,6 @@ func (r *RedisDriver) quarantinePoisonedPayload(ctx context.Context, queueName, 
 			writeErr = fmt.Errorf("velocity/queue: failed to record poison row to %s: %w", failedKey, err)
 		}
 	}
-
-	// Dispatch JobFailed so observers (APM, alerting) can react. We
-	// dispatch even if the failed-jobs write failed because the event
-	// stream is the higher-fidelity signal in degraded states: a Redis
-	// outage that drops the RPUSH should still surface as JobFailed in
-	// metrics, logs, and bus listeners.
-	if jobType == "" {
-		jobType = "unknown"
-	}
-	queue.DispatchJobFailed(r.DispatchFunc(), ctx, jobType, queueName, poisonErr, 0)
 
 	if writeErr != nil {
 		return nil, tc, errors.Join(queue.ErrPoisonJob, poisonErr, writeErr)
