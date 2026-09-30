@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"database/sql/driver"
@@ -43,6 +44,11 @@ type StatementEvent struct {
 	// to driver.Value. They are therefore the driver's view of the
 	// arguments, not the caller's: an int arrives as int64, and a
 	// driver.Valuer has already been resolved to its underlying value.
+	// They are captured when the statement runs: a []byte is a copy, so
+	// a caller reusing its buffer afterwards does not change them. A value
+	// of another mutable type that a driver's NamedValueChecker lets
+	// through (a named byte-slice type, a driver-specific array) is held
+	// as the caller passed it.
 	// Nil on the failure path, where bound values must not be recorded.
 	Args []any
 	// Duration is the wall time the statement took. For a statement
@@ -962,13 +968,20 @@ func valuesToNamedValues(vals []driver.Value) []driver.NamedValue {
 	return named
 }
 
-// namedValuesToAny copies bound arguments into the event payload.
+// namedValuesToAny copies bound arguments into the event payload, when the
+// statement runs. A []byte is cloned: the event is delivered after the
+// statement returned, and a caller that reuses its buffer then must not
+// change what the event reports, nor race the listener reading it.
 func namedValuesToAny(named []driver.NamedValue) []any {
 	if len(named) == 0 {
 		return nil
 	}
 	out := make([]any, len(named))
 	for i, nv := range named {
+		if b, ok := nv.Value.([]byte); ok {
+			out[i] = bytes.Clone(b)
+			continue
+		}
 		out[i] = nv.Value
 	}
 	return out

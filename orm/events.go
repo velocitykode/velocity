@@ -36,6 +36,12 @@ type QueryExecuted struct {
 	// Bindings are the bound parameters as the database driver received
 	// them, after database/sql's conversion: an int arrives as int64, and a
 	// driver.Valuer has already been resolved to its underlying value.
+	// They are a snapshot taken when the statement ran: a []byte is a
+	// copy, so a caller reusing its buffer after the statement returned
+	// does not change the event. The copy is made only when a dispatcher
+	// is set, for a statement that binds a []byte. A named byte-slice
+	// type or another driver-specific value a driver lets through is
+	// delivered by reference, as the caller passed it.
 	Bindings []any
 	// Duration is the wall time the statement took. For a statement that
 	// returns rows it spans from issue until the result set is closed, so
