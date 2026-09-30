@@ -19,7 +19,7 @@ import (
 	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/internal/eventqueue"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
-	"github.com/velocitykode/velocity/internal/panicerr"
+	"github.com/velocitykode/velocity/internal/teardown"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
 )
@@ -226,7 +226,7 @@ func (a *App) teardownSteps(ctx context.Context) error {
 	}
 	// step runs one teardown step contained and collects its error; do
 	// runs one that returns none.
-	step := func(fn func() error) { collect(safeStep(fn)) }
+	step := func(fn func() error) { collect(teardown.Step(fn)) }
 	do := func(fn func()) { step(func() error { fn(); return nil }) }
 
 	// 1. Stop accepting new connections and drain the in-flight requests
@@ -403,7 +403,7 @@ func (a *App) teardownSteps(ctx context.Context) error {
 // be rare since registered values are typically pointers (always distinct
 // unless actually the same instance).
 //
-// Each Shutdown call is panic-guarded (see safeStep) so a misbehaving
+// Each Shutdown call is panic-guarded (teardown.Step) so a misbehaving
 // third-party Close cannot abort the remaining teardown. The
 // sweep runs after module Shutdowns and before core services close, so
 // hooks may still flush through the queue, cache, or DB.
@@ -434,7 +434,7 @@ func shutdownComponents(ctx context.Context, s *app.Services, collect func(error
 			}
 			seen[v] = struct{}{}
 		}
-		collect(safeStep(func() error { return sd.Shutdown(ctx) }))
+		collect(teardown.Step(func() error { return sd.Shutdown(ctx) }))
 	}
 
 	for i := len(entries) - 1; i >= 0; i-- {
@@ -443,16 +443,4 @@ func shutdownComponents(ctx context.Context, s *app.Services, collect func(error
 			shutdownOne(h)
 		}
 	}
-}
-
-// safeStep runs one teardown step, converting a panic in it into its
-// error, so one bad module, service or component cannot abort the rest of
-// App.Shutdown.
-func safeStep(step func() error) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = panicerr.FromRecovered(r)
-		}
-	}()
-	return step()
 }
