@@ -250,3 +250,77 @@ func TestCommitSession_SealsTheSessionItSaves(t *testing.T) {
 	}
 }
 
+// A deletion of the session cookie a queued write adds ends the session
+// the commit issued under the request's reservation: the session is
+// invalidated while the commit holds the gate, not after it freed it.
+// When another operation of the request holds the gate by then, the
+// session object is left to it and only the issued id is retired (revoked
+// in the cookie store, its server record deleted).
+func TestCommitSession_DeletionAfterSaveEndsTheSessionUnderTheReservation(t *testing.T) {
+	for _, busy := range []bool{false, true} {
+		name := "gate free"
+		if busy {
+			name = "gate held by another operation"
+		}
+		t.Run(name, func(t *testing.T) {
+			s := newHookSession()
+			s.data[auth.UserIDSessionKey] = "u1"
+			g, _ := newHookScheme(t, s)
+			var deletes atomic.Int32
+			records := &deleteHookServerStore{holderRaceStore: holderRaceStore{user: "u1"}}
+			records.onDelete = func() { deletes.Add(1) }
+			g.SetServerSessionStore(records)
+			r, w, h := seamRequest(s)
+
+			var (
+				invalidated     atomic.Int32
+				invalidatedFree atomic.Bool
+			)
+			s.onInvalidate = func(*hookSession) {
+				invalidated.Add(1)
+				h.mu.RLock()
+				if !h.busy {
+					invalidatedFree.Store(true)
+				}
+				h.mu.RUnlock()
+			}
+			var other gateOp
+			if !QueueAfterSessionSave(r, func(w http.ResponseWriter) {
+				http.SetCookie(w, &http.Cookie{Name: "vel_session", Value: "", MaxAge: -1})
+				if busy {
+					if err := h.reserve(&other); err != nil {
+						t.Errorf("premise: reserve after the commit freed the gate: %v", err)
+					}
+				}
+			}) {
+				t.Fatal("premise: write not queued")
+			}
+			if err := commitSession(g, r, w, h); err != nil {
+				t.Fatalf("commit: %v", err)
+			}
+			h.mu.RLock()
+			stillHeld := h.busy
+			h.mu.RUnlock()
+			if busy && !stillHeld {
+				t.Error("the commit freed the gate another operation holds")
+			}
+			other.release()
+
+			if busy {
+				if n := invalidated.Load(); n != 0 {
+					t.Errorf("the session was invalidated %d time(s) while another operation held the gate, want none", n)
+				}
+			} else {
+				if n := invalidated.Load(); n != 1 {
+					t.Errorf("the session was invalidated %d time(s), want 1", n)
+				}
+				if invalidatedFree.Load() {
+					t.Error("the session was invalidated with the gate free, outside the reservation")
+				}
+			}
+			if n := deletes.Load(); n != 1 {
+				t.Errorf("the issued session's record was deleted %d time(s), want 1", n)
+			}
+		})
+	}
+}

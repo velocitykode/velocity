@@ -299,7 +299,7 @@ func commitSession(g *SessionScheme, r *http.Request, w http.ResponseWriter, hol
 				holder.releaseGate()
 			}
 		}()
-		finishCommit(g, r, w, holder, saved)
+		finishCommit(g, r, w, holder, saved, reserved)
 	}()
 	// Seal under the reservation: the session is changed by one party at
 	// a time, and a refused commit leaves it to the operation in flight.
@@ -338,7 +338,7 @@ func refuseCommit(g *SessionScheme, holder *sessionHolder, reason error) {
 // same way, also when a step panics (see finishCommit).
 func commitStandalone(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder) error {
 	var saved bool
-	defer func() { finishCommit(g, r, w, holder, saved) }()
+	defer func() { finishCommit(g, r, w, holder, saved, true) }()
 	writes, err := commitSessionHeld(g, r, w, holder, &saved)
 	if err != nil {
 		return err
@@ -360,12 +360,13 @@ func commitStandalone(g *SessionScheme, r *http.Request, w http.ResponseWriter, 
 // response, which carries the response's cookies, deletion included. A
 // commit whose save failed or panicked issued no session, so a deletion
 // ends nothing. Nothing is saved again, and a panic goes on unchanged once
-// it returns. The commit defers it at its start; it runs with the gate
-// free once the queued writes were delivered, holding it otherwise.
-func finishCommit(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder, saved bool) {
+// it returns. The commit defers it at its start; held reports whether the
+// commit still holds the request's gate (it frees it before delivering the
+// queued writes; a standalone commit's operation holds it throughout).
+func finishCommit(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder, saved, held bool) {
 	holder.closeQueue()
 	if saved {
-		g.endSessionDeletedAfterSave(r, w, holder)
+		g.endSessionDeletedAfterSave(r, w, holder, held)
 	}
 }
 
@@ -487,7 +488,13 @@ func (a *afterSaveWriter) WriteHeader(statusCode int) {
 // sharing that store. The response keeps one session cookie line: the
 // session cookie the save issued and the deletions are replaced by one
 // deletion built by the session's cookie policy.
-func (g *SessionScheme) endSessionDeletedAfterSave(r *http.Request, w http.ResponseWriter, holder *sessionHolder) {
+//
+// The session is invalidated under the request's reservation: held says
+// the caller holds the gate; otherwise it is taken for the step. When
+// another operation of the request holds it, the session object is left
+// to that operation and only the issued id is retired, which ends the
+// session the browser was given.
+func (g *SessionScheme) endSessionDeletedAfterSave(r *http.Request, w http.ResponseWriter, holder *sessionHolder, held bool) {
 	id := holder.committed()
 	if id == "" {
 		return
@@ -515,8 +522,15 @@ func (g *SessionScheme) endSessionDeletedAfterSave(r *http.Request, w http.Respo
 		header.Add("Set-Cookie", line)
 	}
 	http.SetCookie(w, g.config.CookiePolicy().Cookie(g.config.Name, "", -1, g.config.HttpOnly))
-	if session := holder.getSession(); session != nil {
+	var op gateOp
+	reserved := held
+	if !held {
+		reserved = holder.reserve(&op) == nil
+		defer op.abort()
+	}
+	if session := holder.getSession(); session != nil && reserved {
 		if ms, ok := session.(modifiedSession); !ok || !ms.IsDestroyed() {
+			op.beginMutation()
 			if err := session.Invalidate(); err != nil {
 				g.logWarn("velocity/auth: session invalidate (session cookie deleted) failed", "session_id", id, "error", err)
 			}
@@ -528,6 +542,7 @@ func (g *SessionScheme) endSessionDeletedAfterSave(r *http.Request, w http.Respo
 	if err := g.retireServerRecord(r, id); err != nil {
 		g.logWarn("velocity/auth: server session store delete (session cookie deleted) failed", "session_id", id, "error", err)
 	}
+	op.publish(false)
 }
 
 // endSessionDeletedBy invalidates session when w already carries a
