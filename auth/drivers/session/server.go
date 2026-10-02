@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
-	"github.com/velocitykode/velocity/csrf/stores"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 )
@@ -385,7 +385,7 @@ var errKeepShared = errors.New("velocity/auth/session: keep the value the record
 // record another request could share: update runs on the session's own
 // value, and the record is created by its Save. A session whose record is
 // gone (revoked or expired) gets an error wrapping
-// stores.ErrSharedRecordGone and is left as it is: the record is never
+// contract.ErrSessionRecordGone and is left as it is: the record is never
 // recreated here. An error from update, or any other store failure, is
 // returned and the session is left as it is.
 //
@@ -452,7 +452,7 @@ func (s *ServerSession) UpdateShared(ctx context.Context, key string, update fun
 	switch {
 	case err == nil, errchain.Is(err, errKeepShared):
 	case errchain.Is(err, auth.ErrSessionNotFound), errchain.Is(err, auth.ErrSessionExpired):
-		return nil, false, errchain.Errorf("velocity/auth/session: update shared session value: %w", stores.ErrSharedRecordGone)
+		return nil, false, errchain.Errorf("velocity/auth/session: update shared session value: %w", contract.ErrSessionRecordGone)
 	default:
 		return nil, false, errchain.Errorf("velocity/auth/session: update shared session value: %w", err)
 	}

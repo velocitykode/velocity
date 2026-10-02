@@ -15,6 +15,7 @@ import (
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/cache/drivers"
 	cacheredis "github.com/velocitykode/velocity/cache/redis"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/csrf/stores"
 )
@@ -425,8 +426,8 @@ func TestServerStore_CSRFMintMissingAndSealedSessions(t *testing.T) {
 	if err := records.Delete(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.GetToken(servedUnder(gone), id); !errors.Is(err, stores.ErrSharedRecordGone) {
-		t.Fatalf("GetToken on a session whose record is gone = %v, want ErrSharedRecordGone", err)
+	if _, err := c.GetToken(servedUnder(gone), id); !errors.Is(err, contract.ErrSessionRecordGone) {
+		t.Fatalf("GetToken on a session whose record is gone = %v, want ErrSessionRecordGone", err)
 	}
 	if _, err := records.Get(context.Background(), id); !errors.Is(err, auth.ErrSessionNotFound) {
 		t.Fatalf("the mint recreated a revoked record: %v", err)

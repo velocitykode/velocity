@@ -41,6 +41,7 @@ func TestSentinelStability(t *testing.T) {
 		{"ErrInvalidPreviousKey", contract.ErrInvalidPreviousKey, "velocity/crypto: invalid previous key"},
 		{"ErrInvalidPayload", contract.ErrInvalidPayload, "velocity/crypto: invalid payload format"},
 		{"ErrStopFromOwnWork", contract.ErrStopFromOwnWork, "velocity: stop called from inside the work it would wait for"},
+		{"ErrSessionRecordGone", contract.ErrSessionRecordGone, "velocity: the session's shared record is gone"},
 	}
 	for _, tc := range stable {
 		if got := tc.err.Error(); got != tc.want {

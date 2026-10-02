@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
@@ -238,7 +239,7 @@ func (b *sharedTestBag) Sealed() bool { return b.sealed }
 
 func (b *sharedTestBag) UpdateShared(_ context.Context, key string, update func(any, bool) (any, bool, error)) (any, bool, error) {
 	if b.gone {
-		return nil, false, ErrSharedRecordGone
+		return nil, false, contract.ErrSessionRecordGone
 	}
 	b.record.mu.Lock()
 	cur, had := b.record.data[key]
@@ -380,10 +381,10 @@ func TestSessionBagStore_LoadOrStore(t *testing.T) {
 		s := NewSessionBagStore(bagFromContext, 0)
 		a := newShared(newTestBag("sess-1"))
 		a.gone = true
-		if _, _, err := s.LoadOrStore(withBag(a), "sess-1", "tok"); !errors.Is(err, ErrSharedRecordGone) {
+		if _, _, err := s.LoadOrStore(withBag(a), "sess-1", "tok"); !errors.Is(err, contract.ErrSessionRecordGone) {
 			t.Fatalf("LoadOrStore on a gone record = %v", err)
 		}
-		if err := s.Set(withBag(a), "sess-1", "tok"); !errors.Is(err, ErrSharedRecordGone) {
+		if err := s.Set(withBag(a), "sess-1", "tok"); !errors.Is(err, contract.ErrSessionRecordGone) {
 			t.Fatalf("Set on a gone record = %v", err)
 		}
 		if err := s.Delete(withBag(a), "sess-1"); err != nil {

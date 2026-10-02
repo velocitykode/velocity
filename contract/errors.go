@@ -108,6 +108,14 @@ var (
 	// check with errors.Is(err, ErrStopFromOwnWork). Each owner adds its
 	// own context, and may wrap its own closed-state sentinel as well.
 	ErrStopFromOwnWork = errors.New("velocity: stop called from inside the work it would wait for")
+
+	// ErrSessionRecordGone is returned (wrapped) by a write to a session's
+	// shared server-side record when the session was saved to a record
+	// that no longer exists: it was revoked or expired. The write does not
+	// recreate it. The session drivers return it from
+	// csrf/stores.SharedBag.UpdateShared, and the CSRF session store
+	// checks for it.
+	ErrSessionRecordGone = errors.New("velocity: the session's shared record is gone")
 )
 
 // HTTPError is the framework's one HTTP-shaped error value. Router, auth,

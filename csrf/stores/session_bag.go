@@ -32,11 +32,6 @@ var ErrNoSessionBag = errors.New("velocity/csrf: no session held for this reques
 // success.
 var ErrSessionSealed = errors.New("velocity/csrf: the request's session was already saved; no token written")
 
-// ErrSharedRecordGone is returned (wrapped) by SharedBag.UpdateShared when
-// the session was saved to a shared record that no longer exists: it was
-// revoked or expired. The record is never recreated by a token write.
-var ErrSharedRecordGone = errors.New("velocity/csrf: the session's shared record is gone")
-
 // SharedBag is the optional capability of a session whose data the other
 // requests of the same session share through a server-side record
 // (session.ServerSession has it; a session held in its cookie does not).
@@ -53,7 +48,8 @@ var ErrSharedRecordGone = errors.New("velocity/csrf: the session's shared record
 // save never writes the key again over a later change. A session with no
 // record yet (created or regenerated, and not saved) is shared with no
 // other request: update runs on the session's own value. A session saved
-// to a record that is gone gets an error wrapping ErrSharedRecordGone.
+// to a record that is gone gets an error wrapping
+// contract.ErrSessionRecordGone; the record is not recreated.
 //
 // SessionBagStore makes every token write through it when the session has
 // it: the mint (LoadOrStore), Set, Delete and single-use consumption are
@@ -288,7 +284,7 @@ func (s *SessionBagStore) Delete(ctx context.Context, id string) error {
 		return nil
 	}
 	_, err = s.update(ctx, b, func(string) (string, bool) { return "", false })
-	if errchain.Is(err, ErrSharedRecordGone) {
+	if errchain.Is(err, contract.ErrSessionRecordGone) {
 		return nil
 	}
 	return err
@@ -363,7 +359,7 @@ func (s *SessionBagStore) ConsumeIfMatch(ctx context.Context, id string, expecte
 			return current, !consumed && current != ""
 		})
 		if err != nil {
-			if errchain.Is(err, ErrSharedRecordGone) {
+			if errchain.Is(err, contract.ErrSessionRecordGone) {
 				return false, nil
 			}
 			return false, err
