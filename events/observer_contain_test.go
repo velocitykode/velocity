@@ -73,6 +73,9 @@ func TestFireModelEvent_ObserverPanicIsContained(t *testing.T) {
 	if got := pe.Error(); !strings.HasPrefix(got, "panic: ") || strings.Contains(got, "Error ran") {
 		t.Errorf("panic error text = %q, want the errchain fallback text", got)
 	}
+	if got, want := err.Error(), `velocity/events: observer *events.hostileObserver panicked on "created": panic: `; !strings.HasPrefix(got, want) {
+		t.Errorf("error text = %q, want it to name the observer and event: %q...", got, want)
+	}
 	if n := hostile.calls.Load(); n != 1 {
 		t.Errorf("hostile observer called %d times, want 1", n)
 	}

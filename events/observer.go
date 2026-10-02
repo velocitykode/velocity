@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventmeta"
 	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/internal/panicerr"
@@ -123,13 +124,15 @@ func (r *ObserverRegistry) Fire(ctx context.Context, event string, model interfa
 }
 
 // fireContained fires event on observer, returning a panic in it as the
-// typed panic error. It is the one call into a model observer: an
-// observer is user code, and its panic fails that observer only, as its
-// error, instead of unwinding through the code that fired the event.
+// typed panic error, wrapped with the observer's type and the event so
+// the caller can tell which one failed. It is the one call into a model
+// observer: an observer is user code, and its panic fails that observer
+// only, as its error, instead of unwinding through the code that fired
+// the event.
 func (r *ObserverRegistry) fireContained(ctx context.Context, observer ModelObserver, event string, model interface{}) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			err = panicerr.FromRecovered(p)
+			err = errchain.Errorf("velocity/events: observer %T panicked on %q: %w", observer, event, panicerr.FromRecovered(p))
 		}
 	}()
 	return r.fireEvent(ctx, observer, event, model)
