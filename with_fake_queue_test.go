@@ -5,16 +5,21 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/queue/queuetest"
 )
 
 // fakeQueueJob is a minimal contract.QueueJob used to exercise WithFakeQueue.
+// It is Batchable so the tests that dispatch it in a batch can.
 type fakeQueueJob struct {
-	name string
+	name    string
+	batchID queue.BatchID
 }
 
-func (j *fakeQueueJob) Handle() error  { return nil }
-func (j *fakeQueueJob) Failed(_ error) {}
+func (j *fakeQueueJob) Handle() error               { return nil }
+func (j *fakeQueueJob) Failed(_ error)              {}
+func (j *fakeQueueJob) GetBatchID() queue.BatchID   { return j.batchID }
+func (j *fakeQueueJob) SetBatchID(id queue.BatchID) { j.batchID = id }
 
 // (criterion 1) WithFakeQueue pre-sets the driver and Bootstrap keeps it:
 // a.Queue is the exact fake after New(). Mirrors the WithFakeEvents wiring.

@@ -45,15 +45,19 @@ func (mailManagerModule) Shutdown(context.Context) error {
 	return nil
 }
 
-// processedJob is a job that succeeds; ran counts its runs.
+// processedJob is a job that succeeds; ran counts its runs. It is
+// Batchable so the batch tests can dispatch it.
 type processedJob struct {
-	ID string `json:"id"`
+	ID      string        `json:"id"`
+	BatchID queue.BatchID `json:"batch_id,omitempty"`
 }
 
 var processedJobRuns atomic.Int32
 
-func (j *processedJob) Handle() error { processedJobRuns.Add(1); return nil }
-func (j *processedJob) Failed(error)  {}
+func (j *processedJob) Handle() error               { processedJobRuns.Add(1); return nil }
+func (j *processedJob) Failed(error)                {}
+func (j *processedJob) GetBatchID() queue.BatchID   { return j.BatchID }
+func (j *processedJob) SetBatchID(id queue.BatchID) { j.BatchID = id }
 
 // eventFailureWarns counts the warn lines in l naming event under "event".
 func eventFailureWarns(l *levelLogger, event string) int {
