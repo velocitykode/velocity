@@ -183,8 +183,10 @@ jobs:
             exit 1
           fi
 
-  # Reports event fields whose type does not survive the queue codec, and
-  # event failures a component records outside the app's failure counter.
+  # Reports event fields whose type does not survive the queue codec,
+  # event failures a component records outside the app's failure counter,
+  # and calls into a registered observer, listener or subscriber of the
+  # events or orm packages that no recover contains.
   # A go/types walker, stdlib only; see the package comment of
   # scripts/ci/check-events for the rules. There is no suppression marker.
   events-lint:
@@ -198,11 +200,11 @@ jobs:
           check-latest: true
       - name: Test the event checker against its golden cases
         run: go test -count=1 ./scripts/ci/check-events/
-      - name: Check event fields, the event envelope and emitter failure accounting
+      - name: Check event fields, the event envelope, emitter failure accounting and callback containment
         run: |
           set -e
           if ! scripts/ci/check-events.sh; then
-            echo "::error::an event field does not survive the queue codec, an event the framework builds lacks the EventMeta envelope, or an emitter records failures outside the app's counter; see the hints above"
+            echo "::error::an event field does not survive the queue codec, an event the framework builds lacks the EventMeta envelope, an emitter records failures outside the app's counter, or a registered callback runs with no recover around it; see the hints above"
             exit 1
           fi
 

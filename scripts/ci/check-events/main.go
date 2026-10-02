@@ -1,4 +1,4 @@
-// check-events reports framework event code that breaks one of three rules.
+// check-events reports framework event code that breaks one of four rules.
 //
 // Rule "field": an event field whose type does not survive the queue
 // codec. A queued listener receives its event after a JSON round trip: the
@@ -52,6 +52,10 @@
 // recorded it. The rule proves the component can take the app's Failures;
 // the tests of the framework's wiring prove it hands them over.
 //
+// Rule "contain": a call into a registered callback of the events or orm
+// packages (a model observer, a listener, a statement observer) that no
+// recover contains; contain.go documents the proof.
+//
 // Scope: the non-test files of the packages the patterns name, except test
 // infrastructure (a directory whose name ends in "test" or is "testing",
 // internal/hostile, scripts/). There is no suppression marker: an event
@@ -61,11 +65,12 @@
 // Type information comes from `go list -export` and the standard library
 // importer, so the tool needs no dependency outside the standard library.
 //
-// Usage: go run ./scripts/ci/check-events [-events] [packages]
+// Usage: go run ./scripts/ci/check-events [-events|-callbacks] [packages]
 // Prints "file:line: rule: message" per offender, then on stderr how to fix
 // each rule reported, and exits 1 when there is any; prints nothing and
 // exits 0 otherwise. -events prints every event type found instead (for
-// inventories).
+// inventories); -callbacks prints every registered-callback call of the
+// events and orm packages with whether it is contained.
 package main
 
 import (
@@ -95,11 +100,13 @@ const (
 var fixes = []struct{ rule, fix string }{
 	{ruleField, "field: carry metadata with a concrete type (a string ID, a formatted message, a type label); an error field needs the event's MarshalJSON/UnmarshalJSON pair (eventmeta.ErrorText / eventmeta.TextError)"},
 	{ruleEnvelope, "envelope: embed contract.EventMeta in the event and fill it from the context the event is built under (eventmeta.Current, or eventmeta.Child for an operation that runs as a span of its own)"},
+	{ruleContain, "contain: call the registered callback inside the package's containment helper, the one function that defers a recover and returns panicerr.FromRecovered as that callback's error"},
 	{ruleEmitter, "emitter: have the framework hand the emitter the app's Failures (Share, or SetShared for a process-wide emitter) where it wires the component's dispatcher"},
 }
 
 func main() {
 	list := flag.Bool("events", false, "print every event type found")
+	cbs := flag.Bool("callbacks", false, "print every registered-callback call in events and orm, contained or not")
 	flag.Parse()
 	patterns := flag.Args()
 	if len(patterns) == 0 {
@@ -109,6 +116,12 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "check-events:", err)
 		os.Exit(2)
+	}
+	if *cbs {
+		for _, e := range r.callbacks {
+			fmt.Println(e)
+		}
+		return
 	}
 	if *list {
 		for _, e := range r.events {
@@ -143,10 +156,12 @@ type listedPackage struct {
 	Error           *struct{ Err string }
 }
 
-// result is what check found: the offenders and the event types, sorted.
+// result is what check found: the offenders, the event types and the
+// registered-callback calls, sorted.
 type result struct {
-	hits   []string
-	events []string
+	hits      []string
+	events    []string
+	callbacks []string
 }
 
 // checker holds what both rules share.
@@ -250,6 +265,7 @@ func check(dir string, patterns []string) (result, error) {
 		c.fields(u)
 		c.emitters(u)
 		c.envelopes(u)
+		c.contains(u)
 	}
 	c.reportEnvelopes()
 	sort.Strings(c.hits)
