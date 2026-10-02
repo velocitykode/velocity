@@ -36,15 +36,20 @@ func admitJob(job Job, queueName ...string) (string, error) {
 	return "default", nil
 }
 
-// admitBatch admits every job of a batch before the batch exists: it is
-// refused whole, before it is saved and before its first push, so a
-// refused batch has no row, no registered callbacks and no pushed job
-// that would wait on it. The error names the first refused job by its
-// position.
+// admitBatch admits every job of a batch before the batch exists: a nil
+// job (ErrNilJob) or one that does not implement Batchable
+// (ErrJobNotBatchable, since the worker settles a batch only through its
+// jobs' batch ids) refuses the batch whole, before it is saved and before
+// its first push, so a refused batch has no row, no registered callbacks
+// and no pushed job that would wait on it. The error names the first
+// refused job by its position.
 func admitBatch(jobs []Job) error {
 	for i, job := range jobs {
 		if isNilJob(job) {
 			return errchain.Errorf("batch: job %d/%d: %w", i+1, len(jobs), ErrNilJob)
+		}
+		if _, ok := job.(Batchable); !ok {
+			return errchain.Errorf("batch: job %d/%d: %w", i+1, len(jobs), ErrJobNotBatchable)
 		}
 	}
 	return nil

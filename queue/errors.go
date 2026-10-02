@@ -14,6 +14,11 @@ var (
 	// or, for a factory that decodes "null", as an empty job that runs. A
 	// push refuses it before any method of the job runs (see admit.go).
 	ErrNilJob = errors.New("velocity/queue: job is nil")
+	// ErrJobNotBatchable is returned by a batch Dispatch holding a job
+	// that does not implement Batchable: the worker settles a batch only
+	// through its jobs' batch ids, so such a batch would run and never
+	// finish. The batch is refused whole, before it is saved or pushed.
+	ErrJobNotBatchable = errors.New("velocity/queue: batch job does not implement Batchable")
 	// ErrJobNotFound is an alias for contract.ErrJobNotFound. Hoisted to
 	// the contract package so callers can errors.Is against the shared
 	// identity without importing queue.

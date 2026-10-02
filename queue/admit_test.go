@@ -91,17 +91,27 @@ func TestMemoryDriver_RefusedNilPushConsumesNoWarning(t *testing.T) {
 	}
 }
 
-// A batch holding a nil job, untyped or a typed nil Batchable, is refused
-// whole before it exists: nothing saved, nothing pushed, no job before it
-// stamped with a batch id, no callback fired, no panic.
-func TestPendingBatch_Dispatch_NilJobRefusedWhole(t *testing.T) {
+// plainBatchJob does not implement Batchable: the worker could never
+// settle a batch holding it.
+type plainBatchJob struct{ ID string }
+
+func (j *plainBatchJob) Handle() error { return nil }
+func (j *plainBatchJob) Failed(error)  {}
+
+// A batch holding a nil job, untyped or a typed nil Batchable, or a job
+// that does not implement Batchable, is refused whole before it exists:
+// nothing saved, nothing pushed, no job before it stamped with a batch
+// id, no callback fired, no panic.
+func TestPendingBatch_Dispatch_RefusedWhole(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name string
-		nil  Job
+		bad  Job
+		want error
 	}{
-		{"untyped nil", nil},
-		{"typed nil Batchable", (*admitProbeJob)(nil)},
+		{"untyped nil", nil, ErrNilJob},
+		{"typed nil Batchable", (*admitProbeJob)(nil), ErrNilJob},
+		{"not Batchable", &plainBatchJob{ID: "p"}, ErrJobNotBatchable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := installCountingRepo(t)
@@ -109,14 +119,14 @@ func TestPendingBatch_Dispatch_NilJobRefusedWhole(t *testing.T) {
 			t.Cleanup(func() { _ = d.Shutdown(ctx) })
 			first := &admitProbeJob{}
 			var fired atomic.Int32
-			b, err := NewBatch(first, tc.nil, &admitProbeJob{}).
+			b, err := NewBatch(first, tc.bad, &admitProbeJob{}).
 				OnQueue("q-batch").
 				Then(func(*Batch) { fired.Add(1) }).
 				Catch(func(*Batch, error) { fired.Add(1) }).
 				Finally(func(*Batch) { fired.Add(1) }).
 				Dispatch(ctx, d)
-			if !errors.Is(err, ErrNilJob) {
-				t.Fatalf("Dispatch = %v, want ErrNilJob", err)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("Dispatch = %v, want %v", err, tc.want)
 			}
 			if b != nil {
 				t.Errorf("Dispatch returned batch %v for a refused batch", b.ID())
@@ -136,6 +146,25 @@ func TestPendingBatch_Dispatch_NilJobRefusedWhole(t *testing.T) {
 				t.Errorf("refused batch fired %d callbacks, want 0", n)
 			}
 		})
+	}
+}
+
+// A batch of only non-Batchable jobs is refused too: accepted, it would
+// run every job and never settle, so Then and Finally would never fire.
+func TestPendingBatch_Dispatch_NoBatchableJobRefused(t *testing.T) {
+	ctx := context.Background()
+	repo := installCountingRepo(t)
+	d := NewMemoryDriver()
+	t.Cleanup(func() { _ = d.Shutdown(ctx) })
+	_, err := NewBatch(&plainBatchJob{ID: "a"}, &plainBatchJob{ID: "b"}).Dispatch(ctx, d)
+	if !errors.Is(err, ErrJobNotBatchable) {
+		t.Fatalf("Dispatch = %v, want ErrJobNotBatchable", err)
+	}
+	if n := repo.saves.Load(); n != 0 {
+		t.Errorf("refused batch saved %d times, want 0", n)
+	}
+	if size, _ := d.Size("default"); size != 0 {
+		t.Errorf("Size(default) = %d after the refused batch, want 0", size)
 	}
 }
 

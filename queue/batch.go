@@ -25,8 +25,10 @@ import (
 // creation time so DB indices behave well under range scans.
 type BatchID string
 
-// Batchable is an optional interface that jobs can implement to participate in batches.
-// This follows the same pattern as MaxAttempter, OnQueuer, etc.
+// Batchable is the interface a job implements to be dispatched in a batch:
+// the worker settles the batch through each job's BatchID, so a batch
+// holding a job that does not implement it is refused (ErrJobNotBatchable).
+// A job pushed on its own need not implement it.
 type Batchable interface {
 	GetBatchID() BatchID
 	SetBatchID(id BatchID)
@@ -553,8 +555,9 @@ type PendingBatch struct {
 	dispatchEvent func(ctx context.Context, event interface{})
 }
 
-// NewBatch creates a new PendingBatch with the given jobs.
-// Jobs that implement Batchable will have their BatchID set automatically.
+// NewBatch creates a new PendingBatch with the given jobs. Every job must
+// implement Batchable: Dispatch sets each one's BatchID, and refuses a
+// batch holding a job that does not with ErrJobNotBatchable.
 func NewBatch(jobs ...Job) *PendingBatch {
 	return &PendingBatch{
 		jobs:  jobs,
@@ -639,7 +642,10 @@ func (pb *PendingBatch) WithEventDispatcher(fn func(ctx context.Context, event i
 	return pb
 }
 
-// Dispatch creates the batch, sets BatchID on Batchable jobs, and pushes all jobs to the driver.
+// Dispatch creates the batch, sets each job's BatchID, and pushes all jobs
+// to the driver. A batch holding a nil job (ErrNilJob) or a job that does
+// not implement Batchable (ErrJobNotBatchable) is refused whole before it
+// is saved or any job is pushed.
 func (pb *PendingBatch) Dispatch(ctx context.Context, driver Driver) (*Batch, error) {
 	if len(pb.jobs) == 0 {
 		return nil, fmt.Errorf("batch: cannot dispatch empty batch")
@@ -684,12 +690,11 @@ func (pb *PendingBatch) Dispatch(ctx context.Context, driver Driver) (*Batch, er
 		return nil, errchain.Errorf("batch: failed to save batch: %w", err)
 	}
 
-	// Set BatchID on all Batchable jobs and push them
+	// Set BatchID on every job and push them; admitBatch made sure each
+	// one is Batchable.
 	pushed := 0
 	for _, job := range pb.jobs {
-		if bj, ok := job.(Batchable); ok {
-			bj.SetBatchID(id)
-		}
+		job.(Batchable).SetBatchID(id)
 		queueName := pb.queue
 		if oq, ok := job.(OnQueuer); ok {
 			queueName = oq.OnQueue()
