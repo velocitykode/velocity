@@ -23,6 +23,8 @@ BENCHMARKS=(
 	"./contract BenchmarkMarkerPredicates"
 	"./contract BenchmarkPreferredMediaRange"
 	"./contract BenchmarkStatusOf"
+	"./events BenchmarkObserverFire_NoObserver"
+	"./internal/nilval BenchmarkIs"
 	"./orm/drivers BenchmarkNormalizeTimeArgs_NoTimeArgs"
 	"./router BenchmarkClassifyError_Unmatched"
 )

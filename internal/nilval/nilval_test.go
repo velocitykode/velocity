@@ -42,14 +42,15 @@ func TestIs(t *testing.T) {
 	}
 }
 
-func TestIs_NoAlloc(t *testing.T) {
+// BenchmarkIs is held to zero allocs/op by
+// scripts/ci/check-zero-alloc-benchmarks.sh.
+func BenchmarkIs(b *testing.B) {
 	v := &impl{}
 	var p *impl
-	if n := testing.AllocsPerRun(100, func() {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
 		_ = Is(v)
 		_ = Is(p)
 		_ = Is(nil)
-	}); n != 0 {
-		t.Fatalf("Is allocates %v times, want 0", n)
 	}
 }

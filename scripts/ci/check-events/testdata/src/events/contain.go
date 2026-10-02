@@ -156,7 +156,7 @@ func (r *Registry) DispatchGo(event any) (err error) {
 		}
 	}()
 	for _, e := range r.entries {
-		go func() {
+		go func() { //safe-goroutine: golden case, a goroutine no recover covers
 			_ = e.listener.Handle(event) // want contain
 		}()
 	}

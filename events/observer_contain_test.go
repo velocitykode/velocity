@@ -187,15 +187,15 @@ func TestObserverRegistry_ConcurrentFireContained(t *testing.T) {
 type hostileModel struct{}
 
 // With no observer registered, Fire does not allocate: the containment
-// adds nothing to the empty fan-out.
-func TestObserverRegistry_FireNoObserverNoAlloc(t *testing.T) {
+// adds nothing to the empty fan-out. Held to zero allocs/op by
+// scripts/ci/check-zero-alloc-benchmarks.sh.
+func BenchmarkObserverFire_NoObserver(b *testing.B) {
 	r := NewObserverRegistry()
 	user := &TestUser{ID: 1}
 	ctx := context.Background()
-	if n := testing.AllocsPerRun(100, func() {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
 		_ = r.Fire(ctx, "created", user)
-	}); n != 0 {
-		t.Fatalf("Fire with no observer allocates %v times, want 0", n)
 	}
 }
 
