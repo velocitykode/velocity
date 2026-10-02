@@ -459,8 +459,9 @@ func TestSessionScheme_ConcurrentCheckRevoke(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < N; i++ {
+			wasRevoked := revoked.Load()
 			ok := scheme.Check(requestWith(cookie))
-			if revoked.Load() && ok {
+			if wasRevoked && ok {
 				t.Errorf("Check returned true after revoke was observed")
 				return
 			}
