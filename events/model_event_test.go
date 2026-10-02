@@ -82,7 +82,7 @@ func TestFireModelEvent_ModelWhoseMethodsPanic(t *testing.T) {
 	capture := &modelEventCapture{}
 	d.Listen("panickymodel.updated", capture)
 
-	for _, model := range []any{&panickyModel{ID: 1}, (*panickyModel)(nil), panickyModel{ID: 2}} {
+	for _, model := range []any{&panickyModel{ID: 1}, panickyModel{ID: 2}} {
 		func() {
 			defer func() {
 				if p := recover(); p != nil {
@@ -95,8 +95,8 @@ func TestFireModelEvent_ModelWhoseMethodsPanic(t *testing.T) {
 		}()
 	}
 	got := capture.all()
-	if len(got) != 3 {
-		t.Fatalf("listener saw %d events, want 3", len(got))
+	if len(got) != 2 {
+		t.Fatalf("listener saw %d events, want 2", len(got))
 	}
 	for _, ev := range got {
 		if ev.ModelType != "panickyModel" || ev.Action != "updated" || ev.Name() != "panickymodel.updated" {

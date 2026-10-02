@@ -10,10 +10,13 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/eventmeta"
+	"github.com/velocitykode/velocity/internal/nilval"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
-// errNilModel is returned for a model event fired without a model: there
-// is no type to name the event by or to find the observers of.
+// errNilModel is returned for a model event fired without a model, an
+// untyped nil or a typed nil pointer alike: there is no model to hand the
+// observers, and a typed nil would reach them as a nil receiver.
 var errNilModel = errors.New("velocity/events: model event fired with a nil model")
 
 // ModelObserver interface for observing model lifecycle events. Each callback
@@ -95,25 +98,41 @@ func (r *ObserverRegistry) GetObservers(modelType string) []ModelObserver {
 	return result
 }
 
-// Fire fires a model event to all registered observers. A nil model
-// returns an error and reaches no observer.
+// Fire fires a model event to all registered observers, in registration
+// order. A nil model, untyped or a typed nil pointer, returns an error and
+// reaches no observer. An observer that fails, by returning an error or
+// by panicking, stops the fan-out: Fire returns its error, a panic as the
+// typed panic error (panicerr), and the later observers are not called.
 func (r *ObserverRegistry) Fire(ctx context.Context, event string, model interface{}) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if model == nil {
+	if nilval.Is(model) {
 		return errNilModel
 	}
 	modelType := r.getModelType(model)
 	observers := r.GetObservers(modelType)
 
 	for _, observer := range observers {
-		if err := r.fireEvent(ctx, observer, event, model); err != nil {
+		if err := r.fireContained(ctx, observer, event, model); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// fireContained fires event on observer, returning a panic in it as the
+// typed panic error. It is the one call into a model observer: an
+// observer is user code, and its panic fails that observer only, as its
+// error, instead of unwinding through the code that fired the event.
+func (r *ObserverRegistry) fireContained(ctx context.Context, observer ModelObserver, event string, model interface{}) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = panicerr.FromRecovered(p)
+		}
+	}()
+	return r.fireEvent(ctx, observer, event, model)
 }
 
 // fireEvent fires a specific event on an observer
@@ -207,8 +226,11 @@ func (d *ObservableDispatcher) ObserveModel(model interface{}, observer ModelObs
 }
 
 // FireModelEvent fires a model lifecycle event: to the model's observers,
-// then as a ModelEvent to the dispatcher's listeners. A nil model returns
-// an error and fires neither.
+// then as a ModelEvent to the dispatcher's listeners. A nil model,
+// untyped or a typed nil pointer, returns an error and fires neither. An
+// observer that returns an error or panics fails the call with that error
+// (a panic as the typed panic error) before the ModelEvent is dispatched,
+// as Fire documents.
 func (d *ObservableDispatcher) FireModelEvent(ctx context.Context, event string, model interface{}) error {
 	if ctx == nil {
 		ctx = context.Background()
