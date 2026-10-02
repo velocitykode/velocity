@@ -1,6 +1,9 @@
 package queue
 
-import "github.com/velocitykode/velocity/internal/errchain"
+import (
+	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
+)
 
 // Admission: every entry point that takes a job from its caller (a push of
 // any driver, a fake's push, a batch dispatch) admits the job here before
@@ -22,7 +25,7 @@ import "github.com/velocitykode/velocity/internal/errchain"
 // returns a non-empty name, else "default". OnQueue runs only on an
 // admitted job.
 func admitJob(job Job, queueName ...string) (string, error) {
-	if isNilJob(job) {
+	if nilval.Is(job) {
 		return "", ErrNilJob
 	}
 	if len(queueName) > 0 && queueName[0] != "" {
@@ -45,7 +48,7 @@ func admitJob(job Job, queueName ...string) (string, error) {
 // refused job by its position.
 func admitBatch(jobs []Job) error {
 	for i, job := range jobs {
-		if isNilJob(job) {
+		if nilval.Is(job) {
 			return errchain.Errorf("batch: job %d/%d: %w", i+1, len(jobs), ErrNilJob)
 		}
 		if _, ok := job.(Batchable); !ok {

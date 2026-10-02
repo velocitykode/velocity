@@ -2,11 +2,11 @@ package queue
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 	"sync"
 
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -115,7 +115,7 @@ func (r *JobRegistry) Deserialize(payload *Payload) (Job, error) {
 	// not reach a driver as a success, or a reserved pop keeps a
 	// reservation for a job the worker takes for an empty queue, or runs a
 	// nil job.
-	if isNilJob(job) {
+	if nilval.Is(job) {
 		return nil, fmt.Errorf("velocity/queue: the factory registered for job type %s returned no job and no error", payload.Type)
 	}
 	return job, nil
@@ -164,16 +164,3 @@ type factoryError struct {
 
 func (e factoryError) Error() string { return e.text }
 func (e factoryError) Unwrap() error { return e.cause }
-
-// isNilJob reports whether job is nil, as an interface or as a nil value
-// of a nillable type (a typed nil pointer).
-func isNilJob(job Job) bool {
-	if job == nil {
-		return true
-	}
-	switch v := reflect.ValueOf(job); v.Kind() {
-	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
-		return v.IsNil()
-	}
-	return false
-}

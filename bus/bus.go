@@ -15,6 +15,7 @@ import (
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/pipeline"
 	"github.com/velocitykode/velocity/queue"
@@ -347,7 +348,9 @@ func (b *Bus) DispatchAsyncCtx(ctx context.Context, cmd Command) error {
 		return fmt.Errorf("bus: queue not configured for async dispatch")
 	}
 
-	if cmdType == nil {
+	// A typed nil is nil: marshalled it would cross as "null" and hydrate
+	// as an empty command that runs.
+	if cmdType == nil || nilval.Is(cmd) {
 		return fmt.Errorf("bus: cannot dispatch nil command")
 	}
 

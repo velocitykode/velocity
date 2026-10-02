@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 // MarshalJob serializes a job into a durable [Payload]. The job's state is
@@ -30,7 +31,7 @@ import (
 // than dropping the job: a job that cannot be marshalled cannot be retried
 // across processes either.
 func MarshalJob(job Job, queueName string) (*Payload, error) {
-	if isNilJob(job) {
+	if nilval.Is(job) {
 		return nil, ErrNilJob
 	}
 	data, err := json.Marshal(job)
