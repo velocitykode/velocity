@@ -22,6 +22,7 @@ func runNilPushContract(t *testing.T, factory DriverFactory) {
 	}{
 		{"untyped nil", nil},
 		{"typed nil", (*ContractJob)(nil)},
+		{"typed nil OnQueuer", (*nilProbeJob)(nil)},
 	}
 	pushes := []struct {
 		name string
@@ -41,22 +42,44 @@ func runNilPushContract(t *testing.T, factory DriverFactory) {
 			return true, dp.PushIfNotExistsCtx(context.Background(), job, "nil-job-key", q)
 		}},
 	}
-	for _, j := range jobs {
-		for _, p := range pushes {
-			t.Run(j.name+"/"+p.name, func(t *testing.T) {
-				d := factory(t)
-				const q = "q-nil-job"
-				ok, err := p.push(d, j.job, q)
-				if !ok {
-					t.Skip("driver does not implement this push")
-				}
-				if !errors.Is(err, queue.ErrNilJob) {
-					t.Fatalf("%s(nil job) = %v; want queue.ErrNilJob", p.name, err)
-				}
-				if n, serr := d.Size(q); serr != nil || n != 0 {
-					t.Errorf("Size after the refused push = %d, %v; want 0", n, serr)
-				}
-			})
+	// The empty name leaves the queue to the job: a push that resolved it
+	// before refusing the job would call OnQueue on a nil receiver.
+	for _, q := range []string{"q-nil-job", ""} {
+		for _, j := range jobs {
+			for _, p := range pushes {
+				t.Run(j.name+"/"+p.name+"/queue="+q, func(t *testing.T) {
+					d := factory(t)
+					ok, err := p.push(d, j.job, q)
+					if !ok {
+						t.Skip("driver does not implement this push")
+					}
+					if !errors.Is(err, queue.ErrNilJob) {
+						t.Fatalf("%s(nil job) = %v; want queue.ErrNilJob", p.name, err)
+					}
+					for _, name := range []string{"q-nil-job", "default"} {
+						if n, serr := d.Size(name); serr != nil || n != 0 {
+							t.Errorf("Size(%q) after the refused push = %d, %v; want 0", name, n, serr)
+						}
+					}
+				})
+			}
 		}
 	}
 }
+
+// nilProbeJob's optional methods read the receiver, as a user job's do:
+// each one panics on a typed nil, so a push that calls one before
+// refusing the job panics instead of returning queue.ErrNilJob.
+type nilProbeJob struct {
+	ID      string
+	Queue   string
+	BatchID queue.BatchID
+}
+
+func (j *nilProbeJob) Handle() error               { return nil }
+func (j *nilProbeJob) Failed(error)                {}
+func (j *nilProbeJob) OnQueue() string             { return j.Queue }
+func (j *nilProbeJob) JobID() string               { return j.ID }
+func (j *nilProbeJob) MaxAttempts() int            { return len(j.ID) + 1 }
+func (j *nilProbeJob) GetBatchID() queue.BatchID   { return j.BatchID }
+func (j *nilProbeJob) SetBatchID(id queue.BatchID) { j.BatchID = id }

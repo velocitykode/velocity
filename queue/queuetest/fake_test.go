@@ -2,9 +2,12 @@ package queuetest
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/queue"
 )
 
 // fakeJob is a minimal contract.QueueJob used to exercise FakeQueue.
@@ -153,4 +156,22 @@ func TestFakeQueue(t *testing.T) {
 			t.Fatalf("Size(reports) = %d, want 0", n)
 		}
 	})
+}
+
+// The fake refuses a nil job, untyped or a typed nil, as every driver
+// does, and before the job's OnQueue runs on the nil receiver.
+func TestFakeQueue_NilJobRefused(t *testing.T) {
+	ctx := context.Background()
+	for _, job := range []contract.QueueJob{nil, (*onQueuerJob)(nil)} {
+		f := NewFakeQueue()
+		if err := f.PushCtx(ctx, job); !errors.Is(err, queue.ErrNilJob) {
+			t.Errorf("PushCtx(%T) = %v, want queue.ErrNilJob", job, err)
+		}
+		if err := f.PushDelayedCtx(ctx, job, time.Second); !errors.Is(err, queue.ErrNilJob) {
+			t.Errorf("PushDelayedCtx(%T) = %v, want queue.ErrNilJob", job, err)
+		}
+		if n := len(f.GetPushed()); n != 0 {
+			t.Errorf("%d jobs recorded after refused pushes, want 0", n)
+		}
+	}
 }

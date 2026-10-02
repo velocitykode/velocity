@@ -244,8 +244,11 @@ func (m *MemoryDriver) PushCtx(ctx context.Context, job Job, queueName ...string
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	name, err := admitJob(job, queueName...)
+	if err != nil {
+		return err
+	}
 	m.warnIfNonIdentifiable(ctx, job)
-	name := resolveQueueName(job, queueName...)
 
 	wrapper, err := createJobWrapper(job, name)
 	if err != nil {
@@ -274,8 +277,11 @@ func (m *MemoryDriver) PushDelayedCtx(ctx context.Context, job Job, delay time.D
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	name, err := admitJob(job, queueName...)
+	if err != nil {
+		return err
+	}
 	m.warnIfNonIdentifiable(ctx, job)
-	name := resolveQueueName(job, queueName...)
 
 	wrapper, err := createJobWrapper(job, name)
 	if err != nil {
@@ -602,8 +608,11 @@ func (m *MemoryDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupeKe
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	name, err := admitJob(job, queueName...)
+	if err != nil {
+		return err
+	}
 	m.warnIfNonIdentifiable(ctx, job)
-	name := resolveQueueName(job, queueName...)
 
 	wrapper, err := createJobWrapper(job, name)
 	if err != nil {

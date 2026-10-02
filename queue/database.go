@@ -219,7 +219,10 @@ func (d *DatabaseDriver) PushIfNotExistsCtx(ctx context.Context, job Job, dedupe
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	name := resolveQueueName(job, queueName...)
+	name, err := admitJob(job, queueName...)
+	if err != nil {
+		return err
+	}
 
 	db := d.db
 	if db == nil {
@@ -330,7 +333,10 @@ func (d *DatabaseDriver) PushDelayedCtx(ctx context.Context, job Job, delay time
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	name := resolveQueueName(job, queueName...)
+	name, err := admitJob(job, queueName...)
+	if err != nil {
+		return err
+	}
 
 	db := d.db
 	if db == nil {

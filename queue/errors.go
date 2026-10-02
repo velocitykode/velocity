@@ -8,10 +8,11 @@ import (
 
 var (
 	ErrNoJobAvailable = errors.New("velocity/queue: no job available")
-	// ErrNilJob is returned by every push, and by FailedCtx, when the job is
-	// nil, untyped or a typed nil pointer: it has no state to run, and
-	// stored it would pop as poison or, for a factory that decodes "null",
-	// as an empty job that runs.
+	// ErrNilJob is returned by every push, by a batch Dispatch holding
+	// one, and by FailedCtx, when the job is nil, untyped or a typed nil
+	// pointer: it has no state to run, and stored it would pop as poison
+	// or, for a factory that decodes "null", as an empty job that runs. A
+	// push refuses it before any method of the job runs (see admit.go).
 	ErrNilJob = errors.New("velocity/queue: job is nil")
 	// ErrJobNotFound is an alias for contract.ErrJobNotFound. Hoisted to
 	// the contract package so callers can errors.Is against the shared

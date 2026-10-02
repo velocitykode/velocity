@@ -243,19 +243,3 @@ type Identifiable interface {
 type OnQueuer interface {
 	OnQueue() string
 }
-
-// resolveQueueName returns the queue name for a job. Priority:
-// 1. Explicit queue name passed by caller
-// 2. Job's OnQueue() if it implements OnQueuer
-// 3. "default"
-func resolveQueueName(job Job, queueName ...string) string {
-	if len(queueName) > 0 && queueName[0] != "" {
-		return queueName[0]
-	}
-	if oq, ok := job.(OnQueuer); ok {
-		if name := oq.OnQueue(); name != "" {
-			return name
-		}
-	}
-	return "default"
-}

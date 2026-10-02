@@ -644,6 +644,9 @@ func (pb *PendingBatch) Dispatch(ctx context.Context, driver Driver) (*Batch, er
 	if len(pb.jobs) == 0 {
 		return nil, fmt.Errorf("batch: cannot dispatch empty batch")
 	}
+	if err := admitBatch(pb.jobs); err != nil {
+		return nil, err
+	}
 
 	id := newBatchID()
 	repo := DefaultBatchRepository()

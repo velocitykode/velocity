@@ -274,7 +274,10 @@ func (r *RedisDriver) PushCtx(ctx context.Context, job queue.Job, queueName ...s
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	name := queue.ResolveQueueName(job, queueName...)
+	name, err := queue.AdmitJob(job, queueName...)
+	if err != nil {
+		return err
+	}
 	queueKey := r.getQueueKey(name)
 
 	payload, err := queue.SerializeJob(job, name)
@@ -309,7 +312,10 @@ func (r *RedisDriver) PushDelayedCtx(ctx context.Context, job queue.Job, delay t
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	name := queue.ResolveQueueName(job, queueName...)
+	name, err := queue.AdmitJob(job, queueName...)
+	if err != nil {
+		return err
+	}
 	delayedKey := r.getDelayedKey(name)
 
 	payload, err := queue.SerializeJob(job, name)
@@ -810,7 +816,10 @@ func (r *RedisDriver) PushIfNotExistsCtx(ctx context.Context, job queue.Job, ded
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	name := queue.ResolveQueueName(job, queueName...)
+	name, err := queue.AdmitJob(job, queueName...)
+	if err != nil {
+		return err
+	}
 	queueKey := r.getQueueKey(name)
 	sentinelKey := r.getDedupeKey(dedupeKey)
 

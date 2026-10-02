@@ -1,4 +1,5 @@
-// check-events reports framework event code that breaks one of four rules.
+// check-events reports framework event code that breaks one of four rules,
+// and queue entry points that break a fifth (admission).
 //
 // Rule "field": an event field whose type does not survive the queue
 // codec. A queued listener receives its event after a JSON round trip: the
@@ -56,6 +57,31 @@
 // packages (a model observer, a listener, a statement observer) that no
 // recover contains; contain.go documents the proof.
 //
+// Rule "admission": a queue entry point that touches a job its caller
+// handed in before admitting it. A job's optional interfaces (OnQueue,
+// SetBatchID, JobID, MaxAttempts, its MarshalJSON) are user methods that
+// panic on a typed nil pointer, and a refusal that comes after one of them
+// has run user code, logged, or stored state for a job it then refuses
+// (a batch saved and half pushed). An entry point is an exported function
+// or method whose name begins with Push or Dispatch and that has a
+// parameter of type contract.QueueJob (queue.Job is an alias), or whose
+// receiver struct holds a []contract.QueueJob field (a pending batch's
+// jobs). Its statements are read in order; the first that uses the job
+// (len of the job slice is not a use) must hand it, as the first argument,
+// to one of the queue package's admission functions (admitJob, AdmitJob,
+// admitBatch), or be a return of another Push or Dispatch call given the
+// job unchanged as its job argument (that one admits). An if without an
+// else that uses the job only in its body is read the same way, and the
+// statements after it still must admit. Test infrastructure is out of
+// scope with the rest (queuetest's fake is held by its own test).
+// admission.go holds the rule.
+//
+// Why an entry-point rule lives here: this program is the framework's host
+// for go/types rules that need the module's type information (the
+// contract package's types, the packages a call resolves to), not an
+// events-only tool. A queue rule shares its loading, scope and golden-test
+// harness instead of duplicating them in a program of its own.
+//
 // Scope: the non-test files of the packages the patterns name, except test
 // infrastructure (a directory whose name ends in "test" or is "testing",
 // internal/hostile, scripts/). There is no suppression marker: an event
@@ -92,15 +118,17 @@ import (
 )
 
 const (
-	ruleField    = "field"
-	ruleEmitter  = "emitter"
-	ruleEnvelope = "envelope"
+	ruleField     = "field"
+	ruleEmitter   = "emitter"
+	ruleEnvelope  = "envelope"
+	ruleAdmission = "admission"
 )
 
 var fixes = []struct{ rule, fix string }{
 	{ruleField, "field: carry metadata with a concrete type (a string ID, a formatted message, a type label); an error field needs the event's MarshalJSON/UnmarshalJSON pair (eventmeta.ErrorText / eventmeta.TextError)"},
 	{ruleEnvelope, "envelope: embed contract.EventMeta in the event and fill it from the context the event is built under (eventmeta.Current, or eventmeta.Child for an operation that runs as a span of its own)"},
 	{ruleContain, "contain: call the registered callback inside the package's containment helper, the one function that defers a recover and returns panicerr.FromRecovered as that callback's error"},
+	{ruleAdmission, "admission: admit the job first: name, err := admitJob(job, queueName...) in the queue package (queue.AdmitJob in a leaf driver, admitBatch for a batch's jobs), before any method, type assertion or log of it"},
 	{ruleEmitter, "emitter: have the framework hand the emitter the app's Failures (Share, or SetShared for a process-wide emitter) where it wires the component's dispatcher"},
 }
 
@@ -133,7 +161,7 @@ func main() {
 		fmt.Println(h)
 	}
 	if len(r.hits) > 0 {
-		fmt.Fprintf(os.Stderr, "%d event rule violation(s).\n", len(r.hits))
+		fmt.Fprintf(os.Stderr, "%d rule violation(s).\n", len(r.hits))
 		for _, f := range fixes {
 			for _, h := range r.hits {
 				if strings.Contains(h, ": "+f.rule+": ") {
@@ -266,6 +294,7 @@ func check(dir string, patterns []string) (result, error) {
 		c.emitters(u)
 		c.envelopes(u)
 		c.contains(u)
+		c.admissions(u)
 	}
 	c.reportEnvelopes()
 	sort.Strings(c.hits)

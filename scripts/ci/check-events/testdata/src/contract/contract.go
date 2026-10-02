@@ -15,3 +15,9 @@ type EventMeta struct {
 
 // Logger stands in for the framework logger.
 type Logger interface{ Warn(msg string, kvs ...any) }
+
+// QueueJob stands in for the framework's queue job.
+type QueueJob interface {
+	Handle() error
+	Failed(error)
+}

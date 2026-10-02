@@ -22,9 +22,10 @@ import (
 // [createJobWrapper]). Tests and other intra-package callers can also use it
 // directly.
 //
-// Returns ErrNilJob for a nil job, untyped or a typed nil pointer: every
-// push and FailedCtx of every driver passes through here, so none stores
-// one. Returns an error when json.Marshal of the job fails (e.g. unsupported field
+// Returns ErrNilJob for a nil job, untyped or a typed nil pointer, so no
+// FailedCtx of any driver stores one; a push has refused it already, in
+// its admission (admit.go), before any method of the job ran. Returns an
+// error when json.Marshal of the job fails (e.g. unsupported field
 // types, marshaller returning an error). Callers should surface this rather
 // than dropping the job: a job that cannot be marshalled cannot be retried
 // across processes either.

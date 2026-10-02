@@ -47,9 +47,13 @@ func (f *FakeQueue) PushCtx(ctx context.Context, job contract.QueueJob, queueNam
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	name, err := queue.AdmitJob(job, queueName...)
+	if err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.pushed = append(f.pushed, pushedJob{job: job, queue: queue.ResolveQueueName(job, queueName...)})
+	f.pushed = append(f.pushed, pushedJob{job: job, queue: name})
 	return nil
 }
 
@@ -60,13 +64,17 @@ func (f *FakeQueue) PushDelayedCtx(ctx context.Context, job contract.QueueJob, d
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	name, err := queue.AdmitJob(job, queueName...)
+	if err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var readyAt time.Time
 	if delay > 0 {
 		readyAt = time.Now().Add(delay)
 	}
-	f.pushed = append(f.pushed, pushedJob{job: job, queue: queue.ResolveQueueName(job, queueName...), delay: delay, readyAt: readyAt})
+	f.pushed = append(f.pushed, pushedJob{job: job, queue: name, delay: delay, readyAt: readyAt})
 	return nil
 }
 

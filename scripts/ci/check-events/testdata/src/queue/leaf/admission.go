@@ -1,0 +1,29 @@
+// Package leaf stands in for a leaf driver outside the queue package.
+package leaf
+
+import (
+	"context"
+
+	"example.com/m/contract"
+	"example.com/m/queue"
+)
+
+type Driver struct{}
+
+// PushCtx admits through the exported form: fine.
+func (d *Driver) PushCtx(ctx context.Context, job contract.QueueJob, queueName ...string) error {
+	name, err := queue.AdmitJob(job, queueName...)
+	if err != nil {
+		return err
+	}
+	_ = name
+	return nil
+}
+
+// PushDelayedCtx admits through a function of its own, not the queue's.
+func (d *Driver) PushDelayedCtx(ctx context.Context, job queue.Job) error {
+	_, err := admitJob(job) // want admission
+	return err
+}
+
+func admitJob(job queue.Job) (string, error) { return queue.AdmitJob(job) }

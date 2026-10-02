@@ -8,11 +8,12 @@ package queue
 // registry, and dispatch the same lifecycle events. The wrappers preserve
 // exact behavior: they add no logic of their own.
 
-// ResolveQueueName resolves the effective queue name for a job, applying
-// the same precedence (explicit override, then job-declared queue, then
-// "default") the built-in drivers use.
-func ResolveQueueName(job Job, queueName ...string) string {
-	return resolveQueueName(job, queueName...)
+// AdmitJob refuses an untyped or typed nil job with [ErrNilJob] before
+// any method of the job runs, then resolves its queue name (explicit
+// override, then the job's OnQueue, then "default"). Every push of a leaf
+// driver calls it before anything else touches the job.
+func AdmitJob(job Job, queueName ...string) (string, error) {
+	return admitJob(job, queueName...)
 }
 
 // SignPayload computes the HMAC-SHA256 signature for data using the

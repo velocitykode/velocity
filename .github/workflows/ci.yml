@@ -200,11 +200,11 @@ jobs:
           check-latest: true
       - name: Test the event checker against its golden cases
         run: go test -count=1 ./scripts/ci/check-events/
-      - name: Check event fields, the event envelope, emitter failure accounting and callback containment
+      - name: Check event fields, the event envelope, emitter failure accounting, callback containment and queue job admission
         run: |
           set -e
           if ! scripts/ci/check-events.sh; then
-            echo "::error::an event field does not survive the queue codec, an event the framework builds lacks the EventMeta envelope, an emitter records failures outside the app's counter, or a registered callback runs with no recover around it; see the hints above"
+            echo "::error::an event field does not survive the queue codec, an event the framework builds lacks the EventMeta envelope, an emitter records failures outside the app's counter, a registered callback runs with no recover around it, or a queue push touches a job before admitting it; see the hints above"
             exit 1
           fi
 
