@@ -220,8 +220,10 @@ func TestFakeDispatcher_ListenerPanicIsContained(t *testing.T) {
 
 type observerTestPanicListener struct{}
 
-func (observerTestPanicListener) Handle(context.Context, interface{}) error { panic("listener panicked") }
-func (observerTestPanicListener) Async() bool                               { return false }
+func (observerTestPanicListener) Handle(context.Context, interface{}) error {
+	panic("listener panicked")
+}
+func (observerTestPanicListener) Async() bool { return false }
 
 // A queued listener job whose listener panics returns the typed panic
 // error from HandleCtx on any caller, as the worker would make of it.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/queue"
 )
 
@@ -93,7 +94,17 @@ func (j *EventListenerJob) Handle() error {
 //     fresh concrete value. Without this step json.Unmarshal would
 //     produce map[string]any and a listener typed against the original
 //     struct would never see its fields.
-func (j *EventListenerJob) HandleCtx(ctx context.Context) error {
+//
+// The listener factory, the event's codec and the listener are user code:
+// a panic in any of them is returned as the typed panic error, the error
+// the queue worker would make of it, so the job fails the same way on
+// every caller, the worker or not.
+func (j *EventListenerJob) HandleCtx(ctx context.Context) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = panicerr.FromRecovered(p)
+		}
+	}()
 	if j.listener == nil {
 		lfactory, ok := lookupListenerFactory(j.ListenerType)
 		if !ok {
@@ -844,26 +855,68 @@ func (d *PriorityDispatcher) getListenersForEvent(event interface{}) []Listener 
 	listeners := make([]Listener, len(base))
 	copy(listeners, base)
 
+	// Each listener's priority is read once, contained (see
+	// listenerPriority): a listener whose Priority panics is replaced by a
+	// listener that fails its delivery with that panic, so it fails on its
+	// own turn, and is ordered as a listener without a priority.
+	var buf [8]listenerRank
+	prio := buf[:0]
+	if len(listeners) > len(buf) {
+		prio = make([]listenerRank, 0, len(listeners))
+	}
+	for i, l := range listeners {
+		prio = append(prio, listenerPriority(l))
+		if prio[i].err != nil {
+			listeners[i] = failedListener{err: prio[i].err}
+		}
+	}
+
 	// Sort by priority (higher priority first)
 	for i := 0; i < len(listeners)-1; i++ {
 		for j := i + 1; j < len(listeners); j++ {
-			pi, ok1 := listeners[i].(PriorityListener)
-			pj, ok2 := listeners[j].(PriorityListener)
+			pi, pj := prio[i], prio[j]
 
-			// If both have priority, sort by priority
-			if ok1 && ok2 {
-				if pj.Priority() > pi.Priority() {
-					listeners[i], listeners[j] = listeners[j], listeners[i]
-				}
-			} else if ok2 && !ok1 {
-				// Priority listeners come before non-priority
+			// If both have priority, sort by priority; priority listeners
+			// come before non-priority ones.
+			if (pi.ok && pj.ok && pj.value > pi.value) || (pj.ok && !pi.ok) {
 				listeners[i], listeners[j] = listeners[j], listeners[i]
+				prio[i], prio[j] = prio[j], prio[i]
 			}
 		}
 	}
 
 	return listeners
 }
+
+// listenerRank is a listener's priority: ok when it has one, err when
+// reading it panicked.
+type listenerRank struct {
+	value int
+	ok    bool
+	err   error
+}
+
+// listenerPriority reads l's priority, returning a panic in its Priority
+// method (user code) as the typed panic error.
+func listenerPriority(l Listener) (r listenerRank) {
+	defer func() {
+		if p := recover(); p != nil {
+			r = listenerRank{err: panicerr.FromRecovered(p)}
+		}
+	}()
+	if pl, ok := l.(PriorityListener); ok {
+		return listenerRank{value: pl.Priority(), ok: true}
+	}
+	return listenerRank{}
+}
+
+// failedListener stands in for a listener whose resolution panicked: its
+// delivery fails with that panic, through the dispatcher's usual failure
+// path, instead of the panic unwinding the whole dispatch.
+type failedListener struct{ err error }
+
+func (l failedListener) Handle(context.Context, interface{}) error { return l.err }
+func (l failedListener) Async() bool                               { return false }
 
 // StoppableEvent allows events to signal that propagation should stop
 type StoppableEvent interface {

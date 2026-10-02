@@ -250,10 +250,12 @@ func (f *FakeDispatcher) StartFaking() {
 // The registry resolves the listeners under its own lock and releases it
 // before any listener body runs, so a listener that re-enters the
 // dispatcher (AssertDispatched, a follow-up Dispatch, Listen) does not
-// deadlock.
+// deadlock. Each listener runs contained, as on the real dispatcher (see
+// deliverContained): a panic in it is that listener's error.
 func (f *FakeDispatcher) executeListeners(ctx context.Context, event interface{}) error {
+	handle := func(listener Listener) error { return listener.Handle(ctx, event) }
 	for _, listener := range f.registry.getListenersForEvent(event) {
-		if err := listener.Handle(ctx, event); err != nil {
+		if err := deliverContained(handle, listener); err != nil {
 			return err
 		}
 	}
