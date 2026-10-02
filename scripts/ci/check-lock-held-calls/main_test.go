@@ -86,8 +86,8 @@ func TestScope(t *testing.T) {
 }
 
 // TestStaleMarkers reports the markers that suppress no call under a
-// lock, with or without -all, and never the markers of an excluded
-// package.
+// lock or no store read-then-write, with or without -all, and never the
+// markers of an excluded package.
 func TestStaleMarkers(t *testing.T) {
 	dir := filepath.Join("testdata", "src")
 	for _, all := range []bool{false, true} {
@@ -101,8 +101,11 @@ func TestStaleMarkers(t *testing.T) {
 				stale = append(stale, h)
 			}
 		}
-		if len(stale) != 1 || !strings.HasPrefix(stale[0], "rules.go:") {
-			t.Errorf("all=%v: stale markers = %q, want the one in rules.go StaleMarker", all, stale)
+		// Sorted: the //store-rmw-ok: one in csrf/rmw.go, then the
+		// //lock-held-ok: one in rules.go StaleMarker.
+		if len(stale) != 2 || !strings.HasPrefix(stale[0], "csrf/rmw.go:") || !strings.Contains(stale[0], "//store-rmw-ok:") ||
+			!strings.HasPrefix(stale[1], "rules.go:") || !strings.Contains(stale[1], "//lock-held-ok:") {
+			t.Errorf("all=%v: stale markers = %q, want the rmw one in csrf/rmw.go and the one in rules.go StaleMarker", all, stale)
 		}
 	}
 }
@@ -118,6 +121,22 @@ func TestHints(t *testing.T) {
 	for _, not := range []string{"func: ", "format: "} {
 		if strings.Contains(out, "  "+not) {
 			t.Errorf("hints name %q, which was not reported:\n%s", not, out)
+		}
+	}
+}
+
+// TestHintsRMW names the read-then-write fix and its marker, and leaves
+// out the lock wording when only rmw was reported.
+func TestHintsRMW(t *testing.T) {
+	out := hints([]string{"csrf/a.go:3: rmw: s.Set after s.Get (line 2) on the same key"})
+	for _, want := range []string{"1 store read(s)", "rmw: ", "//store-rmw-ok: <rationale"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("hints lack %q:\n%s", want, out)
+		}
+	}
+	for _, not := range []string{"call(s) to user code", "//lock-held-ok:"} {
+		if strings.Contains(out, not) {
+			t.Errorf("hints name %q with only rmw reported:\n%s", not, out)
 		}
 	}
 }

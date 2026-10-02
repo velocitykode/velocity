@@ -152,3 +152,15 @@ func (r *R) Markers() {
 func (r *R) StaleMarker() {
 	r.hook() //lock-held-ok: nothing is held here any more // want stale
 }
+
+// A read-then-write outside the packages the rmw rule covers: not flagged.
+type rmwStore interface {
+	Get(id string) string
+	Set(id, v string)
+}
+
+func rmwOutOfScope(s rmwStore, id string) {
+	if s.Get(id) == "" {
+		s.Set(id, "v")
+	}
+}

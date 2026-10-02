@@ -161,9 +161,11 @@ jobs:
   # Reports calls to user code (loggers, func values, values formatted
   # through their own String/Error, statements whose pool runs a statement
   # observer, driver methods) made while framework code holds a lock
-  # or runs inside a sync.Once. A go/types walker, stdlib only; see the
+  # or runs inside a sync.Once, and (rmw rule) a session store read
+  # followed by a blind write of the same key in csrf and auth, which two
+  # requests of one session race. A go/types walker, stdlib only; see the
   # package comment of scripts/ci/check-lock-held-calls for the rules and
-  # the //lock-held-ok: <rationale> marker.
+  # the //lock-held-ok: and //store-rmw-ok: <rationale> markers.
   lock-held-lint:
     name: lock-held user-code lint
     runs-on: ubuntu-latest
@@ -175,11 +177,11 @@ jobs:
           check-latest: true
       - name: Test the lock-held checker against its golden cases
         run: go test -count=1 ./scripts/ci/check-lock-held-calls/
-      - name: Check for user code called under a lock
+      - name: Check for user code called under a lock and store read-then-writes
         run: |
           set -e
           if ! scripts/ci/check-lock-held-calls.sh; then
-            echo "::error::user code called while a lock or sync.Once is held; call it after unlocking, or add //lock-held-ok: <rationale>"
+            echo "::error::user code called while a lock or sync.Once is held (call it after unlocking, or add //lock-held-ok: <rationale>), or a store read then written on one key (use the store's compare-and-set, or add //store-rmw-ok: <rationale>)"
             exit 1
           fi
 

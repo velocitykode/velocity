@@ -80,6 +80,15 @@
 //   - hold (not a call under a lock): an internal/ownctx Hold or
 //     HoldDetached whose Held no `defer h.Release()` in the same function
 //     releases (statement.go);
+//   - rmw (not a call under a lock, rmw.go): in csrf, csrf/stores, auth,
+//     auth/drivers/session and auth/drivers/schemes, a writer method (Set,
+//     Put, Store) called on an interface-typed store after a reader method
+//     (Get, Load, Exists) on the same receiver with the same key, outside
+//     an internal/buildonce Group's Do: two requests of one session racing
+//     the pair each write their own value and the last write wins. Use the
+//     store's compare-and-set (LoadOrStore, UpdateShared, UpdateData) or
+//     the per-key flight; a pair that is safe carries
+//     `//store-rmw-ok: <rationale>`;
 //   - reach: a call to a function of the module whose body makes one of the
 //     calls above, directly or through other module functions. Only code
 //     that runs during the call counts: the body itself, func literals it
@@ -195,6 +204,7 @@ var fixes = []struct{ kind, fix string }{
 	{kindCallback, "callback: encode, decode or copy before taking the lock or after releasing it (json, gob, xml and io calls run methods of the values they are given)"},
 	{kindStmt, "statement: run the statement on an ownctx.Hold context and release the Held after unlocking (the pool's statement observer and query logger then run off the lock); call a driver or observer method after unlocking"},
 	{kindHold, "hold: release the Held on a defer registered right after the Hold (before the lock's deferred unlock), so a panic or early return still delivers its statement reports after the lock is released"},
+	{kindRMW, "rmw: run the read and the write of one key as one step: inside the per-key flight (an internal/buildonce Group's Do), or as a compare-and-set the store offers (LoadOrStore, UpdateShared, UpdateData)"},
 	{kindCtx, "ctx: read the caller's context before taking the lock, and hand code under the lock a context the framework owns (built from context.Background)"},
 }
 
@@ -202,7 +212,18 @@ var fixes = []struct{ kind, fix string }{
 // syntax.
 func hints(hits []string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d call(s) to user code while a lock or sync.Once is held. User code can panic, block, or call back into this component.\n", len(hits))
+	rmw := 0
+	for _, h := range hits {
+		if strings.Contains(h, ": "+kindRMW+": ") {
+			rmw++
+		}
+	}
+	if n := len(hits) - rmw; n > 0 {
+		fmt.Fprintf(&b, "%d call(s) to user code while a lock or sync.Once is held. User code can panic, block, or call back into this component.\n", n)
+	}
+	if rmw > 0 {
+		fmt.Fprintf(&b, "%d store read(s) followed by a write of the same key. Two requests of one session that both read before either writes each write their own value, and the last write wins.\n", rmw)
+	}
 	for _, f := range fixes {
 		for _, h := range hits {
 			if strings.Contains(h, ": "+f.kind+": ") {
@@ -211,7 +232,12 @@ func hints(hits []string) string {
 			}
 		}
 	}
-	b.WriteString("  a call that is safe under the lock: same-line //lock-held-ok: <rationale of at least 5 characters>\n")
+	if rmw < len(hits) {
+		b.WriteString("  a call that is safe under the lock: same-line //lock-held-ok: <rationale of at least 5 characters>\n")
+	}
+	if rmw > 0 {
+		b.WriteString("  a read-then-write that is safe: same-line //store-rmw-ok: <rationale of at least 5 characters> on the write\n")
+	}
 	return b.String()
 }
 
@@ -274,7 +300,7 @@ func check(dir string, patterns []string, all bool) ([]string, error) {
 	})
 	a := &analysis{fset: fset, root: mod.Dir, funcs: map[string]*funcSummary{}, lits: map[string]*ast.FuncLit{}, inClosed: map[*ast.FuncLit]bool{}, all: all}
 	for _, p := range targets {
-		u := &unit{report: !p.DepOnly, module: mod.Path, info: &types.Info{
+		u := &unit{report: !p.DepOnly, module: mod.Path, path: p.ImportPath, info: &types.Info{
 			Types:      map[ast.Expr]types.TypeAndValue{},
 			Uses:       map[*ast.Ident]types.Object{},
 			Defs:       map[*ast.Ident]types.Object{},
@@ -348,6 +374,7 @@ type unit struct {
 	info   *types.Info
 	report bool   // named by the patterns, not only a dependency of one
 	module string // the module's path: methods declared under it are module code
+	path   string // the package's import path
 
 	// zeroVars are the local variables declared without a value (var v T);
 	// uses holds every position each of them is used at. Together they tell
@@ -461,6 +488,7 @@ func (a *analysis) run() []string {
 	}
 	a.staleMarkers()
 	a.unreleasedHolds()
+	a.storeRMW()
 	out := make([]string, 0, len(a.hits))
 	for h := range a.hits {
 		out = append(out, h)
