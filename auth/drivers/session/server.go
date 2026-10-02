@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"maps"
 	"net/http"
 	"reflect"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/csrf/stores"
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 )
@@ -199,17 +203,20 @@ func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
 		return auth.ErrNoServerSessionStore
 	}
 	ctx := ss.context()
+	savedID, createdAt, loadedData, loadedFlash := ss.saveBase()
 
 	if ss.IsDestroyed() {
 		// The browser's copy goes whatever happens to the record: a failed
 		// removal is the server's teardown failing, and keeping the cookie
 		// would leave the session usable wherever the record survived.
 		http.SetCookie(w, s.config.CookiePolicy().Cookie(s.config.Name, "", -1, s.config.HttpOnly))
-		if ss.savedID != "" {
-			if err := records.Delete(ctx, ss.savedID); err != nil {
+		if savedID != "" {
+			if err := records.Delete(ctx, savedID); err != nil {
 				return errchain.Errorf("velocity/auth/session: delete session record: %w", err)
 			}
+			ss.mu.Lock()
 			ss.savedID = ""
+			ss.mu.Unlock()
 		}
 		return nil
 	}
@@ -222,7 +229,6 @@ func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
 		return auth.ErrInvalidSession
 	}
 	now := sessionclock.Now()
-	createdAt := ss.createdAt
 	if createdAt.IsZero() {
 		createdAt = now
 	}
@@ -236,24 +242,27 @@ func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
 	// Retire the record of an id the session rotated away from before
 	// writing under the new id, and fail closed when that is not possible:
 	// a captured cookie naming the old id must not keep a live record.
-	if ss.savedID != "" && ss.savedID != id {
-		if err := records.Delete(ctx, ss.savedID); err != nil && !errchain.Is(err, auth.ErrSessionNotFound) {
+	if savedID != "" && savedID != id {
+		if err := records.Delete(ctx, savedID); err != nil && !errchain.Is(err, auth.ErrSessionNotFound) {
 			return errchain.Errorf("velocity/auth/session: retire previous session record: %w", err)
 		}
+		savedID = ""
+		ss.mu.Lock()
 		ss.savedID = ""
+		ss.mu.Unlock()
 	}
 
 	update := func(map[string]any) (map[string]any, error) { return payload, nil }
-	if ss.savedID == id && ss.loadedData != nil {
+	if savedID == id && loadedData != nil {
 		update = func(current map[string]any) (map[string]any, error) {
 			curData, curFlash := payloadSections(current)
-			applyChanges(curData, ss.loadedData, data)
-			applyChanges(curFlash, ss.loadedFlash, flash)
+			applyChanges(curData, loadedData, data)
+			applyChanges(curFlash, loadedFlash, flash)
 			return map[string]any{recordDataKey: curData, recordFlashKey: curFlash}, nil
 		}
 	}
 	err = records.UpdateData(ctx, id, update, now, recordEnd)
-	if errchain.Is(err, auth.ErrSessionNotFound) && id != ss.savedID && ss.Get(auth.UserIDSessionKey) == nil {
+	if errchain.Is(err, auth.ErrSessionNotFound) && id != savedID && ss.Get(auth.UserIDSessionKey) == nil {
 		err = records.Put(ctx, &auth.StoredSession{
 			ID:         id,
 			Data:       payload,
@@ -281,9 +290,11 @@ func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
 	}
 	http.SetCookie(w, cookie)
 
+	ss.mu.Lock()
 	ss.savedID = id
 	ss.loadedData, ss.loadedFlash = data, flash
 	ss.createdAt = createdAt
+	ss.mu.Unlock()
 	ss.issuedAt = now
 	ss.MarkClean()
 	return nil
@@ -308,6 +319,14 @@ func (s *ServerStore) GarbageCollect(maxLifetime time.Duration) error {
 type ServerSession struct {
 	*auth.BaseSession
 	store *ServerStore
+
+	// mu guards savedID, createdAt, loadedData and loadedFlash: a shared
+	// write (UpdateShared, a CSRF token mint) reads and updates them from
+	// whichever goroutine of the request makes it. It is never held
+	// across a store call. loadedData and loadedFlash are replaced, never
+	// changed in place, so a Save holding the previous maps reads them
+	// unlocked.
+	mu sync.Mutex
 
 	// ctx is the context store calls run under: the loading request's
 	// context without its cancellation (a save must finish even when the
@@ -336,6 +355,140 @@ type ServerSession struct {
 
 	authenticationExpired bool
 	recordDeleted         bool
+}
+
+// saveBase returns the fields a Save measures and writes against.
+func (s *ServerSession) saveBase() (savedID string, createdAt time.Time, loadedData, loadedFlash map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.savedID, s.createdAt, s.loadedData, s.loadedFlash
+}
+
+// errKeepShared aborts an UpdateShared write that would leave the record
+// as it is: nothing is written.
+var errKeepShared = errors.New("velocity/auth/session: keep the value the record holds")
+
+// UpdateShared implements csrf/stores.SharedBag. When the session was
+// saved to its record (and its id has not changed since), update runs on
+// the value the record holds under key inside one UpdateData step, atomic
+// against every other write to the record from every request and instance
+// sharing it; a store that retries on a conflict (CacheStore) runs update
+// again on the newer value, and only the attempt that is written counts.
+// The value is stored JSON-shaped, as a Save stores it; a result equal to
+// what the record holds writes nothing. The state the record is left in is
+// then adopted by the session, as its value under key and as the base Save
+// measures this request's changes against, so this request's Save neither
+// writes the key again over a later change nor removes it; the session's
+// other keys and flags are left as they are.
+//
+// A session not saved under its id yet (created, or regenerated) has no
+// record another request could share: update runs on the session's own
+// value, and the record is created by its Save. A session whose record is
+// gone (revoked or expired) gets an error wrapping
+// stores.ErrSharedRecordGone and is left as it is: the record is never
+// recreated here. An error from update, or any other store failure, is
+// returned and the session is left as it is.
+//
+// update runs under the record store's lock and must not call the store.
+func (s *ServerSession) UpdateShared(ctx context.Context, key string, update func(current any, exists bool) (next any, keep bool, err error)) (any, bool, error) {
+	if ctx == nil {
+		ctx = s.context()
+	}
+	id := s.ID()
+	s.mu.Lock()
+	persisted := s.savedID != "" && s.savedID == id && s.loadedData != nil
+	createdAt := s.createdAt
+	s.mu.Unlock()
+
+	if !persisted {
+		exists := s.Has(key)
+		next, keep, err := update(s.Get(key), exists)
+		if err != nil {
+			return nil, false, err
+		}
+		if !keep {
+			if exists {
+				s.Remove(key)
+			}
+			return nil, false, nil
+		}
+		s.Put(key, next)
+		return next, true, nil
+	}
+	records := s.store.loadRecords()
+	if records == nil {
+		return nil, false, auth.ErrNoServerSessionStore
+	}
+
+	var held any
+	var present bool
+	now := sessionclock.Now()
+	err := records.UpdateData(ctx, id, func(current map[string]any) (map[string]any, error) {
+		data, flash := payloadSections(current)
+		cur, had := data[key]
+		next, keep, err := update(cur, had)
+		if err != nil {
+			return nil, err
+		}
+		if !keep {
+			held, present = nil, false
+			if !had {
+				return nil, errKeepShared
+			}
+			delete(data, key)
+		} else {
+			stored, err := jsonShaped(next)
+			if err != nil {
+				return nil, err
+			}
+			held, present = stored, true
+			if had && reflect.DeepEqual(cur, stored) {
+				return nil, errKeepShared
+			}
+			data[key] = stored
+		}
+		return map[string]any{recordDataKey: data, recordFlashKey: flash}, nil
+	}, now, s.store.config.RecordExpiresAt(createdAt, now))
+	switch {
+	case err == nil, errchain.Is(err, errKeepShared):
+	case errchain.Is(err, auth.ErrSessionNotFound), errchain.Is(err, auth.ErrSessionExpired):
+		return nil, false, errchain.Errorf("velocity/auth/session: update shared session value: %w", stores.ErrSharedRecordGone)
+	default:
+		return nil, false, errchain.Errorf("velocity/auth/session: update shared session value: %w", err)
+	}
+
+	s.mu.Lock()
+	if s.savedID == id && s.loadedData != nil {
+		base := make(map[string]any, len(s.loadedData)+1)
+		maps.Copy(base, s.loadedData)
+		if present {
+			base[key] = held
+		} else {
+			delete(base, key)
+		}
+		s.loadedData = base
+	}
+	s.mu.Unlock()
+	if present {
+		s.Put(key, held)
+	} else {
+		s.Remove(key)
+	}
+	return held, present, nil
+}
+
+// jsonShaped returns v as the JSON round trip leaves it, the shape every
+// value in a record has.
+func jsonShaped(v any) (any, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, errchain.Errorf("velocity/auth/session: encode session value: %w", err)
+	}
+	var out any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, errchain.Errorf("velocity/auth/session: encode session value: %w", err)
+	}
+	return out, nil
 }
 
 func (s *ServerSession) context() context.Context {
@@ -372,7 +525,9 @@ func (s *ServerSession) Regenerate() error {
 	if err := s.BaseSession.Regenerate(); err != nil {
 		return err
 	}
+	s.mu.Lock()
 	s.createdAt = time.Time{}
+	s.mu.Unlock()
 	return nil
 }
 

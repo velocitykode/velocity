@@ -13,6 +13,13 @@ import (
 // velocity.New installs, does. stores.MemoryStore keys a map by id instead
 // and is the session-less default of NewE.
 //
+// Reads are snapshots: Get on a store that keeps the token in the request's
+// session (stores.SessionBagStore) reads the session as the request loaded
+// it, so a request loaded before another request rotated or revoked the
+// token may still emit or validate the old token. Writes (LoadOrStore,
+// Set, Delete, AtomicConsumer.ConsumeIfMatch) go to the store's shared
+// record where it has one.
+//
 // A store is called while CSRF holds a lock for the request (reading a
 // token single-flights per request), so it must not call back into CSRF
 // token reads for the request it is serving: that call waits on the lock
@@ -24,8 +31,18 @@ type Store interface {
 	// stores.ErrTokenNotFound when none is held.
 	Get(ctx context.Context, id string) (string, error)
 
-	// Set stores token for session id.
+	// Set stores token for session id, replacing any token held.
 	Set(ctx context.Context, id string, token string) error
+
+	// LoadOrStore returns the usable token held for session id
+	// (loaded=true), or stores candidate for id and returns it
+	// (loaded=false) when none is held: missing, expired, or otherwise
+	// unusable by the store's own rules. The check and the store are one
+	// step against every other caller sharing the store's record of id, so
+	// of concurrent first reads of one session (tabs opened at once after
+	// the token was revoked or expired) exactly one candidate is stored and
+	// every reader is handed it. GetToken mints through it on a miss.
+	LoadOrStore(ctx context.Context, id, candidate string) (held string, loaded bool, err error)
 
 	// Delete removes the token held for session id. A missing token is
 	// not an error.

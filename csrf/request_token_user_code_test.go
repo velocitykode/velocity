@@ -31,6 +31,12 @@ func (s *codeStore) Set(ctx context.Context, id, token string) error {
 	return s.inner.Set(ctx, id, token)
 }
 
+// LoadOrStore counts as a write: it is the mint.
+func (s *codeStore) LoadOrStore(ctx context.Context, id, candidate string) (string, bool, error) {
+	s.sets.Add(1)
+	return s.inner.LoadOrStore(ctx, id, candidate)
+}
+
 func (s *codeStore) Delete(ctx context.Context, id string) error { return s.inner.Delete(ctx, id) }
 func (s *codeStore) Exists(ctx context.Context, id string) bool  { return s.inner.Exists(ctx, id) }
 

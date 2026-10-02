@@ -222,3 +222,189 @@ func TestSessionBagStore_ConsumptionScope(t *testing.T) {
 		t.Fatalf("MemoryStore scope = %v, want ConsumedEverywhere", got)
 	}
 }
+
+// sharedTestBag is a testBag whose UpdateShared runs on a record shared
+// with other bags of the same session, as session.ServerSession does
+// through its record store, and adopts the record's state.
+type sharedTestBag struct {
+	*testBag
+	record   *testBag
+	sealed   bool
+	gone     bool
+	attempts int // UpdateShared runs update this many extra times first, as a retrying store does
+}
+
+func (b *sharedTestBag) Sealed() bool { return b.sealed }
+
+func (b *sharedTestBag) UpdateShared(_ context.Context, key string, update func(any, bool) (any, bool, error)) (any, bool, error) {
+	if b.gone {
+		return nil, false, ErrSharedRecordGone
+	}
+	b.record.mu.Lock()
+	cur, had := b.record.data[key]
+	for range b.attempts {
+		if _, _, err := update(cur, had); err != nil {
+			b.record.mu.Unlock()
+			return nil, false, err
+		}
+	}
+	next, keep, err := update(cur, had)
+	if err != nil {
+		b.record.mu.Unlock()
+		return nil, false, err
+	}
+	if keep {
+		b.record.data[key] = next
+	} else {
+		delete(b.record.data, key)
+	}
+	b.record.mu.Unlock()
+	if keep {
+		b.Put(key, next)
+		return next, true, nil
+	}
+	b.Remove(key)
+	return nil, false, nil
+}
+
+func newShared(record *testBag) *sharedTestBag {
+	return &sharedTestBag{testBag: newTestBag(record.id), record: record}
+}
+
+// A consumed token is removed from the shared record only while the
+// record still holds it: a token another request stored meanwhile stays,
+// and is the one the consuming request is left holding.
+func TestSessionBagStore_ConsumeKeepsATokenStoredMeanwhile(t *testing.T) {
+	s := NewSessionBagStore(bagFromContext, time.Hour)
+	record := newTestBag("sess-1")
+	a := newShared(record)
+	a.data[TokenSessionKey] = "used"
+	record.data[TokenSessionKey] = "minted-meanwhile"
+	if ok, _ := s.ConsumeIfMatch(withBag(a), "sess-1", "used"); ok {
+		t.Fatal("ConsumeIfMatch accepted a token the shared record no longer holds")
+	}
+	if got := record.Get(TokenSessionKey); got != "minted-meanwhile" {
+		t.Fatalf("record holds %v, want the token stored meanwhile", got)
+	}
+	if got := a.Get(TokenSessionKey); got != "minted-meanwhile" {
+		t.Fatalf("request's session holds %v, want the record's token", got)
+	}
+
+	// The record still holding the token loses it, once.
+	record.data[TokenSessionKey] = "t2"
+	b, c := newShared(record), newShared(record)
+	if ok, _ := s.ConsumeIfMatch(withBag(b), "sess-1", "t2"); !ok {
+		t.Fatal("ConsumeIfMatch refused the token the record holds")
+	}
+	if ok, _ := s.ConsumeIfMatch(withBag(c), "sess-1", "t2"); ok {
+		t.Fatal("a second request consumed the same token")
+	}
+	if got := record.Get(TokenSessionKey); got != nil {
+		t.Fatalf("record still holds %v after the consume", got)
+	}
+
+	// A record that is gone accepts nothing and is no error.
+	g := newShared(record)
+	g.gone = true
+	if ok, err := s.ConsumeIfMatch(withBag(g), "sess-1", "x"); ok || err != nil {
+		t.Fatalf("ConsumeIfMatch on a gone record = %v, %v", ok, err)
+	}
+}
+
+func TestSessionBagStore_LoadOrStore(t *testing.T) {
+	t.Run("plain bag stores in the request's session", func(t *testing.T) {
+		s := NewSessionBagStore(bagFromContext, 0)
+		bag := newTestBag("sess-1")
+		got, loaded, err := s.LoadOrStore(withBag(bag), "sess-1", "tok")
+		if err != nil || got != "tok" || loaded || bag.Get(TokenSessionKey) != "tok" {
+			t.Fatalf("LoadOrStore = %q, %v, %v; bag holds %v", got, loaded, err, bag.Get(TokenSessionKey))
+		}
+		got, loaded, err = s.LoadOrStore(withBag(bag), "sess-1", "other")
+		if err != nil || got != "tok" || !loaded {
+			t.Fatalf("second LoadOrStore = %q, %v, %v; want tok, loaded", got, loaded, err)
+		}
+	})
+	t.Run("shared bag returns the token another request stored", func(t *testing.T) {
+		s := NewSessionBagStore(bagFromContext, 0)
+		record := newTestBag("sess-1")
+		a, b := newShared(record), newShared(record)
+		b.attempts = 2
+		if got, loaded, err := s.LoadOrStore(withBag(a), "sess-1", "tok-a"); err != nil || got != "tok-a" || loaded {
+			t.Fatalf("first LoadOrStore = %q, %v, %v", got, loaded, err)
+		}
+		got, loaded, err := s.LoadOrStore(withBag(b), "sess-1", "tok-b")
+		if err != nil || got != "tok-a" || !loaded || b.Get(TokenSessionKey) != "tok-a" {
+			t.Fatalf("second LoadOrStore = %q, %v, %v; bag holds %v; want tok-a", got, loaded, err, b.Get(TokenSessionKey))
+		}
+	})
+	t.Run("a consumed token in the record is replaced", func(t *testing.T) {
+		s := NewSessionBagStore(bagFromContext, time.Hour)
+		cookie := newTestBag("sess-1")
+		cookie.data[TokenSessionKey] = "used"
+		if ok, _ := s.ConsumeIfMatch(withBag(cookie), "sess-1", "used"); !ok {
+			t.Fatal("ConsumeIfMatch refused the held token")
+		}
+		record := newTestBag("sess-1")
+		record.data[TokenSessionKey] = "used"
+		a := newShared(record)
+		got, loaded, err := s.LoadOrStore(withBag(a), "sess-1", "fresh")
+		if err != nil || got != "fresh" || loaded || record.Get(TokenSessionKey) != "fresh" {
+			t.Fatalf("LoadOrStore = %q, %v, %v; record holds %v; want fresh", got, loaded, err, record.Get(TokenSessionKey))
+		}
+	})
+	t.Run("a value that is not a token is replaced", func(t *testing.T) {
+		s := NewSessionBagStore(bagFromContext, 0)
+		record := newTestBag("sess-1")
+		record.data[TokenSessionKey] = 42
+		got, _, err := s.LoadOrStore(withBag(newShared(record)), "sess-1", "tok")
+		if err != nil || got != "tok" {
+			t.Fatalf("LoadOrStore = %q, %v; want tok", got, err)
+		}
+	})
+	t.Run("a sealed session is left as it is", func(t *testing.T) {
+		s := NewSessionBagStore(bagFromContext, 0)
+		record := newTestBag("sess-1")
+		a := newShared(record)
+		a.sealed = true
+		if _, _, err := s.LoadOrStore(withBag(a), "sess-1", "tok"); !errors.Is(err, ErrSessionSealed) {
+			t.Fatalf("LoadOrStore on a sealed session = %v, want ErrSessionSealed", err)
+		}
+		if err := s.Set(withBag(a), "sess-1", "tok"); !errors.Is(err, ErrSessionSealed) {
+			t.Fatalf("Set on a sealed session = %v, want ErrSessionSealed", err)
+		}
+		if record.Get(TokenSessionKey) != nil || a.Get(TokenSessionKey) != nil {
+			t.Fatal("a sealed session was written")
+		}
+	})
+	t.Run("a gone record fails the mint and the write, not the delete", func(t *testing.T) {
+		s := NewSessionBagStore(bagFromContext, 0)
+		a := newShared(newTestBag("sess-1"))
+		a.gone = true
+		if _, _, err := s.LoadOrStore(withBag(a), "sess-1", "tok"); !errors.Is(err, ErrSharedRecordGone) {
+			t.Fatalf("LoadOrStore on a gone record = %v", err)
+		}
+		if err := s.Set(withBag(a), "sess-1", "tok"); !errors.Is(err, ErrSharedRecordGone) {
+			t.Fatalf("Set on a gone record = %v", err)
+		}
+		if err := s.Delete(withBag(a), "sess-1"); err != nil {
+			t.Fatalf("Delete on a gone record = %v, want nil", err)
+		}
+	})
+	t.Run("another session's id holds nothing reachable", func(t *testing.T) {
+		s := NewSessionBagStore(bagFromContext, 0)
+		if _, _, err := s.LoadOrStore(withBag(newTestBag("sess-1")), "sess-2", "tok"); !errors.Is(err, ErrNoSessionBag) {
+			t.Fatalf("LoadOrStore for another session = %v, want ErrNoSessionBag", err)
+		}
+	})
+	t.Run("set and delete go to the shared record", func(t *testing.T) {
+		s := NewSessionBagStore(bagFromContext, 0)
+		record := newTestBag("sess-1")
+		a := newShared(record)
+		if err := s.Set(withBag(a), "sess-1", "rotated"); err != nil || record.Get(TokenSessionKey) != "rotated" {
+			t.Fatalf("Set: %v; record holds %v", err, record.Get(TokenSessionKey))
+		}
+		if err := s.Delete(withBag(a), "sess-1"); err != nil || record.Get(TokenSessionKey) != nil || a.Get(TokenSessionKey) != nil {
+			t.Fatalf("Delete: %v; record %v, session %v", err, record.Get(TokenSessionKey), a.Get(TokenSessionKey))
+		}
+	})
+}

@@ -795,6 +795,12 @@ func (c *CSRF) RefreshHandler() http.HandlerFunc {
 			http.Error(w, "Failed to store token", http.StatusInternalServerError)
 			return
 		}
+		// The request's token cache may hold the token this refresh
+		// replaced: later readers of the request (a cookie write, a page
+		// prop) must carry the new one, as after RotateToken.
+		if state := tokenStateFromContext(r.Context()); state != nil && state.csrf == c {
+			state.replaceAfterRotation(sessionID, sessionID, token)
+		}
 
 		// Emit the per-response masked form, never the raw stored
 		// token (see MaskToken). The client echoes it verbatim and
@@ -902,7 +908,12 @@ func (c *CSRF) RevokeToken(ctx context.Context, id string) error {
 }
 
 // GetToken retrieves or generates a token for the given session ID. ctx
-// is the context of the request served under that session.
+// is the context of the request served under that session. A miss mints
+// through Store.LoadOrStore: a generated token is stored only when no
+// other request of the session stored one first, and the stored one is
+// returned instead, so concurrent first reads of one session all return
+// the same token. A hit returns the token as the store reads it (see
+// Store on snapshot reads).
 //
 // The return value is the RAW stored token. Do not write it into a
 // response verbatim: every emission sink must wrap it with MaskToken so
@@ -929,18 +940,18 @@ func (c *CSRF) GetToken(ctx context.Context, sessionID string) (string, error) {
 		return "", err
 	}
 
-	// Generate new token
-	token, err = GenerateToken()
+	// Store a fresh token unless another request of the session stored
+	// one since the read: the first stored token is the one every request
+	// hands out.
+	candidate, err := GenerateToken()
 	if err != nil {
 		return "", err
 	}
-
-	// Store token
-	if err := c.config.Store.Set(ctx, sessionID, token); err != nil {
+	held, _, err := c.config.Store.LoadOrStore(ctx, sessionID, candidate)
+	if err != nil {
 		return "", err
 	}
-
-	return token, nil
+	return held, nil
 }
 
 // Helper functions

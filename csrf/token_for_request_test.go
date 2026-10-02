@@ -39,6 +39,12 @@ func (s *countingStore) Set(ctx context.Context, id string, token string) error 
 	return s.inner.Set(ctx, id, token)
 }
 
+// LoadOrStore counts as a write: it is the mint.
+func (s *countingStore) LoadOrStore(ctx context.Context, id, candidate string) (string, bool, error) {
+	s.setCalls.Add(1)
+	return s.inner.LoadOrStore(ctx, id, candidate)
+}
+
 func (s *countingStore) Delete(ctx context.Context, id string) error { return s.inner.Delete(ctx, id) }
 func (s *countingStore) Exists(ctx context.Context, id string) bool  { return s.inner.Exists(ctx, id) }
 

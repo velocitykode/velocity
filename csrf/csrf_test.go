@@ -518,6 +518,9 @@ func (s *flakyGetStore) Get(ctx context.Context, id string) (string, error) {
 func (s *flakyGetStore) Set(ctx context.Context, id string, token string) error {
 	return s.inner.Set(ctx, id, token)
 }
+func (s *flakyGetStore) LoadOrStore(ctx context.Context, id, candidate string) (string, bool, error) {
+	return s.inner.LoadOrStore(ctx, id, candidate)
+}
 func (s *flakyGetStore) Delete(ctx context.Context, id string) error { return s.inner.Delete(ctx, id) }
 func (s *flakyGetStore) Exists(ctx context.Context, id string) bool  { return s.inner.Exists(ctx, id) }
 
@@ -1704,6 +1707,15 @@ func (s *nonAtomicStore) Set(ctx context.Context, id string, token string) error
 	defer s.mu.Unlock()
 	s.tokens[id] = token
 	return nil
+}
+func (s *nonAtomicStore) LoadOrStore(ctx context.Context, id, candidate string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if v, ok := s.tokens[id]; ok {
+		return v, true, nil
+	}
+	s.tokens[id] = candidate
+	return candidate, false, nil
 }
 func (s *nonAtomicStore) Delete(ctx context.Context, id string) error {
 	s.mu.Lock()

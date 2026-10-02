@@ -138,6 +138,27 @@ func (s *MemoryStore) Set(_ context.Context, id string, token string) error {
 	return nil
 }
 
+// LoadOrStore implements csrf.Store. Under the store's write lock it
+// returns the unexpired token held for id (loaded=true), restarting its
+// idle clock as Get does, or stores candidate for id and returns it when
+// none is held, so of concurrent first reads of one session exactly one
+// token is stored and every reader gets it.
+func (s *MemoryStore) LoadOrStore(_ context.Context, id, candidate string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	if entry, ok := s.tokens[id]; ok && !now.After(entry.expiresAt) {
+		entry.expiresAt = now.Add(s.idleLifetime)
+		return entry.token, true, nil
+	}
+	s.tokens[id] = &tokenEntry{
+		token:     candidate,
+		expiresAt: now.Add(s.idleLifetime),
+	}
+	return candidate, false, nil
+}
+
 // Delete removes a token
 func (s *MemoryStore) Delete(_ context.Context, id string) error {
 	s.mu.Lock()

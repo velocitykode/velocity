@@ -384,3 +384,24 @@ func BenchmarkSessionStore_ConcurrentOperations(b *testing.B) {
 		}
 	})
 }
+
+func TestMemoryStore_LoadOrStore(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore(time.Hour)
+	if got, loaded, err := s.LoadOrStore(ctx, "a", "first"); err != nil || got != "first" || loaded {
+		t.Fatalf("LoadOrStore on an empty id = %q, %v, %v", got, loaded, err)
+	}
+	if got, loaded, err := s.LoadOrStore(ctx, "a", "second"); err != nil || got != "first" || !loaded {
+		t.Fatalf("LoadOrStore on a held id = %q, %v, %v; want first, loaded", got, loaded, err)
+	}
+	if got, _ := s.Get(ctx, "a"); got != "first" {
+		t.Fatalf("Get = %q, want first", got)
+	}
+
+	expiring := NewMemoryStore(time.Millisecond)
+	_, _, _ = expiring.LoadOrStore(ctx, "a", "old")
+	time.Sleep(5 * time.Millisecond)
+	if got, loaded, err := expiring.LoadOrStore(ctx, "a", "new"); err != nil || got != "new" || loaded {
+		t.Fatalf("LoadOrStore over an expired token = %q, %v, %v; want new, stored", got, loaded, err)
+	}
+}
