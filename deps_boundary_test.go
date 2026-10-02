@@ -153,6 +153,7 @@ func TestLeafPackagesImportOnlyStdlibAndErrchain(t *testing.T) {
 		"./contract":          {module + "/contract", errchain},
 		"./resource":          {module + "/resource", errchain},
 		"./internal/errchain": {errchain},
+		"./internal/nilval":   {module + "/internal/nilval"},
 	}
 	for pkg, allow := range allowed {
 		out, err := exec.Command("go", "list", "-deps", pkg).Output()

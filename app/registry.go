@@ -6,6 +6,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 // Default is the qualifier marker used for ordinary single-instance
@@ -110,7 +111,10 @@ func RegisterFor[T any, Q any](s *Services, v T, opts ...RegisterOption) error {
 	if s == nil {
 		return fmt.Errorf("velocity/app: cannot register component %s on nil Services", key)
 	}
-	if isNilValue(v) {
+	// A typed nil survives a plain any(v) == nil check: registered, it
+	// would reach the event-wiring sweep, which would call
+	// SetEventDispatcher on the nil receiver and panic during bootstrap.
+	if nilval.Is(v) {
 		return fmt.Errorf("velocity/app: component %s is nil", key)
 	}
 
@@ -250,22 +254,4 @@ func isEventAware(v any) bool {
 func isShutdownAware(v any) bool {
 	_, ok := v.(contract.ShutdownAware)
 	return ok
-}
-
-// isNilValue reports whether v is an untyped nil or a typed nil of a nilable
-// kind (pointer, map, chan, func, slice, interface). A typed-nil registration
-// must be rejected up front: it would survive a plain any(v) == nil check, and
-// the event-wiring sweep would later call SetEventDispatcher on the nil
-// receiver and panic during bootstrap.
-func isNilValue(v any) bool {
-	if v == nil {
-		return true
-	}
-	rv := reflect.ValueOf(v)
-	switch rv.Kind() {
-	case reflect.Pointer, reflect.Map, reflect.Chan, reflect.Func, reflect.Slice, reflect.Interface:
-		return rv.IsNil()
-	default:
-		return false
-	}
 }
