@@ -342,3 +342,31 @@ func TestOwner_NestedStopAfterFinishGetsTheResult(t *testing.T) {
 		t.Fatalf("nested Stop after finish = %v, want %v", got, want)
 	}
 }
+
+// nestedStopper is a function whose calls run an owner's work, named to
+// the owner with NestedInside.
+type nestedStopper struct {
+	own drain.Owner
+	run *drain.Run
+}
+
+func (n *nestedStopper) work(stop func() error) error { return stop() }
+
+// A stop called from inside a function the owner named as running its
+// work is refused without waiting, and changes nothing; the same stop from
+// outside it goes on.
+func TestOwner_NestedInsideRefusesAStopFromTheNamedFunction(t *testing.T) {
+	n := &nestedStopper{}
+	n.own.NestedInside((*nestedStopper).work)
+	n.run = n.own.NewRun()
+	stop := func() error { return n.own.Stop(context.Background(), n.run, nil, nil) }
+	if err := n.work(stop); !errors.Is(err, contract.ErrStopFromOwnWork) {
+		t.Fatalf("stop from the named function = %v, want contract.ErrStopFromOwnWork", err)
+	}
+	if n.run.Stopping() {
+		t.Fatal("the refused stop closed the run's admission")
+	}
+	if err := stop(); err != nil {
+		t.Fatalf("stop from outside = %v, want nil", err)
+	}
+}

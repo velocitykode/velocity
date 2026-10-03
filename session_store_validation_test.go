@@ -11,6 +11,7 @@ import (
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 )
 
@@ -64,21 +65,21 @@ func newAppWithSessionScheme(t *testing.T, env string) *App {
 // SessionScheme. None of its methods are invoked by the production-gate test.
 type stubStore struct{}
 
-func (stubStore) FindByID(interface{}) (auth.Authenticatable, error) { return nil, nil }
-func (stubStore) FindByIDCtx(context.Context, interface{}) (auth.Authenticatable, error) {
+func (stubStore) FindByID(interface{}) (contract.Authenticatable, error) { return nil, nil }
+func (stubStore) FindByIDCtx(context.Context, interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
-func (stubStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (stubStore) FindByCredentials(map[string]interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
-func (stubStore) FindByCredentialsCtx(context.Context, map[string]interface{}) (auth.Authenticatable, error) {
+func (stubStore) FindByCredentialsCtx(context.Context, map[string]interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
-func (stubStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (stubStore) ValidateCredentials(contract.Authenticatable, map[string]interface{}) bool {
 	return false
 }
-func (stubStore) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
-func (stubStore) UpdateRememberTokenCtx(context.Context, auth.Authenticatable, string) error {
+func (stubStore) UpdateRememberToken(contract.Authenticatable, string) error { return nil }
+func (stubStore) UpdateRememberTokenCtx(context.Context, contract.Authenticatable, string) error {
 	return nil
 }
 

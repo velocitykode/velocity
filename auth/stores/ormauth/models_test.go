@@ -11,10 +11,11 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/stores/ormauth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/orm"
 )
 
-// Admin is a model that does NOT implement auth.Authenticatable and whose
+// Admin is a model that does NOT implement contract.Authenticatable and whose
 // columns share none of the default names, so it exercises the reflective
 // column mapping end to end. Its remember token is a sql.NullString.
 type Admin struct {
@@ -181,7 +182,7 @@ func TestNew_RejectsUnmappableModels(t *testing.T) {
 		},
 		{
 			name:      "interface",
-			userStore: ormauth.New[auth.Authenticatable](),
+			userStore: ormauth.New[contract.Authenticatable](),
 			wants:     "is not a struct model",
 		},
 	}
@@ -221,7 +222,7 @@ func TestStore_UnvalidatedStoreNeverQueries(t *testing.T) {
 }
 
 // TestStore_MappedModel_NullString exercises the non-native path: a
-// model that does not implement auth.Authenticatable, with every column
+// model that does not implement contract.Authenticatable, with every column
 // renamed and a sql.NullString remember token.
 func TestStore_MappedModel_NullString(t *testing.T) {
 	m := newManager(t)

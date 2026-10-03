@@ -6,8 +6,11 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
+	"github.com/velocitykode/velocity/internal/hostile"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/internal/teardown"
 )
@@ -91,7 +94,8 @@ func TestStep_GoexitEndsTheGoroutine(t *testing.T) {
 }
 
 // teardown sits under every manager, so it imports only the standard
-// library, internal/panicerr and internal/drain.
+// library, contract and the internal leaves drain, errchain, fallbacklog,
+// nilval and panicerr.
 func TestTeardownImportsOnlyItsLeaves(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go tool not on PATH")
@@ -100,9 +104,17 @@ func TestTeardownImportsOnlyItsLeaves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("go list: %v", err)
 	}
+	allowed := map[string]bool{
+		"github.com/velocitykode/velocity/contract":             true,
+		"github.com/velocitykode/velocity/internal/drain":       true,
+		"github.com/velocitykode/velocity/internal/errchain":    true,
+		"github.com/velocitykode/velocity/internal/fallbacklog": true,
+		"github.com/velocitykode/velocity/internal/nilval":      true,
+		"github.com/velocitykode/velocity/internal/panicerr":    true,
+	}
 	for _, imp := range strings.Fields(string(out)) {
-		if strings.Contains(imp, ".") && imp != "github.com/velocitykode/velocity/internal/panicerr" && imp != "github.com/velocitykode/velocity/internal/drain" {
-			t.Errorf("internal/teardown imports %s; it may import only the standard library, internal/panicerr and internal/drain", imp)
+		if strings.Contains(imp, ".") && !allowed[imp] {
+			t.Errorf("internal/teardown imports %s; it may import only the standard library, contract, internal/drain, internal/errchain, internal/fallbacklog, internal/nilval and internal/panicerr", imp)
 		}
 	}
 }
@@ -162,4 +174,142 @@ func TestClose_NilPointerChild(t *testing.T) {
 	if err := teardown.Close(context.Background(), c); panicerr.AsTyped(err) == nil {
 		t.Fatalf("Close(nil *closer) = %v, want a contained panic", err)
 	}
+}
+
+// onlyCloser closes through Close() error alone.
+type onlyCloser struct {
+	calls int
+	err   error
+}
+
+func (c *onlyCloser) Close() error {
+	c.calls++
+	return c.err
+}
+
+// both has Shutdown and Close: Shutdown is its closer.
+type both struct {
+	shutdowns, closes int
+}
+
+func (b *both) Shutdown(context.Context) error { b.shutdowns++; return nil }
+func (b *both) Close() error                   { b.closes++; return nil }
+
+// valueCloser has a value-receiver Shutdown: reaching it through a nil
+// pointer panics.
+type valueCloser struct{}
+
+func (valueCloser) Shutdown(context.Context) error { return nil }
+
+// The closer contract: Close() error and func(ctx) error close too;
+// Shutdown wins over Close.
+func TestClose_TheCloserContract(t *testing.T) {
+	want := errors.New("close failed")
+	oc := &onlyCloser{err: want}
+	if err := teardown.Close(context.Background(), oc); err != want || oc.calls != 1 {
+		t.Errorf("Close of a Close() error value = %v after %d calls, want its error after 1", err, oc.calls)
+	}
+	type key struct{}
+	ctx := context.WithValue(context.Background(), key{}, "v")
+	var got context.Context
+	fn := func(c context.Context) error { got = c; return want }
+	if err := teardown.Close(ctx, fn); err != want || got != ctx {
+		t.Errorf("Close of a func = %v (ctx passed %v), want its error with the caller's ctx", err, got == ctx)
+	}
+	b := &both{}
+	if err := teardown.Close(context.Background(), b); err != nil || b.shutdowns != 1 || b.closes != 0 {
+		t.Errorf("Close of a value with Shutdown and Close = %v, Shutdown %d, Close %d; want Shutdown only", err, b.shutdowns, b.closes)
+	}
+	var nilFn func(context.Context) error
+	if err := teardown.Close(context.Background(), nilFn); err != nil {
+		t.Errorf("Close of a nil func = %v, want nil (nothing to close)", err)
+	}
+	var vc *valueCloser
+	if err := teardown.Close(context.Background(), vc); panicerr.AsTyped(err) == nil {
+		t.Errorf("Close of a nil pointer with a value-receiver Shutdown = %v, want a contained panic", err)
+	}
+}
+
+// drainStop is a stop that drains work: at ctx it returns ctx's error
+// while the work goes on, and every later call waits for the work and
+// returns its result.
+type drainStop struct {
+	calls   atomic.Int32
+	started sync.Once
+	done    chan struct{}
+	release chan struct{}
+	err     error
+}
+
+func newDrainStop(err error) *drainStop {
+	return &drainStop{done: make(chan struct{}), release: make(chan struct{}), err: err}
+}
+
+func (d *drainStop) stop(ctx context.Context) error {
+	d.calls.Add(1)
+	d.started.Do(func() {
+		go func() {
+			<-d.release
+			close(d.done)
+		}()
+	})
+	select {
+	case <-d.done:
+		return d.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// At a done ctx, Drain waits for the stop's work and returns the stop's
+// retained result, not the ctx's error.
+func TestDrain_ReWaitsPastTheDeadline(t *testing.T) {
+	want := errors.New("work failed")
+	d := newDrainStop(want)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := make(chan error, 1)
+	go func() { result <- teardown.Drain(ctx, d.stop) }()
+	close(d.release)
+	var err error
+	hostile.Within(t, hostile.Deadline, func() { err = <-result })
+	if err != want {
+		t.Fatalf("Drain = %v, want the stop's retained result", err)
+	}
+	if n := d.calls.Load(); n != 2 {
+		t.Errorf("stop calls = %d, want 2 (the stop, then the detached re-wait)", n)
+	}
+}
+
+// With ctx live, or a stop that succeeds, Drain calls the stop once.
+func TestDrain_OneCallWhenNoReWaitIsNeeded(t *testing.T) {
+	want := errors.New("failed")
+	calls := 0
+	if err := teardown.Drain(context.Background(), func(context.Context) error { calls++; return want }); err != want || calls != 1 {
+		t.Errorf("Drain with a live ctx = %v after %d calls, want the error after 1", err, calls)
+	}
+	calls = 0
+	if err := teardown.Drain(cancelledCtx(), func(context.Context) error { calls++; return nil }); err != nil || calls != 1 {
+		t.Errorf("Drain of a stop that succeeded = %v after %d calls, want nil after 1", err, calls)
+	}
+	calls = 0
+	var nilCtx context.Context // a nil ctx is part of Drain's contract
+	if err := teardown.Drain(nilCtx, func(ctx context.Context) error { calls++; return ctx.Err() }); err != nil || calls != 1 {
+		t.Errorf("Drain with a nil ctx = %v after %d calls, want nil after 1", err, calls)
+	}
+}
+
+// A panicking stop is contained and not called again.
+func TestDrain_PanicIsNotRepeated(t *testing.T) {
+	calls := 0
+	err := teardown.Drain(cancelledCtx(), func(context.Context) error { calls++; panic("stop panicked") })
+	if pe := panicerr.AsTyped(err); pe == nil || calls != 1 {
+		t.Fatalf("Drain of a panicking stop = %v after %d calls, want the contained panic after 1", err, calls)
+	}
+}
+
+func cancelledCtx() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
 }

@@ -1,6 +1,10 @@
 package auth
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/velocitykode/velocity/contract"
+)
 
 // BenchmarkJWTIssue issues access and refresh tokens for an integer and a
 // string identifier: the paths that derive the token subject and the
@@ -17,7 +21,7 @@ func BenchmarkJWTIssue(b *testing.B) {
 	}
 	for _, u := range []struct {
 		name string
-		user Authenticatable
+		user contract.Authenticatable
 	}{{"uint", &AuthUser{ID: uint(1)}}, {"string", &AuthUser{ID: "0b0f6a8e-4f3c-4d5e-9a1b-2c3d4e5f6a7b"}}} {
 		b.Run("access/"+u.name, func(b *testing.B) {
 			b.ReportAllocs()

@@ -9,6 +9,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/router"
 )
@@ -29,23 +30,23 @@ func (m *sessionMockT) Errorf(format string, args ...interface{}) {
 // session helper below resolves a user, so every method returns a zero value.
 type stubUserStore struct{}
 
-func (stubUserStore) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authenticatable, error) {
+func (stubUserStore) FindByIDCtx(ctx context.Context, id interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
-func (stubUserStore) FindByID(id interface{}) (auth.Authenticatable, error) { return nil, nil }
-func (stubUserStore) FindByCredentialsCtx(ctx context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (stubUserStore) FindByID(id interface{}) (contract.Authenticatable, error) { return nil, nil }
+func (stubUserStore) FindByCredentialsCtx(ctx context.Context, credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
-func (stubUserStore) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (stubUserStore) FindByCredentials(credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
-func (stubUserStore) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
+func (stubUserStore) ValidateCredentials(user contract.Authenticatable, credentials map[string]interface{}) bool {
 	return false
 }
-func (stubUserStore) UpdateRememberTokenCtx(ctx context.Context, user auth.Authenticatable, token string) error {
+func (stubUserStore) UpdateRememberTokenCtx(ctx context.Context, user contract.Authenticatable, token string) error {
 	return nil
 }
-func (stubUserStore) UpdateRememberToken(user auth.Authenticatable, token string) error {
+func (stubUserStore) UpdateRememberToken(user contract.Authenticatable, token string) error {
 	return nil
 }
 

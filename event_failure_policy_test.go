@@ -306,8 +306,8 @@ func TestFailedEventCount_AsyncRouterPoolCountsOnce(t *testing.T) {
 	for i := 0; i < requests; i++ {
 		a.Router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ping", nil))
 	}
-	if err := a.Router.ShutdownEventDispatcher(context.Background()); err != nil {
-		t.Fatalf("ShutdownEventDispatcher: %v", err)
+	if err := a.Router.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Router.Shutdown: %v", err)
 	}
 	if got := a.FailedEventCount(); got != requests {
 		t.Errorf("FailedEventCount = %d, want %d (one per failed event)", got, requests)

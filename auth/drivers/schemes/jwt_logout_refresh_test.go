@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // jwtLogoutRefreshUser is the minimal Authenticatable used by the
@@ -28,16 +29,16 @@ type jwtLogoutRefreshStore struct {
 	user *jwtLogoutRefreshUser
 }
 
-func (p *jwtLogoutRefreshStore) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *jwtLogoutRefreshStore) FindByID(id interface{}) (contract.Authenticatable, error) {
 	return p.user, nil
 }
-func (p *jwtLogoutRefreshStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (p *jwtLogoutRefreshStore) FindByCredentials(map[string]interface{}) (contract.Authenticatable, error) {
 	return p.user, nil
 }
-func (p *jwtLogoutRefreshStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (p *jwtLogoutRefreshStore) ValidateCredentials(contract.Authenticatable, map[string]interface{}) bool {
 	return true
 }
-func (p *jwtLogoutRefreshStore) UpdateRememberToken(auth.Authenticatable, string) error {
+func (p *jwtLogoutRefreshStore) UpdateRememberToken(contract.Authenticatable, string) error {
 	return nil
 }
 
@@ -96,12 +97,12 @@ func TestJWTScheme_Logout_BumpsRefreshGeneration(t *testing.T) {
 }
 
 // Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
-func (p *jwtLogoutRefreshStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *jwtLogoutRefreshStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *jwtLogoutRefreshStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *jwtLogoutRefreshStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *jwtLogoutRefreshStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *jwtLogoutRefreshStore) UpdateRememberTokenCtx(_ context.Context, user contract.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }

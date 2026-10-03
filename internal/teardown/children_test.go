@@ -40,11 +40,58 @@ func (m *manager) remove(name string) {
 
 func (m *manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
-	children := m.children
-	m.children = nil
-	wait := m.shutdown.Detach(children, func(name string, err error) error { return fmt.Errorf("child %q: %w", name, err) })
+	wait := m.shutdown.Shutdown(&m.children, func(name string, err error) error { return fmt.Errorf("child %q: %w", name, err) })
 	m.mu.Unlock()
 	return wait(ctx)
+}
+
+// set publishes c under name and retires the child it displaces.
+func (m *manager) set(name string, c *child) error {
+	m.mu.Lock()
+	if m.children == nil {
+		m.children = map[string]*child{}
+	}
+	old, had := m.children[name]
+	m.children[name] = c
+	retire := noRetire
+	if had {
+		retire = m.shutdown.Retire(m.children, old)
+	}
+	m.mu.Unlock()
+	return retire()
+}
+
+// clear empties the registry and retires every child it held.
+func (m *manager) clear() error {
+	m.mu.Lock()
+	held := m.children
+	m.children = map[string]*child{}
+	var retires []func() error
+	for _, c := range held {
+		retires = append(retires, m.shutdown.Retire(m.children, c))
+	}
+	m.mu.Unlock()
+	var errs []error
+	for _, r := range retires {
+		errs = append(errs, r())
+	}
+	return errors.Join(errs...)
+}
+
+func noRetire() error { return nil }
+
+// generation reads the shutdown generation under the lock.
+func (m *manager) generation() uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.shutdown.Generation()
+}
+
+// len reports how many children the registry holds.
+func (m *manager) len() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.children)
 }
 
 // child's Shutdown runs code (panic, block, re-enter), then returns err.

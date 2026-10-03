@@ -98,7 +98,7 @@ func initStorage(config StorageConfig, logger contract.Logger) *storage.Manager 
 // is the framework default, backed by ormauth.User against the users table;
 // an application swaps in its own model from a module:
 //
-//	auth.FromServices(s).SetUserStore(ormauth.New[models.Admin]())
+//	s.Auth.(*auth.Manager).SetUserStore(ormauth.New[models.Admin]())
 //
 // SetUserStore re-points every registered scheme, so the swap works regardless
 // of whether it runs before or after this function.

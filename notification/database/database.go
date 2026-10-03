@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,8 +42,16 @@ func init() {
 // same Send call so the row inserted here correlates with the email,
 // broadcast, etc. that went out in parallel.
 type DatabaseChannel struct {
+	// conn is the database and its driver name, replaced together by
+	// SetDB and read once per Send.
+	conn atomic.Pointer[dbConn]
+}
+
+// dbConn is a DatabaseChannel's database and its driver name ("postgres",
+// "mysql", or "sqlite").
+type dbConn struct {
 	db     *sql.DB
-	driver string // "postgres", "mysql", or "sqlite"
+	driver string
 }
 
 // NewDatabaseChannel creates a new database notification channel.
@@ -52,11 +61,33 @@ func NewDatabaseChannel() *DatabaseChannel {
 
 // SetDB sets the database connection and driver name used to store notifications.
 // The driver name determines placeholder syntax ("postgres" uses $1, others use ?).
+//
+// The database and the driver name change together: a Send reads both
+// from one SetDB. Safe to call while sends run; a send in flight finishes
+// on the database it read.
 func (c *DatabaseChannel) SetDB(db *sql.DB, driver ...string) {
-	c.db = db
-	if len(driver) > 0 {
-		c.driver = driver[0]
+	for {
+		prev := c.conn.Load()
+		next := &dbConn{db: db}
+		if len(driver) > 0 {
+			next.driver = driver[0]
+		} else if prev != nil {
+			next.driver = prev.driver
+		}
+		if c.conn.CompareAndSwap(prev, next) {
+			return
+		}
 	}
+}
+
+// DB returns the database and driver name the channel stores
+// notifications with, as the last SetDB gave them (nil and "" before any).
+func (c *DatabaseChannel) DB() (*sql.DB, string) {
+	conn := c.conn.Load()
+	if conn == nil {
+		return nil, ""
+	}
+	return conn.db, conn.driver
 }
 
 // Send stores a notification in the database.
@@ -71,7 +102,8 @@ func (c *DatabaseChannel) Send(ctx context.Context, notifiable interface{}, n no
 		return nil
 	}
 
-	if c.db == nil {
+	conn := c.conn.Load()
+	if conn == nil || conn.db == nil {
 		return fmt.Errorf("notification: database channel has no database connection configured")
 	}
 
@@ -111,11 +143,11 @@ func (c *DatabaseChannel) Send(ctx context.Context, notifiable interface{}, n no
 		id = generateNotificationID()
 	}
 
-	query := rebind(c.driver,
+	query := rebind(conn.driver,
 		"INSERT INTO notifications (id, type, notifiable_type, notifiable_id, data, read_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
 	)
 
-	_, err = c.db.ExecContext(ctx, query,
+	_, err = conn.db.ExecContext(ctx, query,
 		id, dbMsg.Type, notifiableType, notifiableID, string(dataJSON), now, now,
 	)
 	if err != nil {

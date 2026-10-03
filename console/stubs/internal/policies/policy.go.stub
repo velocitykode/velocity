@@ -1,18 +1,21 @@
 package {{ .Package }}
 
-import "github.com/velocitykode/velocity/auth"
+import (
+	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
+)
 
 // {{ .Name }}Policy defines authorization rules for the {{ .Name }} resource.
 //
 // Register it during bootstrap (e.g. in a module's Start(s *app.Services)):
 //
-//	auth.FromServices(s).Access().RegisterPolicy("{{ .Name }}", {{ .Name }}Policy{})
+//	s.Auth.(*auth.Manager).Access().RegisterPolicy("{{ .Name }}", {{ .Name }}Policy{})
 type {{ .Name }}Policy struct{}
 
 var _ auth.Policy = {{ .Name }}Policy{}
 
 // Authorize implements auth.Policy by routing actions to the methods below.
-func (p {{ .Name }}Policy) Authorize(user auth.Authenticatable, action string, resource any) bool {
+func (p {{ .Name }}Policy) Authorize(user contract.Authenticatable, action string, resource any) bool {
 	switch action {
 	case "view":
 		return p.View(user, resource)
@@ -28,21 +31,21 @@ func (p {{ .Name }}Policy) Authorize(user auth.Authenticatable, action string, r
 }
 
 // View determines if the user can view the resource.
-func (p {{ .Name }}Policy) View(user auth.Authenticatable, resource any) bool {
+func (p {{ .Name }}Policy) View(user contract.Authenticatable, resource any) bool {
 	return false
 }
 
 // Create determines if the user can create a resource.
-func (p {{ .Name }}Policy) Create(user auth.Authenticatable) bool {
+func (p {{ .Name }}Policy) Create(user contract.Authenticatable) bool {
 	return false
 }
 
 // Update determines if the user can update the resource.
-func (p {{ .Name }}Policy) Update(user auth.Authenticatable, resource any) bool {
+func (p {{ .Name }}Policy) Update(user contract.Authenticatable, resource any) bool {
 	return false
 }
 
 // Delete determines if the user can delete the resource.
-func (p {{ .Name }}Policy) Delete(user auth.Authenticatable, resource any) bool {
+func (p {{ .Name }}Policy) Delete(user contract.Authenticatable, resource any) bool {
 	return false
 }

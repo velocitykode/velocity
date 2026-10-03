@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/sessionclock"
@@ -135,7 +136,7 @@ func (s *CookieStore) isRevoked(sessionID string) bool {
 }
 
 // Create creates a new session
-func (s *CookieStore) Create(id string) (auth.Session, error) {
+func (s *CookieStore) Create(id string) (contract.Session, error) {
 	return &CookieSession{
 		BaseSession: auth.NewSession(id),
 		store:       s,
@@ -164,7 +165,7 @@ func (s *CookieStore) Create(id string) (auth.Session, error) {
 // for the absolute check and have it persisted on the next Save. Operators
 // who want strict cutoff can rotate APP_KEY which invalidates every prior
 // cookie.
-func (s *CookieStore) Get(r *http.Request, id string) (auth.Session, error) {
+func (s *CookieStore) Get(r *http.Request, id string) (contract.Session, error) {
 	// Get cookie
 	cookie, err := r.Cookie(s.config.Name)
 	if err != nil {
@@ -246,7 +247,7 @@ func (s *CookieStore) expired(createdAt, issuedAt time.Time) bool {
 }
 
 // Save saves session to cookie
-func (s *CookieStore) Save(w http.ResponseWriter, session auth.Session) error {
+func (s *CookieStore) Save(w http.ResponseWriter, session contract.Session) error {
 	cookieSession, ok := session.(*CookieSession)
 	if !ok {
 		baseSession, ok := session.(*auth.BaseSession)

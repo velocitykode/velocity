@@ -9,9 +9,10 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 )
 
-// mockSession implements auth.Session for testing
+// mockSession implements contract.Session for testing
 type mockSession struct {
 	id    string
 	data  map[string]interface{}
@@ -53,15 +54,15 @@ func (s *mockSession) Save(w http.ResponseWriter) error { return nil }
 // mockSessionStore implements auth.SessionStore for testing
 type mockSessionStore struct{}
 
-func (s *mockSessionStore) Create(id string) (auth.Session, error) {
+func (s *mockSessionStore) Create(id string) (contract.Session, error) {
 	return newMockSession(), nil
 }
 
-func (s *mockSessionStore) Get(r *http.Request, id string) (auth.Session, error) {
+func (s *mockSessionStore) Get(r *http.Request, id string) (contract.Session, error) {
 	return newMockSession(), nil
 }
 
-func (s *mockSessionStore) Save(w http.ResponseWriter, session auth.Session) error {
+func (s *mockSessionStore) Save(w http.ResponseWriter, session contract.Session) error {
 	return nil
 }
 
@@ -76,31 +77,31 @@ func (s *mockSessionStore) GarbageCollect(maxLifetime time.Duration) error {
 // mockUserStore implements auth.UserStore for testing
 type mockUserStore struct{}
 
-func (p *mockUserStore) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *mockUserStore) FindByID(id interface{}) (contract.Authenticatable, error) {
 	return p.FindByIDCtx(context.Background(), id)
 }
 
-func (p *mockUserStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *mockUserStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {
 	return &auth.AuthUser{ID: id, Name: "Test", Email: "test@test.com"}, nil
 }
 
-func (p *mockUserStore) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *mockUserStore) FindByCredentials(credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return p.FindByCredentialsCtx(context.Background(), credentials)
 }
 
-func (p *mockUserStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *mockUserStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return &auth.AuthUser{ID: 1, Name: "Test", Email: "test@test.com"}, nil
 }
 
-func (p *mockUserStore) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
+func (p *mockUserStore) ValidateCredentials(user contract.Authenticatable, credentials map[string]interface{}) bool {
 	return true
 }
 
-func (p *mockUserStore) UpdateRememberToken(user auth.Authenticatable, token string) error {
+func (p *mockUserStore) UpdateRememberToken(user contract.Authenticatable, token string) error {
 	return nil
 }
 
-func (p *mockUserStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *mockUserStore) UpdateRememberTokenCtx(_ context.Context, user contract.Authenticatable, token string) error {
 	return nil
 }
 

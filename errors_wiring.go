@@ -7,6 +7,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/problem/routerbridge"
@@ -24,7 +25,14 @@ import (
 // replaces the whole pipeline.
 func installErrorPipeline(a *App) {
 	routerbridge.Install(a.Router,
-		routerbridge.WithHandler(func() contract.ErrorHandler { return a.Services.Errors }),
+		routerbridge.WithHandler(func() contract.ErrorHandler {
+			// A typed nil is no handler: the bridge then falls back to
+			// the router default instead of calling into a nil value.
+			if nilval.Is(a.Services.Errors) {
+				return nil
+			}
+			return a.Services.Errors
+		}),
 		routerbridge.WithUserID(appUserIdentifier{a: a}),
 		// appLogger, not the a.Log value, so a logger swapped after New is used.
 		routerbridge.WithLogger(appLogger{a: a}),
@@ -57,6 +65,8 @@ var sentinelStatuses = []sentinelStatus{
 	{err: csrf.ErrTokenMissing, status: contract.StatusTokenMismatch, message: "CSRF token mismatch"},
 	{err: csrf.ErrTokenInvalid, status: contract.StatusTokenMismatch, message: "CSRF token mismatch"},
 	{err: router.ErrBindExtraData, status: http.StatusBadRequest, message: http.StatusText(http.StatusBadRequest)},
+	// A request the router refused once its Shutdown began.
+	{err: contract.ErrServerShuttingDown, status: http.StatusServiceUnavailable, message: http.StatusText(http.StatusServiceUnavailable)},
 }
 
 // installSentinelErrorRules renders each framework sentinel at its status

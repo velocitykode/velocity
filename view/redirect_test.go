@@ -4,18 +4,18 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/velocitykode/velocity/app"
-	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 )
 
 // fakeSession records Flash/FlashMany interactions and Save invocations for
 // assertion in tests. Only the methods exercised by the redirect helpers are
-// non-trivial; the rest satisfy the auth.Session interface with stub behavior.
+// non-trivial; the rest satisfy the contract.Session interface with stub behavior.
 type fakeSession struct {
 	mu         sync.Mutex
 	flashCalls []flashEntry
@@ -55,7 +55,7 @@ func (s *fakeSession) saves() int {
 	return s.saveCalled
 }
 
-// The remaining auth.Session methods are unused by view.ReqEngine and return
+// The remaining contract.Session methods are unused by view.ReqEngine and return
 // zero values.
 func (s *fakeSession) ID() string                 { return "fake-session" }
 func (s *fakeSession) Get(string) any             { return nil }
@@ -68,19 +68,33 @@ func (s *fakeSession) Invalidate() error          { return nil }
 func (s *fakeSession) GetFlash(string) any        { return nil }
 func (s *fakeSession) FlushFlash() map[string]any { return nil }
 
-var _ auth.Session = (*fakeSession)(nil)
+var _ contract.Session = (*fakeSession)(nil)
 
-// stubViewEngine implements contract.ViewEngine but is not a *view.Engine, so
-// view.FromContext returns nil when this value is wired onto a context.
-type stubViewEngine struct{}
+// foreignEngine implements contract.ViewEngine but is not a *view.Engine:
+// a module's own engine. It records the calls it receives.
+type foreignEngine struct {
+	calls []string
+}
 
-func (stubViewEngine) Back(http.ResponseWriter, *http.Request) {}
+func (e *foreignEngine) Back(http.ResponseWriter, *http.Request) {
+	e.calls = append(e.calls, "Back")
+}
 
-var _ contract.ViewEngine = stubViewEngine{}
+func (e *foreignEngine) Redirect(_ http.ResponseWriter, _ *http.Request, url string) {
+	e.calls = append(e.calls, "Redirect "+url)
+}
 
-// stubAuthManager implements contract.AuthManager but is not an *auth.Manager,
-// so auth.FromContext returns nil when this value is wired onto a context.
-type stubAuthManager struct{}
+func (e *foreignEngine) LocationExternal(_ http.ResponseWriter, _ *http.Request, url string) {
+	e.calls = append(e.calls, "LocationExternal "+url)
+}
+
+var _ contract.ViewEngine = (*foreignEngine)(nil)
+
+// stubAuthManager implements contract.AuthManager but is not an *auth.Manager.
+type stubAuthManager struct {
+	// contract.AuthManager supplies the methods this fake does not use.
+	contract.AuthManager
+}
 
 func (stubAuthManager) Allows(*http.Request, string, ...any) bool { return false }
 func (stubAuthManager) Authorize(*http.Request, string, ...any) error {
@@ -144,19 +158,73 @@ func TestRedirect_TopLevel_InertiaRequestSetsInertiaLocation(t *testing.T) {
 	}
 }
 
-func TestRedirect_TopLevel_NoEngineIsNoop(t *testing.T) {
-	ctx, rec := router.NewTestContext("POST", "/submit")
-	// View is wired to a stub that is not *view.Engine, so view.FromContext
-	// returns nil and Redirect must be a no-op.
-	ctx.SetServices(&app.Services{View: stubViewEngine{}, Auth: stubAuthManager{}})
-
-	Redirect(ctx, "/foo")
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want default 200 (no-op)", rec.Code)
+// A view engine that is not a *view.Engine is present: the helpers whose
+// method the contract carries call it.
+func TestHelpers_ForeignEngine_ContractMethodsReachIt(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*router.Context) error
+		want string
+	}{
+		{"Redirect", func(c *router.Context) error { return Redirect(c, "/foo") }, "Redirect /foo"},
+		{"LocationExternal", func(c *router.Context) error { return LocationExternal(c, "https://x.example") }, "LocationExternal https://x.example"},
+		{"Back", func(c *router.Context) error { return Back(c) }, "Back"},
 	}
-	if got := rec.Header().Get("Location"); got != "" {
-		t.Errorf("Location = %q, want empty (no-op)", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine := &foreignEngine{}
+			ctx, _ := router.NewTestContext("POST", "/submit")
+			ctx.SetServices(&app.Services{View: engine, Auth: stubAuthManager{}})
+			if err := tt.call(ctx); err != nil {
+				t.Fatalf("%s = %v, want nil", tt.name, err)
+			}
+			if len(engine.calls) != 1 || engine.calls[0] != tt.want {
+				t.Fatalf("the engine received %v, want [%s]", engine.calls, tt.want)
+			}
+		})
+	}
+}
+
+// The helpers that need the framework's engine report a foreign one with
+// an error naming its type, not with the absence error: the service is
+// configured. They write nothing and call nothing on it.
+func TestHelpers_ForeignEngine_EngineOnlyHelpersNameItsType(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*router.Context) error
+	}{
+		{"Location", func(c *router.Context) error { return Location(c, "/foo") }},
+		{"Render", func(c *router.Context) error { return Render(c, "Comp") }},
+		{"For", func(c *router.Context) error {
+			re, err := For(c)
+			if re != nil {
+				t.Errorf("For = %v, want nil", re)
+			}
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine := &foreignEngine{}
+			ctx, rec := router.NewTestContext("POST", "/submit")
+			ctx.SetServices(&app.Services{View: engine, Auth: stubAuthManager{}})
+			err := tt.call(ctx)
+			if err == nil {
+				t.Fatalf("%s = nil, want an error naming the engine's type", tt.name)
+			}
+			if errors.Is(err, contract.ErrServiceNotConfigured) {
+				t.Fatalf("%s = %v, which reports a configured service as absent", tt.name, err)
+			}
+			if !strings.Contains(err.Error(), "*view.foreignEngine") {
+				t.Fatalf("%s = %v, want the engine's type named", tt.name, err)
+			}
+			if len(engine.calls) != 0 {
+				t.Errorf("the engine received %v, want nothing", engine.calls)
+			}
+			if rec.Code != http.StatusOK || rec.Body.Len() != 0 || len(rec.Header()) != 0 {
+				t.Errorf("wrote status %d body %q headers %v, want nothing", rec.Code, rec.Body.String(), rec.Header())
+			}
+		})
 	}
 }
 
@@ -191,29 +259,28 @@ func TestBack_TopLevel_UsesReferer(t *testing.T) {
 
 // ---- For chain ----------------------------------------------------------
 
-func TestFor_NoEngine_ReturnsNilAndChainIsNoop(t *testing.T) {
+func TestFor_NoEngine_Reports(t *testing.T) {
 	ctx, rec := router.NewTestContext("POST", "/submit")
-	ctx.SetServices(&app.Services{View: stubViewEngine{}, Auth: stubAuthManager{}})
+	ctx.SetServices(&app.Services{Auth: stubAuthManager{}})
 
-	re := For(ctx)
-	if re != nil {
-		t.Fatalf("For with non-*Engine ViewEngine = %v, want nil", re)
+	re, err := For(ctx)
+	var snc *contract.ServiceNotConfiguredError
+	if re != nil || !errors.As(err, &snc) || snc.Service != "view" {
+		t.Fatalf("For without a view engine = %v, %v; want nil and a ServiceNotConfiguredError naming view", re, err)
 	}
+	if rec.Code != http.StatusOK || rec.Header().Get("Location") != "" {
+		t.Errorf("For wrote status %d Location %q, want nothing written", rec.Code, rec.Header().Get("Location"))
+	}
+}
 
-	// Every chain method must tolerate the nil receiver without panicking.
-	re.Flash("k", "v").FlashMany(map[string]any{"a": 1}).Redirect("/foo")
-	re.Location("/bar")
-	re.Back()
-	if err := re.Render("Comp"); !errors.Is(err, ErrNoEngine) {
-		t.Errorf("Render on nil ReqEngine = %v, want ErrNoEngine", err)
+// mustFor is For for a context known to carry an engine.
+func mustFor(t *testing.T, ctx *router.Context) *ReqEngine {
+	t.Helper()
+	re, err := For(ctx)
+	if err != nil {
+		t.Fatalf("For: %v", err)
 	}
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want default 200", rec.Code)
-	}
-	if got := rec.Header().Get("Location"); got != "" {
-		t.Errorf("Location = %q, want empty", got)
-	}
+	return re
 }
 
 func TestFor_FlashThenRedirect_FlashesWithoutSaving(t *testing.T) {
@@ -221,7 +288,7 @@ func TestFor_FlashThenRedirect_FlashesWithoutSaving(t *testing.T) {
 	sess := &fakeSession{}
 	ctx, rec := newRedirectCtx(t, "POST", "/submit", engine, sess)
 
-	For(ctx).Flash("error", "x").Redirect("/foo")
+	mustFor(t, ctx).Flash("error", "x").Redirect("/foo")
 
 	if rec.Code != http.StatusSeeOther {
 		t.Errorf("status = %d, want 303", rec.Code)
@@ -243,7 +310,7 @@ func TestFor_TwoFlashThenRedirect_AppliesBothWithoutSaving(t *testing.T) {
 	sess := &fakeSession{}
 	ctx, _ := newRedirectCtx(t, "POST", "/submit", engine, sess)
 
-	For(ctx).Flash("error", "x").Flash("info", "y").Redirect("/foo")
+	mustFor(t, ctx).Flash("error", "x").Flash("info", "y").Redirect("/foo")
 
 	calls := sess.calls()
 	if len(calls) != 2 {
@@ -265,7 +332,7 @@ func TestFor_RedirectWithoutFlash_DoesNotLoadOrSaveSession(t *testing.T) {
 	sess := &fakeSession{}
 	ctx, rec := newRedirectCtx(t, "POST", "/submit", engine, sess)
 
-	For(ctx).Redirect("/foo")
+	mustFor(t, ctx).Redirect("/foo")
 
 	if rec.Code != http.StatusSeeOther {
 		t.Errorf("status = %d, want 303", rec.Code)
@@ -283,7 +350,7 @@ func TestFor_FlashMany_AppliesAllWithoutSaving(t *testing.T) {
 	sess := &fakeSession{}
 	ctx, _ := newRedirectCtx(t, "POST", "/submit", engine, sess)
 
-	For(ctx).FlashMany(map[string]any{
+	mustFor(t, ctx).FlashMany(map[string]any{
 		"success": "a",
 		"info":    "b",
 	}).Redirect("/foo")
@@ -311,7 +378,7 @@ func TestFor_RenderWithPriorFlash_RendersWithoutSaving(t *testing.T) {
 	ctx, rec := newRedirectCtx(t, "GET", "/page", engine, sess)
 	ctx.Request.Header.Set("X-Inertia", "true")
 
-	err := For(ctx).Flash("toast", "saved").Render("Comp")
+	err := mustFor(t, ctx).Flash("toast", "saved").Render("Comp")
 	if err != nil {
 		t.Fatalf("Render returned error: %v", err)
 	}
@@ -335,10 +402,7 @@ func TestFor_Flash_NoSession_IsNoop(t *testing.T) {
 	// does when the default scheme keeps no session (JWT-only).
 	ctx, rec := newRedirectCtx(t, "POST", "/submit", engine, nil)
 
-	re := For(ctx)
-	if re == nil {
-		t.Fatal("For returned nil; expected a live ReqEngine when *view.Engine is wired")
-	}
+	re := mustFor(t, ctx)
 	re.Flash("error", "x").Redirect("/foo")
 
 	if rec.Code != http.StatusSeeOther {
@@ -352,9 +416,9 @@ func TestFor_Flash_NoSession_IsNoop(t *testing.T) {
 func TestFor_Flash_NoServices_IsNoop(t *testing.T) {
 	engine := newTestEngine(t)
 	ctx, rec := newRedirectCtx(t, "POST", "/submit", engine, nil)
-	ctx.Services().FlashBag = nil
+	ctx.ServicesIfSet().FlashBag = nil
 
-	For(ctx).Flash("error", "x").Redirect("/foo")
+	mustFor(t, ctx).Flash("error", "x").Redirect("/foo")
 
 	if rec.Code != http.StatusSeeOther {
 		t.Errorf("status = %d, want 303", rec.Code)

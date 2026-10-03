@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // admittingThrottler is countingThrottler plus a store-shaped
@@ -69,7 +70,7 @@ func overCapScheme(t *testing.T, throttler interface {
 // scheduling order.
 func gatedStore(correct string, entered chan<- struct{}, release <-chan struct{}) *delayTestStore {
 	s := &delayTestStore{}
-	s.validateCredentialsFunc = func(_ auth.Authenticatable, c map[string]interface{}) bool {
+	s.validateCredentialsFunc = func(_ contract.Authenticatable, c map[string]interface{}) bool {
 		s.mu.Lock()
 		s.checks++
 		s.mu.Unlock()

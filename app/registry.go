@@ -144,10 +144,12 @@ func RegisterFor[T any, Q any](s *Services, v T, opts ...RegisterOption) error {
 //
 // Lookup is by EXACT type: Get[SomeIface] only finds an entry registered with
 // T=SomeIface, never a concrete value that merely satisfies SomeIface. Returns
-// the raw registered value (no wrapper). Returns an error if the key is not
-// registered, or if the stored value does not assert to T (which cannot happen
-// for values registered through Register, but is checked rather than panicked;
-// rule #10).
+// the raw registered value (no wrapper). An unregistered key returns a
+// *contract.ServiceNotConfiguredError naming the key (naming "services" for
+// a nil s), so errors.Is(err, contract.ErrServiceNotConfigured) matches it.
+// A stored value that does not assert to T (which cannot happen for values
+// registered through Register, but is checked rather than panicked; rule
+// #10) returns a plain error.
 func Get[T any](s *Services) (T, error) {
 	return GetFor[T, Default](s)
 }
@@ -159,7 +161,7 @@ func GetFor[T any, Q any](s *Services) (T, error) {
 	key := ComponentKey{reflect.TypeFor[T](), reflect.TypeFor[Q]()}
 
 	if s == nil {
-		return zero, fmt.Errorf("velocity/app: component %s not registered (nil Services)", key)
+		return zero, &contract.ServiceNotConfiguredError{Service: "services"}
 	}
 
 	s.compMu.RLock()
@@ -171,7 +173,7 @@ func GetFor[T any, Q any](s *Services) (T, error) {
 	s.compMu.RUnlock()
 
 	if !ok {
-		return zero, fmt.Errorf("velocity/app: component %s not registered", key)
+		return zero, &contract.ServiceNotConfiguredError{Service: key.String()}
 	}
 	typed, ok := v.(T)
 	if !ok {

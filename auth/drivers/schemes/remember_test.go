@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 )
@@ -53,16 +54,16 @@ type mockRememberStore struct {
 	updated string
 }
 
-func (p *mockRememberStore) FindByID(interface{}) (auth.Authenticatable, error) {
+func (p *mockRememberStore) FindByID(interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
-func (p *mockRememberStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (p *mockRememberStore) FindByCredentials(map[string]interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
-func (p *mockRememberStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (p *mockRememberStore) ValidateCredentials(contract.Authenticatable, map[string]interface{}) bool {
 	return false
 }
-func (p *mockRememberStore) UpdateRememberToken(u auth.Authenticatable, tok string) error {
+func (p *mockRememberStore) UpdateRememberToken(u contract.Authenticatable, tok string) error {
 	p.updated = tok
 	u.SetRememberToken(tok)
 	return nil
@@ -242,36 +243,36 @@ func TestCheckRememberCookie_ComparesHashedToken(t *testing.T) {
 }
 
 type remLookupStore struct {
-	user auth.Authenticatable
+	user contract.Authenticatable
 }
 
-func (p *remLookupStore) FindByID(interface{}) (auth.Authenticatable, error) {
+func (p *remLookupStore) FindByID(interface{}) (contract.Authenticatable, error) {
 	return p.user, nil
 }
-func (p *remLookupStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (p *remLookupStore) FindByCredentials(map[string]interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
-func (p *remLookupStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (p *remLookupStore) ValidateCredentials(contract.Authenticatable, map[string]interface{}) bool {
 	return false
 }
-func (p *remLookupStore) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
+func (p *remLookupStore) UpdateRememberToken(contract.Authenticatable, string) error { return nil }
 
 // Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
-func (p *mockRememberStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *mockRememberStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *remLookupStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *remLookupStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *mockRememberStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *mockRememberStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *remLookupStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *remLookupStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *mockRememberStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *mockRememberStore) UpdateRememberTokenCtx(_ context.Context, user contract.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }
-func (p *remLookupStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *remLookupStore) UpdateRememberTokenCtx(_ context.Context, user contract.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }

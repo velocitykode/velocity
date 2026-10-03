@@ -48,7 +48,7 @@ func csrfResolverLogin(t *testing.T, a *App) *http.Cookie {
 	t.Helper()
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
-	if err := auth.FromServices(a.Services).Login(w, r, &saveSeamUser{id: 9}); err != nil {
+	if err := a.Services.Auth.(*auth.Manager).Login(w, r, &saveSeamUser{id: 9}); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
 	for _, c := range w.Result().Cookies() {
@@ -104,7 +104,7 @@ func TestCSRFSessionResolver_RejectsSessionsTheStoreRejects(t *testing.T) {
 		a := csrfResolverApp(t)
 		cookie := csrfResolverLogin(t, a)
 		r := csrfResolverRequest(http.MethodGet, cookie)
-		want := auth.FromServices(a.Services).Session(r).ID()
+		want := a.Services.Auth.(*auth.Manager).Session(r).ID()
 		got, err := a.config.CSRF.SessionIDResolver(csrfResolverRequest(http.MethodGet, cookie))
 		if err != nil || got != want {
 			t.Fatalf("resolver = (%q, %v), want (%q, nil)", got, err, want)
@@ -114,9 +114,9 @@ func TestCSRFSessionResolver_RejectsSessionsTheStoreRejects(t *testing.T) {
 	t.Run("expired cookie", func(t *testing.T) {
 		a := csrfResolverApp(t)
 		live := csrfResolverLogin(t, a)
-		liveID := auth.FromServices(a.Services).Session(csrfResolverRequest(http.MethodGet, live)).ID()
+		liveID := a.Services.Auth.(*auth.Manager).Session(csrfResolverRequest(http.MethodGet, live)).ID()
 		expired := csrfResolverExpire(t, a, live)
-		if id := auth.FromServices(a.Services).Session(csrfResolverRequest(http.MethodGet, expired)).ID(); id == liveID {
+		if id := a.Services.Auth.(*auth.Manager).Session(csrfResolverRequest(http.MethodGet, expired)).ID(); id == liveID {
 			t.Fatal("session store accepted the expired cookie; the test premise no longer holds")
 		}
 		got, err := a.config.CSRF.SessionIDResolver(csrfResolverRequest(http.MethodGet, expired))
@@ -130,7 +130,7 @@ func TestCSRFSessionResolver_RejectsSessionsTheStoreRejects(t *testing.T) {
 
 	t.Run("cookie revoked at logout", func(t *testing.T) {
 		a := csrfResolverApp(t)
-		m := auth.FromServices(a.Services)
+		m := a.Services.Auth.(*auth.Manager)
 		cookie := csrfResolverLogin(t, a)
 		loginID := m.Session(csrfResolverRequest(http.MethodGet, cookie)).ID()
 		if err := m.Logout(httptest.NewRecorder(), csrfResolverRequest(http.MethodPost, cookie)); err != nil {
@@ -226,7 +226,7 @@ func TestCSRFSessionResolver_ExpiredSessionPostGets419(t *testing.T) {
 		mux := http.NewServeMux()
 		mux.Handle("/form", a.Services.CSRF.(*csrf.CSRF).Middleware(http.HandlerFunc(ok)))
 		lw := httptest.NewRecorder()
-		if err := auth.FromServices(a.Services).Login(lw, httptest.NewRequest(http.MethodPost, "/login", nil), &saveSeamUser{id: 9}); err != nil {
+		if err := a.Services.Auth.(*auth.Manager).Login(lw, httptest.NewRequest(http.MethodPost, "/login", nil), &saveSeamUser{id: 9}); err != nil {
 			t.Fatalf("Login: %v", err)
 		}
 		var live *http.Cookie

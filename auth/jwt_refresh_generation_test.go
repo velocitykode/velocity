@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // jwtRefreshTestUser is the minimal Authenticatable used by the
@@ -25,24 +27,24 @@ type jwtRefreshTestStore struct {
 	findByIDCalls int
 }
 
-func (p *jwtRefreshTestStore) FindByID(id interface{}) (Authenticatable, error) {
+func (p *jwtRefreshTestStore) FindByID(id interface{}) (contract.Authenticatable, error) {
 	p.findByIDCalls++
 	return p.user, nil
 }
-func (p *jwtRefreshTestStore) FindByIDCtx(context.Context, interface{}) (Authenticatable, error) {
+func (p *jwtRefreshTestStore) FindByIDCtx(context.Context, interface{}) (contract.Authenticatable, error) {
 	return p.user, nil
 }
-func (p *jwtRefreshTestStore) FindByCredentials(map[string]interface{}) (Authenticatable, error) {
+func (p *jwtRefreshTestStore) FindByCredentials(map[string]interface{}) (contract.Authenticatable, error) {
 	return p.user, nil
 }
-func (p *jwtRefreshTestStore) FindByCredentialsCtx(context.Context, map[string]interface{}) (Authenticatable, error) {
+func (p *jwtRefreshTestStore) FindByCredentialsCtx(context.Context, map[string]interface{}) (contract.Authenticatable, error) {
 	return p.user, nil
 }
-func (p *jwtRefreshTestStore) ValidateCredentials(Authenticatable, map[string]interface{}) bool {
+func (p *jwtRefreshTestStore) ValidateCredentials(contract.Authenticatable, map[string]interface{}) bool {
 	return true
 }
-func (p *jwtRefreshTestStore) UpdateRememberToken(Authenticatable, string) error { return nil }
-func (p *jwtRefreshTestStore) UpdateRememberTokenCtx(context.Context, Authenticatable, string) error {
+func (p *jwtRefreshTestStore) UpdateRememberToken(contract.Authenticatable, string) error { return nil }
+func (p *jwtRefreshTestStore) UpdateRememberTokenCtx(context.Context, contract.Authenticatable, string) error {
 	return nil
 }
 

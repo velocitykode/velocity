@@ -17,6 +17,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/view"
 )
@@ -35,18 +36,18 @@ type saveSeamUserStore struct {
 	user *saveSeamUser
 }
 
-func (s *saveSeamUserStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (s *saveSeamUserStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {
 	if fmt.Sprint(id) == fmt.Sprint(s.user.id) {
 		return s.user, nil
 	}
 	return nil, nil
 }
 
-func (s *saveSeamUserStore) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (s *saveSeamUserStore) FindByID(id interface{}) (contract.Authenticatable, error) {
 	return s.FindByIDCtx(context.Background(), id)
 }
 
-func (s *saveSeamUserStore) UpdateRememberTokenCtx(context.Context, auth.Authenticatable, string) error {
+func (s *saveSeamUserStore) UpdateRememberTokenCtx(context.Context, contract.Authenticatable, string) error {
 	return nil
 }
 
@@ -81,7 +82,7 @@ func saveSeamServer(t *testing.T, bootstrap bool) (*httptest.Server, *http.Clien
 			t.Fatalf("Bootstrap: %v", err)
 		}
 	}
-	m := auth.FromServices(a.Services)
+	m := a.Services.Auth.(*auth.Manager)
 	user := &saveSeamUser{id: 7}
 	scheme, err := m.DefaultScheme()
 	if err != nil {
@@ -104,7 +105,11 @@ func saveSeamServer(t *testing.T, bootstrap bool) (*httptest.Server, *http.Clien
 		return c.Redirect(http.StatusSeeOther, "/")
 	})
 	a.Router.Post("/flash", func(c *router.Context) error {
-		view.For(c).Flash("status", "saved").Redirect("/after-flash")
+		re, err := view.For(c)
+		if err != nil {
+			return err
+		}
+		re.Flash("status", "saved").Redirect("/after-flash")
 		return nil
 	})
 	a.Router.Get("/after-flash", func(c *router.Context) error {

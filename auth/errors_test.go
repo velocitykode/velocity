@@ -452,13 +452,13 @@ func (s *idScheme) ID(*http.Request) interface{} {
 // so a test can assert RequestUserID never resolves the user.
 type lookupCountingScheme struct {
 	mockSchemeForMiddleware
-	sess    Session
+	sess    contract.Session
 	lookups int
 }
 
-func (s *lookupCountingScheme) Session(*http.Request) Session { return s.sess }
+func (s *lookupCountingScheme) Session(*http.Request) contract.Session { return s.sess }
 
-func (s *lookupCountingScheme) User(*http.Request) Authenticatable {
+func (s *lookupCountingScheme) User(*http.Request) contract.Authenticatable {
 	s.lookups++
 	return nil
 }
@@ -471,7 +471,7 @@ func (s *lookupCountingScheme) ID(*http.Request) interface{} {
 // TestManager_RequestUserID asserts the user id named for error reports,
 // read from the session without a user lookup for session schemes.
 func TestManager_RequestUserID(t *testing.T) {
-	sessionWith := func(id interface{}) Session {
+	sessionWith := func(id interface{}) contract.Session {
 		s := NewSession("sid")
 		if id != nil {
 			s.Put(UserIDSessionKey, id)

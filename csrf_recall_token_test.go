@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/router"
 )
@@ -33,7 +34,7 @@ type recallUserStore struct {
 	user *recallUser
 }
 
-func (s *recallUserStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (s *recallUserStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if fmt.Sprint(id) == fmt.Sprint(s.user.id) {
@@ -42,11 +43,11 @@ func (s *recallUserStore) FindByIDCtx(_ context.Context, id interface{}) (auth.A
 	return nil, auth.ErrUserNotFound
 }
 
-func (s *recallUserStore) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (s *recallUserStore) FindByID(id interface{}) (contract.Authenticatable, error) {
 	return s.FindByIDCtx(context.Background(), id)
 }
 
-func (s *recallUserStore) UpdateRememberTokenCtx(_ context.Context, u auth.Authenticatable, token string) error {
+func (s *recallUserStore) UpdateRememberTokenCtx(_ context.Context, u contract.Authenticatable, token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.user.token = token
@@ -54,11 +55,11 @@ func (s *recallUserStore) UpdateRememberTokenCtx(_ context.Context, u auth.Authe
 	return nil
 }
 
-func (s *recallUserStore) UpdateRememberToken(u auth.Authenticatable, token string) error {
+func (s *recallUserStore) UpdateRememberToken(u contract.Authenticatable, token string) error {
 	return s.UpdateRememberTokenCtx(context.Background(), u, token)
 }
 
-func (s *recallUserStore) CompareAndSwapRememberToken(_ context.Context, u auth.Authenticatable, oldToken, newToken string) (bool, error) {
+func (s *recallUserStore) CompareAndSwapRememberToken(_ context.Context, u contract.Authenticatable, oldToken, newToken string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.user.token != oldToken {
@@ -98,7 +99,7 @@ func xsrfLines(t *testing.T, h http.Header) []string {
 func recallApp(t *testing.T, sessionStore string) *App {
 	t.Helper()
 	a := csrfBagInstance(t, sessionStore, nil, false)
-	m := auth.FromServices(a.Services)
+	m := a.Services.Auth.(*auth.Manager)
 	m.SetUserStore(&recallUserStore{user: &recallUser{id: 9}})
 	render := func(c *router.Context) error {
 		tok, err := csrf.TokenForRequest(c.Request)

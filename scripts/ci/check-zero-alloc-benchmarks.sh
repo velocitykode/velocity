@@ -20,6 +20,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 BENCHMARKS=(
+	". BenchmarkBindingCell_Forward"
 	"./contract BenchmarkMarkerPredicates"
 	"./contract BenchmarkPreferredMediaRange"
 	"./contract BenchmarkStatusOf"
@@ -27,6 +28,7 @@ BENCHMARKS=(
 	"./internal/nilval BenchmarkIs"
 	"./orm/drivers BenchmarkNormalizeTimeArgs_NoTimeArgs"
 	"./router BenchmarkClassifyError_Unmatched"
+	"./router BenchmarkRequestAdmission"
 )
 
 fail=0

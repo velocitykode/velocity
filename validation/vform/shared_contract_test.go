@@ -254,13 +254,28 @@ func TestSharedContract_BindValidPlainRulesThroughSeam(t *testing.T) {
 }
 
 // TestSharedContract_BindValidPlainRulesWithoutSeam pins the other half of
-// the contract: with no seam wired, BindValid falls back to the validator
-// service and still validates an orm-free rule set.
+// the contract: with no seam wired, BindValid validates nothing and reports
+// the missing validator, for a passing and a failing body alike.
 func TestSharedContract_BindValidPlainRulesWithoutSeam(t *testing.T) {
 	r := router.New()
-	r.SetServices(&app.Services{Validator: validation.NewValidator()})
+	r.SetServices(&app.Services{})
 
-	runPlainRules(t, r)
+	var got error
+	r.Post("/signup", func(c *router.Context) error {
+		var req plainRequest
+		got = c.BindValid(&req)
+		return c.JSON(http.StatusOK, map[string]string{"ok": "1"})
+	})
+	for _, body := range []string{`{"email":"a@b.com"}`, `{"email":"nope"}`} {
+		got = nil
+		httpReq := httptest.NewRequest(http.MethodPost, "/signup", strings.NewReader(body))
+		httpReq.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(httptest.NewRecorder(), httpReq)
+		var snc *contract.ServiceNotConfiguredError
+		if !errors.As(got, &snc) || snc.Service != "validator" {
+			t.Errorf("body %s: BindValid = %v, want a ServiceNotConfiguredError naming validator", body, got)
+		}
+	}
 }
 
 // runPlainRules drives a passing and a failing body through BindValid on the

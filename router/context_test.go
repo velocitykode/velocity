@@ -735,9 +735,20 @@ func TestContext_BindValid_Unwired(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error when no validator is wired")
 	}
-	if !strings.Contains(err.Error(), "validator not configured") {
+	var snc *contract.ServiceNotConfiguredError
+	if !errors.As(err, &snc) || snc.Service != "validator" {
+		t.Errorf("error = %v, want a ServiceNotConfiguredError naming validator", err)
+	}
+	if err.Error() != "velocity: validator service not configured" {
 		t.Errorf("error = %q, want the not-configured message", err.Error())
 	}
+}
+
+// coreDataValidator is a data-validator seam running the orm-free core
+// validator, the shape an app without DB rules wires.
+func coreDataValidator(_ *Context, data map[string]interface{}, rules contract.ValidationRuleSet, _ ...contract.ValidationMessages) error {
+	_, err := validation.NewValidator().Validate(data, rules)
+	return err
 }
 
 // TestContext_BindValid_UsesDataValidatorSeam pins that BindValid prefers the
@@ -750,8 +761,6 @@ func TestContext_BindValid_UsesDataValidatorSeam(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	c := NewContext(w, req)
-	// A validator service is present too; the seam must win.
-	c.services = &app.Services{Validator: validation.NewValidator()}
 
 	var gotData map[string]interface{}
 	var gotRules validation.Rules
@@ -782,16 +791,16 @@ func (dbRuleStruct) Rules() validation.Rules {
 	return validation.Rules{"email": {validation.Required(), validation.Unique("users", "email")}}
 }
 
-// TestContext_BindValid_DBRuleWithoutSeam documents the fallback: the core
-// validator resolves the orm-free rule set only, so a DB rule with no seam
-// wired is reported as a configuration error rather than failing the field.
+// TestContext_BindValid_DBRuleWithoutSeam documents a seam without DB
+// rules: the core validator resolves the orm-free rule set only, so a DB
+// rule is reported as a configuration error rather than failing the field.
 func TestContext_BindValid_DBRuleWithoutSeam(t *testing.T) {
 	body := `{"email":"john@example.com"}`
 	req := httptest.NewRequest("POST", "/test", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	c := NewContext(w, req)
-	c.services = &app.Services{Validator: validation.NewValidator()}
+	c.validateDataFn = coreDataValidator
 
 	var data dbRuleStruct
 	err := c.BindValid(&data)
@@ -813,7 +822,7 @@ func TestContext_BindValid_WithValidator(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	c := NewContext(w, req)
-	c.services = &app.Services{Validator: validation.NewValidator()}
+	c.validateDataFn = coreDataValidator
 
 	var data validatableStruct
 	if err := c.BindValid(&data); err != nil {
@@ -827,7 +836,7 @@ func TestContext_BindValid_ValidationFails(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	c := NewContext(w, req)
-	c.services = &app.Services{Validator: validation.NewValidator()}
+	c.validateDataFn = coreDataValidator
 
 	var data validatableStruct
 	if err := c.BindValid(&data); err == nil {
@@ -841,7 +850,7 @@ func TestContext_BindValid_NotValidatable(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	c := NewContext(w, req)
-	c.services = &app.Services{Validator: validation.NewValidator()}
+	c.validateDataFn = coreDataValidator
 
 	var data struct {
 		Name string `json:"name"`
@@ -1815,6 +1824,8 @@ func TestContext_Accepts(t *testing.T) {
 // mockAuthAccessChecker satisfies the contract.AuthManager interface used by Context
 // without importing pkg/auth.
 type mockAuthAccessChecker struct {
+	// contract.AuthManager supplies the methods this fake does not use.
+	contract.AuthManager
 	allows map[string]bool
 }
 
@@ -1920,6 +1931,8 @@ func TestContext_Authorize(t *testing.T) {
 		wantErr   bool
 		wantCode  int
 		wantCause bool
+		// wantService names the missing service the 403's cause reports.
+		wantService string
 	}{
 		{
 			name:     "allowed ability returns nil",
@@ -1936,18 +1949,20 @@ func TestContext_Authorize(t *testing.T) {
 			wantCause: true,
 		},
 		{
-			name:     "nil auth returns 403",
-			services: &app.Services{Auth: nil},
-			ability:  "anything",
-			wantErr:  true,
-			wantCode: http.StatusForbidden,
+			name:        "nil auth returns 403",
+			services:    &app.Services{Auth: nil},
+			ability:     "anything",
+			wantErr:     true,
+			wantCode:    http.StatusForbidden,
+			wantService: "auth",
 		},
 		{
-			name:     "nil services returns 403",
-			services: nil,
-			ability:  "anything",
-			wantErr:  true,
-			wantCode: http.StatusForbidden,
+			name:        "nil services returns 403",
+			services:    nil,
+			ability:     "anything",
+			wantErr:     true,
+			wantCode:    http.StatusForbidden,
+			wantService: "services",
 		},
 	}
 
@@ -1970,8 +1985,14 @@ func TestContext_Authorize(t *testing.T) {
 				if httpErr.StatusCode() != tt.wantCode {
 					t.Errorf("expected status %d, got %d", tt.wantCode, httpErr.StatusCode())
 				}
-				if (httpErr.Cause != nil) != tt.wantCause {
+				if (httpErr.Cause != nil) != (tt.wantCause || tt.wantService != "") {
 					t.Errorf("cause = %v, wantCause %v", httpErr.Cause, tt.wantCause)
+				}
+				if tt.wantService != "" {
+					var snc *contract.ServiceNotConfiguredError
+					if !errors.As(httpErr.Cause, &snc) || snc.Service != tt.wantService {
+						t.Errorf("cause = %v, want a ServiceNotConfiguredError naming %q", httpErr.Cause, tt.wantService)
+					}
 				}
 				if !strings.Contains(httpErr.Origin(), "context_test.go") {
 					t.Errorf("origin = %q, want the caller of Authorize", httpErr.Origin())

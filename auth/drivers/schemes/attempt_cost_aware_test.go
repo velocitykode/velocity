@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 )
 
@@ -21,24 +22,24 @@ type bcryptVerifyingStore struct {
 	cost int
 }
 
-func (p *bcryptVerifyingStore) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *bcryptVerifyingStore) FindByID(id interface{}) (contract.Authenticatable, error) {
 	if p.user != nil && p.user.id == id {
 		return p.user, nil
 	}
 	return nil, nil
 }
-func (p *bcryptVerifyingStore) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *bcryptVerifyingStore) FindByCredentials(credentials map[string]interface{}) (contract.Authenticatable, error) {
 	email, _ := credentials["email"].(string)
 	if p.user != nil && email == p.user.id {
 		return p.user, nil
 	}
 	return nil, nil
 }
-func (p *bcryptVerifyingStore) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
+func (p *bcryptVerifyingStore) ValidateCredentials(user contract.Authenticatable, credentials map[string]interface{}) bool {
 	password, _ := credentials["password"].(string)
 	return auth.NewBcryptHasher(p.cost).Verify(password, p.user.password)
 }
-func (p *bcryptVerifyingStore) UpdateRememberToken(auth.Authenticatable, string) error {
+func (p *bcryptVerifyingStore) UpdateRememberToken(contract.Authenticatable, string) error {
 	return nil
 }
 
@@ -255,12 +256,12 @@ func TestGetDummyBcryptHash_ClampsCost(t *testing.T) {
 }
 
 // Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
-func (p *bcryptVerifyingStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *bcryptVerifyingStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *bcryptVerifyingStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *bcryptVerifyingStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *bcryptVerifyingStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *bcryptVerifyingStore) UpdateRememberTokenCtx(_ context.Context, user contract.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }

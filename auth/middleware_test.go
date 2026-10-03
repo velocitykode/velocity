@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -59,11 +60,11 @@ func TestAuditSalt_ConcurrentSetAndGet(t *testing.T) {
 // mockSchemeForMiddleware implements Scheme for middleware tests.
 type mockSchemeForMiddleware struct {
 	authenticated bool
-	user          Authenticatable
+	user          contract.Authenticatable
 }
 
 func (g *mockSchemeForMiddleware) Check(*http.Request) bool { return g.authenticated }
-func (g *mockSchemeForMiddleware) User(*http.Request) Authenticatable {
+func (g *mockSchemeForMiddleware) User(*http.Request) contract.Authenticatable {
 	if g.authenticated {
 		return g.user
 	}
@@ -74,7 +75,7 @@ func (g *mockSchemeForMiddleware) SetUserStore(UserStore)       {}
 func (g *mockSchemeForMiddleware) Logout(http.ResponseWriter, *http.Request) error {
 	return nil
 }
-func (g *mockSchemeForMiddleware) Login(http.ResponseWriter, *http.Request, Authenticatable, ...bool) error {
+func (g *mockSchemeForMiddleware) Login(http.ResponseWriter, *http.Request, contract.Authenticatable, ...bool) error {
 	return nil
 }
 func (g *mockSchemeForMiddleware) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {
@@ -126,17 +127,17 @@ func TestAuthMiddleware_AllowsAuthenticatedUsers(t *testing.T) {
 // manager.Session(r) returns a real session the stash path can write to.
 type sessionAwareScheme struct {
 	mockSchemeForMiddleware
-	sess Session
+	sess contract.Session
 }
 
-func (g *sessionAwareScheme) Session(*http.Request) Session { return g.sess }
+func (g *sessionAwareScheme) Session(*http.Request) contract.Session { return g.sess }
 
 // --- RequireRole tests ---
 
 func TestRequireRole_AllowsUserWithRole(t *testing.T) {
 	user := &mockUser{id: 1, roles: []string{"admin"}}
 	m := newManagerWithUser(user)
-	m.Access().SetRoleChecker(func(u Authenticatable, role string) bool {
+	m.Access().SetRoleChecker(func(u contract.Authenticatable, role string) bool {
 		mu := u.(*mockUser)
 		for _, r := range mu.roles {
 			if r == role {
@@ -172,7 +173,7 @@ func TestRequireRole_AllowsUserWithRole(t *testing.T) {
 func TestRequireAnyRole_AllowsUserWithOneMatchingRole(t *testing.T) {
 	user := &mockUser{id: 1, roles: []string{"editor"}}
 	m := newManagerWithUser(user)
-	m.Access().SetRoleChecker(func(u Authenticatable, role string) bool {
+	m.Access().SetRoleChecker(func(u contract.Authenticatable, role string) bool {
 		mu := u.(*mockUser)
 		for _, r := range mu.roles {
 			if r == role {
@@ -205,7 +206,7 @@ func TestRequireAnyRole_AllowsUserWithOneMatchingRole(t *testing.T) {
 func TestRequireAllRoles_AllowsUserWithAllRoles(t *testing.T) {
 	user := &mockUser{id: 1, roles: []string{"admin", "editor"}}
 	m := newManagerWithUser(user)
-	m.Access().SetRoleChecker(func(u Authenticatable, role string) bool {
+	m.Access().SetRoleChecker(func(u contract.Authenticatable, role string) bool {
 		mu := u.(*mockUser)
 		for _, r := range mu.roles {
 			if r == role {
@@ -238,7 +239,7 @@ func TestRequireAllRoles_AllowsUserWithAllRoles(t *testing.T) {
 func TestAuthorizeMiddleware_AllowsWhenAbilityGranted(t *testing.T) {
 	user := &mockUser{id: 1}
 	m := newManagerWithUser(user)
-	m.Access().Define("view-reports", func(u Authenticatable, args ...interface{}) bool {
+	m.Access().Define("view-reports", func(u contract.Authenticatable, args ...interface{}) bool {
 		return true
 	})
 
@@ -263,7 +264,7 @@ func TestAuthorizeMiddleware_AllowsWhenAbilityGranted(t *testing.T) {
 func TestAuthorizeMiddleware_WithResourceFunc(t *testing.T) {
 	user := &mockUser{id: 1}
 	m := newManagerWithUser(user)
-	m.Access().Define("edit-post", func(u Authenticatable, args ...interface{}) bool {
+	m.Access().Define("edit-post", func(u contract.Authenticatable, args ...interface{}) bool {
 		if len(args) > 0 {
 			postOwner, ok := args[0].(int)
 			if ok {

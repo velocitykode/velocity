@@ -11,6 +11,7 @@ import (
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/session"
 	"github.com/velocitykode/velocity/cache/drivers"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -219,7 +220,7 @@ func TestRememberRecall_FailedSaveKeepsThePresentedCredential(t *testing.T) {
 			stored := users.token("u1")
 
 			orig := saveSessionFromMiddleware
-			saveSessionFromMiddleware = func(*SessionScheme, http.ResponseWriter, auth.Session) error {
+			saveSessionFromMiddleware = func(*SessionScheme, http.ResponseWriter, contract.Session) error {
 				return errors.New("store down")
 			}
 			b.replayRememberOnly(presented)

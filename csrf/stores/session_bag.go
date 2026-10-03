@@ -71,7 +71,7 @@ type sealedBag interface {
 }
 
 // SessionBag is the key-value bag of the session a request is served
-// under. auth.Session satisfies it.
+// under. contract.Session satisfies it.
 type SessionBag interface {
 	ID() string
 	Get(key string) any

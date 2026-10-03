@@ -64,9 +64,9 @@ func TestCSRFSource_NamesNoSessionFallback(t *testing.T) {
 	}
 }
 
-// The auth manager on the context (contract.AuthManager) has no Session
-// method; the session is reached through auth.FromContext(ctx).Session(r).
-// A comment naming the other form describes code that does not compile.
+// Context.Auth returns the manager and an error, so the session is reached
+// as auth, err := ctx.Auth() and then auth.Session(r). A comment naming
+// ctx.Auth().Session describes code that does not compile.
 func TestFrameworkSource_NamesNoContextAuthSession(t *testing.T) {
 	var offenders []string
 	walkNonTestGo(t, ".", func(path string, src []byte) {

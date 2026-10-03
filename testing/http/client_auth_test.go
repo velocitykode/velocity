@@ -8,12 +8,13 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/router"
 	velhttp "github.com/velocitykode/velocity/testing/http"
 )
 
-// memUser is a minimal auth.Authenticatable for the acting-as tests.
+// memUser is a minimal contract.Authenticatable for the acting-as tests.
 type memUser struct {
 	id            interface{}
 	password      string
@@ -30,7 +31,7 @@ type memStore struct {
 	users map[interface{}]*memUser
 }
 
-func (p *memStore) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *memStore) FindByID(id interface{}) (contract.Authenticatable, error) {
 	u, ok := p.users[id]
 	if !ok {
 		return nil, nil
@@ -38,25 +39,25 @@ func (p *memStore) FindByID(id interface{}) (auth.Authenticatable, error) {
 	return u, nil
 }
 
-func (p *memStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *memStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {
 	return p.FindByID(id)
 }
 
-func (p *memStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (p *memStore) FindByCredentials(map[string]interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
 
-func (p *memStore) FindByCredentialsCtx(_ context.Context, c map[string]interface{}) (auth.Authenticatable, error) {
+func (p *memStore) FindByCredentialsCtx(_ context.Context, c map[string]interface{}) (contract.Authenticatable, error) {
 	return p.FindByCredentials(c)
 }
 
-func (p *memStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (p *memStore) ValidateCredentials(contract.Authenticatable, map[string]interface{}) bool {
 	return true
 }
 
-func (p *memStore) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
+func (p *memStore) UpdateRememberToken(contract.Authenticatable, string) error { return nil }
 
-func (p *memStore) UpdateRememberTokenCtx(_ context.Context, u auth.Authenticatable, t string) error {
+func (p *memStore) UpdateRememberTokenCtx(_ context.Context, u contract.Authenticatable, t string) error {
 	return p.UpdateRememberToken(u, t)
 }
 

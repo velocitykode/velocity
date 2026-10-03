@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/cache"
+	"github.com/velocitykode/velocity/cache/drivers"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
@@ -205,6 +206,16 @@ func installSchedulerLocker(sched *scheduler.Scheduler, cm cache.CacheManager, d
 	if driver == "" || driver == "memory" {
 		return
 	}
+	if l := sharedSchedulerLocker(cm, driver, log); l != nil {
+		sched.SetLocker(l)
+	}
+}
+
+// sharedSchedulerLocker returns a cache-backed Locker over cm when its
+// default store supports the distributed lock primitive, or nil (with a
+// warning naming driver) when it does not and the scheduler keeps its
+// in-process Locker.
+func sharedSchedulerLocker(cm cache.CacheManager, driver string, log contract.Logger) scheduler.Locker {
 	// The warnings below go through the app's logger: contain it so one
 	// that panics writes to the fallback logger instead of escaping into
 	// bootstrap and leaving the fallback Locker uninstalled.
@@ -227,7 +238,7 @@ func installSchedulerLocker(sched *scheduler.Scheduler, cm cache.CacheManager, d
 				"error", err,
 			)
 		}
-		return
+		return nil
 	}
 	lc, ok := store.(lockCapable)
 	if !ok {
@@ -237,7 +248,7 @@ func installSchedulerLocker(sched *scheduler.Scheduler, cm cache.CacheManager, d
 				"driver", driver,
 			)
 		}
-		return
+		return nil
 	}
 
 	// Capability probe: *FileStore satisfies lockCapable structurally
@@ -255,10 +266,47 @@ func installSchedulerLocker(sched *scheduler.Scheduler, cm cache.CacheManager, d
 				"driver", driver,
 			)
 		}
-		return
+		return nil
 	}
 
-	if l := newCacheLocker(cm); l != nil {
-		sched.SetLocker(l)
+	return newCacheLocker(cm)
+}
+
+// rebindSchedulerLocker moves the scheduler New built to a Locker over
+// the cache Services.Cache holds now: a cache-backed one when its default
+// store supports distributed locks and is not process-scoped (the memory
+// store keeps the in-process Locker, as at boot), the in-process one
+// otherwise. A scheduler a module installed, or a Locker a module gave the
+// framework's scheduler, is kept.
+func rebindSchedulerLocker(a *App, _, cur ownedSet) (func(), error) {
+	sched, _ := cur[fieldScheduler].(*scheduler.Scheduler)
+	if sched == nil || sched != a.builtScheduler || sched.Locker() != a.schedulerLocker {
+		return nil, nil
 	}
+	next := a.inMemoryLocker
+	if cm, _ := cur[fieldCache].(cache.CacheManager); cm != nil && !processScopedCache(cm) {
+		if l := sharedSchedulerLocker(cm, errchain.Sprintf("%T", cm), a.Log); l != nil {
+			next = l
+		}
+	}
+	if next == a.schedulerLocker {
+		return nil, nil
+	}
+	return func() {
+		sched.SetLocker(next)
+		a.schedulerLocker = next
+	}, nil
+}
+
+// processScopedCache reports whether cm's default store lives in this
+// process (the memory store): a lock in it guards nothing across hosts, so
+// the scheduler keeps its in-process Locker, as New does for the memory
+// driver.
+func processScopedCache(cm cache.CacheManager) bool {
+	store, err := cm.DefaultStore()
+	if err != nil {
+		return false
+	}
+	_, ok := store.(*drivers.MemoryStore)
+	return ok
 }

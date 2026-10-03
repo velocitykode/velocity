@@ -26,24 +26,29 @@ func (l *closingLogger) Close() error {
 	return nil
 }
 
-// releaseOnShutdown is a module whose Shutdown, which App.Shutdown runs
-// after the event dispatcher stopped and before the queue, cache, DB and
-// logger close, releases a straggling handler and waits for its request
-// to finish, so the request's events are dispatched in the middle of
-// App.Shutdown.
-type releaseOnShutdown struct {
-	release  chan struct{}
-	finished chan struct{}
-	waited   atomic.Bool
+// observeStraggler is a module whose Shutdown, which App.Shutdown runs
+// after the router stopped and before the queue, cache, DB and logger
+// close, records whether a straggling request finished: the router's run
+// is released as ServeHTTP returns, just before the test server's handler
+// closes finished, so it waits for that (bounded); a module shut down
+// before the straggler was released would see nothing and record false.
+type observeStraggler struct {
+	release      chan struct{}
+	finished     chan struct{}
+	finishedSeen atomic.Bool
 }
 
-func (m *releaseOnShutdown) Init(*Services) error  { return nil }
-func (m *releaseOnShutdown) Start(*Services) error { return nil }
-func (m *releaseOnShutdown) Shutdown(context.Context) error {
-	close(m.release)
+func (m *observeStraggler) Init(*Services) error  { return nil }
+func (m *observeStraggler) Start(*Services) error { return nil }
+func (m *observeStraggler) Shutdown(context.Context) error {
+	select {
+	case <-m.release:
+	default:
+		return nil // shut down before the straggler was released
+	}
 	select {
 	case <-m.finished:
-		m.waited.Store(true)
+		m.finishedSeen.Store(true)
 	case <-time.After(5 * time.Second):
 	}
 	return nil
@@ -51,10 +56,11 @@ func (m *releaseOnShutdown) Shutdown(context.Context) error {
 
 // TestShutdown_AsyncEventsStragglerPastDeadline asserts App.Shutdown on an
 // app using SetAsyncEventDispatcher, with a handler that ignores its
-// context and outlives the server's shutdown deadline: the straggler's
-// request finishes normally when released after the event pool stopped
-// (its RequestHandled is a counted drop, not a send on a closed channel),
-// and Shutdown runs through to the logger close, its last step.
+// context and outlives the server's shutdown deadline: Shutdown returns at
+// its deadline while the teardown waits for the straggler, which finishes
+// normally once released; no later step (the modules, the logger close)
+// runs before it, its events all reach the pool (none dropped), and the
+// teardown then runs through to the logger close, its last step.
 func TestShutdown_AsyncEventsStragglerPastDeadline(t *testing.T) {
 	logs := &closingLogger{}
 	const driverName = "shutdown-async-events-capture"
@@ -63,7 +69,7 @@ func TestShutdown_AsyncEventsStragglerPastDeadline(t *testing.T) {
 	})
 	t.Cleanup(func() { log.Drivers().Override(driverName, prev) })
 
-	mod := &releaseOnShutdown{release: make(chan struct{}), finished: make(chan struct{})}
+	mod := &observeStraggler{release: make(chan struct{}), finished: make(chan struct{})}
 	a, err := New(WithConfig(Config{
 		Env:   "testing",
 		Port:  "0",
@@ -134,8 +140,13 @@ func TestShutdown_AsyncEventsStragglerPastDeadline(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("App.Shutdown never returned")
 	}
-	// Shutdown returned at its deadline while the teardown went on; a
-	// second Shutdown waits for that same teardown to end.
+	if logs.closed.Load() {
+		t.Fatal("the teardown closed the logger while an admitted request still ran")
+	}
+	// Shutdown returned at its deadline while the teardown waits for the
+	// straggler; release it, and a second Shutdown waits for that same
+	// teardown to end.
+	close(mod.release)
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
@@ -148,24 +159,24 @@ func TestShutdown_AsyncEventsStragglerPastDeadline(t *testing.T) {
 	}
 
 	if p := escaped.Load(); p != nil {
-		t.Fatalf("straggler request panicked after the event pool stopped: %v", p)
+		t.Fatalf("straggler request panicked: %v", p)
 	}
-	if !mod.waited.Load() {
-		t.Error("straggler request did not finish while App.Shutdown was running")
+	if !mod.finishedSeen.Load() {
+		t.Error("a module shut down before the straggler request finished")
 	}
-	if got := a.FailedEventCount(); got != 1 {
-		t.Errorf("failed event count = %d, want 1 (the straggler's late RequestHandled)", got)
+	if got := a.FailedEventCount(); got != 0 {
+		t.Errorf("failed event count = %d, want 0 (the pool outlives every admitted request)", got)
 	}
-	for i := 0; i < 2; i++ {
+	for i := 0; i < 3; i++ {
 		select {
 		case <-deliveries:
 		case <-time.After(5 * time.Second):
-			t.Fatalf("the pool delivered %d of the straggler's 2 events queued before the stop within 5s", i)
+			t.Fatalf("the pool delivered %d of the straggler's 3 events within 5s", i)
 		}
 	}
 	evMu.Lock()
-	if delivered != 2 {
-		t.Errorf("delivered %d events, want 2 (the straggler's RequestStarted and RequestRouted, queued before the stop)", delivered)
+	if delivered != 3 {
+		t.Errorf("delivered %d events, want 3 (the straggler's RequestStarted, RequestRouted and RequestHandled)", delivered)
 	}
 	evMu.Unlock()
 	if !logs.closed.Load() {

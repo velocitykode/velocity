@@ -55,8 +55,8 @@ import (
 	"net/http/httptest"
 	"reflect"
 
-	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -193,7 +193,7 @@ func (c *TestClient) AssertSessionMissing(scheme *schemes.SessionScheme, key str
 // current cookies. It reuses authProbeRequest (the same probe path AssertGuest /
 // AssertAuthenticated use), so reads go through the real cookie jar rather than a
 // single response's Set-Cookie.
-func (c *TestClient) sessionFromClient(scheme *schemes.SessionScheme) auth.Session {
+func (c *TestClient) sessionFromClient(scheme *schemes.SessionScheme) contract.Session {
 	if scheme == nil {
 		return nil
 	}

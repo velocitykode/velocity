@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/session"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/hostile"
 )
 
@@ -17,7 +17,7 @@ type clearFailingUsers struct {
 	*revokeTestStore
 }
 
-func (clearFailingUsers) UpdateRememberTokenCtx(context.Context, auth.Authenticatable, string) error {
+func (clearFailingUsers) UpdateRememberTokenCtx(context.Context, contract.Authenticatable, string) error {
 	return errors.New("users table down")
 }
 

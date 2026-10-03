@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // mockUser implements Authenticatable for testing
@@ -35,7 +37,7 @@ type mockPost struct {
 func TestAccess_Define(t *testing.T) {
 	access := NewAccess()
 
-	access.Define("edit-post", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("edit-post", func(user contract.Authenticatable, args ...interface{}) bool {
 		if len(args) == 0 {
 			return false
 		}
@@ -62,7 +64,7 @@ func TestAccess_Define(t *testing.T) {
 func TestAccess_Denies(t *testing.T) {
 	access := NewAccess()
 
-	access.Define("admin-action", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("admin-action", func(user contract.Authenticatable, args ...interface{}) bool {
 		return false // always deny
 	})
 
@@ -76,13 +78,13 @@ func TestAccess_Denies(t *testing.T) {
 func TestAccess_Check(t *testing.T) {
 	access := NewAccess()
 
-	access.Define("read", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("read", func(user contract.Authenticatable, args ...interface{}) bool {
 		return true
 	})
-	access.Define("write", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("write", func(user contract.Authenticatable, args ...interface{}) bool {
 		return true
 	})
-	access.Define("delete", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("delete", func(user contract.Authenticatable, args ...interface{}) bool {
 		return false
 	})
 
@@ -100,10 +102,10 @@ func TestAccess_Check(t *testing.T) {
 func TestAccess_Any(t *testing.T) {
 	access := NewAccess()
 
-	access.Define("read", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("read", func(user contract.Authenticatable, args ...interface{}) bool {
 		return false
 	})
-	access.Define("write", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("write", func(user contract.Authenticatable, args ...interface{}) bool {
 		return true
 	})
 
@@ -123,7 +125,7 @@ func TestAccess_Before(t *testing.T) {
 
 	// Admin bypass
 	allowTrue := true
-	access.Before(func(user Authenticatable, ability string, args ...interface{}) *bool {
+	access.Before(func(user contract.Authenticatable, ability string, args ...interface{}) *bool {
 		if u, ok := user.(*mockUser); ok {
 			for _, role := range u.roles {
 				if role == "admin" {
@@ -134,7 +136,7 @@ func TestAccess_Before(t *testing.T) {
 		return nil
 	})
 
-	access.Define("restricted", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("restricted", func(user contract.Authenticatable, args ...interface{}) bool {
 		return false
 	})
 
@@ -154,12 +156,12 @@ func TestAccess_After(t *testing.T) {
 	access := NewAccess()
 
 	var afterCalled bool
-	access.After(func(user Authenticatable, ability string, result bool, args ...interface{}) bool {
+	access.After(func(user contract.Authenticatable, ability string, result bool, args ...interface{}) bool {
 		afterCalled = true
 		return result
 	})
 
-	access.Define("test", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("test", func(user contract.Authenticatable, args ...interface{}) bool {
 		return true
 	})
 
@@ -173,7 +175,7 @@ func TestAccess_After(t *testing.T) {
 
 func TestAccess_Allows_NoDeadlockUnderConcurrentDefine(t *testing.T) {
 	access := NewAccess()
-	access.Define("x", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("x", func(user contract.Authenticatable, args ...interface{}) bool {
 		return true
 	})
 
@@ -205,13 +207,13 @@ func TestAccess_Allows_NoDeadlockUnderConcurrentDefine(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < writeIterations; j++ {
-				access.Define("x", func(user Authenticatable, args ...interface{}) bool {
+				access.Define("x", func(user contract.Authenticatable, args ...interface{}) bool {
 					return true
 				})
-				access.Before(func(user Authenticatable, ability string, args ...interface{}) *bool {
+				access.Before(func(user contract.Authenticatable, ability string, args ...interface{}) *bool {
 					return nil
 				})
-				access.After(func(user Authenticatable, ability string, result bool, args ...interface{}) bool {
+				access.After(func(user contract.Authenticatable, ability string, result bool, args ...interface{}) bool {
 					return result
 				})
 			}
@@ -241,7 +243,7 @@ func TestAccess_Allows_BeforeCallbackPanicDoesNotWedgeAccess(t *testing.T) {
 	var shouldPanic atomic.Bool
 	shouldPanic.Store(true)
 
-	access.Before(func(user Authenticatable, ability string, args ...interface{}) *bool {
+	access.Before(func(user contract.Authenticatable, ability string, args ...interface{}) *bool {
 		if shouldPanic.Swap(false) {
 			panic("before callback panic")
 		}
@@ -259,7 +261,7 @@ func TestAccess_Allows_BeforeCallbackPanicDoesNotWedgeAccess(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		access.Define("x", func(user Authenticatable, args ...interface{}) bool {
+		access.Define("x", func(user contract.Authenticatable, args ...interface{}) bool {
 			return true
 		})
 		if !access.Allows(user, "x") {
@@ -278,7 +280,7 @@ func TestAccess_Allows_BeforeCallbackPanicDoesNotWedgeAccess(t *testing.T) {
 func TestAccess_RoleChecker(t *testing.T) {
 	access := NewAccess()
 
-	access.SetRoleChecker(func(user Authenticatable, role string) bool {
+	access.SetRoleChecker(func(user contract.Authenticatable, role string) bool {
 		if u, ok := user.(*mockUser); ok {
 			for _, r := range u.roles {
 				if r == role {
@@ -303,7 +305,7 @@ func TestAccess_RoleChecker(t *testing.T) {
 func TestAccess_HasAnyRole(t *testing.T) {
 	access := NewAccess()
 
-	access.SetRoleChecker(func(user Authenticatable, role string) bool {
+	access.SetRoleChecker(func(user contract.Authenticatable, role string) bool {
 		if u, ok := user.(*mockUser); ok {
 			for _, r := range u.roles {
 				if r == role {
@@ -328,7 +330,7 @@ func TestAccess_HasAnyRole(t *testing.T) {
 func TestAccess_HasAllRoles(t *testing.T) {
 	access := NewAccess()
 
-	access.SetRoleChecker(func(user Authenticatable, role string) bool {
+	access.SetRoleChecker(func(user contract.Authenticatable, role string) bool {
 		if u, ok := user.(*mockUser); ok {
 			for _, r := range u.roles {
 				if r == role {
@@ -354,7 +356,7 @@ func TestPolicy_Authorize(t *testing.T) {
 	access := NewAccess()
 
 	// Register a team policy
-	teamPolicy := PolicyFunc(func(user Authenticatable, action string, resource interface{}) bool {
+	teamPolicy := PolicyFunc(func(user contract.Authenticatable, action string, resource interface{}) bool {
 		team, ok := resource.(*mockTeam)
 		if !ok {
 			return false
@@ -396,11 +398,11 @@ func TestPolicy_Authorize(t *testing.T) {
 func TestUserAccess(t *testing.T) {
 	access := NewAccess()
 
-	access.Define("post.create", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("post.create", func(user contract.Authenticatable, args ...interface{}) bool {
 		return true
 	})
 
-	access.Define("post.delete", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("post.delete", func(user contract.Authenticatable, args ...interface{}) bool {
 		return false
 	})
 
@@ -441,7 +443,7 @@ func TestAccess_UndefinedAbility(t *testing.T) {
 func TestAccess_Concurrent(t *testing.T) {
 	access := NewAccess()
 
-	access.Define("concurrent-test", func(user Authenticatable, args ...interface{}) bool {
+	access.Define("concurrent-test", func(user contract.Authenticatable, args ...interface{}) bool {
 		return true
 	})
 

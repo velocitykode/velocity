@@ -52,11 +52,81 @@ type LoggerAware interface {
 	SetLogger(l Logger)
 }
 
-// AuthManager defines the contract for authorization checks.
-// Implemented by *auth.Manager.
+// AuthManager is the authentication and authorization surface handlers
+// use through router.Context.Auth. Implemented by *auth.Manager, whose
+// methods act through the default scheme. Configuration (schemes, user
+// stores, policies) is not on it: a module configures the concrete
+// manager it was given with s.Auth.(*auth.Manager).
 type AuthManager interface {
+	// Allows reports whether the authenticated user may perform ability;
+	// false when there is no authenticated user.
 	Allows(r *http.Request, ability string, args ...interface{}) bool
+	// Authorize returns nil when the authenticated user may perform
+	// ability, and an error on denial or with no authenticated user.
 	Authorize(r *http.Request, ability string, args ...interface{}) error
+	// Check reports whether the request is authenticated.
+	Check(r *http.Request) bool
+	// User returns the authenticated user, or nil.
+	User(r *http.Request) Authenticatable
+	// Session returns the session attached to the request, or nil when
+	// the default scheme keeps none.
+	Session(r *http.Request) Session
+	// Login signs user in on the response.
+	Login(w http.ResponseWriter, r *http.Request, user Authenticatable, remember ...bool) error
+	// Attempt signs in the user the credentials identify, reporting
+	// whether they matched.
+	Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error)
+	// Logout signs the request's user out.
+	Logout(w http.ResponseWriter, r *http.Request) error
+	// Hash hashes a password with the manager's hasher.
+	Hash(password string) (string, error)
+}
+
+// Authenticatable represents a user that can be authenticated.
+type Authenticatable interface {
+	GetAuthIdentifier() interface{}
+	GetAuthPassword() string
+	GetRememberToken() string
+	SetRememberToken(token string)
+}
+
+// Session represents a user session.
+type Session interface {
+	// Get session ID
+	ID() string
+
+	// Get value from session
+	Get(key string) interface{}
+
+	// Put value in session
+	Put(key string, value interface{})
+
+	// Has checks if key exists
+	Has(key string) bool
+
+	// Remove value from session
+	Remove(key string)
+
+	// Clear all session data
+	Clear()
+
+	// Regenerate session ID
+	Regenerate() error
+
+	// Invalidate session
+	Invalidate() error
+
+	// Flash messages
+	Flash(key string, value interface{})
+	GetFlash(key string) interface{}
+
+	// FlushFlash returns the entire flash bag and clears it in one call.
+	// Returns nil (not an empty map) when the bag is empty so callers can
+	// rely on JSON omitempty / nil checks.
+	FlushFlash() map[string]interface{}
+
+	// Save session
+	Save(w http.ResponseWriter) error
 }
 
 // CSRFProtector defines the contract for CSRF protection middleware.
@@ -70,6 +140,9 @@ type AuthManager interface {
 type CSRFProtector interface {
 	Middleware(next http.Handler) http.Handler
 	Protect(w http.ResponseWriter, r *http.Request) (*http.Request, error)
+	// RevokeToken deletes the token bound to the session id; deleting a
+	// missing token is not an error.
+	RevokeToken(ctx context.Context, id string) error
 }
 
 // CSRFTokenRotator is the contract the auth subsystem uses to keep CSRF
@@ -146,7 +219,14 @@ type CSRFTokenRotator interface {
 // ViewEngine defines the contract for the view/rendering layer.
 // Implemented by *view.Engine.
 type ViewEngine interface {
+	// Back redirects to the Referer, or "/" when it is missing.
 	Back(w http.ResponseWriter, r *http.Request)
+	// Redirect performs an SPA redirect for internal navigation.
+	Redirect(w http.ResponseWriter, r *http.Request, url string)
+	// LocationExternal performs a full-page reload to an arbitrary
+	// external http/https host. SECURITY: only pass trusted or
+	// statically-known URLs.
+	LocationExternal(w http.ResponseWriter, r *http.Request, url string)
 }
 
 // RedirectAllowlist is the operator-configured allowlist of cross-origin

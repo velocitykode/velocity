@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"github.com/velocitykode/velocity/internal/drain"
 	"sync"
 	"testing"
 	"time"
@@ -58,7 +59,7 @@ func (t *recordingTarget) got() []interface{} {
 // Cleanups run last-registered first, so a gated target created after
 // this call is released before the drain waits on it.
 func shutdownOnCleanup(tb testing.TB, r *VelocityRouterV2) {
-	tb.Cleanup(func() { _ = r.ShutdownEventDispatcher(context.Background()) })
+	tb.Cleanup(func() { _ = r.Shutdown(context.Background()) })
 }
 
 func waitForCount(t *testing.T, target *recordingTarget, want int, what string) {
@@ -125,8 +126,9 @@ func TestBindEventDispatcher_SyncModeAssigns(t *testing.T) {
 	}
 }
 
-// A pool retired by a timed-out shutdown keeps delivering its buffered
-// events to its own target: neither a replacement pool nor a bind on the
+// A pool retired while it still drains (its stop began and did not
+// finish, as a stop that timed out leaves it) keeps delivering its
+// buffered events to its own target: neither a replacement pool nor a bind on the
 // replacement redirects it.
 func TestBindEventDispatcher_RetiredPoolKeepsItsTarget(t *testing.T) {
 	r := NewV2()
@@ -151,10 +153,12 @@ func TestBindEventDispatcher_RetiredPoolKeepsItsTarget(t *testing.T) {
 		t.Fatal("old pool never started delivering")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
-	if err := r.ShutdownEventDispatcher(ctx); err == nil {
-		t.Fatal("ShutdownEventDispatcher returned nil although the old pool could not drain")
+	// Begin the old pool's stop without waiting for it; the replacement
+	// below then retires it without waiting either.
+	old := r.asyncStop
+	r.own.Signal(old.run, old.work)
+	if drain.Closed(old.run.Finished()) {
+		t.Fatal("the old pool finished its stop although its worker is held")
 	}
 
 	// Replacement pool, then a bind on it, while the old pool still drains.

@@ -19,6 +19,7 @@ import (
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/internal/sqlerr"
+	"github.com/velocitykode/velocity/internal/teardown"
 	"github.com/velocitykode/velocity/orm/drivers"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -100,9 +101,14 @@ var _ Database = (*Manager)(nil)
 type Manager struct {
 	mu            sync.RWMutex
 	defaultDriver drivers.Driver
-	connections   map[string]drivers.Driver
-	defaultName   string
-	databaseName  string
+	// shutDefault is the default connection Shutdown took out of
+	// defaultDriver to close. It is kept for its identity alone, so a
+	// registration of that instance once Shutdown began is not closed a
+	// second time. Guarded by mu.
+	shutDefault  drivers.Driver
+	connections  map[string]drivers.Driver
+	defaultName  string
+	databaseName string
 	// closed flips to true at the start of Shutdown, before any driver
 	// is closed, so racing queries fail fast with ErrManagerShutdown
 	// instead of surfacing database/sql closed-connection noise (or nil
@@ -150,12 +156,20 @@ type Manager struct {
 	// them, so a connection is handed the forwarder exactly once.
 	unhanded        map[string]contract.LoggerAware
 	unhandedDefault contract.LoggerAware
-	// closes coordinates Shutdown's close phase (internal/drain): the first
-	// Shutdown to reach it owns the drivers' closes, a later one waits for
-	// them (or its own ctx), so a nil return still means every driver is
-	// closed, and one called from inside a driver's Close is refused
-	// instead of waiting on itself. Begin and Ended run under mu.
-	closes drain.Coordinator
+	// shutdowns is the named connections' lifecycle: AddConnection retires
+	// through it a connection it displaces, and Shutdown awaits those
+	// retirements. Called under mu.
+	shutdowns teardown.Children[drivers.Driver]
+	// own and run drain the manager's work in flight at Shutdown
+	// (internal/drain): the statement-event pump's two goroutines are
+	// units admitted into run, and Shutdown's own work (the pump's drain,
+	// then the drivers' closes) runs as the owner's work, so a Shutdown
+	// called back from a listener or a driver's Close is refused instead
+	// of waiting on itself. run is made under mu by the first pump start
+	// or Shutdown (a manager built as a literal works too); the manager
+	// does not start again after it.
+	own drain.Owner
+	run *drain.Run
 }
 
 // NewManager creates a new ORM Manager with a connected database driver.
@@ -287,7 +301,18 @@ func (m *Manager) Connection(name string) (drivers.Driver, error) {
 // the first SetLogger. The driver's SetStatementObserver and SetLogger run
 // before the connection is published and under no manager lock, so either
 // may call back into the manager. A connection added once Shutdown has
-// begun is not published: it is closed, and a warning says so.
+// begun is not published: it is closed, and a warning says so, unless the
+// manager still owns it (its default connection, one it holds under a
+// name, or one it is closing), which Shutdown closes. A
+// connection AddConnection displaces under the same name is closed before
+// it returns: contained, once, unless the manager still holds it under
+// another name or as its default connection, which Shutdown closes; the
+// call succeeds, so a failure to close it is written once as a warning. A
+// driver value must be comparable with == (pointer types are): one that is
+// not, registered under a second name or also the default, cannot be
+// recognised as the same instance and is closed once per registration. A
+// configuration call, not concurrent with queries on the displaced
+// connection.
 func (m *Manager) AddConnection(name string, driver drivers.Driver) {
 	m.attachStatementObserver(driver)
 	la, aware := driver.(contract.LoggerAware)
@@ -299,12 +324,25 @@ func (m *Manager) AddConnection(name string, driver drivers.Driver) {
 	if m.closed.Load() {
 		// Shutdown has begun: it takes the connections to close under mu
 		// after setting closed under mu, so one published now would never
-		// be closed. Publish nothing and close it here instead.
+		// be closed. Publish nothing and close it here instead, unless
+		// the manager owns it, which that Shutdown closes.
+		owned := m.ownsLocked(driver)
 		m.mu.Unlock()
+		if owned {
+			m.warnClose("velocity/orm: connection added after Shutdown is one the manager closes, not added", name, nil)
+			return
+		}
 		m.closeUnpublished(name, driver)
 		return
 	}
+	old := m.connections[name]
 	m.connections[name] = driver
+	// The default connection is not in the registry Retire looks at: a
+	// displaced alias of it stays open, and Shutdown closes it.
+	var retire func() error
+	if !teardown.SameInstance(old, m.defaultDriver) {
+		retire = m.shutdowns.Retire(m.connections, old)
+	}
 	delete(m.unhanded, name)
 	// A SetLogger that ran since the check above left no pending entry for
 	// this connection: hand it here, once, after the lock is released.
@@ -319,30 +357,53 @@ func (m *Manager) AddConnection(name string, driver drivers.Driver) {
 	if late {
 		m.handLogger(la)
 	}
+	if retire == nil {
+		return
+	}
+	if err := retire(); err != nil {
+		m.warnClose("velocity/orm: a displaced connection failed to close", name, err)
+	}
+}
+
+// ownsLocked reports whether driver is an instance the manager closes: its
+// default connection (also once Shutdown took it), one held under a name,
+// or one that left the registry and whose close has not returned. The
+// caller holds mu.
+func (m *Manager) ownsLocked(driver drivers.Driver) bool {
+	if teardown.SameInstance(driver, m.defaultDriver) || teardown.SameInstance(driver, m.shutDefault) {
+		return true
+	}
+	for _, held := range m.connections {
+		if teardown.SameInstance(held, driver) {
+			return true
+		}
+	}
+	for _, held := range m.shutdowns.Closing() {
+		if teardown.SameInstance(held, driver) {
+			return true
+		}
+	}
+	return false
 }
 
 // closeUnpublished closes a connection AddConnection was handed after
 // Shutdown began, and writes one warning saying so. The driver's Close is
 // user code: a panic in it is contained and reported on the same line.
 func (m *Manager) closeUnpublished(name string, driver drivers.Driver) {
-	err := closeContained(driver)
+	m.warnClose("velocity/orm: connection added after Shutdown was closed, not added", name, teardown.Close(context.Background(), driver))
+}
+
+// warnClose writes msg once for the connection name, with the kind of the
+// close error err, when there is one: the kind, never the driver's text,
+// which may carry the connection's credentials.
+func (m *Manager) warnClose(msg, name string, err error) {
 	kvs := []any{"connection", name}
 	if err != nil {
 		kvs = append(kvs, sqlerr.Key, sqlerr.Kind(err))
 	}
 	fallbacklog.Write(m.log(), func(l contract.Logger) {
-		l.Warn("velocity/orm: connection added after Shutdown was closed, not added", kvs...)
+		l.Warn(msg, kvs...)
 	})
-}
-
-// closeContained closes driver, returning a panic in its Close as an error.
-func closeContained(driver drivers.Driver) (err error) {
-	defer func() {
-		if p := recover(); p != nil {
-			err = panicerr.FromRecovered(p)
-		}
-	}()
-	return driver.Close()
 }
 
 // Introspector returns the schema introspector for the default connection.
@@ -905,28 +966,36 @@ func (m *Manager) OwnsCaller() bool {
 	if p := m.pump.Load(); p != nil && p.onPumpGoroutine() {
 		return true
 	}
-	return m.closes.Nested()
+	return m.own.Nested() || m.shutdowns.OwnsCaller()
 }
 
 // Shutdown delivers the queued statement events, then closes the default
-// database connection and all named connections. When ctx ends before the
-// events are delivered it still closes the connections, and returns the
-// delivery's error (wrapping ctx's) joined with any close error.
+// database connection and all named connections. Queries issued once it
+// began fail with ErrManagerShutdown.
+//
+// It waits within ctx: at ctx it returns ctx's error while the delivery
+// and the closes go on without a bound (the manager forces nothing), and
+// every later Shutdown returns the first one's result once they finished.
+// A listener that never returns holds the closes, which wait for it.
 //
 // Called from an event listener or from the failure hook handed a dropped
-// event, it returns ErrQueryEventsFlushFromPump and changes nothing: those
-// run on the goroutines the delivery would wait for.
-//
-// The first Shutdown closes the drivers, after releasing the manager's
-// lock, so a driver's Close may call back into the manager. A Shutdown
-// that overlaps it waits for those closes, or returns ctx's error when ctx
-// ends first; one called from inside a driver's Close returns an error at
-// once while the closes go on. A later Shutdown returns nil once the closes are done.
+// event, it returns an error wrapping contract.ErrStopFromOwnWork and
+// changes nothing: those run on the goroutines the delivery would wait
+// for. Called from a driver's Close
+// while the manager closes its drivers, it returns an error wrapping
+// contract.ErrStopFromOwnWork while the closes go on. The drivers are
+// closed after the manager's lock is released, so a driver's Close may
+// call back into the manager.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	// A pump goroutine can only be running on a pump already published, so
 	// this unlocked read cannot miss the one the caller runs on.
 	if p := m.pump.Load(); p != nil && p.onPumpGoroutine() {
-		return ErrQueryEventsFlushFromPump
+		return errchain.Errorf("velocity/orm: Shutdown called from a statement-event listener, which the delivery would wait for: %w", contract.ErrStopFromOwnWork)
+	}
+	if m.own.Nested() || m.shutdowns.OwnsCaller() {
+		// The caller is closing one of the manager's connections, work
+		// the running Shutdown waits for.
+		return errchain.Errorf("velocity/orm: Shutdown called from a driver's Close while the manager closes its drivers: %w", contract.ErrStopFromOwnWork)
 	}
 
 	// Mark closed before touching any driver so concurrent queries observe
@@ -937,65 +1006,66 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	// is drained below, or SetEventDispatcher sees closed and starts none.
 	m.mu.Lock()
 	m.closed.Store(true)
+	run := m.runLocked()
 	p := m.pump.Load()
 	m.mu.Unlock()
+	return m.own.Stop(ctx, run, func() error { return m.stopWork(run, p) }, nil)
+}
 
+// runLocked returns the manager's run, made on first use. The caller
+// holds mu.
+func (m *Manager) runLocked() *drain.Run {
+	if m.run == nil {
+		m.run = m.own.NewRun()
+	}
+	return m.run
+}
+
+// stopWork is Shutdown's work, run once: deliver the queued statement
+// events and wait for the pump's goroutines to return, then close the
+// drivers.
+func (m *Manager) stopWork(run *drain.Run, p *eventPump) error {
 	// Deliver queued statement events before the dispatcher goes away,
 	// outside mu: the delivery runs listeners, which may use the manager.
+	// No deadline: a deadline is the waiter's outcome, not the drain's.
 	var drainErr error
 	if p != nil {
-		if err := p.stop(ctx); err != nil {
+		if err := p.stop(context.Background()); err != nil {
 			drainErr = errchain.Errorf("velocity/orm: deliver query events: %w", err)
 		}
 	}
+	<-run.Idle()
 
-	// Take the drivers out under mu and close them after it is released:
-	// a driver's Close is user code, which may log through the manager's
-	// forwarder into a logger that calls back into the manager. Only the
-	// first Shutdown here owns the closes; a later one waits for them.
+	// Take the connections out under mu and close them after it is
+	// released: a driver's Close is user code, which may log through the
+	// manager's forwarder into a logger that calls back into the manager.
+	// The named connections close through their lifecycle (shutdowns),
+	// which also awaits the ones AddConnection retired; the default one,
+	// set once at construction and not in that registry, closes last,
+	// unless a name holds the same instance and closes it already.
 	m.mu.Lock()
-	if closed := m.closes.Ended(); closed != nil {
-		m.mu.Unlock()
-		if !drain.Closed(closed) && m.closes.Nested() {
-			return errors.Join(drainErr, errchain.Errorf("velocity/orm: Shutdown called from a driver's Close while the manager closes its drivers: %w", contract.ErrStopFromOwnWork))
-		}
-		if err := m.closes.Await(ctx, closed, nil); err != nil {
-			return errors.Join(drainErr, err)
-		}
-		return drainErr
-	}
-	closed := m.closes.Begin()
 	defaultDriver := m.defaultDriver
 	m.defaultDriver = nil
-	conns := make([]drivers.Driver, 0, len(m.connections))
-	for name, conn := range m.connections {
-		conns = append(conns, conn)
-		delete(m.connections, name)
+	m.shutDefault = defaultDriver
+	for _, conn := range m.connections {
+		if teardown.SameInstance(conn, defaultDriver) {
+			defaultDriver = nil
+			break
+		}
 	}
+	wait := m.shutdowns.Shutdown(&m.connections, func(name string, err error) error {
+		return errchain.Errorf("velocity/orm: close connection %q: %w", name, err)
+	})
 	m.unhanded, m.unhandedDefault = nil, nil
 	m.mu.Unlock()
 
-	// Each Close is contained (closeContained): a driver whose Close panics
-	// has the panic returned as its error, and the drivers after it are
-	// still closed.
-	var firstErr error
-	m.closes.Drain(closed, func() {
-		if defaultDriver != nil {
-			if err := closeContained(defaultDriver); err != nil {
-				firstErr = err
-			}
-		}
-		for _, conn := range conns {
-			if err := closeContained(conn); err != nil && firstErr == nil {
-				firstErr = err
-			}
-		}
-	})
-
-	if drainErr != nil {
-		return errors.Join(drainErr, firstErr)
+	// No deadline here either: the closes finish, and the waiters bound
+	// their own wait.
+	errs := []error{drainErr, teardown.Drain(context.Background(), wait)}
+	if defaultDriver != nil {
+		errs = append(errs, teardown.Close(context.Background(), defaultDriver))
 	}
-	return firstErr
+	return errors.Join(errs...)
 }
 
 // Ping verifies the default database connection.
@@ -1106,7 +1176,7 @@ func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event any) err
 	// dispatch, takes mu for reading and so simply waits for this call to
 	// return.
 	if m.pump.Load() == nil {
-		p := newEventPump(m.events.Fail, m.events.FailLater)
+		p := newEventPump(m.events.Fail, m.events.FailLater, m.runLocked())
 		// The observer built each queued event while a dispatcher was
 		// installed (hasDispatcher); the pump hands it over later, off the
 		// driver callback.

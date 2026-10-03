@@ -38,13 +38,13 @@ type Options struct {
 	IdentifierColumn string
 
 	// PasswordColumn holds the password hash. Unused when the model
-	// implements auth.Authenticatable itself.
+	// implements contract.Authenticatable itself.
 	PasswordColumn string
 
 	// RememberTokenColumn holds the remember-me token. Read on lookup
 	// and written on both the unconditional login-path update and the
 	// atomic compare-and-swap rotation, so it is required even when the
-	// model implements auth.Authenticatable itself.
+	// model implements contract.Authenticatable itself.
 	RememberTokenColumn string
 
 	// CredentialsKey is the key read from the credentials map passed to

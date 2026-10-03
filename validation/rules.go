@@ -97,9 +97,8 @@ var builtinRules = map[string]RuleHandler{
 // (see Custom), so nothing outside this package registers into it.
 //
 // Lookups fall back to builtinRules, which is immutable, so construction
-// copies nothing. The per-validator map is mutex-guarded because
-// app.Services.Validator is a long-lived singleton shared across every
-// handler goroutine.
+// copies nothing. The per-validator map is mutex-guarded because one
+// validator may be shared across handler goroutines.
 type ruleRegistry struct {
 	mu    sync.RWMutex
 	rules map[string]RuleHandler

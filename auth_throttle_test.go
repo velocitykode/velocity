@@ -142,11 +142,11 @@ func (g *fakeLoginThrottlerScheme) SetLoginThrottler(t contract.LoginThrottler) 
 }
 
 func (g *fakeLoginThrottlerScheme) Check(*http.Request) bool { return false }
-func (g *fakeLoginThrottlerScheme) User(*http.Request) auth.Authenticatable {
+func (g *fakeLoginThrottlerScheme) User(*http.Request) contract.Authenticatable {
 	return nil
 }
 func (g *fakeLoginThrottlerScheme) ID(*http.Request) interface{} { return nil }
-func (g *fakeLoginThrottlerScheme) Login(http.ResponseWriter, *http.Request, auth.Authenticatable, ...bool) error {
+func (g *fakeLoginThrottlerScheme) Login(http.ResponseWriter, *http.Request, contract.Authenticatable, ...bool) error {
 	return nil
 }
 func (g *fakeLoginThrottlerScheme) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {

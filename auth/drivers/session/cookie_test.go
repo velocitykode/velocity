@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 )
 
@@ -139,13 +140,13 @@ func TestCookieStore_Create(t *testing.T) {
 		name    string
 		id      string
 		wantErr bool
-		check   func(t *testing.T, session auth.Session)
+		check   func(t *testing.T, session contract.Session)
 	}{
 		{
 			name:    "creates session with provided ID",
 			id:      "test-session-id",
 			wantErr: false,
-			check: func(t *testing.T, session auth.Session) {
+			check: func(t *testing.T, session contract.Session) {
 				if session.ID() != "test-session-id" {
 					t.Errorf("expected ID 'test-session-id', got '%s'", session.ID())
 				}
@@ -155,7 +156,7 @@ func TestCookieStore_Create(t *testing.T) {
 			name:    "creates session with generated ID when empty",
 			id:      "",
 			wantErr: false,
-			check: func(t *testing.T, session auth.Session) {
+			check: func(t *testing.T, session contract.Session) {
 				if session.ID() == "" {
 					t.Error("expected generated ID, got empty string")
 				}
@@ -165,7 +166,7 @@ func TestCookieStore_Create(t *testing.T) {
 			name:    "returns CookieSession type",
 			id:      "type-check-id",
 			wantErr: false,
-			check: func(t *testing.T, session auth.Session) {
+			check: func(t *testing.T, session contract.Session) {
 				_, ok := session.(*CookieSession)
 				if !ok {
 					t.Errorf("expected *CookieSession type, got %T", session)
@@ -197,7 +198,7 @@ func TestCookieStore_Get(t *testing.T) {
 		setupReq  func() *http.Request
 		encryptor *mockEncryptor
 		wantErr   bool
-		check     func(t *testing.T, session auth.Session)
+		check     func(t *testing.T, session contract.Session)
 	}{
 		{
 			name: "returns new session when no cookie present",
@@ -206,7 +207,7 @@ func TestCookieStore_Get(t *testing.T) {
 			},
 			encryptor: &mockEncryptor{},
 			wantErr:   false,
-			check: func(t *testing.T, session auth.Session) {
+			check: func(t *testing.T, session contract.Session) {
 				if session == nil {
 					t.Error("expected session, got nil")
 				}
@@ -249,7 +250,7 @@ func TestCookieStore_Get(t *testing.T) {
 				},
 			},
 			wantErr: false,
-			check: func(t *testing.T, session auth.Session) {
+			check: func(t *testing.T, session contract.Session) {
 				if session.ID() != "restored-session-id" {
 					t.Errorf("expected ID 'restored-session-id', got '%s'", session.ID())
 				}
@@ -277,7 +278,7 @@ func TestCookieStore_Get(t *testing.T) {
 				},
 			},
 			wantErr: false,
-			check: func(t *testing.T, session auth.Session) {
+			check: func(t *testing.T, session contract.Session) {
 				if session == nil {
 					t.Error("expected new session, got nil")
 				}
@@ -303,7 +304,7 @@ func TestCookieStore_Get(t *testing.T) {
 				},
 			},
 			wantErr: false,
-			check: func(t *testing.T, session auth.Session) {
+			check: func(t *testing.T, session contract.Session) {
 				if session == nil {
 					t.Error("expected new session, got nil")
 				}
@@ -387,7 +388,7 @@ func TestCookieStore_Get_RoundTrip(t *testing.T) {
 func TestCookieStore_Save(t *testing.T) {
 	tests := []struct {
 		name      string
-		session   func(store *CookieStore) auth.Session
+		session   func(store *CookieStore) contract.Session
 		encryptor *mockEncryptor
 		wantErr   bool
 		errType   error
@@ -395,7 +396,7 @@ func TestCookieStore_Save(t *testing.T) {
 	}{
 		{
 			name: "saves CookieSession type",
-			session: func(store *CookieStore) auth.Session {
+			session: func(store *CookieStore) contract.Session {
 				session, _ := store.Create("cookie-session-id")
 				session.Put("data", "value")
 				return session
@@ -415,7 +416,7 @@ func TestCookieStore_Save(t *testing.T) {
 		},
 		{
 			name: "saves BaseSession type by wrapping",
-			session: func(store *CookieStore) auth.Session {
+			session: func(store *CookieStore) contract.Session {
 				s := auth.NewSession("base-session-id")
 				s.Put("k", "v") // mark modified so Save persists
 				return s
@@ -431,7 +432,7 @@ func TestCookieStore_Save(t *testing.T) {
 		},
 		{
 			name: "returns error for unsupported session type",
-			session: func(store *CookieStore) auth.Session {
+			session: func(store *CookieStore) contract.Session {
 				return &unsupportedSession{}
 			},
 			encryptor: &mockEncryptor{},
@@ -441,7 +442,7 @@ func TestCookieStore_Save(t *testing.T) {
 		},
 		{
 			name: "sets MaxAge -1 for destroyed session",
-			session: func(store *CookieStore) auth.Session {
+			session: func(store *CookieStore) contract.Session {
 				session, _ := store.Create("destroyed-session-id")
 				_ = session.Invalidate()
 				return session
@@ -464,7 +465,7 @@ func TestCookieStore_Save(t *testing.T) {
 		},
 		{
 			name: "returns error when encryption fails",
-			session: func(store *CookieStore) auth.Session {
+			session: func(store *CookieStore) contract.Session {
 				session, _ := store.Create("encryption-fail-id")
 				session.Put("k", "v") // force modified so Encrypt is invoked
 				return session
@@ -745,17 +746,17 @@ func TestCookieSession_Implements_Session(t *testing.T) {
 		t.Fatalf("failed to create session: %v", err)
 	}
 
-	// Verify CookieSession implements auth.Session
-	var _ auth.Session = session
+	// Verify CookieSession implements contract.Session
+	var _ contract.Session = session
 
 	// Test that all Session methods work
 	tests := []struct {
 		name string
-		test func(t *testing.T, s auth.Session)
+		test func(t *testing.T, s contract.Session)
 	}{
 		{
 			name: "ID returns session ID",
-			test: func(t *testing.T, s auth.Session) {
+			test: func(t *testing.T, s contract.Session) {
 				if s.ID() != "interface-test" {
 					t.Errorf("expected ID 'interface-test', got '%s'", s.ID())
 				}
@@ -763,7 +764,7 @@ func TestCookieSession_Implements_Session(t *testing.T) {
 		},
 		{
 			name: "Put and Get work correctly",
-			test: func(t *testing.T, s auth.Session) {
+			test: func(t *testing.T, s contract.Session) {
 				s.Put("testKey", "testValue")
 				if s.Get("testKey") != "testValue" {
 					t.Errorf("expected 'testValue', got '%v'", s.Get("testKey"))
@@ -772,7 +773,7 @@ func TestCookieSession_Implements_Session(t *testing.T) {
 		},
 		{
 			name: "Has returns true for existing key",
-			test: func(t *testing.T, s auth.Session) {
+			test: func(t *testing.T, s contract.Session) {
 				s.Put("existsKey", "value")
 				if !s.Has("existsKey") {
 					t.Error("expected Has() to return true")
@@ -781,7 +782,7 @@ func TestCookieSession_Implements_Session(t *testing.T) {
 		},
 		{
 			name: "Has returns false for non-existing key",
-			test: func(t *testing.T, s auth.Session) {
+			test: func(t *testing.T, s contract.Session) {
 				if s.Has("nonExistentKey") {
 					t.Error("expected Has() to return false")
 				}
@@ -789,7 +790,7 @@ func TestCookieSession_Implements_Session(t *testing.T) {
 		},
 		{
 			name: "Remove deletes key",
-			test: func(t *testing.T, s auth.Session) {
+			test: func(t *testing.T, s contract.Session) {
 				s.Put("removeKey", "value")
 				s.Remove("removeKey")
 				if s.Has("removeKey") {
@@ -799,7 +800,7 @@ func TestCookieSession_Implements_Session(t *testing.T) {
 		},
 		{
 			name: "Flash and GetFlash work correctly",
-			test: func(t *testing.T, s auth.Session) {
+			test: func(t *testing.T, s contract.Session) {
 				s.Flash("flashKey", "flashValue")
 				value := s.GetFlash("flashKey")
 				if value != "flashValue" {
@@ -813,7 +814,7 @@ func TestCookieSession_Implements_Session(t *testing.T) {
 		},
 		{
 			name: "Regenerate generates new ID",
-			test: func(t *testing.T, s auth.Session) {
+			test: func(t *testing.T, s contract.Session) {
 				oldID := s.ID()
 				err := s.Regenerate()
 				if err != nil {
@@ -853,15 +854,15 @@ func TestCookieStore_SessionDataPersistence(t *testing.T) {
 
 	tests := []struct {
 		name  string
-		setup func(session auth.Session)
-		check func(t *testing.T, restored auth.Session)
+		setup func(session contract.Session)
+		check func(t *testing.T, restored contract.Session)
 	}{
 		{
 			name: "persists string data",
-			setup: func(session auth.Session) {
+			setup: func(session contract.Session) {
 				session.Put("stringKey", "stringValue")
 			},
-			check: func(t *testing.T, restored auth.Session) {
+			check: func(t *testing.T, restored contract.Session) {
 				if restored.Get("stringKey") != "stringValue" {
 					t.Errorf("expected 'stringValue', got '%v'", restored.Get("stringKey"))
 				}
@@ -869,10 +870,10 @@ func TestCookieStore_SessionDataPersistence(t *testing.T) {
 		},
 		{
 			name: "persists numeric data",
-			setup: func(session auth.Session) {
+			setup: func(session contract.Session) {
 				session.Put("numKey", float64(42)) // JSON unmarshals numbers as float64
 			},
-			check: func(t *testing.T, restored auth.Session) {
+			check: func(t *testing.T, restored contract.Session) {
 				val := restored.Get("numKey")
 				if val != float64(42) {
 					t.Errorf("expected 42, got '%v' (type: %T)", val, val)
@@ -881,10 +882,10 @@ func TestCookieStore_SessionDataPersistence(t *testing.T) {
 		},
 		{
 			name: "persists flash data",
-			setup: func(session auth.Session) {
+			setup: func(session contract.Session) {
 				session.Flash("flashKey", "flashValue")
 			},
-			check: func(t *testing.T, restored auth.Session) {
+			check: func(t *testing.T, restored contract.Session) {
 				if restored.GetFlash("flashKey") != "flashValue" {
 					t.Errorf("expected flash 'flashValue', got '%v'", restored.GetFlash("flashKey"))
 				}
@@ -892,12 +893,12 @@ func TestCookieStore_SessionDataPersistence(t *testing.T) {
 		},
 		{
 			name: "persists multiple values",
-			setup: func(session auth.Session) {
+			setup: func(session contract.Session) {
 				session.Put("key1", "value1")
 				session.Put("key2", "value2")
 				session.Put("key3", "value3")
 			},
-			check: func(t *testing.T, restored auth.Session) {
+			check: func(t *testing.T, restored contract.Session) {
 				if restored.Get("key1") != "value1" {
 					t.Errorf("expected key1='value1', got '%v'", restored.Get("key1"))
 				}
@@ -1031,8 +1032,8 @@ func (s *unsupportedSession) GetFlash(key string) interface{}     { return nil }
 func (s *unsupportedSession) FlushFlash() map[string]interface{}  { return nil }
 func (s *unsupportedSession) Save(w http.ResponseWriter) error    { return nil }
 
-// Compile-time check that unsupportedSession implements auth.Session
-var _ auth.Session = (*unsupportedSession)(nil)
+// Compile-time check that unsupportedSession implements contract.Session
+var _ contract.Session = (*unsupportedSession)(nil)
 
 func TestCookieStore_DestroyedSession_ClearsAllData(t *testing.T) {
 	store := newTestCookieStore(testConfig(), &mockEncryptor{})
@@ -1441,7 +1442,7 @@ func TestCookieStore_Clear_Session(t *testing.T) {
 func TestCookieStore_Types_Implement_Interfaces(t *testing.T) {
 	// Compile-time interface checks
 	var _ auth.SessionStore = (*CookieStore)(nil)
-	var _ auth.Session = (*CookieSession)(nil)
+	var _ contract.Session = (*CookieSession)(nil)
 
 	// Additional runtime check
 	store := newTestCookieStore(testConfig(), &mockEncryptor{})
@@ -1454,10 +1455,10 @@ func TestCookieStore_Types_Implement_Interfaces(t *testing.T) {
 
 	session, _ := store.Create("interface-check")
 	sessionType := reflect.TypeOf(session)
-	authSessionType := reflect.TypeOf((*auth.Session)(nil)).Elem()
+	authSessionType := reflect.TypeOf((*contract.Session)(nil)).Elem()
 
 	if !sessionType.Implements(authSessionType) {
-		t.Error("CookieSession does not implement auth.Session")
+		t.Error("CookieSession does not implement contract.Session")
 	}
 }
 

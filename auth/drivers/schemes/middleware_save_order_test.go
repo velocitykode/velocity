@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -48,7 +48,7 @@ func TestSessionMiddleware_LoginXSRFCookieFollowsTheSessionSave(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.saveErr != nil {
 				orig := saveSessionFromMiddleware
-				saveSessionFromMiddleware = func(*SessionScheme, http.ResponseWriter, auth.Session) error { return tt.saveErr }
+				saveSessionFromMiddleware = func(*SessionScheme, http.ResponseWriter, contract.Session) error { return tt.saveErr }
 				t.Cleanup(func() { saveSessionFromMiddleware = orig })
 			}
 			scheme := newRealCookieScheme(t)

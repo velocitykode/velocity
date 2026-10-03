@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 
-	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -28,7 +28,7 @@ func runInSession(scheme *schemes.SessionScheme, fn router.HandlerFunc) (*httpte
 // Only the session cookie is seeded. Mutating verbs (POST/PUT/PATCH/DELETE)
 // routed through CSRF middleware still require a valid CSRF token or CSRF
 // disabled - ActingAs does not exempt requests from CSRF protection.
-func (c *TestClient) ActingAs(scheme *schemes.SessionScheme, user auth.Authenticatable) *TestClient {
+func (c *TestClient) ActingAs(scheme *schemes.SessionScheme, user contract.Authenticatable) *TestClient {
 	c.t.Helper()
 	// Login only changes the session; the session middleware saves it.
 	w, err := runInSession(scheme, func(rc *router.Context) error {

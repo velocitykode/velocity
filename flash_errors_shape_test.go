@@ -85,16 +85,18 @@ func flashShapeApp(t *testing.T) (*App, *http.Client, *httptest.Server) {
 	// credentials mismatch.
 	a.Router.Post("/handler", func(c *router.Context) error {
 		c.FlashErrors(map[string][]string{"email": {"These credentials do not match our records."}})
-		view.Back(c)
-		return nil
+		return view.Back(c)
 	})
 	a.Router.Post("/handler-strings", func(c *router.Context) error {
 		c.FlashErrors(map[string]string{"email": "These credentials do not match our records."})
-		view.Back(c)
-		return nil
+		return view.Back(c)
 	})
 	a.Router.Get("/login", func(c *router.Context) error {
-		return view.For(c).Render("Auth/Login", view.Props{})
+		re, err := view.For(c)
+		if err != nil {
+			return err
+		}
+		return re.Render("Auth/Login", view.Props{})
 	})
 
 	srv := httptest.NewServer(a.Router)
@@ -204,7 +206,7 @@ func (r *flashShapeRecorder) Errorf(format string, args ...any) {
 // under a named error bag.
 func TestAssertSessionHasErrors_EverySource(t *testing.T) {
 	a, _, _ := flashShapeApp(t)
-	scheme, err := auth.FromServices(a.Services).DefaultScheme()
+	scheme, err := a.Services.Auth.(*auth.Manager).DefaultScheme()
 	if err != nil {
 		t.Fatalf("DefaultScheme: %v", err)
 	}

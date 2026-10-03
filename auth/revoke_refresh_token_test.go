@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // fakeRefreshRevokerScheme implements Scheme + RefreshTokenRevoker so the
@@ -27,10 +29,10 @@ func (g *fakeRefreshRevokerScheme) RevokeAllRefreshTokensForUser(_ context.Conte
 
 // Stub Scheme methods - RevokeAllSessions only inspects the
 // RefreshTokenRevoker interface; the rest can be panics or no-ops.
-func (g *fakeRefreshRevokerScheme) Check(*http.Request) bool           { return false }
-func (g *fakeRefreshRevokerScheme) User(*http.Request) Authenticatable { return nil }
-func (g *fakeRefreshRevokerScheme) ID(*http.Request) interface{}       { return nil }
-func (g *fakeRefreshRevokerScheme) Login(http.ResponseWriter, *http.Request, Authenticatable, ...bool) error {
+func (g *fakeRefreshRevokerScheme) Check(*http.Request) bool                    { return false }
+func (g *fakeRefreshRevokerScheme) User(*http.Request) contract.Authenticatable { return nil }
+func (g *fakeRefreshRevokerScheme) ID(*http.Request) interface{}                { return nil }
+func (g *fakeRefreshRevokerScheme) Login(http.ResponseWriter, *http.Request, contract.Authenticatable, ...bool) error {
 	return nil
 }
 func (g *fakeRefreshRevokerScheme) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {

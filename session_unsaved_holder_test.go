@@ -35,7 +35,7 @@ func TestSessionAccessors_IgnoreASessionNothingSaves(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
-	m := auth.FromServices(a.Services)
+	m := a.Services.Auth.(*auth.Manager)
 	scheme, err := m.DefaultScheme()
 	if err != nil {
 		t.Fatalf("DefaultScheme: %v", err)

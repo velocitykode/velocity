@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // errMockRejected is the rejection mockCSRF returns.
@@ -19,6 +21,8 @@ type mockStateKey struct{}
 // a context value to every request and, when rejectUnsafe is set, rejects
 // unsafe methods with errMockRejected.
 type mockCSRF struct {
+	// contract.CSRFProtector supplies the methods this fake does not use.
+	contract.CSRFProtector
 	rejectUnsafe bool
 }
 

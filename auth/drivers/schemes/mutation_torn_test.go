@@ -11,10 +11,11 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 )
 
-// hookSession is a custom auth.Session whose mutators run a hook, so a
+// hookSession is a custom contract.Session whose mutators run a hook, so a
 // test can make one change the session and then panic. It does not report
 // IsModified, so the commit saves it unconditionally and saves counts
 // every save.
@@ -58,11 +59,11 @@ func (s *hookSession) Save(http.ResponseWriter) error {
 }
 
 // hookSessionStore hands out one session for every load and create.
-type hookSessionStore struct{ s auth.Session }
+type hookSessionStore struct{ s contract.Session }
 
-func (st *hookSessionStore) Create(string) (auth.Session, error)             { return st.s, nil }
-func (st *hookSessionStore) Get(*http.Request, string) (auth.Session, error) { return st.s, nil }
-func (st *hookSessionStore) Save(w http.ResponseWriter, s auth.Session) error {
+func (st *hookSessionStore) Create(string) (contract.Session, error)             { return st.s, nil }
+func (st *hookSessionStore) Get(*http.Request, string) (contract.Session, error) { return st.s, nil }
+func (st *hookSessionStore) Save(w http.ResponseWriter, s contract.Session) error {
 	return s.Save(w)
 }
 func (st *hookSessionStore) Destroy(string) error                           { return nil }
@@ -93,7 +94,7 @@ func (*expiringServerStore) Get(context.Context, string) (*auth.StoredSession, e
 // newHookScheme returns a session scheme whose store hands out s, with the
 // revoke-suite user store (users u1 and u2) and a real encryptor, so a
 // remember cookie can be minted for a recall.
-func newHookScheme(t *testing.T, s auth.Session) (*SessionScheme, *revokeTestStore) {
+func newHookScheme(t *testing.T, s contract.Session) (*SessionScheme, *revokeTestStore) {
 	t.Helper()
 	enc, err := crypto.NewEncryptor(crypto.Config{Key: strings.Repeat("k", 32), Cipher: "AES-256-GCM"})
 	if err != nil {
@@ -109,7 +110,7 @@ func newHookScheme(t *testing.T, s auth.Session) (*SessionScheme, *revokeTestSto
 
 // seamRequest returns a request served inside the session save seam, as
 // SessionMiddleware binds it, with s as the request's session.
-func seamRequest(s auth.Session) (*http.Request, *httptest.ResponseRecorder, *sessionHolder) {
+func seamRequest(s contract.Session) (*http.Request, *httptest.ResponseRecorder, *sessionHolder) {
 	w := httptest.NewRecorder()
 	r := WithSessionContext(httptest.NewRequest(http.MethodPost, "/", nil))
 	h := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
@@ -334,7 +335,7 @@ type freshSessionStore struct {
 	n       atomic.Int32
 }
 
-func (st *freshSessionStore) Get(*http.Request, string) (auth.Session, error) {
+func (st *freshSessionStore) Get(*http.Request, string) (contract.Session, error) {
 	st.arrived <- struct{}{}
 	<-st.both
 	s := newHookSession()
@@ -354,7 +355,7 @@ func TestSessionScheme_ConcurrentFirstLoadsShareOneSession(t *testing.T) {
 	}
 	r := WithSessionContext(httptest.NewRequest(http.MethodGet, "/", nil))
 	r.AddCookie(&http.Cookie{Name: "vel_session", Value: "presented"})
-	got := make(chan auth.Session, 2)
+	got := make(chan contract.Session, 2)
 	for range 2 {
 		go func() { got <- g.Session(r) }()
 	}

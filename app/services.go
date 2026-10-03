@@ -41,7 +41,6 @@ type Services struct {
 	Scheduler    scheduler.TaskScheduler
 	Mail         contract.Mailer
 	Notification contract.Notifier
-	Validator    contract.Validator
 
 	// RedirectAllowlist exposes the operator-configured cross-origin
 	// host allowlist (Router.RedirectAllowedHosts) to redirect helpers

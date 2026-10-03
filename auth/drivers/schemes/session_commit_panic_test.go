@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/session"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -20,7 +20,7 @@ type panicRememberStore struct {
 	armed *atomic.Bool
 }
 
-func (p *panicRememberStore) UpdateRememberTokenCtx(ctx context.Context, user auth.Authenticatable, token string) error {
+func (p *panicRememberStore) UpdateRememberTokenCtx(ctx context.Context, user contract.Authenticatable, token string) error {
 	if p.armed.Load() {
 		panic("user store failed to store the remember token")
 	}
@@ -48,7 +48,7 @@ func newCommitPanicRig(t *testing.T, serverSide bool) *commitPanicRig {
 		armed:           &rig.rememberPanic,
 	}
 	orig := saveSessionFromMiddleware
-	saveSessionFromMiddleware = func(g *SessionScheme, w http.ResponseWriter, s auth.Session) error {
+	saveSessionFromMiddleware = func(g *SessionScheme, w http.ResponseWriter, s contract.Session) error {
 		if rig.savePanic.Load() {
 			http.SetCookie(w, &http.Cookie{Name: "vel_session", Value: "", Path: "/", MaxAge: -1})
 			panic("session store failed while saving")

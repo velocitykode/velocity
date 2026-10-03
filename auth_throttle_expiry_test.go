@@ -162,7 +162,7 @@ func TestSessionScheme_CacheThrottler_WindowExpiryAfterReservation_KeepsSlot(t *
 	// From here every attempt pauses right after its over-cap reservation
 	// was counted, before anything else reads the counter or touches the
 	// slot; the window expires while they wait.
-	th.store = &incrementPauseStore{CacheStore: store, counterKey: cacheKey, arrived: arrived, resume: resume}
+	th.setStore(&incrementPauseStore{CacheStore: store, counterKey: cacheKey, arrived: arrived, resume: resume})
 
 	enc, err := crypto.NewEncryptor(crypto.Config{Key: strings.Repeat("k", 32), Cipher: "AES-256-GCM"})
 	if err != nil {

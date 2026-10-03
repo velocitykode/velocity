@@ -45,10 +45,10 @@ package dbrules
 import (
 	"context"
 	"fmt"
-	"reflect"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/trace"
 	"github.com/velocitykode/velocity/validation"
@@ -162,7 +162,7 @@ func UniqueRuleCtx(ctx context.Context, db orm.Database) validation.RuleHandler 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if isNilDatabase(db) {
+	if nilval.Is(db) {
 		return missingDatabaseRule("unique")
 	}
 	return dbcheck.UniqueRule(db.DriverName(), countQuery(ctx, db), databaseLogger(ctx, db))
@@ -188,33 +188,18 @@ func ExistsRuleCtx(ctx context.Context, db orm.Database) validation.RuleHandler 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if isNilDatabase(db) {
+	if nilval.Is(db) {
 		return missingDatabaseRule("exists")
 	}
 	return dbcheck.ExistsRule(db.DriverName(), countQuery(ctx, db), databaseLogger(ctx, db))
 }
 
-// isNilDatabase reports whether db carries no database. A nil interface and
-// a typed nil (an interface holding a nil *orm.Manager) both count: the
-// second would otherwise reach a method call on a nil receiver.
-func isNilDatabase(db orm.Database) bool {
-	if db == nil {
-		return true
-	}
-	v := reflect.ValueOf(db)
-	switch v.Kind() {
-	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func:
-		return v.IsNil()
-	default:
-		return false
-	}
-}
-
 // missingDatabaseRule is the handler returned when a DB-backed rule is built
 // without a database. Building the rule is not itself fatal (the caller may
-// never apply it), so the absence is reported when the rule runs.
+// never apply it), so the absence is reported when the rule runs, wrapping
+// a *contract.ServiceNotConfiguredError naming "database".
 func missingDatabaseRule(name string) validation.RuleHandler {
 	return func(field string, value interface{}, params []string, data map[string]interface{}) error {
-		return fmt.Errorf("velocity/validation: the %s rule on %q requires a database", name, field)
+		return fmt.Errorf("velocity/validation: the %s rule on %q requires a database: %w", name, field, &contract.ServiceNotConfiguredError{Service: "database"})
 	}
 }

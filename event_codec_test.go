@@ -14,6 +14,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/grpc/grpcevents"
@@ -101,23 +102,23 @@ func (codecUser) SetRememberToken(string)        {}
 // codecStore finds codecUser for any credentials.
 type codecStore struct{}
 
-func (codecStore) FindByIDCtx(context.Context, interface{}) (auth.Authenticatable, error) {
+func (codecStore) FindByIDCtx(context.Context, interface{}) (contract.Authenticatable, error) {
 	return codecUser{}, nil
 }
-func (codecStore) FindByID(interface{}) (auth.Authenticatable, error) { return codecUser{}, nil }
-func (codecStore) FindByCredentialsCtx(context.Context, map[string]interface{}) (auth.Authenticatable, error) {
+func (codecStore) FindByID(interface{}) (contract.Authenticatable, error) { return codecUser{}, nil }
+func (codecStore) FindByCredentialsCtx(context.Context, map[string]interface{}) (contract.Authenticatable, error) {
 	return codecUser{}, nil
 }
-func (codecStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (codecStore) FindByCredentials(map[string]interface{}) (contract.Authenticatable, error) {
 	return codecUser{}, nil
 }
-func (codecStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (codecStore) ValidateCredentials(contract.Authenticatable, map[string]interface{}) bool {
 	return true
 }
-func (codecStore) UpdateRememberTokenCtx(context.Context, auth.Authenticatable, string) error {
+func (codecStore) UpdateRememberTokenCtx(context.Context, contract.Authenticatable, string) error {
 	return nil
 }
-func (codecStore) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
+func (codecStore) UpdateRememberToken(contract.Authenticatable, string) error { return nil }
 
 // codecHasher accepts every password and always asks for a rehash.
 type codecHasher struct{}

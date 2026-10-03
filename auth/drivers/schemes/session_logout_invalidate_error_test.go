@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/session"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 	logdrivers "github.com/velocitykode/velocity/log/drivers"
 )
 
-// errInvalidateSession wraps a real auth.Session but reports a
+// errInvalidateSession wraps a real contract.Session but reports a
 // caller-supplied error from Invalidate. The underlying session is
 // still asked to invalidate (so its destroyed/data/id mutations land
 // on the real object), then the caller-supplied error is returned in
@@ -22,7 +22,7 @@ import (
 // BaseSession.Invalidate where the session is marked destroyed and
 // its id zeroed even though regenerate failed.
 type errInvalidateSession struct {
-	auth.Session
+	contract.Session
 	err error
 }
 

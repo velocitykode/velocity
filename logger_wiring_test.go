@@ -102,7 +102,11 @@ func TestNew_BondRedirectAllowlistFallbackLogsThroughTheAppLogger(t *testing.T) 
 		c.View = view.Config{ErrorPage: "Error"}
 	})
 	a.Router.Get("/back", func(c *router.Context) error {
-		c.View().Back(c.Response, c.Request)
+		v, err := c.View()
+		if err != nil {
+			return err
+		}
+		v.Back(c.Response, c.Request)
 		return nil
 	})
 
@@ -242,10 +246,10 @@ func TestNew_FrameworkBuiltServicesAreLoggerAware(t *testing.T) {
 	}
 }
 
-// loggerProbe is a Services.Validator that records the logger the sweep
-// hands it.
+// loggerProbe is a Services.Notification that records the logger the
+// sweep hands it; every Notifier call goes to the notifier it replaced.
 type loggerProbe struct {
-	contract.Validator
+	contract.Notifier
 	mu  sync.Mutex
 	got []contract.Logger
 }
@@ -265,7 +269,7 @@ func (p *loggerProbe) last() contract.Logger {
 	return p.got[len(p.got)-1]
 }
 
-// loggerSwapModule installs probe as Services.Validator in Init and
+// loggerSwapModule installs probe as Services.Notification in Init and
 // replaces Services.Log with swapped in Start.
 type loggerSwapModule struct {
 	probe   *loggerProbe
@@ -273,7 +277,8 @@ type loggerSwapModule struct {
 }
 
 func (m loggerSwapModule) Init(s *app.Services) error {
-	s.Validator = m.probe
+	m.probe.Notifier = s.Notification
+	s.Notification = m.probe
 	return nil
 }
 

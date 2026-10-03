@@ -10,6 +10,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/session"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // unreadableMode is how a user's identifier fails to read.
@@ -101,11 +102,11 @@ type unreadableRecallStore struct {
 	mode unreadableMode
 }
 
-func (s *unreadableRecallStore) FindByID(interface{}) (auth.Authenticatable, error) {
+func (s *unreadableRecallStore) FindByID(interface{}) (contract.Authenticatable, error) {
 	return &unreadableUser{mode: s.mode, token: s.user.rememberToken}, nil
 }
 
-func (s *unreadableRecallStore) FindByIDCtx(context.Context, interface{}) (auth.Authenticatable, error) {
+func (s *unreadableRecallStore) FindByIDCtx(context.Context, interface{}) (contract.Authenticatable, error) {
 	return s.FindByID(nil)
 }
 
@@ -124,7 +125,7 @@ func TestSessionScheme_RecallOfAnUnreadableIdentifierRevivesNothing(t *testing.T
 
 			r := WithSessionContext(httptest.NewRequest(http.MethodGet, "/dashboard", nil))
 			r.AddCookie(remember)
-			var user auth.Authenticatable
+			var user contract.Authenticatable
 			_ = catching(t, func() error { user = scheme.User(r); return nil })
 			if user != nil {
 				t.Errorf("the recall revived a user whose identifier cannot be read")

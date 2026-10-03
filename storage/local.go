@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/internal/errchain"
 )
 
@@ -50,6 +51,15 @@ type LocalDriver struct {
 	url         string
 	visibility  Visibility
 	maxFileSize int64
+
+	// own and run admit the driver's work in flight at Shutdown, each
+	// PutStream from its start to its rename (internal/drain). The run is
+	// made at construction and ends at the first Shutdown: the driver does
+	// not start again. closeErr is the root's close error, kept under
+	// rootMu for every Shutdown after it.
+	own      drain.Owner
+	run      *drain.Run
+	closeErr error
 }
 
 // Compile-time assertion: LocalDriver releases the *os.Root file descriptor
@@ -101,26 +111,48 @@ func NewLocalDriver(config DiskConfig) *LocalDriver {
 	if handle, err := os.OpenRoot(root); err == nil {
 		d.rootHandle = handle
 	}
+	d.own.NestedInside((*LocalDriver).PutStream)
+	d.run = d.own.NewRun()
 	return d
 }
 
-// Shutdown releases the *os.Root file descriptor. Idempotent.
+// Shutdown stops admitting PutStream calls, waits within ctx for the ones
+// in flight to finish, then releases the *os.Root file descriptor.
 //
-// It does not wait for a PutStream still reading its stream: that write
-// fails with ErrInvalidPath once its stream ends, removes its temp file,
-// and holds a descriptor of its target directory until then.
+// At ctx it returns ctx's error and closes the root at once, so a write
+// still copying its stream cannot commit: it fails with ErrInvalidPath at
+// its rename and removes its temp file once its stream returns. A stream
+// blocked in its Read holds its write until the Read returns; the
+// shutdown completes then, and every later Shutdown returns the result of
+// the first. Called from a stream's Read it is refused with an error
+// wrapping contract.ErrStopFromOwnWork and changes nothing.
 func (d *LocalDriver) Shutdown(ctx context.Context) error {
+	return d.own.Stop(ctx, d.run, func() error {
+		<-d.run.Idle()
+		return d.closeRoot()
+	}, func() { _ = d.closeRoot() })
+}
+
+// OwnsCaller reports whether the calling goroutine runs work the driver's
+// Shutdown waits for: a stream's Read inside PutStream. A stop called from
+// it that waits for the driver's Shutdown would wait on itself. Read
+// without a lock.
+func (d *LocalDriver) OwnsCaller() bool {
+	return d.own.Nested()
+}
+
+// closeRoot closes the root once and returns the close's error, to this
+// call and every later one.
+func (d *LocalDriver) closeRoot() error {
 	d.rootMu.Lock()
 	defer d.rootMu.Unlock()
-	if d.rootHandle == nil {
-		return nil
+	if d.rootHandle != nil {
+		if err := d.rootHandle.Close(); err != nil {
+			d.closeErr = errchain.Errorf("velocity/storage: close local root: %w", err)
+		}
+		d.rootHandle = nil
 	}
-	err := d.rootHandle.Close()
-	d.rootHandle = nil
-	if err != nil {
-		return errchain.Errorf("velocity/storage: close local root: %w", err)
-	}
-	return nil
+	return d.closeErr
 }
 
 // withRoot runs fn with the driver's *os.Root under a read lock.
@@ -210,11 +242,18 @@ func (d *LocalDriver) Put(path string, contents []byte) error {
 // PutStream stores a stream at the given path.
 //
 // The stream is user code: its Read can block, panic, or call back into
-// the driver, Shutdown included. So the driver's lock is held only to
-// create the write's temp file and, after the copy, to rename it into
-// place; the copy runs without it. A write whose driver is shut down
-// before the rename fails with ErrInvalidPath and leaves nothing behind.
+// the driver. So the driver's lock is held only to create the write's
+// temp file and, after the copy, to rename it into place; the copy runs
+// without it. The write is admitted as the driver's work in flight:
+// Shutdown waits for it, and refuses to be called from its Read. A write
+// arriving once Shutdown began, or whose root Shutdown closed at its
+// deadline before the rename, fails with ErrInvalidPath and leaves
+// nothing behind.
 func (d *LocalDriver) PutStream(path string, stream io.Reader) error {
+	if !d.run.Admit() {
+		return errchain.Errorf("velocity/storage: local driver is shut down: %w", ErrInvalidPath)
+	}
+	defer d.run.Release()
 	rel, err := normalizeRelative(path)
 	if err != nil {
 		return err

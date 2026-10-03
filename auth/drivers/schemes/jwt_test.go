@@ -13,7 +13,9 @@ import (
 	"time"
 
 	jwtlib "github.com/golang-jwt/jwt/v5"
+
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // forgeUnsignedJWTSchemeToken crafts a JWT with the given alg header and no
@@ -30,41 +32,41 @@ func forgeUnsignedJWTSchemeToken(t *testing.T, alg string, claims map[string]int
 
 // mockJWTUserStore implements auth.UserStore for JWT tests
 type mockJWTUserStore struct {
-	findByIDFunc            func(id interface{}) (auth.Authenticatable, error)
-	findByCredentialsFunc   func(credentials map[string]interface{}) (auth.Authenticatable, error)
-	validateCredentialsFunc func(user auth.Authenticatable, credentials map[string]interface{}) bool
-	updateRememberTokenFunc func(user auth.Authenticatable, token string) error
+	findByIDFunc            func(id interface{}) (contract.Authenticatable, error)
+	findByCredentialsFunc   func(credentials map[string]interface{}) (contract.Authenticatable, error)
+	validateCredentialsFunc func(user contract.Authenticatable, credentials map[string]interface{}) bool
+	updateRememberTokenFunc func(user contract.Authenticatable, token string) error
 }
 
-func (p *mockJWTUserStore) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *mockJWTUserStore) FindByID(id interface{}) (contract.Authenticatable, error) {
 	if p.findByIDFunc != nil {
 		return p.findByIDFunc(id)
 	}
 	return &mockJWTUser{id: id, password: "hashedpassword"}, nil
 }
 
-func (p *mockJWTUserStore) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *mockJWTUserStore) FindByCredentials(credentials map[string]interface{}) (contract.Authenticatable, error) {
 	if p.findByCredentialsFunc != nil {
 		return p.findByCredentialsFunc(credentials)
 	}
 	return &mockJWTUser{id: "user123", email: "test@example.com", password: "hashedpassword"}, nil
 }
 
-func (p *mockJWTUserStore) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
+func (p *mockJWTUserStore) ValidateCredentials(user contract.Authenticatable, credentials map[string]interface{}) bool {
 	if p.validateCredentialsFunc != nil {
 		return p.validateCredentialsFunc(user, credentials)
 	}
 	return true
 }
 
-func (p *mockJWTUserStore) UpdateRememberToken(user auth.Authenticatable, token string) error {
+func (p *mockJWTUserStore) UpdateRememberToken(user contract.Authenticatable, token string) error {
 	if p.updateRememberTokenFunc != nil {
 		return p.updateRememberTokenFunc(user, token)
 	}
 	return nil
 }
 
-// mockJWTUser implements auth.Authenticatable for JWT tests
+// mockJWTUser implements contract.Authenticatable for JWT tests
 type mockJWTUser struct {
 	id            interface{}
 	email         string
@@ -205,7 +207,7 @@ func TestJWTScheme_Check(t *testing.T) {
 			name: "returns false when user not found",
 			setupScheme: func() *JWTScheme {
 				userStore := &mockJWTUserStore{
-					findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
+					findByIDFunc: func(id interface{}) (contract.Authenticatable, error) {
 						return nil, errors.New("user not found")
 					},
 				}
@@ -224,7 +226,7 @@ func TestJWTScheme_Check(t *testing.T) {
 			name: "returns false when user is nil",
 			setupScheme: func() *JWTScheme {
 				userStore := &mockJWTUserStore{
-					findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
+					findByIDFunc: func(id interface{}) (contract.Authenticatable, error) {
 						return nil, nil
 					},
 				}
@@ -244,7 +246,7 @@ func TestJWTScheme_Check(t *testing.T) {
 			setupScheme: func() *JWTScheme {
 				callCount := 0
 				userStore := &mockJWTUserStore{
-					findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
+					findByIDFunc: func(id interface{}) (contract.Authenticatable, error) {
 						callCount++
 						if callCount > 1 {
 							return nil, errors.New("should not be called twice")
@@ -326,7 +328,7 @@ func TestJWTScheme_User(t *testing.T) {
 			name: "returns nil when user store returns error",
 			setupScheme: func() *JWTScheme {
 				userStore := &mockJWTUserStore{
-					findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
+					findByIDFunc: func(id interface{}) (contract.Authenticatable, error) {
 						return nil, errors.New("database error")
 					},
 				}
@@ -459,7 +461,7 @@ func TestJWTScheme_ID(t *testing.T) {
 			name: "returns ID without verifying user exists",
 			setupScheme: func() *JWTScheme {
 				userStore := &mockJWTUserStore{
-					findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
+					findByIDFunc: func(id interface{}) (contract.Authenticatable, error) {
 						return nil, errors.New("user deleted")
 					},
 				}
@@ -499,7 +501,7 @@ func TestJWTScheme_Login(t *testing.T) {
 	tests := []struct {
 		name        string
 		setupScheme func() *JWTScheme
-		user        auth.Authenticatable
+		user        contract.Authenticatable
 		remember    []bool
 		wantErr     bool
 		checkResp   func(t *testing.T, w *httptest.ResponseRecorder)
@@ -606,7 +608,7 @@ func TestJWTScheme_LoginByID(t *testing.T) {
 			name: "returns error when user not found",
 			setupScheme: func() *JWTScheme {
 				userStore := &mockJWTUserStore{
-					findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
+					findByIDFunc: func(id interface{}) (contract.Authenticatable, error) {
 						return nil, errors.New("user not found")
 					},
 				}
@@ -665,7 +667,7 @@ func TestJWTScheme_Attempt(t *testing.T) {
 			name: "returns false when user not found",
 			setupScheme: func() *JWTScheme {
 				userStore := &mockJWTUserStore{
-					findByCredentialsFunc: func(credentials map[string]interface{}) (auth.Authenticatable, error) {
+					findByCredentialsFunc: func(credentials map[string]interface{}) (contract.Authenticatable, error) {
 						return nil, errors.New("user not found")
 					},
 				}
@@ -694,7 +696,7 @@ func TestJWTScheme_Attempt(t *testing.T) {
 			name: "returns false when password validation fails",
 			setupScheme: func() *JWTScheme {
 				userStore := &mockJWTUserStore{
-					validateCredentialsFunc: func(user auth.Authenticatable, credentials map[string]interface{}) bool {
+					validateCredentialsFunc: func(user contract.Authenticatable, credentials map[string]interface{}) bool {
 						return false
 					},
 				}
@@ -1035,7 +1037,7 @@ func TestJWTScheme_SetUserStore(t *testing.T) {
 func TestJWTScheme_GenerateToken(t *testing.T) {
 	tests := []struct {
 		name         string
-		user         auth.Authenticatable
+		user         contract.Authenticatable
 		customClaims []map[string]interface{}
 		wantErr      bool
 	}{
@@ -1072,7 +1074,7 @@ func TestJWTScheme_GenerateToken(t *testing.T) {
 func TestJWTScheme_GenerateRefreshToken(t *testing.T) {
 	tests := []struct {
 		name    string
-		user    auth.Authenticatable
+		user    contract.Authenticatable
 		wantErr bool
 	}{
 		{
@@ -1130,7 +1132,7 @@ func TestJWTScheme_RefreshToken(t *testing.T) {
 			name: "returns error when user not found during refresh",
 			setupScheme: func() *JWTScheme {
 				userStore := &mockJWTUserStore{
-					findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
+					findByIDFunc: func(id interface{}) (contract.Authenticatable, error) {
 						return nil, errors.New("user not found")
 					},
 				}
@@ -1362,13 +1364,13 @@ func TestJWTScheme_ValidateToken_NegativeTable(t *testing.T) {
 }
 
 // Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
-func (p *mockJWTUserStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *mockJWTUserStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *mockJWTUserStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *mockJWTUserStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *mockJWTUserStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *mockJWTUserStore) UpdateRememberTokenCtx(_ context.Context, user contract.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }
 

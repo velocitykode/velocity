@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // helper: compute a TOTP code for a base32 secret at the given unix time.
@@ -410,7 +412,7 @@ func TestTOTP_DecodeSecret_AcceptsLowercaseAndSpaces(t *testing.T) {
 
 func TestRequireTwoFactor_DeniesWhenStatusFalse(t *testing.T) {
 	access := NewAccess()
-	access.Define("admin", func(user Authenticatable, args ...interface{}) bool { return true })
+	access.Define("admin", func(user contract.Authenticatable, args ...interface{}) bool { return true })
 	access.Before(RequireTwoFactor(func(actor any) bool { return false }))
 
 	user := &mockUser{id: 1}
@@ -421,7 +423,7 @@ func TestRequireTwoFactor_DeniesWhenStatusFalse(t *testing.T) {
 
 func TestRequireTwoFactor_AllowsWhenStatusTrue(t *testing.T) {
 	access := NewAccess()
-	access.Define("admin", func(user Authenticatable, args ...interface{}) bool { return true })
+	access.Define("admin", func(user contract.Authenticatable, args ...interface{}) bool { return true })
 	access.Before(RequireTwoFactor(func(actor any) bool { return true }))
 
 	user := &mockUser{id: 1}
@@ -432,7 +434,7 @@ func TestRequireTwoFactor_AllowsWhenStatusTrue(t *testing.T) {
 
 func TestRequireTwoFactor_NilStatusIsNoop(t *testing.T) {
 	access := NewAccess()
-	access.Define("admin", func(user Authenticatable, args ...interface{}) bool { return true })
+	access.Define("admin", func(user contract.Authenticatable, args ...interface{}) bool { return true })
 	access.Before(RequireTwoFactor(nil))
 
 	user := &mockUser{id: 1}

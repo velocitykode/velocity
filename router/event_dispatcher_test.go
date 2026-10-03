@@ -30,8 +30,8 @@ func TestAsyncEventDispatcher_DeliversAllEvents(t *testing.T) {
 		}
 	}
 
-	if err := r.ShutdownEventDispatcher(context.Background()); err != nil {
-		t.Fatalf("ShutdownEventDispatcher: %v", err)
+	if err := r.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Router.Shutdown: %v", err)
 	}
 
 	mu.Lock()
@@ -74,7 +74,7 @@ func TestAsyncEventDispatcher_DoesNotBlockCaller(t *testing.T) {
 	}
 
 	close(release)
-	if err := r.ShutdownEventDispatcher(context.Background()); err != nil {
+	if err := r.Shutdown(context.Background()); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
 }
@@ -95,7 +95,7 @@ func TestAsyncEventDispatcher_RecoversListenerPanics(t *testing.T) {
 		_ = r.events.Dispatcher()(context.Background(), i)
 	}
 
-	if err := r.ShutdownEventDispatcher(context.Background()); err != nil {
+	if err := r.Shutdown(context.Background()); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
 
@@ -105,23 +105,23 @@ func TestAsyncEventDispatcher_RecoversListenerPanics(t *testing.T) {
 	}
 }
 
-func TestShutdownEventDispatcher_NoopWhenSync(t *testing.T) {
+func TestRouterShutdown_NoopWhenSync(t *testing.T) {
 	r := NewV2()
 	// Never set an async dispatcher.
-	if err := r.ShutdownEventDispatcher(context.Background()); err != nil {
+	if err := r.Shutdown(context.Background()); err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}
 }
 
-func TestShutdownEventDispatcher_SecondCallIsNoop(t *testing.T) {
+func TestRouterShutdown_SecondCallIsNoop(t *testing.T) {
 	r := NewV2()
 	r.SetAsyncEventDispatcher(func(_ context.Context, event interface{}) error { return nil }, 1, 4)
 
-	if err := r.ShutdownEventDispatcher(context.Background()); err != nil {
+	if err := r.Shutdown(context.Background()); err != nil {
 		t.Fatalf("first shutdown: %v", err)
 	}
 	// Second call must not panic on the closed channel.
-	if err := r.ShutdownEventDispatcher(context.Background()); err != nil {
+	if err := r.Shutdown(context.Background()); err != nil {
 		t.Errorf("second shutdown: %v", err)
 	}
 }
@@ -273,8 +273,8 @@ func TestAsyncEventDispatcher_RecordedFailureCountedOnce(t *testing.T) {
 	for i := 0; i < n; i++ {
 		emitEvent(r, context.Background(), &RequestHandled{})
 	}
-	if err := r.ShutdownEventDispatcher(context.Background()); err != nil {
-		t.Fatalf("ShutdownEventDispatcher: %v", err)
+	if err := r.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Router.Shutdown: %v", err)
 	}
 	if got := app.Count(); got != n {
 		t.Errorf("app count = %d, want %d (one per failed event)", got, n)

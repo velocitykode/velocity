@@ -15,6 +15,7 @@ import (
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/cache/drivers"
 	cacheredis "github.com/velocitykode/velocity/cache/redis"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // recordBackends are the shipped server session record stores: the
@@ -52,7 +53,7 @@ func recordBackends() []struct {
 
 // loadSession loads the session id names from store, as a request carrying
 // its cookie does.
-func loadSession(t *testing.T, store *ServerStore, id string) auth.Session {
+func loadSession(t *testing.T, store *ServerStore, id string) contract.Session {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	s, err := store.Get(r, id)
@@ -126,7 +127,7 @@ func TestServerStore_ConcurrentSavesKeepEveryKey(t *testing.T) {
 			}
 			id := first.ID()
 
-			sessions := make([]auth.Session, writers)
+			sessions := make([]contract.Session, writers)
 			for i := range sessions {
 				sessions[i] = loadSession(t, store, id)
 			}
@@ -134,7 +135,7 @@ func TestServerStore_ConcurrentSavesKeepEveryKey(t *testing.T) {
 			errs := make(chan error, writers)
 			for i, s := range sessions {
 				wg.Add(1)
-				go func(i int, s auth.Session) {
+				go func(i int, s contract.Session) {
 					defer wg.Done()
 					if i == 0 {
 						_ = s.GetFlash("status")

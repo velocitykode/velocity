@@ -34,7 +34,7 @@ const (
 )
 
 type cachedUser struct {
-	user     auth.Authenticatable
+	user     contract.Authenticatable
 	cachedAt time.Time
 }
 
@@ -306,7 +306,7 @@ func (g *JWTScheme) evictExpired() {
 	}
 }
 
-func (g *JWTScheme) getCachedUser(token string) (auth.Authenticatable, bool) {
+func (g *JWTScheme) getCachedUser(token string) (contract.Authenticatable, bool) {
 	g.mu.RLock()
 	entry, ok := g.userCache[token]
 	g.mu.RUnlock()
@@ -322,7 +322,7 @@ func (g *JWTScheme) getCachedUser(token string) (auth.Authenticatable, bool) {
 	return entry.user, true
 }
 
-func (g *JWTScheme) cacheUser(token string, user auth.Authenticatable) {
+func (g *JWTScheme) cacheUser(token string, user contract.Authenticatable) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -368,7 +368,7 @@ func (g *JWTScheme) Check(r *http.Request) bool {
 }
 
 // User returns the authenticated user from JWT
-func (g *JWTScheme) User(r *http.Request) auth.Authenticatable {
+func (g *JWTScheme) User(r *http.Request) contract.Authenticatable {
 	token := g.getTokenFromRequest(r)
 	if token == "" {
 		return nil
@@ -414,7 +414,7 @@ func (g *JWTScheme) ID(r *http.Request) interface{} {
 }
 
 // Login generates a JWT token for the user
-func (g *JWTScheme) Login(w http.ResponseWriter, r *http.Request, user auth.Authenticatable, remember ...bool) error {
+func (g *JWTScheme) Login(w http.ResponseWriter, r *http.Request, user contract.Authenticatable, remember ...bool) error {
 	// Generate access token
 	token, err := g.jwtManager.GenerateToken(user)
 	if err != nil {
@@ -589,12 +589,12 @@ func (g *JWTScheme) SetRefreshGenerationStore(store auth.RefreshGenerationStore)
 }
 
 // GenerateToken generates a JWT token for a user
-func (g *JWTScheme) GenerateToken(user auth.Authenticatable, claims ...map[string]interface{}) (string, error) {
+func (g *JWTScheme) GenerateToken(user contract.Authenticatable, claims ...map[string]interface{}) (string, error) {
 	return g.jwtManager.GenerateToken(user, claims...)
 }
 
 // GenerateRefreshToken generates a refresh token
-func (g *JWTScheme) GenerateRefreshToken(user auth.Authenticatable) (string, error) {
+func (g *JWTScheme) GenerateRefreshToken(user contract.Authenticatable) (string, error) {
 	return g.jwtManager.GenerateRefreshToken(user)
 }
 

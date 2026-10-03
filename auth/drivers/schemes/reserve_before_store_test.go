@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // hookUsers is a revokeTestStore that runs onFind, when set, before a user
@@ -20,7 +21,7 @@ type hookUsers struct {
 	credentialed atomic.Int32
 }
 
-func (u *hookUsers) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authenticatable, error) {
+func (u *hookUsers) FindByIDCtx(ctx context.Context, id interface{}) (contract.Authenticatable, error) {
 	u.finds.Add(1)
 	if p := u.onFind.Load(); p != nil {
 		(*p)()
@@ -28,7 +29,7 @@ func (u *hookUsers) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authe
 	return u.revokeTestStore.FindByIDCtx(ctx, id)
 }
 
-func (u *hookUsers) FindByCredentialsCtx(ctx context.Context, _ map[string]interface{}) (auth.Authenticatable, error) {
+func (u *hookUsers) FindByCredentialsCtx(ctx context.Context, _ map[string]interface{}) (contract.Authenticatable, error) {
 	u.credentialed.Add(1)
 	return u.revokeTestStore.FindByIDCtx(ctx, "u1")
 }

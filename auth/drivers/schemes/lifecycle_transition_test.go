@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/hostile"
 	"github.com/velocitykode/velocity/router"
 )
@@ -130,7 +131,7 @@ type pausingCASStore struct {
 	once    sync.Once
 }
 
-func (p *pausingCASStore) CompareAndSwapRememberToken(ctx context.Context, u auth.Authenticatable, oldToken, newToken string) (bool, error) {
+func (p *pausingCASStore) CompareAndSwapRememberToken(ctx context.Context, u contract.Authenticatable, oldToken, newToken string) (bool, error) {
 	first := false
 	p.once.Do(func() { first = true })
 	if !first {
@@ -279,7 +280,7 @@ func TestRememberRecall_FailedSaveDuringTheTransitionRollsBack(t *testing.T) {
 			clock.advance(time.Minute)
 
 			orig := saveSessionFromMiddleware
-			saveSessionFromMiddleware = func(*SessionScheme, http.ResponseWriter, auth.Session) error {
+			saveSessionFromMiddleware = func(*SessionScheme, http.ResponseWriter, contract.Session) error {
 				return errors.New("store down")
 			}
 			scheme.SetUserStore(pausing)
@@ -307,7 +308,7 @@ type flakyUserStore struct {
 
 var errUserDatabaseDown = errors.New("user database unreachable")
 
-func (p *flakyUserStore) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *flakyUserStore) FindByIDCtx(ctx context.Context, id interface{}) (contract.Authenticatable, error) {
 	if p.down.Load() {
 		return nil, errUserDatabaseDown
 	}

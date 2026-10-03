@@ -445,7 +445,7 @@ func TestInstall_PanicCarryingMarkerIsAReported500(t *testing.T) {
 // TestInstall_MiddlewareReportsAMarkedPanicOnce asserts the report-once
 // flow for a recovered panic whose value was marked: the handler under
 // Timeout panics with a marked error, an outer middleware reports the
-// forwarded panic through c.Errors().Report and returns it marked, and
+// forwarded panic through the c.Errors() handler and returns it marked, and
 // the boundary reports nothing more.
 func TestInstall_MiddlewareReportsAMarkedPanicOnce(t *testing.T) {
 	rec := &recordingReporter{}
@@ -458,7 +458,11 @@ func TestInstall_MiddlewareReportsAMarkedPanicOnce(t *testing.T) {
 			err := next(c)
 			var pe *router.PanicError
 			if errors.As(err, &pe) {
-				c.Errors().Report(err, trace.NewErrorContext(context.Background()))
+				eh, herr := c.Errors()
+				if herr != nil {
+					return herr
+				}
+				eh.Report(err, trace.NewErrorContext(context.Background()))
 				return contract.MarkReported(err)
 			}
 			return err

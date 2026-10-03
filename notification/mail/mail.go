@@ -6,6 +6,7 @@ import (
 	"html"
 	"net/url"
 	"strings"
+	"sync/atomic"
 
 	"github.com/velocitykode/velocity/internal/errchain"
 	velmail "github.com/velocitykode/velocity/mail"
@@ -21,17 +22,23 @@ func init() {
 // MailChannel delivers notifications via the mail system.
 // It requires a mail.Mailer to be set before sending.
 type MailChannel struct {
-	mailer velmail.Mailer
+	// mailer is read once per Send, so SetMailer may replace it while
+	// sends run.
+	mailer atomic.Pointer[mailerRef]
 }
+
+// mailerRef boxes the channel's mailer for its atomic pointer.
+type mailerRef struct{ m velmail.Mailer }
 
 // NewMailChannel creates a new mail notification channel.
 func NewMailChannel() *MailChannel {
 	return &MailChannel{}
 }
 
-// SetMailer sets the mailer used to deliver notifications.
+// SetMailer sets the mailer used to deliver notifications. Safe to call
+// while sends run: a send in flight finishes on the mailer it read.
 func (c *MailChannel) SetMailer(mailer velmail.Mailer) {
-	c.mailer = mailer
+	c.mailer.Store(&mailerRef{mailer})
 }
 
 // Send delivers a notification via mail.
@@ -46,7 +53,11 @@ func (c *MailChannel) Send(ctx context.Context, notifiable interface{}, n notifi
 		return nil
 	}
 
-	if c.mailer == nil {
+	var mailer velmail.Mailer
+	if ref := c.mailer.Load(); ref != nil {
+		mailer = ref.m
+	}
+	if mailer == nil {
 		return fmt.Errorf("notification: mail channel has no mailer configured")
 	}
 
@@ -130,7 +141,7 @@ func (c *MailChannel) Send(ctx context.Context, notifiable interface{}, n notifi
 		return err
 	}
 
-	return c.mailer.Send(ctx, msg)
+	return mailer.Send(ctx, msg)
 }
 
 // renderMailText renders a plain text body from the structured MailMessage fields.

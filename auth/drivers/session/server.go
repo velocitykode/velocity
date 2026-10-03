@@ -96,7 +96,7 @@ func (s *ServerStore) loadRecords() auth.ServerSessionStore {
 }
 
 // Create returns a new, unsaved session. An empty id generates one.
-func (s *ServerStore) Create(id string) (auth.Session, error) {
+func (s *ServerStore) Create(id string) (contract.Session, error) {
 	return &ServerSession{
 		BaseSession: auth.NewSession(id),
 		store:       s,
@@ -121,7 +121,7 @@ func (s *ServerStore) Create(id string) (auth.Session, error) {
 //     grace runs out, so this is mostly a replayed or long-open cookie;
 //     the scheme fails secure and never revives it by remember-me;
 //   - a store that cannot be read: the visitor is treated as signed out.
-func (s *ServerStore) Get(r *http.Request, id string) (auth.Session, error) {
+func (s *ServerStore) Get(r *http.Request, id string) (contract.Session, error) {
 	records := s.loadRecords()
 	if records == nil || !validSessionID(id) {
 		return s.Create("")
@@ -193,7 +193,7 @@ func (s *ServerStore) Get(r *http.Request, id string) (auth.Session, error) {
 //
 // Any store failure is returned; except for a destroyed session's deletion,
 // no cookie is written then.
-func (s *ServerStore) Save(w http.ResponseWriter, session auth.Session) error {
+func (s *ServerStore) Save(w http.ResponseWriter, session contract.Session) error {
 	ss, ok := session.(*ServerSession)
 	if !ok {
 		return auth.ErrInvalidSession

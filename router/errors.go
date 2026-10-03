@@ -385,6 +385,8 @@ func (f *errorFacts) answer() (status int, headers http.Header, named bool) {
 //   - *http.MaxBytesError: 413.
 //   - otherwise 500.
 //
+// A 503 whose chain holds contract.ErrServerShuttingDown (a request the
+// router refused once its Shutdown began) logs nothing.
 // A 503 whose chain holds context.DeadlineExceeded (explicit or not), and
 // a request the server cancelled while shutting down, log at warn; any
 // other status of 500 and above logs at error level; below 500 nothing is
@@ -423,6 +425,9 @@ func resolveClassified(c *Context, err error, f *errorFacts, info ErrorInfo) def
 		switch {
 		case res.status == http.StatusServiceUnavailable && f.deadline:
 			res.level = logWarn
+		case res.status == http.StatusServiceUnavailable && errchain.Is(err, contract.ErrServerShuttingDown):
+			// A request the router refused while stopping: an outcome
+			// of the shutdown, not a failure, so nothing is logged.
 		case res.status >= http.StatusInternalServerError:
 			res.level = logError
 		}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // rememberRevivalStore exposes UpdateRememberToken so the test can mint
@@ -17,7 +18,7 @@ type rememberRevivalStore struct {
 	user *revokeTestUser
 }
 
-func (p *rememberRevivalStore) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *rememberRevivalStore) FindByID(id interface{}) (contract.Authenticatable, error) {
 	if p.user == nil {
 		return nil, nil
 	}
@@ -29,15 +30,15 @@ func (p *rememberRevivalStore) FindByID(id interface{}) (auth.Authenticatable, e
 	return nil, nil
 }
 
-func (p *rememberRevivalStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (p *rememberRevivalStore) FindByCredentials(map[string]interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
 
-func (p *rememberRevivalStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (p *rememberRevivalStore) ValidateCredentials(contract.Authenticatable, map[string]interface{}) bool {
 	return true
 }
 
-func (p *rememberRevivalStore) UpdateRememberToken(user auth.Authenticatable, token string) error {
+func (p *rememberRevivalStore) UpdateRememberToken(user contract.Authenticatable, token string) error {
 	if u, ok := user.(*revokeTestUser); ok {
 		u.rememberToken = token
 	}
@@ -49,7 +50,7 @@ func (p *rememberRevivalStore) UpdateRememberToken(user auth.Authenticatable, to
 
 // CompareAndSwapRememberToken implements the capability the scheme now
 // requires for recall rotation; recalls fail closed without it.
-func (p *rememberRevivalStore) CompareAndSwapRememberToken(_ context.Context, user auth.Authenticatable, oldToken, newToken string) (bool, error) {
+func (p *rememberRevivalStore) CompareAndSwapRememberToken(_ context.Context, user contract.Authenticatable, oldToken, newToken string) (bool, error) {
 	if p.user == nil || p.user.rememberToken != oldToken {
 		return false, nil
 	}
@@ -181,12 +182,12 @@ func TestSessionScheme_RememberRevival_RotatesSessionID(t *testing.T) {
 }
 
 // Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
-func (p *rememberRevivalStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *rememberRevivalStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *rememberRevivalStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *rememberRevivalStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *rememberRevivalStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *rememberRevivalStore) UpdateRememberTokenCtx(_ context.Context, user contract.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -34,15 +35,15 @@ type trackingStore struct {
 	session *trackingSession
 }
 
-func (s *trackingStore) Create(id string) (auth.Session, error) {
+func (s *trackingStore) Create(id string) (contract.Session, error) {
 	return s.session, nil
 }
 
-func (s *trackingStore) Get(r *http.Request, id string) (auth.Session, error) {
+func (s *trackingStore) Get(r *http.Request, id string) (contract.Session, error) {
 	return s.session, nil
 }
 
-func (s *trackingStore) Save(w http.ResponseWriter, session auth.Session) error {
+func (s *trackingStore) Save(w http.ResponseWriter, session contract.Session) error {
 	return nil
 }
 
@@ -67,7 +68,7 @@ func newSchemeForMiddleware(t *testing.T, store *trackingStore) *SessionScheme {
 
 // runMiddleware drives a single request through SessionMiddleware so we can
 // assert the post-handler save fired (or did not).
-func runMiddleware(t *testing.T, g *SessionScheme, mutate func(s auth.Session)) (*trackingSession, *httptest.ResponseRecorder) {
+func runMiddleware(t *testing.T, g *SessionScheme, mutate func(s contract.Session)) (*trackingSession, *httptest.ResponseRecorder) {
 	t.Helper()
 
 	store, ok := g.store.(*trackingStore)
@@ -103,7 +104,7 @@ func TestSessionMiddleware_PersistsModifiedSessionAfterHandler(t *testing.T) {
 	store := &trackingStore{session: newTrackingSession()}
 	g := newSchemeForMiddleware(t, store)
 
-	sess, _ := runMiddleware(t, g, func(s auth.Session) {
+	sess, _ := runMiddleware(t, g, func(s contract.Session) {
 		s.Put("user_id", "u-1")
 	})
 
@@ -116,7 +117,7 @@ func TestSessionMiddleware_NoopWhenSessionUnmodified(t *testing.T) {
 	store := &trackingStore{session: newTrackingSession()}
 	g := newSchemeForMiddleware(t, store)
 
-	sess, _ := runMiddleware(t, g, func(s auth.Session) {
+	sess, _ := runMiddleware(t, g, func(s contract.Session) {
 		// Read-only: Get returns nil, no Put, no Flash. The session
 		// should remain pristine; the middleware MUST NOT call Save.
 		_ = s.Get("user_id")
@@ -194,7 +195,7 @@ func TestSessionMiddleware_FlashWriteIsPersisted(t *testing.T) {
 	store := &trackingStore{session: newTrackingSession()}
 	g := newSchemeForMiddleware(t, store)
 
-	sess, _ := runMiddleware(t, g, func(s auth.Session) {
+	sess, _ := runMiddleware(t, g, func(s contract.Session) {
 		s.Flash("status", "saved")
 	})
 
@@ -210,7 +211,7 @@ func TestSessionMiddleware_DestroyedSessionIsSaved(t *testing.T) {
 	store := &trackingStore{session: newTrackingSession()}
 	g := newSchemeForMiddleware(t, store)
 
-	sess, _ := runMiddleware(t, g, func(s auth.Session) {
+	sess, _ := runMiddleware(t, g, func(s contract.Session) {
 		_ = s.Invalidate()
 	})
 

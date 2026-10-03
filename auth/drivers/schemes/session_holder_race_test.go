@@ -9,31 +9,32 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // holderRaceUserStore returns a stable user every time. The test wants
 // the cache cells to race, not the user lookup.
 type holderRaceUserStore struct{}
 
-func (p *holderRaceUserStore) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *holderRaceUserStore) FindByID(id interface{}) (contract.Authenticatable, error) {
 	return &auth.AuthUser{ID: id, Name: "Test", Email: "t@example.com"}, nil
 }
-func (p *holderRaceUserStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *holderRaceUserStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *holderRaceUserStore) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *holderRaceUserStore) FindByCredentials(credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return &auth.AuthUser{ID: "1", Name: "Test", Email: "t@example.com"}, nil
 }
-func (p *holderRaceUserStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *holderRaceUserStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *holderRaceUserStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (p *holderRaceUserStore) ValidateCredentials(contract.Authenticatable, map[string]interface{}) bool {
 	return true
 }
-func (p *holderRaceUserStore) UpdateRememberToken(auth.Authenticatable, string) error {
+func (p *holderRaceUserStore) UpdateRememberToken(contract.Authenticatable, string) error {
 	return nil
 }
-func (p *holderRaceUserStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *holderRaceUserStore) UpdateRememberTokenCtx(_ context.Context, user contract.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }
 

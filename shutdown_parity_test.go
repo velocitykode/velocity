@@ -58,6 +58,8 @@ func TestServeHTTP_ListenError_RunsShutdown(t *testing.T) {
 // viewShutdownProbe satisfies contract.ViewEngine and contract.ShutdownAware
 // so Shutdown's view-engine step is observable.
 type viewShutdownProbe struct {
+	// contract.ViewEngine supplies the methods this fake does not use.
+	contract.ViewEngine
 	shutdowns atomic.Int32
 }
 

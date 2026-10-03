@@ -33,25 +33,47 @@ func (m *blockingModule) Shutdown(context.Context) error {
 }
 
 // queueCloseProbe and cacheCloseProbe count the Shutdown of the service
-// they wrap.
+// they wrap. A teardown step that drains (teardown.Drain) calls a
+// Shutdown that returned at its done ctx once more, detached from the
+// ctx's cancellation (ctx.Done() is nil), for the result the first call
+// retained: that re-wait is counted apart, in rewaits, since it closes
+// nothing again.
 type queueCloseProbe struct {
 	contract.QueueDriver
-	shutdowns atomic.Int32
+	shutdowns, rewaits atomic.Int32
 }
 
 func (p *queueCloseProbe) Shutdown(ctx context.Context) error {
-	p.shutdowns.Add(1)
+	countClose(ctx, &p.shutdowns, &p.rewaits)
 	return p.QueueDriver.Shutdown(ctx)
 }
 
 type cacheCloseProbe struct {
 	contract.CacheManager
-	shutdowns atomic.Int32
+	shutdowns, rewaits atomic.Int32
 }
 
 func (p *cacheCloseProbe) Shutdown(ctx context.Context) error {
-	p.shutdowns.Add(1)
+	countClose(ctx, &p.shutdowns, &p.rewaits)
 	return p.CacheManager.Shutdown(ctx)
+}
+
+// countClose counts a Shutdown call in shutdowns, or in rewaits when ctx
+// is a detached re-wait.
+func countClose(ctx context.Context, shutdowns, rewaits *atomic.Int32) {
+	if ctx.Done() == nil {
+		rewaits.Add(1)
+		return
+	}
+	shutdowns.Add(1)
+}
+
+// assertRewaits fails t when a probe was re-waited more than once.
+func assertRewaits(t *testing.T, b *blockedApp) {
+	t.Helper()
+	if q, c := b.queue.rewaits.Load(), b.cache.rewaits.Load(); q > 1 || c > 1 {
+		t.Errorf("re-waits: queue %d, cache %d; want at most one each", q, c)
+	}
 }
 
 // blockedApp is a test app whose one module blocks in Shutdown, with the
@@ -134,6 +156,7 @@ func TestShutdown_BlockingModuleDoesNotHoldTheDeadline(t *testing.T) {
 	if b.mod.shutdowns.Load() != 1 || b.queue.shutdowns.Load() != 1 {
 		t.Error("a Shutdown after the teardown ended ran a step again")
 	}
+	assertRewaits(t, b)
 }
 
 // Overlapping Shutdowns share the one teardown: each returns at its own
@@ -161,6 +184,7 @@ func TestShutdown_OverlappingCallsShareOneTeardown(t *testing.T) {
 		t.Errorf("closes: queue %d, cache %d, view %d; want one each",
 			b.queue.shutdowns.Load(), b.cache.shutdowns.Load(), b.view.shutdowns.Load())
 	}
+	assertRewaits(t, b)
 }
 
 // reenteringModule calls App.Shutdown from its own Shutdown.

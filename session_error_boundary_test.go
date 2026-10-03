@@ -57,7 +57,7 @@ func TestInertiaErrorPage_FlashDrainedByErrorPageStaysDrained(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
 	a.Errors(func(h contract.ErrorHandler) { h.SetDebug(false) })
-	m := auth.FromServices(a.Services)
+	m := a.Services.Auth.(*auth.Manager)
 	if m == nil {
 		t.Fatal("app has no *auth.Manager")
 	}
@@ -197,7 +197,7 @@ func TestInertiaErrorPage_FlashDrainStaysDrainedWhereverBondIsRegistered(t *test
 			}
 			t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
 			a.Errors(func(h contract.ErrorHandler) { h.SetDebug(false) })
-			m := auth.FromServices(a.Services)
+			m := a.Services.Auth.(*auth.Manager)
 			if m == nil {
 				t.Fatal("app has no *auth.Manager")
 			}

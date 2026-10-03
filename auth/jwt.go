@@ -12,6 +12,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/velocitykode/velocity/auth/internal/identity"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
 )
 
@@ -491,7 +492,7 @@ func (j *JWTManager) verificationKey() interface{} {
 }
 
 // GenerateToken generates a JWT token for a user
-func (j *JWTManager) GenerateToken(user Authenticatable, customClaims ...map[string]interface{}) (string, error) {
+func (j *JWTManager) GenerateToken(user contract.Authenticatable, customClaims ...map[string]interface{}) (string, error) {
 	id, subject, err := identity.Of(user)
 	if err != nil {
 		return "", err
@@ -555,7 +556,7 @@ func (j *JWTManager) GenerateToken(user Authenticatable, customClaims ...map[str
 // transient cache flaps. The trade-off: a generation lookup error degrades
 // gracefully to "act as if user has no prior generation"; subsequent
 // Logout-driven bumps still invalidate the token.
-func (j *JWTManager) GenerateRefreshToken(user Authenticatable) (string, error) {
+func (j *JWTManager) GenerateRefreshToken(user contract.Authenticatable) (string, error) {
 	id, userID, err := identity.Of(user)
 	if err != nil {
 		return "", err

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/hostile"
 	"github.com/velocitykode/velocity/router"
 )
@@ -20,14 +21,14 @@ type gateHookUsers struct {
 	onFind, onSwap atomic.Pointer[func()]
 }
 
-func (u *gateHookUsers) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authenticatable, error) {
+func (u *gateHookUsers) FindByIDCtx(ctx context.Context, id interface{}) (contract.Authenticatable, error) {
 	if p := u.onFind.Load(); p != nil {
 		(*p)()
 	}
 	return u.revokeTestStore.FindByIDCtx(ctx, id)
 }
 
-func (u *gateHookUsers) CompareAndSwapRememberToken(ctx context.Context, user auth.Authenticatable, oldToken, newToken string) (bool, error) {
+func (u *gateHookUsers) CompareAndSwapRememberToken(ctx context.Context, user contract.Authenticatable, oldToken, newToken string) (bool, error) {
 	if p := u.onSwap.Load(); p != nil {
 		(*p)()
 	}
@@ -90,7 +91,7 @@ func TestSessionScheme_OperationUserCodeRunsWithTheGateOnly(t *testing.T) {
 		{"Login CSRF rotation", func(rg *rig, hook func()) { rg.rotator.onRotate.Store(&hook) }, func(*rig) {}, http.MethodPost, "/login", false},
 		{"commit session save", func(rg *rig, hook func()) {
 			orig := saveSessionFromMiddleware
-			saveSessionFromMiddleware = func(g *SessionScheme, w http.ResponseWriter, s auth.Session) error {
+			saveSessionFromMiddleware = func(g *SessionScheme, w http.ResponseWriter, s contract.Session) error {
 				hook()
 				return orig(g, w, s)
 			}

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/console"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
@@ -22,7 +23,7 @@ import (
 // driver so the error handler's LogReporter writes to it too, is the
 // returned fieldLogger, with a recording reporter on the error handler.
 // Boot-time lines are cleared before it returns.
-func newFieldApp(t *testing.T) (*App, fieldLogger, *recordingReporter) {
+func newFieldApp(t *testing.T) (*App, *fieldLogger, *recordingReporter) {
 	t.Helper()
 	logger := newFieldLogger()
 	const driverName = "field-capture"
@@ -51,7 +52,11 @@ func newFieldApp(t *testing.T) (*App, fieldLogger, *recordingReporter) {
 }
 
 // userAuth is an auth manager whose facet names every request's user.
-type userAuth struct{ id string }
+type userAuth struct {
+	// contract.AuthManager supplies the methods this fake does not use.
+	contract.AuthManager
+	id string
+}
 
 func (userAuth) Allows(*http.Request, string, ...interface{}) bool     { return true }
 func (userAuth) Authorize(*http.Request, string, ...interface{}) error { return nil }

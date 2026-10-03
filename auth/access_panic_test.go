@@ -4,13 +4,15 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // panicPolicy is a Policy whose Authorize() should never be reached in the
 // E-04 regression tests because the panicking Before callback fires first.
 type panicPolicy struct{}
 
-func (panicPolicy) Authorize(user Authenticatable, action string, resource interface{}) bool {
+func (panicPolicy) Authorize(user contract.Authenticatable, action string, resource interface{}) bool {
 	return false
 }
 
@@ -33,7 +35,7 @@ func TestAuthorizePolicy_BeforePanicDoesNotLeakRLock(t *testing.T) {
 	for iter := 0; iter < 10; iter++ {
 		access := NewAccess()
 		access.RegisterPolicy("post", panicPolicy{})
-		access.Before(func(user Authenticatable, ability string, args ...interface{}) *bool {
+		access.Before(func(user contract.Authenticatable, ability string, args ...interface{}) *bool {
 			panic("E-04 regression: simulate before-callback panic")
 		})
 
@@ -60,7 +62,7 @@ func TestAuthorizePolicy_BeforePanicDoesNotLeakRLock(t *testing.T) {
 		defineDone := make(chan struct{})
 		go func() {
 			defer close(defineDone)
-			access.Define("x", func(user Authenticatable, args ...interface{}) bool {
+			access.Define("x", func(user contract.Authenticatable, args ...interface{}) bool {
 				return true
 			})
 		}()
@@ -81,13 +83,13 @@ func TestAuthorizePolicy_BeforePanicDoesNotLeakRLock(t *testing.T) {
 // authorization would stop responding process-wide.
 func TestAuthorizePolicy_PanicAllowsConcurrentAuthorization(t *testing.T) {
 	access := NewAccess()
-	access.RegisterPolicy("post", PolicyFunc(func(user Authenticatable, action string, resource interface{}) bool {
+	access.RegisterPolicy("post", PolicyFunc(func(user contract.Authenticatable, action string, resource interface{}) bool {
 		return true
 	}))
 
 	// Register a panicking Before first, then a regular Define attempt
 	// after the panic to prove the writer path is unblocked.
-	access.Before(func(user Authenticatable, ability string, args ...interface{}) *bool {
+	access.Before(func(user contract.Authenticatable, ability string, args ...interface{}) *bool {
 		panic("E-04 regression: panic in before")
 	})
 
@@ -104,7 +106,7 @@ func TestAuthorizePolicy_PanicAllowsConcurrentAuthorization(t *testing.T) {
 	writeDone := make(chan struct{})
 	go func() {
 		defer close(writeDone)
-		access.Define("after", func(u Authenticatable, args ...interface{}) bool { return true })
+		access.Define("after", func(u contract.Authenticatable, args ...interface{}) bool { return true })
 	}()
 	select {
 	case <-writeDone:

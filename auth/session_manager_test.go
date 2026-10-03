@@ -4,16 +4,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // mockSessionScheme is a Scheme that also satisfies SessionAware so the
 // Manager.Session delegation path can be exercised.
 type mockSessionScheme struct {
 	mockScheme
-	session Session
+	session contract.Session
 }
 
-func (g *mockSessionScheme) Session(*http.Request) Session { return g.session }
+func (g *mockSessionScheme) Session(*http.Request) contract.Session { return g.session }
 
 // Compile-time check that the test mocks satisfy the interfaces under test.
 var (
@@ -65,7 +67,7 @@ func TestManagerSession_SchemeSessionAware(t *testing.T) {
 	if got == nil {
 		t.Fatal("Session() returned nil for SessionAware scheme")
 	}
-	if got != Session(wantSession) {
+	if got != contract.Session(wantSession) {
 		t.Error("Session() did not return the scheme's session instance")
 	}
 

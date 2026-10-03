@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/hostile"
 )
 
@@ -90,7 +91,7 @@ func TestSessionScheme_ReadNeverReturnsAnUnpublishedLogin(t *testing.T) {
 	}
 	records.onPut.Store(&panicPut)
 
-	readDone := make(chan auth.Authenticatable, 1)
+	readDone := make(chan contract.Authenticatable, 1)
 	go func() { readDone <- g.User(r) }()
 	<-readerIn
 
@@ -114,7 +115,7 @@ func TestSessionScheme_ReadNeverReturnsAnUnpublishedLogin(t *testing.T) {
 	}
 
 	close(readerGo)
-	var got auth.Authenticatable
+	var got contract.Authenticatable
 	hostile.Within(t, hostile.Deadline, func() { got = <-readDone })
 	if parked {
 		close(loginGo)
@@ -200,13 +201,13 @@ func TestSessionScheme_ConcurrentReadsJoinTheResolver(t *testing.T) {
 	}
 	users.onFind.Store(&block)
 
-	first := make(chan auth.Authenticatable, 1)
+	first := make(chan contract.Authenticatable, 1)
 	go func() { first <- g.User(r) }()
 	<-in
 	findsBefore := users.finds.Load()
 
 	const siblings = 4
-	got := make(chan auth.Authenticatable, siblings)
+	got := make(chan contract.Authenticatable, siblings)
 	for range siblings {
 		go func() { got <- g.User(r) }()
 	}
@@ -272,7 +273,7 @@ func TestSessionScheme_WaitingReadHonoursItsContext(t *testing.T) {
 		}
 	}
 	users.onFind.Store(&block)
-	first := make(chan auth.Authenticatable, 1)
+	first := make(chan contract.Authenticatable, 1)
 	go func() { first <- g.User(r) }()
 	<-in
 

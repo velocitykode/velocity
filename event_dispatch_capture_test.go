@@ -703,8 +703,8 @@ func TestBootstrap_ClearingStaysStickyForConsumersAddedLater(t *testing.T) {
 	}
 	a.Router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ping", nil))
 	// Drain the router's pool so any event it would deliver has landed.
-	if err := a.Router.ShutdownEventDispatcher(context.Background()); err != nil {
-		t.Fatalf("ShutdownEventDispatcher: %v", err)
+	if err := a.Router.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Router.Shutdown: %v", err)
 	}
 	if n := countEvents[*router.RequestStarted](old); n != 0 {
 		t.Errorf("old dispatcher received %d router.request.started through the router pool configured after clearing", n)

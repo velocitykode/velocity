@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // countingReader counts how many bytes have been consumed from the
@@ -99,7 +100,7 @@ func TestJWTScheme_FormToken_NonFormContentTypeUntouched(t *testing.T) {
 // ErrUserNotFound, not a panic inside Login/GenerateToken.
 func TestJWTScheme_LoginByID_NilUserReturnsErrUserNotFound(t *testing.T) {
 	userStore := &mockJWTUserStore{
-		findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
+		findByIDFunc: func(id interface{}) (contract.Authenticatable, error) {
 			return nil, nil // not found, per UserStore contract
 		},
 	}
@@ -118,7 +119,7 @@ func TestJWTScheme_LoginByID_NilUserReturnsErrUserNotFound(t *testing.T) {
 // must not cache the nil as an authenticated entry.
 func TestJWTScheme_User_NilUserNoPanic(t *testing.T) {
 	userStore := &mockJWTUserStore{
-		findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
+		findByIDFunc: func(id interface{}) (contract.Authenticatable, error) {
 			return nil, nil
 		},
 	}
@@ -145,7 +146,7 @@ func TestJWTScheme_User_NilUserNoPanic(t *testing.T) {
 // GenerateToken.
 func TestJWTScheme_RefreshToken_NilUserReturnsErrUserNotFound(t *testing.T) {
 	userStore := &mockJWTUserStore{
-		findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
+		findByIDFunc: func(id interface{}) (contract.Authenticatable, error) {
 			return nil, nil
 		},
 	}
@@ -187,7 +188,7 @@ type ctxCapturingStore struct {
 	gotCtx context.Context
 }
 
-func (p *ctxCapturingStore) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *ctxCapturingStore) FindByIDCtx(ctx context.Context, id interface{}) (contract.Authenticatable, error) {
 	p.gotCtx = ctx
 	return &mockJWTUser{id: id, password: "hashedpassword"}, nil
 }

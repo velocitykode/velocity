@@ -40,45 +40,6 @@ var ErrSessionSealed = errors.New("velocity/auth: session sealed: the request al
 // this for a failing reader to exercise rand.Read error paths.
 var sessionRandReader io.Reader = rand.Reader
 
-// Session represents a user session
-type Session interface {
-	// Get session ID
-	ID() string
-
-	// Get value from session
-	Get(key string) interface{}
-
-	// Put value in session
-	Put(key string, value interface{})
-
-	// Has checks if key exists
-	Has(key string) bool
-
-	// Remove value from session
-	Remove(key string)
-
-	// Clear all session data
-	Clear()
-
-	// Regenerate session ID
-	Regenerate() error
-
-	// Invalidate session
-	Invalidate() error
-
-	// Flash messages
-	Flash(key string, value interface{})
-	GetFlash(key string) interface{}
-
-	// FlushFlash returns the entire flash bag and clears it in one call.
-	// Returns nil (not an empty map) when the bag is empty so callers can
-	// rely on JSON omitempty / nil checks.
-	FlushFlash() map[string]interface{}
-
-	// Save session
-	Save(w http.ResponseWriter) error
-}
-
 // SessionStore loads and saves the session a request carries. The session
 // scheme reads and writes the session only through it, so handlers use the
 // same session API whichever store holds the data. The framework ships two:
@@ -91,13 +52,13 @@ type Session interface {
 // is in flight gets ErrOperationInProgress (see UserStore).
 type SessionStore interface {
 	// Create a new session
-	Create(id string) (Session, error)
+	Create(id string) (contract.Session, error)
 
 	// Get session by ID
-	Get(r *http.Request, id string) (Session, error)
+	Get(r *http.Request, id string) (contract.Session, error)
 
 	// Save session
-	Save(w http.ResponseWriter, session Session) error
+	Save(w http.ResponseWriter, session contract.Session) error
 
 	// Destroy session
 	Destroy(id string) error
@@ -669,7 +630,7 @@ func (c SessionConfig) ValidateCookieSecurity(env string) error {
 }
 
 // GetSessionFromRequest gets session from request
-func GetSessionFromRequest(r *http.Request, store SessionStore, name string) (Session, error) {
+func GetSessionFromRequest(r *http.Request, store SessionStore, name string) (contract.Session, error) {
 	// Try to get session ID from cookie
 	cookie, err := r.Cookie(name)
 	if err != nil {

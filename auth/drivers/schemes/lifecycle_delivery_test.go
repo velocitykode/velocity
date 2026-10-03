@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -184,7 +185,7 @@ func TestLogin_AbortedSignInKeepsTheRecallDeliveryAndUndo(t *testing.T) {
 
 				if saveFails {
 					orig := saveSessionFromMiddleware
-					saveSessionFromMiddleware = func(*SessionScheme, http.ResponseWriter, auth.Session) error {
+					saveSessionFromMiddleware = func(*SessionScheme, http.ResponseWriter, contract.Session) error {
 						return errors.New("store down")
 					}
 					b.do(http.MethodGet, "/recall")
@@ -263,7 +264,7 @@ func TestLogin_FailedSaveUndoesASupersededRecall(t *testing.T) {
 			clock.advance(time.Minute)
 
 			orig := saveSessionFromMiddleware
-			saveSessionFromMiddleware = func(*SessionScheme, http.ResponseWriter, auth.Session) error {
+			saveSessionFromMiddleware = func(*SessionScheme, http.ResponseWriter, contract.Session) error {
 				return errors.New("store down")
 			}
 			b.do(http.MethodGet, "/recall")

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 )
 
@@ -48,24 +49,24 @@ type timingTestStore struct {
 	user *timingTestUser
 }
 
-func (p *timingTestStore) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *timingTestStore) FindByID(id interface{}) (contract.Authenticatable, error) {
 	if p.user != nil && p.user.id == id {
 		return p.user, nil
 	}
 	return nil, errors.New("not found")
 }
-func (p *timingTestStore) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *timingTestStore) FindByCredentials(credentials map[string]interface{}) (contract.Authenticatable, error) {
 	email, _ := credentials["email"].(string)
 	if p.user != nil && email == p.user.id {
 		return p.user, nil
 	}
 	return nil, errors.New("not found")
 }
-func (p *timingTestStore) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
+func (p *timingTestStore) ValidateCredentials(user contract.Authenticatable, credentials map[string]interface{}) bool {
 	password, _ := credentials["password"].(string)
 	return password == p.user.password
 }
-func (p *timingTestStore) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
+func (p *timingTestStore) UpdateRememberToken(contract.Authenticatable, string) error { return nil }
 
 // newTimingScheme builds a SessionScheme backed by an in-memory user store
 // and a hasher whose Verify calls are observable.
@@ -191,12 +192,12 @@ func TestTimebox_NoFloorSkipsSleep(t *testing.T) {
 }
 
 // Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
-func (p *timingTestStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *timingTestStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *timingTestStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *timingTestStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *timingTestStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *timingTestStore) UpdateRememberTokenCtx(_ context.Context, user contract.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }

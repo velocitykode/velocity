@@ -6,11 +6,14 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 const (
@@ -40,7 +43,10 @@ const (
 // bound once the pair and IP buckets rotate.
 
 type cacheLoginThrottler struct {
-	store contract.CacheStore
+	// store is the cache store the counters live in: the default store
+	// of the app's cache, moved by rebind when a module replaces
+	// Services.Cache. Read once per call.
+	store atomic.Pointer[throttleStore]
 	// maxAttempts caps the (identifier, IP) pair dimension and is the
 	// fallback for keys carrying no recognised dimension prefix.
 	maxAttempts           int64
@@ -76,8 +82,7 @@ func newCacheLoginThrottler(store contract.CacheStore, maxAttempts, identifierMa
 	if decay <= 0 {
 		decay = defaultLoginThrottleDecay
 	}
-	return &cacheLoginThrottler{
-		store:                 store,
+	t := &cacheLoginThrottler{
 		maxAttempts:           int64(maxAttempts),
 		identifierMaxAttempts: int64(identifierMaxAttempts),
 		ipMaxAttempts:         int64(ipMaxAttempts),
@@ -85,6 +90,28 @@ func newCacheLoginThrottler(store contract.CacheStore, maxAttempts, identifierMa
 		delayBase:             auth.DefaultIdentifierDelay,
 		delayMax:              auth.DefaultIdentifierDelayMax,
 	}
+	t.setStore(store)
+	return t
+}
+
+// throttleStore boxes the throttler's cache store for its atomic pointer.
+type throttleStore struct{ contract.CacheStore }
+
+// setStore points the throttler at store; nil throttles nothing.
+func (t *cacheLoginThrottler) setStore(store contract.CacheStore) {
+	t.store.Store(&throttleStore{store})
+}
+
+// cache returns the store the throttler counts in now, or nil.
+func (t *cacheLoginThrottler) cache() contract.CacheStore {
+	if t == nil {
+		return nil
+	}
+	ref := t.store.Load()
+	if ref == nil {
+		return nil
+	}
+	return ref.CacheStore
 }
 
 // withDelay sets the progressive-delay base and ceiling. A base <= 0
@@ -121,10 +148,11 @@ func (t *cacheLoginThrottler) limitFor(key string) int64 {
 }
 
 func (t *cacheLoginThrottler) Allow(r *http.Request, key string) bool {
-	if t == nil || t.store == nil {
+	store := t.cache()
+	if store == nil {
 		return true
 	}
-	count, ok := t.store.GetCtx(requestContext(r), t.cacheKey(key))
+	count, ok := store.GetCtx(requestContext(r), t.cacheKey(key))
 	if !ok {
 		return true
 	}
@@ -144,18 +172,18 @@ func (t *cacheLoginThrottler) Allow(r *http.Request, key string) bool {
 // the key is re-put under the decay TTL. The re-put can lose an increment
 // that lands between the recreate and the re-put, an undercount of at most
 // the arrivals in that instant of a real expiry.
-func (t *cacheLoginThrottler) countAttempt(ctx context.Context, key string) (int64, error) {
+func (t *cacheLoginThrottler) countAttempt(ctx context.Context, store contract.CacheStore, key string) (int64, error) {
 	cacheKey := t.cacheKey(key)
-	added, err := t.store.AddCtx(ctx, cacheKey, int64(1), t.decay)
+	added, err := store.AddCtx(ctx, cacheKey, int64(1), t.decay)
 	if err == nil && added {
 		return 1, nil
 	}
-	count, err := t.store.IncrementCtx(ctx, cacheKey, 1)
+	count, err := store.IncrementCtx(ctx, cacheKey, 1)
 	if err != nil {
 		return 0, err
 	}
 	if count == 1 {
-		_ = t.store.PutCtx(ctx, cacheKey, int64(1), t.decay)
+		_ = store.PutCtx(ctx, cacheKey, int64(1), t.decay)
 	}
 	return count, nil
 }
@@ -167,10 +195,11 @@ func (t *cacheLoginThrottler) countAttempt(ctx context.Context, key string) (int
 // cannot all observe the same remaining capacity. A store error fails
 // open, matching Allow.
 func (t *cacheLoginThrottler) Reserve(r *http.Request, key string) (bool, time.Duration) {
-	if t == nil || t.store == nil {
+	store := t.cache()
+	if store == nil {
 		return true, 0
 	}
-	count, err := t.countAttempt(requestContext(r), key)
+	count, err := t.countAttempt(requestContext(r), store, key)
 	if err != nil {
 		return true, 0
 	}
@@ -196,10 +225,11 @@ func (t *cacheLoginThrottler) delayFor(excess int64) time.Duration {
 // the caller's own Reserve, so the first attempt past the cap (count ==
 // cap+1) pays the base delay.
 func (t *cacheLoginThrottler) Delay(r *http.Request, key string) time.Duration {
-	if t == nil || t.store == nil || t.delayBase <= 0 {
+	store := t.cache()
+	if store == nil || t.delayBase <= 0 {
 		return 0
 	}
-	count, ok := t.store.GetCtx(requestContext(r), t.cacheKey(key))
+	count, ok := store.GetCtx(requestContext(r), t.cacheKey(key))
 	if !ok {
 		return 0
 	}
@@ -212,10 +242,11 @@ func (t *cacheLoginThrottler) Delay(r *http.Request, key string) time.Duration {
 // a throttle store outage degrades to "no throttling", never to "no
 // logins". hold <= 0 admits unconditionally.
 func (t *cacheLoginThrottler) Admit(r *http.Request, key string, hold time.Duration) bool {
-	if t == nil || t.store == nil || hold <= 0 {
+	store := t.cache()
+	if store == nil || hold <= 0 {
 		return true
 	}
-	added, err := t.store.AddCtx(requestContext(r), t.cacheKey(key)+loginThrottleTrialSuffix, int64(1), hold)
+	added, err := store.AddCtx(requestContext(r), t.cacheKey(key)+loginThrottleTrialSuffix, int64(1), hold)
 	if err != nil {
 		return true
 	}
@@ -223,19 +254,21 @@ func (t *cacheLoginThrottler) Admit(r *http.Request, key string, hold time.Durat
 }
 
 func (t *cacheLoginThrottler) RecordFailure(r *http.Request, key string) {
-	if t == nil || t.store == nil {
+	store := t.cache()
+	if store == nil {
 		return
 	}
-	_, _ = t.countAttempt(requestContext(r), key)
+	_, _ = t.countAttempt(requestContext(r), store, key)
 }
 
 func (t *cacheLoginThrottler) RecordSuccess(r *http.Request, key string) {
-	if t == nil || t.store == nil {
+	store := t.cache()
+	if store == nil {
 		return
 	}
 	ctx := requestContext(r)
-	_ = t.store.ForgetCtx(ctx, t.cacheKey(key))
-	_ = t.store.ForgetCtx(ctx, t.cacheKey(key)+loginThrottleTrialSuffix)
+	_ = store.ForgetCtx(ctx, t.cacheKey(key))
+	_ = store.ForgetCtx(ctx, t.cacheKey(key)+loginThrottleTrialSuffix)
 }
 
 func (t *cacheLoginThrottler) cacheKey(key string) string {
@@ -333,9 +366,9 @@ func configuredLoginThrottleDecay() time.Duration {
 	return defaultLoginThrottleDecay
 }
 
-func installLoginThrottler(manager *auth.Manager, cm cache.CacheManager, log contract.Logger) {
+func installLoginThrottler(manager *auth.Manager, cm cache.CacheManager, log contract.Logger) *cacheLoginThrottler {
 	if manager == nil || cm == nil {
-		return
+		return nil
 	}
 
 	store, err := cm.DefaultStore()
@@ -346,10 +379,10 @@ func installLoginThrottler(manager *auth.Manager, cm cache.CacheManager, log con
 				"error", err,
 			)
 		}
-		return
+		return nil
 	}
 
-	manager.SetLoginThrottler(newCacheLoginThrottler(
+	t := newCacheLoginThrottler(
 		store,
 		configuredLoginThrottleMaxAttempts(),
 		configuredLoginThrottleIdentifierMaxAttempts(),
@@ -358,5 +391,33 @@ func installLoginThrottler(manager *auth.Manager, cm cache.CacheManager, log con
 	).withDelay(
 		configuredLoginThrottleIdentifierDelay(),
 		configuredLoginThrottleIdentifierDelayMax(),
-	))
+	)
+	manager.SetLoginThrottler(t)
+	return t
+}
+
+// rebindLoginThrottler moves the login throttler New installed to the
+// default store of the cache Services.Cache holds now. The throttler is
+// the framework's own value: one a module gave the auth manager instead
+// is not touched. A cache with no default store leaves login attempts
+// unthrottled, with the warning New gives in that case.
+func rebindLoginThrottler(a *App, _, cur ownedSet) (func(), error) {
+	t := a.loginThrottler
+	if t == nil {
+		return nil, nil
+	}
+	var store contract.CacheStore
+	var err error
+	if cm, _ := cur[fieldCache].(cache.CacheManager); cm != nil {
+		store, err = cm.DefaultStore()
+	}
+	return func() {
+		if nilval.Is(store) {
+			store = nil
+			fallbacklog.Write(a.Log, func(l contract.Logger) {
+				l.Warn("velocity/auth: cache default store unavailable; login attempts are no longer throttled; Scheme.Attempt brute-force protection will NOT work", "error", err)
+			})
+		}
+		t.setStore(store)
+	}, nil
 }

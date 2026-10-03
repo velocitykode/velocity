@@ -51,6 +51,11 @@ func (a *App) bootstrap() error {
 		}
 	}()
 	a.bootstrapErr = a.runBootstrap()
+	if a.bootstrapErr != nil {
+		// A bootstrap that failed reaches no further boundary: retire what
+		// its modules and callbacks displaced since the last one.
+		a.unwindRetire()
+	}
 	return a.bootstrapErr
 }
 
@@ -72,6 +77,10 @@ func (a *App) runBootstrap() error {
 		// afterwards so the Shutdown that follows a failed bootstrap
 		// (serveHTTP error path) does not tear the same modules down a
 		// second time.
+		//
+		// Retire what the modules displaced first, and wait for it, so the
+		// module unwind never closes something a retiring instance uses.
+		a.unwindRetire()
 		for i := registered - 1; i >= 0; i-- {
 			_ = a.chainModules[i].Shutdown(context.Background())
 		}
@@ -80,35 +89,20 @@ func (a *App) runBootstrap() error {
 	}
 
 	// Chain modules may have registered registry components or replaced
-	// service instances (e.g. s.CSRF) during Init/Start; the wireInstanceEvents
-	// sweep in New() ran before any of them existed, so re-sweep services
-	// and components so the final instances receive the dispatcher. Every
-	// wiring setter is an idempotent overwrite, so re-running is safe.
-	wireInstanceEvents(a)
-
-	// 1a. Re-install the CSRF token rotator on the auth manager NOW,
-	// AFTER every chain module's Start() has had a chance to replace
-	// s.CSRF with a customised instance. New() already wired the
-	// rotator at construction time so direct-New consumers (no
-	// Bootstrap, no Serve) still get session lifecycle rotation; this
-	// second call lets a Start-phase swap of s.CSRF win. The helper is
-	// idempotent (sets a mutex-protected function pointer on
-	// auth.Manager); double-install is safe, the last call wins.
-	//
-	// Without this re-install, a consumer Start that replaces s.CSRF
-	// would leave the auth manager rotating a store no longer in the
-	// request path -> Login/Logout rotations silently target a dead
-	// store and the first POST after login 419s. See app.go for the
-	// matching install at the New-time site.
-	installCSRFTokenRotator(a)
+	// service instances (e.g. s.CSRF) during Init/Start; the rebind in
+	// New() ran before any of them existed. Rebind now: the dispatcher,
+	// logger and error handler reach the final instances, the framework's
+	// consumers follow every replaced field (a replaced s.CSRF becomes the
+	// auth manager's token rotator, so Login/Logout rotate the tokens of
+	// the instance in the request path), the save-at-end session
+	// middleware points at the default scheme as chain modules left it,
+	// and each displaced instance is retired.
+	if err := rebind(a); err != nil {
+		return err
+	}
 
 	// 2. Build middleware stack
 	mwStack := chain.NewMiddlewareStack(a.Services)
-
-	// 2a. Point the save-at-end session middleware New installed at the
-	// default scheme as chain modules left it. See
-	// schemes.SessionScheme.SessionMiddleware for the contract.
-	refreshSessionScheme(a)
 
 	dispatchModuleCallback(a.chainModules, func(mp chain.MiddlewareModule) {
 		mp.Middleware(mwStack)
@@ -160,7 +154,9 @@ func (a *App) runBootstrap() error {
 	// aware service instance or registered an aware component. The
 	// dispatch closures are bound to the value wired before, so re-wire
 	// every consumer to the dispatcher the app holds now.
-	wireInstanceEvents(a)
+	if err := rebind(a); err != nil {
+		return err
+	}
 
 	// 5. Register scheduled jobs
 	dispatchModuleCallback(a.chainModules, func(sp chain.ScheduleModule) {
@@ -199,8 +195,11 @@ func (a *App) runBootstrap() error {
 	// to a handler value (see wireFailureReporters) and the dispatch
 	// closures to a dispatcher value; wireInstanceEvents re-binds both to
 	// the ones the app holds now that every module and the Schedule,
-	// Commands, Seeders and Errors callbacks have run.
-	wireInstanceEvents(a)
+	// Commands, Seeders and Errors callbacks have run. Services are
+	// published from here on: a field replaced later is not re-bound.
+	if err := rebind(a); err != nil {
+		return err
+	}
 
 	// 9. Refuse to run with CookieStore-only sessions in production
 	// unless the operator explicitly opted in. The CookieStore in-process
@@ -752,13 +751,13 @@ func csrfSessionResolver(current func() *schemes.SessionScheme) func(*http.Reque
 //   - a.Auth does not expose SetCSRFTokenRotator (custom AuthManager,
 //     test fakes that satisfy only contract.AuthManager).
 //
-// Idempotent: bootstrap() guards against double-run via a.bootstrapped.
+// When a.CSRF has no rotator the auth manager's is cleared: a rotator
+// installed before rotates the tokens of a CSRF instance no longer in the
+// request path. rebind runs it again whenever s.CSRF or s.Auth changed.
+//
+// Idempotent: the last call wins.
 func installCSRFTokenRotator(a *App) {
 	if a == nil || a.Services == nil {
-		return
-	}
-	rotator, ok := a.CSRF.(contract.CSRFTokenRotator)
-	if !ok {
 		return
 	}
 	authMgr, ok := a.Auth.(interface {
@@ -767,5 +766,6 @@ func installCSRFTokenRotator(a *App) {
 	if !ok {
 		return
 	}
+	rotator, _ := a.CSRF.(contract.CSRFTokenRotator)
 	authMgr.SetCSRFTokenRotator(rotator)
 }

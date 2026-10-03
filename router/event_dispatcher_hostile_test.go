@@ -32,7 +32,7 @@ func TestAsyncEventDispatcher_ListenerIsContained(t *testing.T) {
 
 			code := hostile.New(t, mode, func() {
 				_ = r.events.Dispatcher()(context.Background(), "inner")
-				_ = r.ShutdownEventDispatcher(context.Background())
+				_ = r.Shutdown(context.Background())
 			})
 			r.SetAsyncEventDispatcher(func(_ context.Context, ev interface{}) error {
 				if ev == "hostile" {
@@ -67,7 +67,7 @@ func TestAsyncEventDispatcher_ListenerIsContained(t *testing.T) {
 					}
 					ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 					defer cancel()
-					if err := r.ShutdownEventDispatcher(ctx); !errors.Is(err, context.DeadlineExceeded) {
+					if err := r.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
 						t.Errorf("stop while the listener blocks = %v, want its deadline", err)
 					}
 				})
@@ -76,7 +76,7 @@ func TestAsyncEventDispatcher_ListenerIsContained(t *testing.T) {
 				waitUntil(t, func() bool { return code.Calls() == 1 && delivered.Load() >= 1 }, "the re-entering listener returning")
 			}
 			hostile.Within(t, hostile.Deadline, func() {
-				if err := r.ShutdownEventDispatcher(context.Background()); err != nil {
+				if err := r.Shutdown(context.Background()); err != nil {
 					t.Errorf("stop from outside = %v, want nil once drained", err)
 				}
 			})

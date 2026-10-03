@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -276,38 +278,14 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 			clone.applyWiring(c.snapshotWiring())
 
 			done := make(chan error, 1)
-			// Not async.Go: must forward a recovered panic through `done`
-			// as a *PanicError (stack captured here, inside the deferred
-			// recover, on the goroutine that panicked) so the router
-			// boundary reports it as a recovered panic instead of the
-			// panic being dropped into the package logger only. An
-			// http.ErrAbortHandler panic is forwarded as a *handlerAbort
-			// instead: re-panicking here would crash the process, so the
-			// request goroutine re-panics it. Once the middleware timed
-			// out, deliver refuses the result and it stays here: a late
-			// panic is reported by reportLatePanic, a late abort or
-			// returned error is dropped. The goroutine is bound to the
-			// request lifetime.
-			go func() { //safe-goroutine: forwards panic via done as request error, see comment above
-				defer func() {
-					if r := recover(); r != nil {
-						if isAbortPanic(r) {
-							tw.deliver(done, &handlerAbort{value: r})
-							return
-						}
-						// Skip the deferred function so the trace starts
-						// at the panic site.
-						pe := newPanicError(errchain.Errorf("velocity/router: timeout handler panic: %w", panicerr.FromRecovered(r)), 1)
-						if !tw.deliver(done, pe) {
-							reportLatePanic(clone, pe)
-						}
-					}
-				}()
-				if err := next(clone); !tw.deliver(done, err) {
-					reportLatePanic(clone, err)
-				}
-			}()
-
+			// The handler goroutine is the request's work in flight past
+			// this middleware: it holds a unit of the run that admitted
+			// the request until it returns, its late report included,
+			// so the router's Shutdown waits for it.
+			if run := c.requests; run != nil {
+				run.Join()
+			}
+			go runTimed(next, clone, tw, done, c.requests) //safe-goroutine: forwards a panic via done as the request's error, see runTimed
 			select {
 			case err := <-done:
 				// Handler finished in time. Commit the buffered
@@ -405,7 +383,7 @@ func reportLatePanic(c *Context, err error) {
 	if pe := f.panicErr; pe != nil {
 		stack, st = pe.Stack, pe.Trace
 	}
-	if c.services != nil && c.services.Errors != nil {
+	if c.services != nil && !nilval.Is(c.services.Errors) {
 		ec := c.ErrorContext()
 		ec.Recovered, ec.PanicStack, ec.StackTrace = true, stack, st
 		c.services.Errors.Report(err, ec)
@@ -468,5 +446,43 @@ func cloneValues(src map[string]interface{}) map[string]interface{} {
 func mergeValues(dst, src map[string]interface{}) {
 	for k, v := range src {
 		dst[k] = v
+	}
+}
+
+// runTimed runs a Timeout handler on its own goroutine, holding a unit of
+// run (the router run that admitted the request, nil when none did)
+// until it returned.
+//
+// Not async.Go: it must forward a recovered panic through done as a
+// *PanicError (stack captured here, inside the deferred recover, on the
+// goroutine that panicked) so the router boundary reports it as a
+// recovered panic instead of the panic being dropped into the package
+// logger only. An http.ErrAbortHandler panic is forwarded as a
+// *handlerAbort instead: re-panicking here would crash the process, so
+// the request goroutine re-panics it. Once the middleware timed out,
+// deliver refuses the result and it stays here: a late panic is reported
+// by reportLatePanic, a late abort or returned error is dropped. The
+// router names this function as running its work (see admission.go), so
+// a stop the handler calls is refused.
+func runTimed(next HandlerFunc, clone *Context, tw *timeoutWriter, done chan error, run *drain.Run) {
+	if run != nil {
+		defer run.Release()
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			if isAbortPanic(r) {
+				tw.deliver(done, &handlerAbort{value: r})
+				return
+			}
+			// Skip the deferred function so the trace starts at the
+			// panic site.
+			pe := newPanicError(errchain.Errorf("velocity/router: timeout handler panic: %w", panicerr.FromRecovered(r)), 1)
+			if !tw.deliver(done, pe) {
+				reportLatePanic(clone, pe)
+			}
+		}
+	}()
+	if err := next(clone); !tw.deliver(done, err) {
+		reportLatePanic(clone, err)
 	}
 }

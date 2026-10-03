@@ -130,10 +130,13 @@ func bindHandler(c *router.Context) error {
 // real app: the router boundary, the bridge and the error handler built
 // by New.
 func TestErrorPipeline_DefaultMappings(t *testing.T) {
-	// release unblocks the handler the Timeout case leaves running once
-	// every case has finished.
+	// release unblocks the handler the Timeout case leaves running, once
+	// that case has made its assertions and before its app shuts down:
+	// the app's teardown waits for the request work it admitted, the
+	// Timeout handler goroutine included.
 	release := make(chan struct{})
-	defer close(release)
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	defer releaseOnce()
 
 	tests := []struct {
 		name       string
@@ -145,6 +148,8 @@ func TestErrorPipeline_DefaultMappings(t *testing.T) {
 		configure  func(t *testing.T, a *App)
 		// deadClient cancels the request context before serving.
 		deadClient bool
+		// blocks marks the case whose handler blocks on release.
+		blocks bool
 
 		wantStatus      int // 0: nothing written
 		wantHeader      map[string]string
@@ -224,6 +229,7 @@ func TestErrorPipeline_DefaultMappings(t *testing.T) {
 		{
 			name:       "timeout with a dead client writes and reports nothing",
 			deadClient: true,
+			blocks:     true,
 			middleware: []router.MiddlewareFunc{router.Timeout(5 * time.Second)},
 			handler: func(*router.Context) error {
 				<-release
@@ -327,6 +333,9 @@ func TestErrorPipeline_DefaultMappings(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a, logs, rec := newPipelineApp(t)
+			if tt.blocks {
+				t.Cleanup(releaseOnce) // runs before the app's Shutdown cleanup
+			}
 			if tt.configure != nil {
 				tt.configure(t, a)
 			}
@@ -531,7 +540,11 @@ func TestErrorPipeline_NilHandlerFallsBackToRouterDefault(t *testing.T) {
 
 // stubUserAuth is a contract.AuthManager with the RequestUserIdentifier
 // facet.
-type stubUserAuth struct{ id string }
+type stubUserAuth struct {
+	// contract.AuthManager supplies the methods this fake does not use.
+	contract.AuthManager
+	id string
+}
 
 func (stubUserAuth) Allows(*http.Request, string, ...interface{}) bool     { return true }
 func (stubUserAuth) Authorize(*http.Request, string, ...interface{}) error { return nil }
@@ -570,6 +583,8 @@ func TestErrorPipeline_UserIDFromAuthFacet(t *testing.T) {
 // stubErrorPageView is a contract.ViewEngine with the ErrorPageRenderer
 // facet.
 type stubErrorPageView struct {
+	// contract.ViewEngine supplies the methods this fake does not use.
+	contract.ViewEngine
 	mu       sync.Mutex
 	statuses []int
 }
@@ -586,7 +601,10 @@ func (v *stubErrorPageView) RenderErrorPage(rc contract.RenderContext, status in
 }
 
 // stubPlainView is a contract.ViewEngine without the facet.
-type stubPlainView struct{}
+type stubPlainView struct {
+	// contract.ViewEngine supplies the methods this fake does not use.
+	contract.ViewEngine
+}
 
 func (stubPlainView) Back(http.ResponseWriter, *http.Request) {}
 

@@ -65,10 +65,10 @@ func (g *recorderScheme) lastRotator() contract.CSRFTokenRotator {
 	return g.got
 }
 
-func (g *recorderScheme) Check(_ *http.Request) bool                { return false }
-func (g *recorderScheme) User(_ *http.Request) auth.Authenticatable { return nil }
-func (g *recorderScheme) ID(_ *http.Request) interface{}            { return nil }
-func (g *recorderScheme) Login(_ http.ResponseWriter, _ *http.Request, _ auth.Authenticatable, _ ...bool) error {
+func (g *recorderScheme) Check(_ *http.Request) bool                    { return false }
+func (g *recorderScheme) User(_ *http.Request) contract.Authenticatable { return nil }
+func (g *recorderScheme) ID(_ *http.Request) interface{}                { return nil }
+func (g *recorderScheme) Login(_ http.ResponseWriter, _ *http.Request, _ contract.Authenticatable, _ ...bool) error {
 	return errors.New("recorderScheme.Login: should not be called in this test")
 }
 func (g *recorderScheme) LoginByID(_ http.ResponseWriter, _ *http.Request, _ interface{}, _ ...bool) error {

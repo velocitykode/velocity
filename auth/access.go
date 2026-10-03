@@ -3,6 +3,8 @@ package auth
 import (
 	"errors"
 	"sync"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // Authorization errors
@@ -15,31 +17,31 @@ var (
 )
 
 // AccessCallback is a function that determines if a user can perform an action
-type AccessCallback func(user Authenticatable, args ...interface{}) bool
+type AccessCallback func(user contract.Authenticatable, args ...interface{}) bool
 
 // Policy defines authorization logic for a specific resource type
 type Policy interface {
 	// Authorize checks if user can perform action on the resource
-	Authorize(user Authenticatable, action string, resource interface{}) bool
+	Authorize(user contract.Authenticatable, action string, resource interface{}) bool
 }
 
 // PolicyFunc is a function adapter for simple policies
-type PolicyFunc func(user Authenticatable, action string, resource interface{}) bool
+type PolicyFunc func(user contract.Authenticatable, action string, resource interface{}) bool
 
 // Authorize implements Policy interface
-func (f PolicyFunc) Authorize(user Authenticatable, action string, resource interface{}) bool {
+func (f PolicyFunc) Authorize(user contract.Authenticatable, action string, resource interface{}) bool {
 	return f(user, action, resource)
 }
 
 // BeforeCallback is called before any access/policy check
 // Return true to allow, false to deny, nil to continue to the actual check
-type BeforeCallback func(user Authenticatable, ability string, args ...interface{}) *bool
+type BeforeCallback func(user contract.Authenticatable, ability string, args ...interface{}) *bool
 
 // AfterCallback is called after any access/policy check
-type AfterCallback func(user Authenticatable, ability string, result bool, args ...interface{}) bool
+type AfterCallback func(user contract.Authenticatable, ability string, result bool, args ...interface{}) bool
 
 // RoleChecker is a function that checks if a user has a role
-type RoleChecker func(user Authenticatable, role string) bool
+type RoleChecker func(user contract.Authenticatable, role string) bool
 
 // Access manages authorization abilities and policies
 type Access struct {
@@ -97,7 +99,7 @@ func (g *Access) SetRoleChecker(checker RoleChecker) {
 }
 
 // Allows checks if a user is allowed to perform an ability
-func (g *Access) Allows(user Authenticatable, ability string, args ...interface{}) bool {
+func (g *Access) Allows(user contract.Authenticatable, ability string, args ...interface{}) bool {
 	g.mu.RLock()
 	beforeCallbacks := make([]BeforeCallback, len(g.before))
 	copy(beforeCallbacks, g.before)
@@ -123,12 +125,12 @@ func (g *Access) Allows(user Authenticatable, ability string, args ...interface{
 }
 
 // Denies checks if a user is denied from performing an ability
-func (g *Access) Denies(user Authenticatable, ability string, args ...interface{}) bool {
+func (g *Access) Denies(user contract.Authenticatable, ability string, args ...interface{}) bool {
 	return !g.Allows(user, ability, args...)
 }
 
 // Check checks multiple abilities (all must pass)
-func (g *Access) Check(user Authenticatable, abilities []string, args ...interface{}) bool {
+func (g *Access) Check(user contract.Authenticatable, abilities []string, args ...interface{}) bool {
 	for _, ability := range abilities {
 		if !g.Allows(user, ability, args...) {
 			return false
@@ -138,7 +140,7 @@ func (g *Access) Check(user Authenticatable, abilities []string, args ...interfa
 }
 
 // Any checks if any of the abilities pass
-func (g *Access) Any(user Authenticatable, abilities []string, args ...interface{}) bool {
+func (g *Access) Any(user contract.Authenticatable, abilities []string, args ...interface{}) bool {
 	for _, ability := range abilities {
 		if g.Allows(user, ability, args...) {
 			return true
@@ -156,7 +158,7 @@ func (g *Access) Any(user Authenticatable, abilities []string, args ...interface
 // not unwind on panic), wedging every future Access.Define/Before/After
 // writer and every reader queued behind it, a permanent authorization DoS.
 // Mirrors the snapshot used by runAfterCallbacks below.
-func (g *Access) AuthorizePolicy(user Authenticatable, resourceType, action string, resource interface{}) bool {
+func (g *Access) AuthorizePolicy(user contract.Authenticatable, resourceType, action string, resource interface{}) bool {
 	g.mu.RLock()
 	policy, ok := g.policies[resourceType]
 	// Snapshot before-callback slice. append() inside Before() either grows
@@ -184,7 +186,7 @@ func (g *Access) AuthorizePolicy(user Authenticatable, resourceType, action stri
 }
 
 // HasRole checks if a user has a specific role
-func (g *Access) HasRole(user Authenticatable, role string) bool {
+func (g *Access) HasRole(user contract.Authenticatable, role string) bool {
 	g.mu.RLock()
 	checker := g.roleChecker
 	g.mu.RUnlock()
@@ -196,7 +198,7 @@ func (g *Access) HasRole(user Authenticatable, role string) bool {
 }
 
 // HasAnyRole checks if a user has any of the given roles
-func (g *Access) HasAnyRole(user Authenticatable, roles ...string) bool {
+func (g *Access) HasAnyRole(user contract.Authenticatable, roles ...string) bool {
 	for _, role := range roles {
 		if g.HasRole(user, role) {
 			return true
@@ -206,7 +208,7 @@ func (g *Access) HasAnyRole(user Authenticatable, roles ...string) bool {
 }
 
 // HasAllRoles checks if a user has all the given roles
-func (g *Access) HasAllRoles(user Authenticatable, roles ...string) bool {
+func (g *Access) HasAllRoles(user contract.Authenticatable, roles ...string) bool {
 	for _, role := range roles {
 		if !g.HasRole(user, role) {
 			return false
@@ -216,7 +218,7 @@ func (g *Access) HasAllRoles(user Authenticatable, roles ...string) bool {
 }
 
 // runAfterCallbacks runs after callbacks and returns the final result
-func (g *Access) runAfterCallbacks(user Authenticatable, ability string, result bool, args ...interface{}) bool {
+func (g *Access) runAfterCallbacks(user contract.Authenticatable, ability string, result bool, args ...interface{}) bool {
 	g.mu.RLock()
 	afterCallbacks := make([]AfterCallback, len(g.after))
 	copy(afterCallbacks, g.after)
@@ -225,7 +227,7 @@ func (g *Access) runAfterCallbacks(user Authenticatable, ability string, result 
 	return runAfter(afterCallbacks, user, ability, result, args...)
 }
 
-func runAfter(afterCallbacks []AfterCallback, user Authenticatable, ability string, result bool, args ...interface{}) bool {
+func runAfter(afterCallbacks []AfterCallback, user contract.Authenticatable, ability string, result bool, args ...interface{}) bool {
 	for _, after := range afterCallbacks {
 		result = after(user, ability, result, args...)
 	}
@@ -233,7 +235,7 @@ func runAfter(afterCallbacks []AfterCallback, user Authenticatable, ability stri
 }
 
 // ForUser creates a user-scoped authorization checker
-func (g *Access) ForUser(user Authenticatable) *UserAccess {
+func (g *Access) ForUser(user contract.Authenticatable) *UserAccess {
 	return &UserAccess{
 		access: g,
 		user:   user,
@@ -243,7 +245,7 @@ func (g *Access) ForUser(user Authenticatable) *UserAccess {
 // UserAccess provides authorization methods for a specific user
 type UserAccess struct {
 	access *Access
-	user   Authenticatable
+	user   contract.Authenticatable
 }
 
 // Allows checks if the user is allowed to perform an ability

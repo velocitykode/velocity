@@ -23,7 +23,7 @@
 //	    if err := userStore.Validate(); err != nil {
 //	        return err
 //	    }
-//	    auth.FromServices(s).SetUserStore(userStore)
+//	    s.Auth.(*auth.Manager).SetUserStore(userStore)
 //	    return nil
 //	}
 //
@@ -43,7 +43,7 @@
 // # Model requirements
 //
 // A model is usable as an auth model when it either implements
-// [auth.Authenticatable] itself (preferred - no reflection on the hot
+// [contract.Authenticatable] itself (preferred - no reflection on the hot
 // path) or exposes the identifier, password, and remember-token columns
 // that this package maps onto that interface. Column names are options,
 // so a model with no "name" column, or with "username" instead of

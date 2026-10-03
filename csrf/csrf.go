@@ -968,16 +968,3 @@ func matchPath(path, pattern string) bool {
 	}
 	return path == pattern
 }
-
-// FromContext extracts the *CSRF from a router.Context.
-// Returns nil if CSRF is not configured, including when the context has
-// no service container at all (e.g. a bare test context), so callers
-// can rely on the documented nil contract instead of a panic.
-func FromContext(ctx *router.Context) *CSRF {
-	s := ctx.ServicesIfSet()
-	if s == nil || s.CSRF == nil {
-		return nil
-	}
-	c, _ := s.CSRF.(*CSRF)
-	return c
-}

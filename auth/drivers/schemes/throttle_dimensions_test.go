@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 )
 
@@ -151,7 +152,7 @@ func TestSessionScheme_Attempt_IdentifierThrottleAllowsValidCredentials(t *testi
 // dimension.
 func TestSessionScheme_Attempt_IdentifierThrottleDeniesInvalidCredentials(t *testing.T) {
 	userStore := &mockSessionSchemeUserStore{
-		validateCredentialsFunc: func(auth.Authenticatable, map[string]interface{}) bool { return false },
+		validateCredentialsFunc: func(contract.Authenticatable, map[string]interface{}) bool { return false },
 	}
 	throttler := &recordingThrottler{denyPrefix: auth.ThrottleKeyIdentifierPrefix}
 	scheme := newThrottleDimensionsSessionScheme(t, userStore, throttler)
@@ -170,7 +171,7 @@ func TestSessionScheme_Attempt_IdentifierThrottleDeniesInvalidCredentials(t *tes
 // credential check increments all three dimension buckets.
 func TestSessionScheme_Attempt_RecordsFailureOnEveryDimension(t *testing.T) {
 	userStore := &mockSessionSchemeUserStore{
-		findByCredentialsFunc: func(map[string]interface{}) (auth.Authenticatable, error) {
+		findByCredentialsFunc: func(map[string]interface{}) (contract.Authenticatable, error) {
 			return nil, nil // user not found
 		},
 	}
@@ -256,7 +257,7 @@ func TestJWTScheme_Attempt_IdentifierThrottleVerifyFirst(t *testing.T) {
 
 	t.Run("invalid credentials denied", func(t *testing.T) {
 		userStore := &mockSessionSchemeUserStore{
-			validateCredentialsFunc: func(auth.Authenticatable, map[string]interface{}) bool { return false },
+			validateCredentialsFunc: func(contract.Authenticatable, map[string]interface{}) bool { return false },
 		}
 		throttler := &recordingThrottler{denyPrefix: auth.ThrottleKeyIdentifierPrefix}
 		scheme := newScheme(userStore, throttler)
@@ -276,7 +277,7 @@ func TestJWTScheme_Attempt_IdentifierThrottleVerifyFirst(t *testing.T) {
 // failure fan-out check on the JWT scheme surface.
 func TestJWTScheme_Attempt_RecordsFailureOnEveryDimension(t *testing.T) {
 	userStore := &mockSessionSchemeUserStore{
-		findByCredentialsFunc: func(map[string]interface{}) (auth.Authenticatable, error) {
+		findByCredentialsFunc: func(map[string]interface{}) (contract.Authenticatable, error) {
 			return nil, nil
 		},
 	}

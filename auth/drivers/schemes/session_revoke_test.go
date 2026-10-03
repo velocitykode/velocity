@@ -13,6 +13,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/session"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 )
 
@@ -34,7 +35,7 @@ type revokeTestStore struct {
 	users map[string]*revokeTestUser
 }
 
-func (p *revokeTestStore) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *revokeTestStore) FindByID(id interface{}) (contract.Authenticatable, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	key, _ := id.(string)
@@ -43,13 +44,13 @@ func (p *revokeTestStore) FindByID(id interface{}) (auth.Authenticatable, error)
 	}
 	return nil, auth.ErrUserNotFound
 }
-func (p *revokeTestStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (p *revokeTestStore) FindByCredentials(map[string]interface{}) (contract.Authenticatable, error) {
 	return nil, errors.New("unused")
 }
-func (p *revokeTestStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (p *revokeTestStore) ValidateCredentials(contract.Authenticatable, map[string]interface{}) bool {
 	return true
 }
-func (p *revokeTestStore) UpdateRememberToken(user auth.Authenticatable, token string) error {
+func (p *revokeTestStore) UpdateRememberToken(user contract.Authenticatable, token string) error {
 	// Propagate the token to the canonical user in the map so subsequent
 	// FindByID reflects it. checkRememberCookie compares against the
 	// stored token, so without this propagation the remember-me flow
@@ -65,7 +66,7 @@ func (p *revokeTestStore) UpdateRememberToken(user auth.Authenticatable, token s
 
 // CompareAndSwapRememberToken implements the capability the scheme now
 // requires for recall rotation; recalls fail closed without it.
-func (p *revokeTestStore) CompareAndSwapRememberToken(_ context.Context, user auth.Authenticatable, oldToken, newToken string) (bool, error) {
+func (p *revokeTestStore) CompareAndSwapRememberToken(_ context.Context, user contract.Authenticatable, oldToken, newToken string) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	id, _ := user.GetAuthIdentifier().(string)
@@ -735,10 +736,10 @@ func TestRememberTokenClearer_UserNotFound(t *testing.T) {
 // rather than panic during type assertion.
 type noReceiverScheme struct{}
 
-func (noReceiverScheme) Check(*http.Request) bool                { return false }
-func (noReceiverScheme) User(*http.Request) auth.Authenticatable { return nil }
-func (noReceiverScheme) ID(*http.Request) interface{}            { return nil }
-func (noReceiverScheme) Login(http.ResponseWriter, *http.Request, auth.Authenticatable, ...bool) error {
+func (noReceiverScheme) Check(*http.Request) bool                    { return false }
+func (noReceiverScheme) User(*http.Request) contract.Authenticatable { return nil }
+func (noReceiverScheme) ID(*http.Request) interface{}                { return nil }
+func (noReceiverScheme) Login(http.ResponseWriter, *http.Request, contract.Authenticatable, ...bool) error {
 	return nil
 }
 func (noReceiverScheme) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {
@@ -821,12 +822,12 @@ func TestManager_RevokeAllSessions_ClearerErrorReturnsPartial(t *testing.T) {
 }
 
 // Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
-func (p *revokeTestStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *revokeTestStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *revokeTestStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *revokeTestStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *revokeTestStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *revokeTestStore) UpdateRememberTokenCtx(_ context.Context, user contract.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }

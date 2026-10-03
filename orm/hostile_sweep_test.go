@@ -267,9 +267,12 @@ func TestQueryEventPump_HostileListenerSweep(t *testing.T) {
 				}
 			})
 			if mode == hostile.Reenter {
-				for _, err := range reentryErrs {
-					if !errors.Is(err, ErrQueryEventsFlushFromPump) {
-						t.Errorf("a listener's Shutdown or flush = %v, want ErrQueryEventsFlushFromPump", err)
+				for i := 0; i+1 < len(reentryErrs); i += 2 {
+					if err := reentryErrs[i]; !errors.Is(err, contract.ErrStopFromOwnWork) {
+						t.Errorf("a listener's Shutdown = %v, want contract.ErrStopFromOwnWork", err)
+					}
+					if err := reentryErrs[i+1]; !errors.Is(err, ErrQueryEventsFlushFromPump) {
+						t.Errorf("a listener's flush = %v, want ErrQueryEventsFlushFromPump", err)
 					}
 				}
 			}

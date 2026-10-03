@@ -3,6 +3,7 @@ package orm
 import (
 	"context"
 	"errors"
+	"github.com/velocitykode/velocity/contract"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -49,7 +50,8 @@ func within(t *testing.T, d time.Duration, what string, fn func()) {
 
 // A drop hook runs on the pump's reporter goroutine: a flush or Shutdown it
 // asks for would wait on the goroutine running it. Both are refused at
-// once with ErrQueryEventsFlushFromPump, before Shutdown changes anything:
+// once (the flush with ErrQueryEventsFlushFromPump, Shutdown with
+// contract.ErrStopFromOwnWork), before Shutdown changes anything:
 // the manager stays open, and a later Shutdown from outside drains and
 // closes it.
 func TestQueryEventPump_FlushAndShutdownFromTheHookAreRefused(t *testing.T) {
@@ -85,8 +87,8 @@ func TestQueryEventPump_FlushAndShutdownFromTheHookAreRefused(t *testing.T) {
 	if !errors.Is(r.flush, ErrQueryEventsFlushFromPump) {
 		t.Errorf("flush from the hook = %v, want ErrQueryEventsFlushFromPump", r.flush)
 	}
-	if !errors.Is(r.shutdown, ErrQueryEventsFlushFromPump) {
-		t.Errorf("Shutdown from the hook = %v, want ErrQueryEventsFlushFromPump", r.shutdown)
+	if !errors.Is(r.shutdown, contract.ErrStopFromOwnWork) {
+		t.Errorf("Shutdown from the hook = %v, want contract.ErrStopFromOwnWork", r.shutdown)
 	}
 	if err := m.Ping(); err != nil {
 		t.Errorf("after the refused Shutdown: Ping = %v, want the manager still open", err)
@@ -132,8 +134,8 @@ func TestQueryEventPump_FlushAndShutdownFromAListenerAreRefused(t *testing.T) {
 	if err := *flushErr.Load(); !errors.Is(err, ErrQueryEventsFlushFromPump) {
 		t.Errorf("flush from a listener = %v, want ErrQueryEventsFlushFromPump", err)
 	}
-	if err := *shutdownErr.Load(); !errors.Is(err, ErrQueryEventsFlushFromPump) {
-		t.Errorf("Shutdown from a listener = %v, want ErrQueryEventsFlushFromPump", err)
+	if err := *shutdownErr.Load(); !errors.Is(err, contract.ErrStopFromOwnWork) {
+		t.Errorf("Shutdown from a listener = %v, want contract.ErrStopFromOwnWork", err)
 	}
 	if err := m.Ping(); err != nil {
 		t.Errorf("after the refused Shutdown: Ping = %v, want the manager still open", err)

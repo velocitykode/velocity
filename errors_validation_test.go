@@ -22,7 +22,10 @@ import (
 
 // backToSignup is a contract.ViewEngine whose Back answers 303 /signup,
 // standing in for the view engine's redirect back.
-type backToSignup struct{}
+type backToSignup struct {
+	// contract.ViewEngine supplies the methods this fake does not use.
+	contract.ViewEngine
+}
 
 func (backToSignup) Back(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/signup", http.StatusSeeOther)

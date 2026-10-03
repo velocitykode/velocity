@@ -24,7 +24,10 @@ import (
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
+	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/resource"
 	"github.com/velocitykode/velocity/scheduler"
 	"github.com/velocitykode/velocity/trace"
@@ -150,6 +153,10 @@ type Context struct {
 	// Wired during app init via Router.SetIntendedResolver so router need
 	// not import auth. Returns "" when nothing is stashed.
 	intendedFn func(c *Context) string
+
+	// requests is the router run that admitted this request (see
+	// ctxWiring.requests).
+	requests *drain.Run
 	// logger is Services.Log bound to LogFields, built by the first Log
 	// call of the request.
 	logger contract.Logger
@@ -671,6 +678,10 @@ type ctxWiring struct {
 	validateFn           func(c *Context, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error
 	validateDataFn       func(c *Context, data map[string]interface{}, rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error
 	intendedFn           func(c *Context) string
+	// requests is the router run that admitted the request, nil for a
+	// Context no router admitted (NewContext, Wrap); a Timeout handler
+	// goroutine holds a unit of it while it runs.
+	requests *drain.Run
 }
 
 // applyWiring installs the router-owned wiring fields on the context.
@@ -682,6 +693,7 @@ func (c *Context) applyWiring(w ctxWiring) {
 	c.validateFn = w.validateFn
 	c.validateDataFn = w.validateDataFn
 	c.intendedFn = w.intendedFn
+	c.requests = w.requests
 }
 
 // snapshotWiring captures the context's wiring so it can be copied onto
@@ -696,6 +708,7 @@ func (c *Context) snapshotWiring() ctxWiring {
 		validateFn:           c.validateFn,
 		validateDataFn:       c.validateDataFn,
 		intendedFn:           c.intendedFn,
+		requests:             c.requests,
 	}
 }
 
@@ -717,6 +730,7 @@ func (c *Context) reset() {
 	c.validateFn = nil
 	c.validateDataFn = nil
 	c.intendedFn = nil
+	c.requests = nil
 	c.logger = nil
 }
 
@@ -734,8 +748,8 @@ func (c *Context) IsAjax() bool {
 // the request's own negotiation, under which an Inertia request never
 // wants JSON.
 func (c *Context) WantsJSON() bool {
-	if c.services != nil && c.services.Errors != nil {
-		return c.services.Errors.WantsJSON(c.Request, nil)
+	if h, err := c.Errors(); err == nil {
+		return h.WantsJSON(c.Request, nil)
 	}
 	return contract.WantsJSON(c.Request)
 }
@@ -881,13 +895,15 @@ func (c *Context) Report(err error) error {
 	if err == nil {
 		return nil
 	}
-	s := c.ServicesIfSet()
-	if s == nil || s.Errors == nil {
+	h, herr := c.Errors()
+	if herr != nil {
 		return err
 	}
 	ec := c.ErrorContext()
-	ec.UserID = requestUserID(s.Auth, c.Request)
-	s.Errors.Report(err, ec)
+	if auth, aerr := c.Auth(); aerr == nil {
+		ec.UserID = requestUserID(auth, c.Request)
+	}
+	h.Report(err, ec)
 	return contract.MarkReported(err)
 }
 
@@ -942,35 +958,50 @@ func (c *Context) SetServices(s *app.Services) {
 	}
 }
 
-// mustServices returns the service container or panics if it is nil.
-func (c *Context) mustServices() *app.Services {
-	if c.services == nil {
-		panic("velocity: router.Context has no services, create the router via velocity.New()")
+// serviceOf returns the service pick reads from c's service container.
+// A nil c, a context with no services, and an absent or typed-nil field
+// all answer the zero T and a *contract.ServiceNotConfiguredError naming
+// the service ("services" when the container itself is missing), so no
+// accessor panics and a typed nil never reaches the caller.
+func serviceOf[T any](c *Context, name string, pick func(*app.Services) T) (T, error) {
+	var zero T
+	if c == nil || c.services == nil {
+		return zero, &contract.ServiceNotConfiguredError{Service: "services"}
 	}
-	return c.services
-}
-
-// requireService panics if the given service is nil (typed as any so it works
-// with both interface and pointer fields). The returned value is the same svc;
-// callers must type-assert.
-func requireService(c *Context, svc any, name string) {
-	if svc == nil {
-		panic(fmt.Sprintf("velocity: %s service not configured", name))
+	v := pick(c.services)
+	if nilval.Is(v) {
+		return zero, &contract.ServiceNotConfiguredError{Service: name}
 	}
+	return v, nil
 }
 
-// Services returns the service container.
-func (c *Context) Services() *app.Services {
-	return c.mustServices()
+// Services returns the service container, or a
+// *contract.ServiceNotConfiguredError naming "services" when the context
+// has none (a hand-built context, or a router built without
+// velocity.New).
+func (c *Context) Services() (*app.Services, error) {
+	if c == nil || c.services == nil {
+		return nil, &contract.ServiceNotConfiguredError{Service: "services"}
+	}
+	return c.services, nil
 }
 
-// ServicesIfSet returns the service container without panicking. Returns nil
-// when services have not been wired (e.g. raw NewContext in unit tests, or
-// helpers running before velocity.New() injects them). Use this from utility
-// packages that want to degrade gracefully instead of crashing the request.
+// ServicesIfSet returns the service container, or nil when services have
+// not been wired (e.g. raw NewContext in unit tests, or helpers running
+// before velocity.New() injects them). Use it from utility packages that
+// degrade gracefully when a service is missing.
 func (c *Context) ServicesIfSet() *app.Services {
+	if c == nil {
+		return nil
+	}
 	return c.services
 }
+
+// Every service accessor below returns the service and a nil error, or
+// the zero value and a *contract.ServiceNotConfiguredError naming the
+// service when the application has not configured it (see serviceOf);
+// errors.Is(err, contract.ErrServiceNotConfigured) matches it. Returned
+// from a handler, the error renders as a reported 500 naming the service.
 
 // DB returns the ORM database interface as the stdlib-only contract.Database.
 // The stored value is always the concrete *orm.Manager, which satisfies this
@@ -980,34 +1011,38 @@ func (c *Context) ServicesIfSet() *app.Services {
 // (DefaultDriver, Connection, AddConnection) so that ./router carries no heavy
 // driver packages. This is a deliberate narrowing of the surface, not an
 // accidental capability loss. Handlers that need those methods recover the
-// wider interface with the supported escape hatch:
+// wider interface with a type assertion:
 //
-//	db, ok := c.DB().(orm.Database) // orm.Database includes the driver methods
-//
-// (orm cannot expose a FromContext helper here: orm importing router would
-// create an import cycle, so the type assertion is the canonical recovery path.)
-func (c *Context) DB() contract.Database {
-	s := c.mustServices()
-	requireService(c, s.DB, "database")
-	return s.DB
+//	db, err := c.DB()
+//	if err != nil {
+//	    return err
+//	}
+//	full, ok := db.(orm.Database) // orm.Database includes the driver methods
+func (c *Context) DB() (contract.Database, error) {
+	return serviceOf(c, "database", func(s *app.Services) contract.Database { return s.DB })
 }
 
 // Cache returns the cache manager interface.
-func (c *Context) Cache() contract.CacheManager {
-	s := c.mustServices()
-	requireService(c, s.Cache, "cache")
-	return s.Cache
+func (c *Context) Cache() (contract.CacheManager, error) {
+	return serviceOf(c, "cache", func(s *app.Services) contract.CacheManager { return s.Cache })
 }
 
 // Log returns the application logger (Services.Log) bound to this request:
 // every line it writes carries LogFields, the request, trace and span ids
 // and the method and route. It is built on the first call and reused for
-// the rest of the request.
+// the rest of the request. With no logger configured (no services, or an
+// absent or typed-nil Services.Log) it binds the framework's standalone
+// fallback logger instead, so Log never fails.
 func (c *Context) Log() contract.Logger {
+	if c == nil {
+		return fallbacklog.Logger{}
+	}
 	if c.logger == nil {
-		s := c.mustServices()
-		requireService(c, s.Log, "log")
-		c.logger = s.Log.With(c.LogFields()...)
+		var base contract.Logger = fallbacklog.Logger{}
+		if l, err := serviceOf(c, "log", func(s *app.Services) contract.Logger { return s.Log }); err == nil {
+			base = l
+		}
+		c.logger = base.With(c.LogFields()...)
 	}
 	return c.logger
 }
@@ -1030,96 +1065,69 @@ func (c *Context) LogFields() []any {
 }
 
 // Queue returns the queue driver.
-func (c *Context) Queue() contract.QueueDriver {
-	s := c.mustServices()
-	requireService(c, s.Queue, "queue")
-	return s.Queue
+func (c *Context) Queue() (contract.QueueDriver, error) {
+	return serviceOf(c, "queue", func(s *app.Services) contract.QueueDriver { return s.Queue })
 }
 
 // Storage returns the storage manager interface.
-func (c *Context) Storage() contract.StorageManager {
-	s := c.mustServices()
-	requireService(c, s.Storage, "storage")
-	return s.Storage
+func (c *Context) Storage() (contract.StorageManager, error) {
+	return serviceOf(c, "storage", func(s *app.Services) contract.StorageManager { return s.Storage })
 }
 
 // Mail returns the mailer.
-func (c *Context) Mail() contract.Mailer {
-	s := c.mustServices()
-	requireService(c, s.Mail, "mail")
-	return s.Mail
+func (c *Context) Mail() (contract.Mailer, error) {
+	return serviceOf(c, "mail", func(s *app.Services) contract.Mailer { return s.Mail })
 }
 
 // Notification returns the notification interface.
-func (c *Context) Notification() contract.Notifier {
-	s := c.mustServices()
-	requireService(c, s.Notification, "notification")
-	return s.Notification
+func (c *Context) Notification() (contract.Notifier, error) {
+	return serviceOf(c, "notification", func(s *app.Services) contract.Notifier { return s.Notification })
 }
 
 // Events returns the event dispatcher.
-func (c *Context) Events() contract.Dispatcher {
-	s := c.mustServices()
-	requireService(c, s.Events, "events")
-	return s.Events
+func (c *Context) Events() (contract.Dispatcher, error) {
+	return serviceOf(c, "events", func(s *app.Services) contract.Dispatcher { return s.Events })
 }
 
 // Crypto returns the encryptor.
-func (c *Context) Crypto() contract.Encryptor {
-	s := c.mustServices()
-	requireService(c, s.Crypto, "crypto")
-	return s.Crypto
-}
-
-// Validator returns the validator.
-func (c *Context) Validator() contract.Validator {
-	s := c.mustServices()
-	requireService(c, s.Validator, "validator")
-	return s.Validator
+func (c *Context) Crypto() (contract.Encryptor, error) {
+	return serviceOf(c, "crypto", func(s *app.Services) contract.Encryptor { return s.Crypto })
 }
 
 // Errors returns the error handler.
-func (c *Context) Errors() contract.ErrorHandler {
-	s := c.mustServices()
-	requireService(c, s.Errors, "errors")
-	return s.Errors
+func (c *Context) Errors() (contract.ErrorHandler, error) {
+	return serviceOf(c, "errors", func(s *app.Services) contract.ErrorHandler { return s.Errors })
 }
 
 // Scheduler returns the task scheduler interface.
-func (c *Context) Scheduler() scheduler.TaskScheduler {
-	s := c.mustServices()
-	requireService(c, s.Scheduler, "scheduler")
-	return s.Scheduler
+func (c *Context) Scheduler() (scheduler.TaskScheduler, error) {
+	return serviceOf(c, "scheduler", func(s *app.Services) scheduler.TaskScheduler { return s.Scheduler })
 }
 
 // Auth returns the auth manager (*auth.Manager) as a contract.AuthManager.
-func (c *Context) Auth() contract.AuthManager {
-	s := c.mustServices()
-	requireService(c, s.Auth, "auth")
-	return s.Auth
+func (c *Context) Auth() (contract.AuthManager, error) {
+	return serviceOf(c, "auth", func(s *app.Services) contract.AuthManager { return s.Auth })
 }
 
 // CSRF returns the CSRF protection instance (*csrf.CSRF) as a contract.CSRFProtector.
-func (c *Context) CSRF() contract.CSRFProtector {
-	s := c.mustServices()
-	requireService(c, s.CSRF, "csrf")
-	return s.CSRF
+func (c *Context) CSRF() (contract.CSRFProtector, error) {
+	return serviceOf(c, "csrf", func(s *app.Services) contract.CSRFProtector { return s.CSRF })
 }
 
 // View returns the view engine (*view.Engine) as a contract.ViewEngine.
-func (c *Context) View() contract.ViewEngine {
-	s := c.mustServices()
-	requireService(c, s.View, "view")
-	return s.View
+func (c *Context) View() (contract.ViewEngine, error) {
+	return serviceOf(c, "view", func(s *app.Services) contract.ViewEngine { return s.View })
 }
 
 // Can returns true if the authenticated user is allowed to perform the given
-// ability. Returns false when auth is not configured or no user is logged in.
+// ability. Returns false when auth is not configured (absent, typed nil, or
+// no services) or no user is logged in.
 func (c *Context) Can(ability string, args ...interface{}) bool {
-	if c.services == nil || c.services.Auth == nil {
+	auth, err := c.Auth()
+	if err != nil {
 		return false
 	}
-	return c.services.Auth.Allows(c.Request, ability, args...)
+	return auth.Allows(c.Request, ability, args...)
 }
 
 // Cannot returns true if the authenticated user is NOT allowed to perform the
@@ -1130,13 +1138,15 @@ func (c *Context) Cannot(ability string, args ...interface{}) bool {
 
 // Authorize checks if the authenticated user can perform the given ability.
 // A denial returns a 403 *contract.HTTPError whose Cause is the auth
-// manager's error; with auth not configured it returns a 403 with no
-// cause. The origin recorded on the error is the caller of Authorize.
+// manager's error; with auth not configured it returns a 403 whose Cause
+// is the *contract.ServiceNotConfiguredError naming "auth". The origin
+// recorded on the error is the caller of Authorize.
 func (c *Context) Authorize(ability string, args ...interface{}) error {
-	if c.services == nil || c.services.Auth == nil {
-		return contract.NewHTTPError(http.StatusForbidden).WithOrigin(1)
+	auth, err := c.Auth()
+	if err != nil {
+		return contract.NewHTTPError(http.StatusForbidden).WithCause(err).WithOrigin(1)
 	}
-	if err := c.services.Auth.Authorize(c.Request, ability, args...); err != nil {
+	if err := auth.Authorize(c.Request, ability, args...); err != nil {
 		return contract.NewHTTPError(http.StatusForbidden).WithCause(err).WithOrigin(1)
 	}
 	return nil
@@ -1280,13 +1290,10 @@ type Validatable interface {
 // an app with no view engine, errors and old input flashed with a redirect
 // back for a browser.
 //
-// Rules run through the same seam vform uses when the app wires one, so
-// DB-backed rules resolve here too. Without that seam it falls back to the
-// validator service, which resolves the orm-free rule set only and returns
-// its own validation error: a rule the validator cannot resolve is reported
-// as a configuration error, never as a field failure.
-//
-// Returns an error when neither the seam nor a validator service is wired.
+// Rules run through the same seam vform uses, so DB-backed rules resolve
+// here too. Without that seam (a router built without velocity.New, or
+// one never given SetDataValidator) a struct with rules returns a
+// *contract.ServiceNotConfiguredError naming "validator".
 func (c *Context) BindValid(v interface{}) error {
 	if err := c.Bind(v); err != nil {
 		return err
@@ -1301,12 +1308,7 @@ func (c *Context) BindValid(v interface{}) error {
 		return c.validateDataFn(c, dataMap, val.Rules())
 	}
 
-	s := c.ServicesIfSet()
-	if s == nil || s.Validator == nil {
-		return errors.New("velocity/router: validator not configured")
-	}
-	_, err := s.Validator.Validate(dataMap, val.Rules())
-	return err
+	return &contract.ServiceNotConfiguredError{Service: "validator"}
 }
 
 // structToMap converts a struct (or pointer to struct) to map[string]interface{}
@@ -2293,11 +2295,12 @@ func unwrapErrorBag(value any) any {
 //	    // only reaches here if valid
 //	}
 //
-// Returns an error when no validator is wired: validation runs per request,
-// so a missing service is reported, not fatal.
+// With no validator wired it returns a *contract.ServiceNotConfiguredError
+// naming "validator": validation runs per request, so a missing service is
+// reported, not fatal.
 func (c *Context) Validate(rules contract.ValidationRuleSet, messages ...contract.ValidationMessages) error {
-	if c.validateFn == nil {
-		return errors.New("velocity/router: validator not configured")
+	if c == nil || c.validateFn == nil {
+		return &contract.ServiceNotConfiguredError{Service: "validator"}
 	}
 	return c.validateFn(c, rules, messages...)
 }

@@ -6,6 +6,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/stores/ormauth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/orm"
 )
 
@@ -149,10 +150,10 @@ type recordingScheme struct {
 
 func (g *recordingScheme) SetUserStore(p auth.UserStore)                   { g.userStore = p }
 func (g *recordingScheme) Check(*http.Request) bool                        { return false }
-func (g *recordingScheme) User(*http.Request) auth.Authenticatable         { return nil }
+func (g *recordingScheme) User(*http.Request) contract.Authenticatable     { return nil }
 func (g *recordingScheme) ID(*http.Request) interface{}                    { return nil }
 func (g *recordingScheme) Logout(http.ResponseWriter, *http.Request) error { return nil }
-func (g *recordingScheme) Login(http.ResponseWriter, *http.Request, auth.Authenticatable, ...bool) error {
+func (g *recordingScheme) Login(http.ResponseWriter, *http.Request, contract.Authenticatable, ...bool) error {
 	return nil
 }
 func (g *recordingScheme) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {

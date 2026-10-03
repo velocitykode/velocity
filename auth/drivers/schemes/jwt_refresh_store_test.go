@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // sharedRefreshGenStore is the test surrogate for a Redis-backed
@@ -40,7 +41,7 @@ func (s *sharedRefreshGenStore) Bump(userID string) (int64, error) {
 	return s.counts[userID], nil
 }
 
-// jwtSharedStoreUser implements auth.Authenticatable for the shared-store
+// jwtSharedStoreUser implements contract.Authenticatable for the shared-store
 // suite.
 type jwtSharedStoreUser struct {
 	id string
@@ -56,16 +57,16 @@ type jwtSharedStoreUserStore struct {
 	user *jwtSharedStoreUser
 }
 
-func (p *jwtSharedStoreUserStore) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *jwtSharedStoreUserStore) FindByID(id interface{}) (contract.Authenticatable, error) {
 	return p.user, nil
 }
-func (p *jwtSharedStoreUserStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (p *jwtSharedStoreUserStore) FindByCredentials(map[string]interface{}) (contract.Authenticatable, error) {
 	return p.user, nil
 }
-func (p *jwtSharedStoreUserStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (p *jwtSharedStoreUserStore) ValidateCredentials(contract.Authenticatable, map[string]interface{}) bool {
 	return true
 }
-func (p *jwtSharedStoreUserStore) UpdateRememberToken(auth.Authenticatable, string) error {
+func (p *jwtSharedStoreUserStore) UpdateRememberToken(contract.Authenticatable, string) error {
 	return nil
 }
 
@@ -216,12 +217,12 @@ func TestJWTScheme_SetRefreshGenerationStore_NilReverts(t *testing.T) {
 }
 
 // Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
-func (p *jwtSharedStoreUserStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *jwtSharedStoreUserStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *jwtSharedStoreUserStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *jwtSharedStoreUserStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *jwtSharedStoreUserStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *jwtSharedStoreUserStore) UpdateRememberTokenCtx(_ context.Context, user contract.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }

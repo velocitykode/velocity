@@ -1,14 +1,8 @@
 package router
 
 import (
-	"errors"
-
 	"github.com/velocitykode/velocity/app"
 )
-
-// errServicesNotSet is returned when a handler asks for a registry component
-// but the service container was never wired onto the Context.
-var errServicesNotSet = errors.New("velocity/router: services not set on context")
 
 // Service retrieves the registry component registered under the exact type T
 // from the request's service container. It is the handler-side accessor for
@@ -19,16 +13,12 @@ var errServicesNotSet = errors.New("velocity/router: services not set on context
 // with T=SomeIface, never a concrete value that merely satisfies it. This
 // mirrors app.Get.
 //
-// It never panics. If services were never wired onto the Context it returns the
-// zero T and errServicesNotSet; if the component is not registered it returns
-// the zero T and the error from app.Get.
+// It never panics. If c is nil or services were never wired onto it, it
+// returns the zero T and a *contract.ServiceNotConfiguredError naming
+// "services"; if the component is not registered it returns the zero T and
+// the error from app.Get, which names the component key.
 func Service[T any](c *Context) (T, error) {
-	s := c.ServicesIfSet()
-	if s == nil {
-		var zero T
-		return zero, errServicesNotSet
-	}
-	return app.Get[T](s)
+	return ServiceFor[T, app.Default](c)
 }
 
 // ServiceFor retrieves the registry component registered under the exact type T
@@ -38,10 +28,10 @@ func Service[T any](c *Context) (T, error) {
 // As with Service, a missing service container and a missing component both
 // return errors and never panic.
 func ServiceFor[T any, Q any](c *Context) (T, error) {
-	s := c.ServicesIfSet()
-	if s == nil {
+	s, err := c.Services()
+	if err != nil {
 		var zero T
-		return zero, errServicesNotSet
+		return zero, err
 	}
 	return app.GetFor[T, Q](s)
 }

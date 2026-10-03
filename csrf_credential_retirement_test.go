@@ -35,7 +35,7 @@ func retirementInstance(t *testing.T, sessionStore string, records auth.ServerSe
 
 func retirementScheme(t *testing.T, a *App) *schemes.SessionScheme {
 	t.Helper()
-	sc, err := auth.FromServices(a.Services).DefaultScheme()
+	sc, err := a.Services.Auth.(*auth.Manager).DefaultScheme()
 	if err != nil {
 		t.Fatalf("DefaultScheme: %v", err)
 	}

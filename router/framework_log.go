@@ -1,6 +1,7 @@
 package router
 
 import (
+	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 )
@@ -42,8 +43,8 @@ func requestBaseLogger(c *Context) contract.Logger {
 	if r := servingRouter(c.Request); r != nil && r.logger != nil {
 		return r.logger
 	}
-	if c.services != nil && c.services.Log != nil {
-		return c.services.Log
+	if l, err := serviceOf(c, "log", func(s *app.Services) contract.Logger { return s.Log }); err == nil {
+		return l
 	}
 	return fallbacklog.Logger{}
 }

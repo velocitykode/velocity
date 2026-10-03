@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
@@ -44,7 +45,7 @@ func requestWithCookie(cfg auth.SessionConfig, value string) *http.Request {
 }
 
 // saveAndExtract saves the session and returns the resulting cookie value.
-func saveAndExtract(t *testing.T, store *CookieStore, cfg auth.SessionConfig, sess auth.Session) string {
+func saveAndExtract(t *testing.T, store *CookieStore, cfg auth.SessionConfig, sess contract.Session) string {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	if err := store.Save(rec, sess); err != nil {

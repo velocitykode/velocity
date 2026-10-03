@@ -34,7 +34,7 @@ func csrfWithSessionBagStore(t *testing.T, singleUse bool) (*csrf.CSRF, *stores.
 	t.Helper()
 	cfg := csrf.DefaultConfig()
 	store := stores.NewSessionBagStore(func(ctx context.Context) stores.SessionBag {
-		s, _ := ctx.Value(csrfBagKey{}).(auth.Session)
+		s, _ := ctx.Value(csrfBagKey{}).(contract.Session)
 		if s == nil {
 			return nil
 		}
@@ -51,7 +51,7 @@ func csrfWithSessionBagStore(t *testing.T, singleUse bool) (*csrf.CSRF, *stores.
 	return c, store
 }
 
-func servedUnder(s auth.Session) context.Context {
+func servedUnder(s contract.Session) context.Context {
 	return context.WithValue(context.Background(), csrfBagKey{}, s)
 }
 
@@ -89,7 +89,7 @@ func TestServerStore_ConcurrentCSRFMintAfterRevokeHandsOutOneToken(t *testing.T)
 				t.Fatalf("Save: %v", err)
 			}
 
-			sessions := make([]auth.Session, n)
+			sessions := make([]contract.Session, n)
 			for i := range sessions {
 				sessions[i] = loadSession(t, store, id)
 			}
@@ -184,7 +184,7 @@ func TestServerStore_StaggeredCSRFMintsFromPreloadedSessions(t *testing.T) {
 			c := csrfWithSessionBag(t)
 			id := revokedSession(t, store, c)
 
-			sessions := make([]auth.Session, n)
+			sessions := make([]contract.Session, n)
 			for i := range sessions {
 				sessions[i] = loadSession(t, store, id)
 				sessions[i].Put(fmt.Sprintf("tab-%d", i), i)
@@ -262,7 +262,7 @@ func TestServerStore_CSRFMintAcrossInstances(t *testing.T) {
 			id := revokedSession(t, storeA, cA)
 
 			type req struct {
-				s auth.Session
+				s contract.Session
 				c *csrf.CSRF
 			}
 			var reqs []req

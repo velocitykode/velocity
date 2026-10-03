@@ -191,13 +191,19 @@ func (v *defaultValidator) resolve(name string, custom map[string]carriedRule) (
 // resolve. It runs after every handler is installed, so an unresolvable name
 // is a configuration bug (a typo, or a DB rule without a database wired) and
 // is reported to the caller instead of surfacing as a field error the end
-// user would see.
+// user would see. A DB rule left unresolved means no database is wired: the
+// error then also wraps a *contract.ServiceNotConfiguredError naming
+// "database".
 func (v *defaultValidator) checkResolvable(rs normalizedRuleSet) error {
 	for field, fieldRules := range rs.fields {
 		for _, rule := range fieldRules {
-			if _, ok := v.resolve(rule.name, rs.custom); !ok {
-				return errchain.Errorf("%w: field %q names rule %q, which is not registered", ErrInvalidRule, field, rule.name)
+			if _, ok := v.resolve(rule.name, rs.custom); ok {
+				continue
 			}
+			if _, db := dbRuleNames[rule.name]; db {
+				return errchain.Errorf("%w: field %q names rule %q: %w", ErrInvalidRule, field, rule.name, &contract.ServiceNotConfiguredError{Service: "database"})
+			}
+			return errchain.Errorf("%w: field %q names rule %q, which is not registered", ErrInvalidRule, field, rule.name)
 		}
 	}
 	return nil

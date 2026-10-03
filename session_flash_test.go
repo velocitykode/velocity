@@ -50,17 +50,29 @@ func sessionFlashServer(t *testing.T, bootstrap bool) (*App, *httptest.Server, *
 	a.Router.Use(a.Services.View.(*view.Engine).Middleware())
 
 	a.Router.Post("/save", func(c *router.Context) error {
-		view.For(c).Flash("success", "Saved!").Redirect("/dash")
+		re, err := view.For(c)
+		if err != nil {
+			return err
+		}
+		re.Flash("success", "Saved!").Redirect("/dash")
 		return nil
 	})
 	a.Router.Post("/invalid", func(c *router.Context) error {
 		c.FlashErrors(map[string][]string{"email": {"The email is taken."}})
 		c.FlashInput(map[string]any{"email": "taken@example.test"})
-		view.For(c).Flash("warning", "Check the form.").Redirect("/dash")
+		re, err := view.For(c)
+		if err != nil {
+			return err
+		}
+		re.Flash("warning", "Check the form.").Redirect("/dash")
 		return nil
 	})
 	a.Router.Get("/dash", func(c *router.Context) error {
-		return view.For(c).Render("Dash", view.Props{"other": "x"})
+		re, err := view.For(c)
+		if err != nil {
+			return err
+		}
+		return re.Render("Dash", view.Props{"other": "x"})
 	})
 
 	srv := httptest.NewServer(a.Router)
@@ -154,7 +166,7 @@ func assertOnlySessionCookie(t *testing.T, a *App, step string, resp *http.Respo
 }
 
 // TestSessionFlash_ReachesTheNextPageOnce asserts a message flashed by
-// view.For(ctx).Flash reaches the next Inertia page as flash.success with
+// a view.For handle's Flash reaches the next Inertia page as flash.success with
 // no app wiring, is gone from the page after that, and is gone from the
 // session cookie once delivered.
 func TestSessionFlash_ReachesTheNextPageOnce(t *testing.T) {

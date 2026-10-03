@@ -9,58 +9,59 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 )
 
 // mockSessionSchemeUserStore implements auth.UserStore for session scheme tests
 type mockSessionSchemeUserStore struct {
-	findByIDFunc            func(id interface{}) (auth.Authenticatable, error)
-	findByCredentialsFunc   func(credentials map[string]interface{}) (auth.Authenticatable, error)
-	validateCredentialsFunc func(user auth.Authenticatable, credentials map[string]interface{}) bool
-	updateRememberTokenFunc func(user auth.Authenticatable, token string) error
+	findByIDFunc            func(id interface{}) (contract.Authenticatable, error)
+	findByCredentialsFunc   func(credentials map[string]interface{}) (contract.Authenticatable, error)
+	validateCredentialsFunc func(user contract.Authenticatable, credentials map[string]interface{}) bool
+	updateRememberTokenFunc func(user contract.Authenticatable, token string) error
 }
 
-func (p *mockSessionSchemeUserStore) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *mockSessionSchemeUserStore) FindByID(id interface{}) (contract.Authenticatable, error) {
 	if p.findByIDFunc != nil {
 		return p.findByIDFunc(id)
 	}
 	return &mockSessionSchemeUser{id: id, password: "hashedpassword"}, nil
 }
 
-func (p *mockSessionSchemeUserStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *mockSessionSchemeUserStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {
 	return p.FindByID(id)
 }
 
-func (p *mockSessionSchemeUserStore) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *mockSessionSchemeUserStore) FindByCredentials(credentials map[string]interface{}) (contract.Authenticatable, error) {
 	if p.findByCredentialsFunc != nil {
 		return p.findByCredentialsFunc(credentials)
 	}
 	return &mockSessionSchemeUser{id: "user123", email: "test@example.com", password: "hashedpassword"}, nil
 }
 
-func (p *mockSessionSchemeUserStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *mockSessionSchemeUserStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
 
-func (p *mockSessionSchemeUserStore) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
+func (p *mockSessionSchemeUserStore) ValidateCredentials(user contract.Authenticatable, credentials map[string]interface{}) bool {
 	if p.validateCredentialsFunc != nil {
 		return p.validateCredentialsFunc(user, credentials)
 	}
 	return true
 }
 
-func (p *mockSessionSchemeUserStore) UpdateRememberToken(user auth.Authenticatable, token string) error {
+func (p *mockSessionSchemeUserStore) UpdateRememberToken(user contract.Authenticatable, token string) error {
 	if p.updateRememberTokenFunc != nil {
 		return p.updateRememberTokenFunc(user, token)
 	}
 	return nil
 }
 
-func (p *mockSessionSchemeUserStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *mockSessionSchemeUserStore) UpdateRememberTokenCtx(_ context.Context, user contract.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }
 
-// mockSessionSchemeUser implements auth.Authenticatable for session scheme tests
+// mockSessionSchemeUser implements contract.Authenticatable for session scheme tests
 type mockSessionSchemeUser struct {
 	id            interface{}
 	email         string
@@ -84,7 +85,7 @@ func (u *mockSessionSchemeUser) SetRememberToken(token string) {
 	u.rememberToken = token
 }
 
-// mockSessionSchemeSession implements auth.Session for testing
+// mockSessionSchemeSession implements contract.Session for testing
 type mockSessionSchemeSession struct {
 	id              string
 	data            map[string]interface{}
@@ -140,28 +141,28 @@ func (s *mockSessionSchemeSession) Save(w http.ResponseWriter) error { return s.
 
 // mockSessionSchemeStore implements auth.SessionStore for testing
 type mockSessionSchemeStore struct {
-	createFunc  func(id string) (auth.Session, error)
-	getFunc     func(r *http.Request, id string) (auth.Session, error)
-	saveFunc    func(w http.ResponseWriter, session auth.Session) error
+	createFunc  func(id string) (contract.Session, error)
+	getFunc     func(r *http.Request, id string) (contract.Session, error)
+	saveFunc    func(w http.ResponseWriter, session contract.Session) error
 	destroyFunc func(id string) error
 	gcFunc      func(maxLifetime time.Duration) error
 }
 
-func (s *mockSessionSchemeStore) Create(id string) (auth.Session, error) {
+func (s *mockSessionSchemeStore) Create(id string) (contract.Session, error) {
 	if s.createFunc != nil {
 		return s.createFunc(id)
 	}
 	return newMockSessionSchemeSession(id), nil
 }
 
-func (s *mockSessionSchemeStore) Get(r *http.Request, id string) (auth.Session, error) {
+func (s *mockSessionSchemeStore) Get(r *http.Request, id string) (contract.Session, error) {
 	if s.getFunc != nil {
 		return s.getFunc(r, id)
 	}
 	return newMockSessionSchemeSession(id), nil
 }
 
-func (s *mockSessionSchemeStore) Save(w http.ResponseWriter, session auth.Session) error {
+func (s *mockSessionSchemeStore) Save(w http.ResponseWriter, session contract.Session) error {
 	if s.saveFunc != nil {
 		return s.saveFunc(w, session)
 	}
@@ -255,10 +256,10 @@ func TestSessionScheme_Check(t *testing.T) {
 				session := newMockSessionSchemeSession("test-id")
 				session.Put("user_id", int64(123))
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
@@ -283,10 +284,10 @@ func TestSessionScheme_Check(t *testing.T) {
 			name: "returns false when session is nil",
 			setupScheme: func() *SessionScheme {
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return nil, errors.New("session not found")
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return nil, errors.New("cannot create session")
 					},
 				}
@@ -313,10 +314,10 @@ func TestSessionScheme_Check(t *testing.T) {
 				session := newMockSessionSchemeSession("test-id")
 				// No user_id set
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
@@ -343,15 +344,15 @@ func TestSessionScheme_Check(t *testing.T) {
 				session := newMockSessionSchemeSession("test-id")
 				session.Put("user_id", int64(123))
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
 				userStore := &mockSessionSchemeUserStore{
-					findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
+					findByIDFunc: func(id interface{}) (contract.Authenticatable, error) {
 						return nil, errors.New("user not found")
 					},
 				}
@@ -378,15 +379,15 @@ func TestSessionScheme_Check(t *testing.T) {
 				session := newMockSessionSchemeSession("test-id")
 				session.Put("user_id", int64(123))
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
 				userStore := &mockSessionSchemeUserStore{
-					findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
+					findByIDFunc: func(id interface{}) (contract.Authenticatable, error) {
 						return nil, nil
 					},
 				}
@@ -435,10 +436,10 @@ func TestSessionScheme_User(t *testing.T) {
 				session := newMockSessionSchemeSession("test-id")
 				session.Put("user_id", "user123")
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
@@ -464,10 +465,10 @@ func TestSessionScheme_User(t *testing.T) {
 			name: "returns nil when session is nil",
 			setupScheme: func() *SessionScheme {
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return nil, errors.New("session not found")
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return nil, errors.New("cannot create")
 					},
 				}
@@ -493,10 +494,10 @@ func TestSessionScheme_User(t *testing.T) {
 			setupScheme: func() *SessionScheme {
 				session := newMockSessionSchemeSession("test-id")
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
@@ -523,15 +524,15 @@ func TestSessionScheme_User(t *testing.T) {
 				session := newMockSessionSchemeSession("test-id")
 				session.Put("user_id", "user123")
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
 				userStore := &mockSessionSchemeUserStore{
-					findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
+					findByIDFunc: func(id interface{}) (contract.Authenticatable, error) {
 						return nil, errors.New("database error")
 					},
 				}
@@ -590,10 +591,10 @@ func TestSessionScheme_ID(t *testing.T) {
 				session := newMockSessionSchemeSession("test-id")
 				session.Put("user_id", int64(456))
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
@@ -619,10 +620,10 @@ func TestSessionScheme_ID(t *testing.T) {
 			name: "returns nil when session is nil",
 			setupScheme: func() *SessionScheme {
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return nil, errors.New("no session")
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return nil, errors.New("cannot create")
 					},
 				}
@@ -648,10 +649,10 @@ func TestSessionScheme_ID(t *testing.T) {
 			setupScheme: func() *SessionScheme {
 				session := newMockSessionSchemeSession("test-id")
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
@@ -697,7 +698,7 @@ func TestSessionScheme_Login(t *testing.T) {
 		name        string
 		setupScheme func() *SessionScheme
 		setupReq    func() *http.Request
-		user        auth.Authenticatable
+		user        contract.Authenticatable
 		remember    []bool
 		wantErr     bool
 		checkScheme func(t *testing.T, scheme *SessionScheme, req *http.Request)
@@ -707,10 +708,10 @@ func TestSessionScheme_Login(t *testing.T) {
 			setupScheme: func() *SessionScheme {
 				session := newMockSessionSchemeSession("test-id")
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
@@ -748,10 +749,10 @@ func TestSessionScheme_Login(t *testing.T) {
 			setupScheme: func() *SessionScheme {
 				session := newMockSessionSchemeSession("")
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return nil, errors.New("no session")
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
@@ -775,10 +776,10 @@ func TestSessionScheme_Login(t *testing.T) {
 			name: "returns error when session creation fails",
 			setupScheme: func() *SessionScheme {
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return nil, errors.New("no session")
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return nil, errors.New("cannot create session")
 					},
 				}
@@ -808,10 +809,10 @@ func TestSessionScheme_Login(t *testing.T) {
 					saveError: errors.New("save failed"),
 				}
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
@@ -867,10 +868,10 @@ func TestSessionScheme_LoginByID(t *testing.T) {
 			setupScheme: func() *SessionScheme {
 				session := newMockSessionSchemeSession("test-id")
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
@@ -896,7 +897,7 @@ func TestSessionScheme_LoginByID(t *testing.T) {
 			name: "returns error when user not found",
 			setupScheme: func() *SessionScheme {
 				userStore := &mockSessionSchemeUserStore{
-					findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
+					findByIDFunc: func(id interface{}) (contract.Authenticatable, error) {
 						return nil, errors.New("user not found")
 					},
 				}
@@ -921,10 +922,10 @@ func TestSessionScheme_LoginByID(t *testing.T) {
 			setupScheme: func() *SessionScheme {
 				session := newMockSessionSchemeSession("test-id")
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
@@ -991,10 +992,10 @@ func TestSessionScheme_Attempt(t *testing.T) {
 			setupScheme: func() *SessionScheme {
 				session := newMockSessionSchemeSession("test-id")
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
@@ -1024,7 +1025,7 @@ func TestSessionScheme_Attempt(t *testing.T) {
 			name: "returns false when user not found",
 			setupScheme: func() *SessionScheme {
 				userStore := &mockSessionSchemeUserStore{
-					findByCredentialsFunc: func(credentials map[string]interface{}) (auth.Authenticatable, error) {
+					findByCredentialsFunc: func(credentials map[string]interface{}) (contract.Authenticatable, error) {
 						return nil, errors.New("user not found")
 					},
 				}
@@ -1075,7 +1076,7 @@ func TestSessionScheme_Attempt(t *testing.T) {
 			name: "returns false when password validation fails",
 			setupScheme: func() *SessionScheme {
 				userStore := &mockSessionSchemeUserStore{
-					validateCredentialsFunc: func(user auth.Authenticatable, credentials map[string]interface{}) bool {
+					validateCredentialsFunc: func(user contract.Authenticatable, credentials map[string]interface{}) bool {
 						return false
 					},
 				}
@@ -1103,10 +1104,10 @@ func TestSessionScheme_Attempt(t *testing.T) {
 			name: "returns error when login fails after successful validation",
 			setupScheme: func() *SessionScheme {
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return nil, errors.New("no session")
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return nil, errors.New("cannot create session")
 					},
 				}
@@ -1164,10 +1165,10 @@ func TestSessionScheme_Logout(t *testing.T) {
 				session := newMockSessionSchemeSession("test-id")
 				session.Put("user_id", "user123")
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
@@ -1192,10 +1193,10 @@ func TestSessionScheme_Logout(t *testing.T) {
 			name: "returns nil when session is nil",
 			setupScheme: func() *SessionScheme {
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return nil, errors.New("no session")
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return nil, errors.New("cannot create")
 					},
 				}
@@ -1224,10 +1225,10 @@ func TestSessionScheme_Logout(t *testing.T) {
 					invalidateError: errors.New("invalidate failed"),
 				}
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
@@ -1253,10 +1254,10 @@ func TestSessionScheme_Logout(t *testing.T) {
 			setupScheme: func() *SessionScheme {
 				session := newMockSessionSchemeSession("test-id")
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
@@ -1370,10 +1371,10 @@ func TestSessionScheme_getSession(t *testing.T) {
 			name: "creates new session when cookie exists but session not found",
 			setupScheme: func() *SessionScheme {
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return nil, errors.New("session not found")
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return newMockSessionSchemeSession("new-session"), nil
 					},
 				}
@@ -1398,7 +1399,7 @@ func TestSessionScheme_getSession(t *testing.T) {
 			name: "creates new session when no cookie exists",
 			setupScheme: func() *SessionScheme {
 				store := &mockSessionSchemeStore{
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return newMockSessionSchemeSession("new-session"), nil
 					},
 				}
@@ -1421,10 +1422,10 @@ func TestSessionScheme_getSession(t *testing.T) {
 			name: "returns nil when session creation fails",
 			setupScheme: func() *SessionScheme {
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return nil, errors.New("get failed")
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return nil, errors.New("create failed")
 					},
 				}
@@ -1469,7 +1470,7 @@ func TestSessionScheme_SessionRegeneration(t *testing.T) {
 	tests := []struct {
 		name        string
 		setupScheme func() (*SessionScheme, *mockSessionSchemeSession)
-		user        auth.Authenticatable
+		user        contract.Authenticatable
 		wantRegen   bool
 	}{
 		{
@@ -1477,10 +1478,10 @@ func TestSessionScheme_SessionRegeneration(t *testing.T) {
 			setupScheme: func() (*SessionScheme, *mockSessionSchemeSession) {
 				session := newMockSessionSchemeSession("old-session-id")
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
@@ -1531,10 +1532,10 @@ func TestSessionScheme_SessionInvalidation(t *testing.T) {
 				session := newMockSessionSchemeSession("session-id")
 				session.Put("user_id", "user123")
 				store := &mockSessionSchemeStore{
-					getFunc: func(r *http.Request, id string) (auth.Session, error) {
+					getFunc: func(r *http.Request, id string) (contract.Session, error) {
 						return session, nil
 					},
-					createFunc: func(id string) (auth.Session, error) {
+					createFunc: func(id string) (contract.Session, error) {
 						return session, nil
 					},
 				}
@@ -1583,10 +1584,10 @@ func TestLogin_RegenerateErrorFailsLogin(t *testing.T) {
 	session.regenerateError = errors.New("store I/O failure")
 
 	store := &mockSessionSchemeStore{
-		getFunc: func(r *http.Request, id string) (auth.Session, error) {
+		getFunc: func(r *http.Request, id string) (contract.Session, error) {
 			return session, nil
 		},
-		createFunc: func(id string) (auth.Session, error) {
+		createFunc: func(id string) (contract.Session, error) {
 			return session, nil
 		},
 	}
@@ -1636,7 +1637,7 @@ func TestLogin_RegenerateErrorFailsLogin(t *testing.T) {
 // deref. Nothing may be written to the response.
 func TestSessionScheme_LoginByID_UnknownID(t *testing.T) {
 	userStore := &mockSessionSchemeUserStore{
-		findByIDFunc: func(id interface{}) (auth.Authenticatable, error) {
+		findByIDFunc: func(id interface{}) (contract.Authenticatable, error) {
 			return nil, nil // not found, no error: contract-permitted
 		},
 	}

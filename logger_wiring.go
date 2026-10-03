@@ -67,6 +67,5 @@ func loggerWiringCandidates(a *App) []loggerCandidate {
 		{"Scheduler", s.Scheduler},
 		{"Mail", s.Mail},
 		{"Notification", s.Notification},
-		{"Validator", s.Validator},
 	}
 }

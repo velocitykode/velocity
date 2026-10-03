@@ -12,7 +12,7 @@ import (
 // Error or Format method). auth re-exports it as ErrIdentifierUnreadable.
 var ErrUnreadable = errors.New("velocity/auth: user identifier unreadable: GetAuthIdentifier or the identifier's String, Error or Format method panicked")
 
-// user is the part of auth.Authenticatable Of calls.
+// user is the part of contract.Authenticatable Of calls.
 type user interface{ GetAuthIdentifier() interface{} }
 
 // Of returns u's identifier as GetAuthIdentifier returns it and as text

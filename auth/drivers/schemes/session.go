@@ -47,7 +47,7 @@ type sessionCtxKey struct{}
 // sibling goroutines. `go test -race` catches it deterministically.
 type sessionHolder struct {
 	mu        sync.RWMutex
-	session   auth.Session
+	session   contract.Session
 	storeOnce bool
 	storeRec  *auth.StoredSession
 	storeErr  error
@@ -126,7 +126,7 @@ type sessionHolder struct {
 	waiters    int
 	// ended is set when a Logout of the request published: the holder's
 	// session is ended, whatever the session object reports (a custom
-	// auth.Session may not say it was invalidated). It is never saved as
+	// contract.Session may not say it was invalidated). It is never saved as
 	// live nor reused for a sign-in: a Login that follows starts from a
 	// fresh session, and publishing it clears the mark.
 	ended bool
@@ -405,7 +405,7 @@ func (h *sessionHolder) isTorn() bool {
 }
 
 // getSession returns the cached session under a read lock.
-func (h *sessionHolder) getSession() auth.Session {
+func (h *sessionHolder) getSession() contract.Session {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.session
@@ -415,7 +415,7 @@ func (h *sessionHolder) getSession() auth.Session {
 // request, unless another goroutine of the request cached one first, and
 // returns the cached session: the first load wins, so every goroutine of
 // the request, and every operation, works on one session object.
-func (h *sessionHolder) installLoaded(s auth.Session) auth.Session {
+func (h *sessionHolder) installLoaded(s contract.Session) contract.Session {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.session == nil {
@@ -425,7 +425,7 @@ func (h *sessionHolder) installLoaded(s auth.Session) auth.Session {
 }
 
 // setSession installs s as the cached session under a write lock.
-func (h *sessionHolder) setSession(s auth.Session) {
+func (h *sessionHolder) setSession(s contract.Session) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.session = s
@@ -506,7 +506,7 @@ func WithSessionContext(r *http.Request) *http.Request {
 // handler in the request resolved one (the holder was attached but
 // SessionScheme.getSession was never called). Test helper / middleware helper
 // only; nil is a normal outcome.
-func sessionFromHolder(r *http.Request) auth.Session {
+func sessionFromHolder(r *http.Request) contract.Session {
 	holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
 	if !ok || holder == nil {
 		return nil
@@ -522,7 +522,7 @@ func sessionFromHolder(r *http.Request) auth.Session {
 // into the session uses SessionFromContext, and the framework's CSRF
 // session resolution uses SessionScheme.ResolveSession, which refuses a
 // fresh session outside a save scope.
-func SessionFromRequest(r *http.Request) auth.Session {
+func SessionFromRequest(r *http.Request) contract.Session {
 	return sessionFromHolder(r)
 }
 
@@ -537,7 +537,7 @@ func SessionFromRequest(r *http.Request) auth.Session {
 // The framework's CSRF token store reads it to keep the token in the
 // session, so the token is saved with the session and never written into
 // one that is not.
-func SessionFromContext(ctx context.Context) auth.Session {
+func SessionFromContext(ctx context.Context) contract.Session {
 	if ctx == nil {
 		return nil
 	}
@@ -553,7 +553,7 @@ func SessionFromContext(ctx context.Context) auth.Session {
 // session, otherwise r's context with a holder of its own for session (a
 // Login or Logout outside the session middleware, which commits session
 // itself).
-func sessionContext(r *http.Request, session auth.Session) context.Context {
+func sessionContext(r *http.Request, session contract.Session) context.Context {
 	if SessionFromContext(r.Context()) == session {
 		return r.Context()
 	}
@@ -1050,7 +1050,7 @@ func (g *SessionScheme) CheckWithError(r *http.Request) (bool, error) {
 // the reason it is not (nil on the ordinary unauthenticated paths). Error
 // policy is owned by the callers: CheckWithError surfaces err while User
 // swallows everything to nil.
-func (g *SessionScheme) resolveAuthenticatedUser(r *http.Request) (auth.Authenticatable, bool, error) {
+func (g *SessionScheme) resolveAuthenticatedUser(r *http.Request) (contract.Authenticatable, bool, error) {
 	holder, _ := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
 	if holder == nil {
 		session := g.getSession(r)
@@ -1081,7 +1081,7 @@ func (g *SessionScheme) resolveAuthenticatedUser(r *http.Request) (auth.Authenti
 // holding the request's gate for op as the request's resolver, publishes
 // the outcome and frees the gate. A read that meets it from its own
 // goroutine is refused by its frame (see onResolvePath).
-func (g *SessionScheme) resolveReserved(r *http.Request, op *gateOp) (auth.Authenticatable, bool, error) {
+func (g *SessionScheme) resolveReserved(r *http.Request, op *gateOp) (contract.Authenticatable, bool, error) {
 	defer op.abort()
 	var (
 		res     resolvedIdentity
@@ -1109,7 +1109,7 @@ func (g *SessionScheme) resolveReserved(r *http.Request, op *gateOp) (auth.Authe
 
 // resolveAuthenticationChange is resolveAuthenticatedUser's ladder for
 // session. The caller holds the request's gate for op.
-func (g *SessionScheme) resolveAuthenticationChange(r *http.Request, session auth.Session, op *gateOp) (auth.Authenticatable, bool, error) {
+func (g *SessionScheme) resolveAuthenticationChange(r *http.Request, session contract.Session, op *gateOp) (contract.Authenticatable, bool, error) {
 	userID := session.Get(auth.UserIDSessionKey)
 	if userID == nil {
 		// A server-held session whose record was deleted arrives as an
@@ -1218,7 +1218,7 @@ func (g *SessionScheme) burnPresentedRememberToken(r *http.Request) {
 // user_id is anchored on the new session, and the server-side session
 // store (when configured) is consulted on the rotated ID. If the store is
 // configured and the write/lookup fails, User returns nil.
-func (g *SessionScheme) User(r *http.Request) auth.Authenticatable {
+func (g *SessionScheme) User(r *http.Request) contract.Authenticatable {
 	// Swallow the consultServerStore error to nil (asymmetric with
 	// CheckWithError, which surfaces it).
 	user, ok, _ := g.resolveAuthenticatedUser(r)
@@ -1246,7 +1246,7 @@ func (g *SessionScheme) User(r *http.Request) auth.Authenticatable {
 //
 // The caller holds the request's gate for op, which stages the recall's
 // transition and credential writes until it ends.
-func (g *SessionScheme) anchorRecalledUser(r *http.Request, session auth.Session, user auth.Authenticatable, op *gateOp) bool {
+func (g *SessionScheme) anchorRecalledUser(r *http.Request, session contract.Session, user contract.Authenticatable, op *gateOp) bool {
 	// Capture the pre-rotation id so the CSRF rotator (when wired) can
 	// drop any token bound to the planted id. Required to keep the
 	// session-fixation defense complete: H-02 says the CSRF token MUST
@@ -1403,7 +1403,7 @@ var errRememberTokenStale = errors.New("velocity/auth: remember token rotated co
 // offers no durable slot for a previous-token grace entry, and scheme-local
 // memory would not survive multi-host deployments, so we fail secure: at
 // worst the user signs in again.
-func (g *SessionScheme) rotateRememberToken(r *http.Request, user auth.Authenticatable, op *gateOp) error {
+func (g *SessionScheme) rotateRememberToken(r *http.Request, user contract.Authenticatable, op *gateOp) error {
 	holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
 	if !ok || holder == nil {
 		return errors.New("velocity/auth: no session holder on request; cannot deliver rotated remember cookie")
@@ -1502,7 +1502,7 @@ func (g *SessionScheme) ID(r *http.Request) interface{} {
 //     may name the token of the session before the recall: the next
 //     unsafe request can be refused (419) until a safe request writes the
 //     cookie again.
-func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.Authenticatable, remember ...bool) error {
+func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user contract.Authenticatable, remember ...bool) error {
 	// Guard the nil user before any session work. user is deref'd below
 	// (session.Put(auth.UserIDSessionKey, ...)), so a nil here would
 	// panic. UserStore.FindByID is contractually allowed to return
@@ -1531,7 +1531,7 @@ func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user auth.
 // (standalone), runs then (when set) once the sign-in succeeded, and frees
 // the gate. The commit and then run under op's reservation, so a store
 // they call that asks the scheme about the request is refused.
-func (g *SessionScheme) signInReserved(w http.ResponseWriter, r *http.Request, holder *sessionHolder, standalone bool, op *gateOp, user auth.Authenticatable, then func(), remember ...bool) error {
+func (g *SessionScheme) signInReserved(w http.ResponseWriter, r *http.Request, holder *sessionHolder, standalone bool, op *gateOp, user contract.Authenticatable, then func(), remember ...bool) error {
 	session, err := g.loginReserved(r, holder, user, op, remember...)
 	if err != nil {
 		// A sign-in that failed installs no session: after a Logout the
@@ -1559,7 +1559,7 @@ func (g *SessionScheme) signInReserved(w http.ResponseWriter, r *http.Request, h
 // loginReserved is Login's body, run holding the request's gate for op. It
 // returns the signed-in session, or nil with the error that stopped the
 // sign-in.
-func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, user auth.Authenticatable, op *gateOp, remember ...bool) (auth.Session, error) {
+func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, user contract.Authenticatable, op *gateOp, remember ...bool) (contract.Session, error) {
 	if holder.isSealed() {
 		return nil, errSessionSaved
 	}
@@ -1984,7 +1984,7 @@ func (g *SessionScheme) SetUserStore(userStore auth.UserStore) {
 // Once the session middleware saved the request's session, the session is
 // sealed: its Regenerate returns auth.ErrSessionSealed, since the cookie
 // the save delivered names its id (see QueueAfterSessionSave).
-func (g *SessionScheme) Session(r *http.Request) auth.Session {
+func (g *SessionScheme) Session(r *http.Request) contract.Session {
 	return g.getSession(r)
 }
 
@@ -2017,7 +2017,7 @@ func (g *SessionScheme) Session(r *http.Request) auth.Session {
 // is in flight, or from the goroutine of the read in progress, it returns
 // auth.ErrOperationInProgress; on a request an operation was torn on it
 // returns auth.ErrSessionNotFound.
-func (g *SessionScheme) ResolveSession(r *http.Request) (auth.Session, error) {
+func (g *SessionScheme) ResolveSession(r *http.Request) (contract.Session, error) {
 	holder, _ := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
 	if holder == nil {
 		return g.resolveSessionReserved(r)
@@ -2032,7 +2032,7 @@ func (g *SessionScheme) ResolveSession(r *http.Request) (auth.Session, error) {
 // resolveSessionTurn is ResolveSession's turn: its body, run holding the
 // request's gate for op as the request's resolver. A read that meets it
 // from its own goroutine is refused by its frame (see onResolvePath).
-func (g *SessionScheme) resolveSessionTurn(r *http.Request, holder *sessionHolder, op *gateOp) (auth.Session, error) {
+func (g *SessionScheme) resolveSessionTurn(r *http.Request, holder *sessionHolder, op *gateOp) (contract.Session, error) {
 	defer op.abort()
 	if holder.isTorn() {
 		op.publish(false)
@@ -2045,7 +2045,7 @@ func (g *SessionScheme) resolveSessionTurn(r *http.Request, holder *sessionHolde
 
 // resolveSessionReserved is ResolveSession's body, run holding the
 // request's gate when the request has a holder.
-func (g *SessionScheme) resolveSessionReserved(r *http.Request) (auth.Session, error) {
+func (g *SessionScheme) resolveSessionReserved(r *http.Request) (contract.Session, error) {
 	sess := sessionFromHolder(r)
 	if sess == nil || sess.ID() == "" {
 		sess = g.getSession(r)
@@ -2068,7 +2068,7 @@ func (g *SessionScheme) resolveSessionReserved(r *http.Request) (auth.Session, e
 }
 
 // getSession gets or creates session for request
-func (g *SessionScheme) getSession(r *http.Request) auth.Session {
+func (g *SessionScheme) getSession(r *http.Request) contract.Session {
 	// Check request context cache first
 	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok {
 		if cached := holder.getSession(); cached != nil {
@@ -2102,7 +2102,7 @@ func (g *SessionScheme) getSession(r *http.Request) auth.Session {
 // activityRefreshInterval.
 //
 // Returns nil when no store is configured (cookie-only mode preserved).
-func (g *SessionScheme) consultServerStore(r *http.Request, session auth.Session) error {
+func (g *SessionScheme) consultServerStore(r *http.Request, session contract.Session) error {
 	store := g.getServerStore()
 	if store == nil {
 		return nil
@@ -2228,7 +2228,7 @@ func (g *SessionScheme) pastAbsoluteCap(rec *auth.StoredSession) bool {
 // session.Regenerate() inside Login already produced a fresh id, so this
 // writes a brand-new record; Login removed the previous id's record before
 // the regenerate (retireServerRecord).
-func (g *SessionScheme) recordServerSession(r *http.Request, session auth.Session, user auth.Authenticatable) {
+func (g *SessionScheme) recordServerSession(r *http.Request, session contract.Session, user contract.Authenticatable) {
 	store := g.getServerStore()
 	if store == nil {
 		return
@@ -2319,7 +2319,7 @@ func (g *SessionScheme) clientIP(r *http.Request) string {
 // Validation only: rotate-on-use (V2-08) happens in anchorRecalledUser,
 // which calls rotateRememberToken once the revival fully anchors, so a
 // recall that fails fixation/store checks does not burn the token.
-func (g *SessionScheme) checkRememberCookie(r *http.Request) auth.Authenticatable {
+func (g *SessionScheme) checkRememberCookie(r *http.Request) contract.Authenticatable {
 	cookie, err := r.Cookie("remember_" + g.config.Name)
 	if err != nil {
 		return nil
@@ -2375,7 +2375,7 @@ func (g *SessionScheme) checkRememberCookie(r *http.Request) auth.Authenticatabl
 // (there is no prior credential to guard against; login may always
 // overwrite) and returns the cookie for the caller to write. ctx is the
 // request context so a client disconnect aborts the user store write.
-func (g *SessionScheme) issueRememberCookie(ctx context.Context, user auth.Authenticatable) (*http.Cookie, error) {
+func (g *SessionScheme) issueRememberCookie(ctx context.Context, user contract.Authenticatable) (*http.Cookie, error) {
 	return g.mintRememberCookie(user, func(hashed string) error {
 		return g.loadUserStore().UpdateRememberTokenCtx(ctx, user, hashed)
 	})
@@ -2392,7 +2392,7 @@ func (g *SessionScheme) issueRememberCookie(ctx context.Context, user auth.Authe
 // Encryption runs BEFORE persist so an encryptor failure cannot strand
 // the user: overwriting the stored hash while unable to deliver the
 // replacement cookie would silently sign the device out.
-func (g *SessionScheme) mintRememberCookie(user auth.Authenticatable, persist func(hashed string) error) (*http.Cookie, error) {
+func (g *SessionScheme) mintRememberCookie(user contract.Authenticatable, persist func(hashed string) error) (*http.Cookie, error) {
 	_, userID, err := identity.Of(user)
 	if err != nil {
 		return nil, err

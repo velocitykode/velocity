@@ -847,25 +847,32 @@ func TestContext_Report(t *testing.T) {
 }
 
 func TestContext_Errors(t *testing.T) {
+	h := &fakeErrorHandler{}
 	tests := []struct {
-		name      string
-		services  *app.Services
-		wantPanic bool
+		name        string
+		services    *app.Services
+		want        contract.ErrorHandler
+		wantService string
 	}{
-		{name: "returns the error handler", services: &app.Services{Errors: &fakeErrorHandler{}}},
-		{name: "panics when the error handler is unset", services: &app.Services{}, wantPanic: true},
+		{name: "returns the error handler", services: &app.Services{Errors: h}, want: h},
+		{name: "reports an unset error handler", services: &app.Services{}, wantService: "errors"},
+		{name: "reports a typed-nil error handler", services: &app.Services{Errors: (*fakeErrorHandler)(nil)}, wantService: "errors"},
+		{name: "reports missing services", services: nil, wantService: "services"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c, _ := NewTestContext(http.MethodGet, "/")
 			c.services = tt.services
-			defer func() {
-				if p := recover(); (p != nil) != tt.wantPanic {
-					t.Fatalf("recover() = %v, want panic %v", p, tt.wantPanic)
+			got, err := c.Errors()
+			if tt.wantService == "" {
+				if err != nil || got != tt.want {
+					t.Fatalf("Errors() = %v, %v; want %v, nil", got, err, tt.want)
 				}
-			}()
-			if got := c.Errors(); got != tt.services.Errors {
-				t.Errorf("Errors() = %v, want %v", got, tt.services.Errors)
+				return
+			}
+			var snc *contract.ServiceNotConfiguredError
+			if got != nil || !errors.As(err, &snc) || snc.Service != tt.wantService {
+				t.Fatalf("Errors() = %v, %v; want nil and a ServiceNotConfiguredError naming %q", got, err, tt.wantService)
 			}
 		})
 	}

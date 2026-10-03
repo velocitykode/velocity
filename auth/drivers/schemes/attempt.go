@@ -84,7 +84,7 @@ func attemptCredentials(
 	trustedProxies []*net.IPNet,
 	admitter *auth.LocalLoginAdmitter,
 	challenge auth.LoginChallenge,
-) (auth.Authenticatable, []string, bool, error) {
+) (contract.Authenticatable, []string, bool, error) {
 	keys := auth.ThrottleKeys(r, credentials, trustedProxies)
 	// Consult every dimension even after one denies, so the denial path
 	// does the same number of lookups regardless of which dimension
@@ -131,7 +131,7 @@ func attemptCredentials(
 	}
 
 	var (
-		user            auth.Authenticatable
+		user            contract.Authenticatable
 		findErr         error
 		credentialsOK   bool
 		invalidCredErr  error
@@ -258,7 +258,7 @@ func maybeEmitRehashEvent(
 	ctx context.Context,
 	events *eventemit.Emitter,
 	hasher auth.Hasher,
-	user auth.Authenticatable,
+	user contract.Authenticatable,
 	schemeName string,
 ) {
 	if !events.Installed() || hasher == nil || user == nil {

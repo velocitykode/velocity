@@ -31,6 +31,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 )
 
@@ -80,11 +81,11 @@ type pgUserStore struct {
 	hasher auth.Hasher
 }
 
-func (p *pgUserStore) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *pgUserStore) FindByID(id interface{}) (contract.Authenticatable, error) {
 	return p.FindByIDCtx(context.Background(), id)
 }
 
-func (p *pgUserStore) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *pgUserStore) FindByIDCtx(ctx context.Context, id interface{}) (contract.Authenticatable, error) {
 	q := fmt.Sprintf("SELECT id, email, password, remember_token FROM %s WHERE id=$1", p.table)
 	row := p.db.QueryRowContext(ctx, q, id)
 	u := &auth.AuthUser{}
@@ -99,11 +100,11 @@ func (p *pgUserStore) FindByIDCtx(ctx context.Context, id interface{}) (auth.Aut
 	return u, nil
 }
 
-func (p *pgUserStore) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *pgUserStore) FindByCredentials(credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return p.FindByCredentialsCtx(context.Background(), credentials)
 }
 
-func (p *pgUserStore) FindByCredentialsCtx(ctx context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *pgUserStore) FindByCredentialsCtx(ctx context.Context, credentials map[string]interface{}) (contract.Authenticatable, error) {
 	email, _ := credentials["email"].(string)
 	q := fmt.Sprintf("SELECT id, email, password, remember_token FROM %s WHERE email=$1", p.table)
 	row := p.db.QueryRowContext(ctx, q, email)
@@ -119,16 +120,16 @@ func (p *pgUserStore) FindByCredentialsCtx(ctx context.Context, credentials map[
 	return u, nil
 }
 
-func (p *pgUserStore) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
+func (p *pgUserStore) ValidateCredentials(user contract.Authenticatable, credentials map[string]interface{}) bool {
 	password, _ := credentials["password"].(string)
 	return p.hasher.Verify(password, user.GetAuthPassword())
 }
 
-func (p *pgUserStore) UpdateRememberToken(user auth.Authenticatable, token string) error {
+func (p *pgUserStore) UpdateRememberToken(user contract.Authenticatable, token string) error {
 	return p.UpdateRememberTokenCtx(context.Background(), user, token)
 }
 
-func (p *pgUserStore) UpdateRememberTokenCtx(ctx context.Context, user auth.Authenticatable, token string) error {
+func (p *pgUserStore) UpdateRememberTokenCtx(ctx context.Context, user contract.Authenticatable, token string) error {
 	q := fmt.Sprintf("UPDATE %s SET remember_token=$1 WHERE id=$2", p.table)
 	_, err := p.db.ExecContext(ctx, q, token, user.GetAuthIdentifier())
 	return err

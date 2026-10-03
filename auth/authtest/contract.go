@@ -29,7 +29,7 @@ type UserStoreFactory struct {
 	// store if the runner only exercises miss paths).
 	New func(t *testing.T) auth.UserStore
 	// SeedUser is the user the seeded user store must return.
-	SeedUser auth.Authenticatable
+	SeedUser contract.Authenticatable
 	// SeedEmail is the email key in the credentials map.
 	SeedEmail string
 	// SeedPassword is the plaintext password the user store must accept

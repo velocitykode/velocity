@@ -133,6 +133,39 @@ type App struct {
 	// the default scheme is honoured.
 	sessionScheme atomic.Pointer[schemes.SessionScheme]
 
+	// bound is what the owned Services fields held at the last rebind
+	// (see ownedFields), and boundSet whether one ran: the next boundary
+	// tells a displaced instance from it. Only the lifecycle goroutine
+	// (New, bootstrap) touches them.
+	bound    ownedSet
+	boundSet bool
+	// retired is what the boundaries retired (see rebind).
+	retired appRetirements
+	// cryptoCell, mailCell and sessionCacheCell are the binding cells the
+	// framework's forwarders read (see bindingCell): the encryptor, the
+	// mailer and the server session store's cache backend.
+	cryptoCell       bindingCell[contract.Encryptor]
+	mailCell         bindingCell[contract.Mailer]
+	sessionCacheCell bindingCell[sessionCacheBackend]
+	// cryptoConsumers names the collaborators New built that need an
+	// encryptor, so a module replacing Services.Crypto with none is refused.
+	cryptoConsumers []string
+	// dbChannel is the notification database channel New gave the boot
+	// database, and dbChannelDB the *sql.DB the framework last gave it.
+	dbChannel   notificationDBChannel
+	dbChannelDB *sql.DB
+	// loginThrottler is the login throttler New installed, nil when it
+	// installed none; rebind moves it with Services.Cache.
+	loginThrottler *cacheLoginThrottler
+	// builtScheduler is the scheduler New built, and schedulerLocker the
+	// Locker the framework last gave it (the in-process default
+	// inMemoryLocker or a cache-backed one): rebind moves the Locker with
+	// Services.Cache only while the scheduler still holds the one the
+	// framework gave it.
+	builtScheduler  *scheduler.Scheduler
+	schedulerLocker scheduler.Locker
+	inMemoryLocker  scheduler.Locker
+
 	// outboxRelay is an optional ORM transactional-outbox relay registered
 	// via UseOutboxRelay. Shutdown stops it before tearing down the queue
 	// and database so in-flight dispatches can complete.
@@ -318,6 +351,24 @@ func New(opts ...Option) (*App, error) {
 			return nil, errchain.Errorf("velocity: failed to initialize crypto: %w", err)
 		}
 		a.Crypto = enc
+		a.cryptoCell.store(enc)
+	}
+	// boundCrypto is what the session scheme, the cookie session store and
+	// the queue payload sealer encrypt with: a forwarder to the encryptor
+	// Services.Crypto holds at the last boundary (see rebindEncryptor), or
+	// nil without one, as each of them treats a missing encryptor.
+	var boundCrypto crypto.Encryptor
+	if a.Crypto != nil {
+		boundCrypto = appEncryptor{cell: &a.cryptoCell}
+	}
+	for _, sc := range a.config.Auth.Schemes {
+		if sc.Driver == "session" && boundCrypto != nil {
+			a.cryptoConsumers = append(a.cryptoConsumers, "the session scheme")
+			break
+		}
+	}
+	if a.config.Queue.Encrypt && a.Services.Queue == nil && boundCrypto != nil {
+		a.cryptoConsumers = append(a.cryptoConsumers, "queue payload encryption (QUEUE_ENCRYPT)")
 	}
 
 	// 4. Initialize database connection
@@ -334,6 +385,9 @@ func New(opts ...Option) (*App, error) {
 		sqlDB = dbManager.DB()
 		orm.SetDefault(dbManager)
 		cleanups = append(cleanups, func() {
+			// A database a module displaced closes here too: this runs
+			// after the queue's cleanup, which may still use its *sql.DB.
+			_ = a.closeBorrowedRetired(context.Background())
 			_ = a.DB.Shutdown(context.Background())
 			orm.ResetDefault()
 		})
@@ -368,16 +422,16 @@ func New(opts ...Option) (*App, error) {
 			_ = a.Cache.Shutdown(context.Background())
 		}
 	})
-	sessionOpts, sessionRecords, err := sessionStoreFromConfig(a.config.Session, a.Cache)
+	sessionOpts, sessionRecords, err := sessionStoreFromConfig(a.config.Session, a.Cache, &a.sessionCacheCell)
 	if err != nil {
 		return nil, err
 	}
-	a.Auth = initAuth(a.config.Auth, a.config.Session, a.Log, a.Crypto, sessionOpts...)
+	a.Auth = initAuth(a.config.Auth, a.config.Session, a.Log, boundCrypto, sessionOpts...)
 	if authManager, ok := a.Auth.(*auth.Manager); ok {
 		if sessionRecords != nil {
 			authManager.SetServerSessionStore(sessionRecords)
 		}
-		installLoginThrottler(authManager, a.Cache, a.Log)
+		a.loginThrottler = installLoginThrottler(authManager, a.Cache, a.Log)
 	}
 
 	// 8. Initialize CSRF
@@ -491,8 +545,8 @@ func New(opts ...Option) (*App, error) {
 	installErrorPageRenderer(a)
 
 	// 10. Initialize events dispatcher (skip if WithoutEvents was used, keep if pre-set by WithFakeEvents).
-	// The dispatcher itself has no Shutdown today; the router drains async
-	// workers via ShutdownEventDispatcher once wired (see wireInstanceEvents).
+	// The dispatcher itself has no Shutdown today; the router's async
+	// delivery workers are drained by the router's own shutdown.
 	if !a.noEvents && a.Services.Events == nil {
 		a.Services.Events = events.NewDispatcher()
 	}
@@ -512,7 +566,7 @@ func New(opts ...Option) (*App, error) {
 		// already resets SetBatchCallbackQueue(nil, "") on teardown.
 		queue.SetBatchCallbackQueue(queueDriver, "default")
 	} else {
-		queueDriver, err = initQueue(a.config.Queue, sqlDB, a.config.DB.Connection, a.config.Queue.SigningKey, a.config.Key, a.config.Env, a.Crypto, a.Log)
+		queueDriver, err = initQueue(a.config.Queue, sqlDB, a.config.DB.Connection, a.config.Queue.SigningKey, a.config.Key, a.config.Env, boundCrypto, a.Log)
 		if err != nil {
 			return nil, errchain.Errorf("velocity: failed to initialize queue: %w", err)
 		}
@@ -585,7 +639,10 @@ func New(opts ...Option) (*App, error) {
 	// contention, silently skipping every guarded job. Memory-cache
 	// deployments retain InMemoryLocker (single-process scope matches
 	// the cache's scope).
+	a.inMemoryLocker = sched.Locker()
 	installSchedulerLocker(sched, a.Cache, a.config.Cache.Driver, a.Log)
+	a.builtScheduler = sched
+	a.schedulerLocker = sched.Locker()
 	// Sweep 3 (configuration lock-in): warn loudly when running in
 	// production with the default in-memory scheduler locker still in
 	// place. WithoutOverlapping / OnOneServer guarantees degrade to
@@ -653,7 +710,22 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	// 15. Initialize notification manager
-	a.Notification = initNotification(a.Mail, sqlDB, a.config.DB.Connection)
+	// The mail channel sends through a forwarder to the mailer Services.Mail
+	// holds at the last boundary (see rebindMailer), so a mailer a module
+	// installs reaches it, one New built included.
+	a.mailCell.store(a.Mail)
+	notifier := initNotification(appMailer{cell: &a.mailCell}, sqlDB, a.config.DB.Connection)
+	a.Notification = notifier
+	if sqlDB != nil {
+		// The database channel holds the boot database's *sql.DB: rebind
+		// re-points it when a module replaces Services.DB, while the
+		// channel still holds the one installed here.
+		if ch, err := notifier.Channel("database"); err == nil {
+			if dc, ok := ch.(notificationDBChannel); ok {
+				a.dbChannel, a.dbChannelDB = dc, sqlDB
+			}
+		}
+	}
 	cleanups = append(cleanups, func() {
 		if sd, ok := a.Notification.(contract.ShutdownAware); ok {
 			_ = sd.Shutdown(context.Background())
@@ -823,15 +895,12 @@ func New(opts ...Option) (*App, error) {
 	})
 
 	// Wire the session flash bag: FlashErrors / FlashInput flash into it,
-	// view.For(ctx).Flash flashes messages into it, and the view engine
+	// a view.For handle's Flash flashes messages into it, and the view engine
 	// drains it when it renders the next page. It is the session the save
 	// seam bound to the request, so a drain is saved with the response
 	// that delivered it; a request without one (the default scheme keeps
 	// no session) flashes nothing.
 	a.Services.FlashBag = sessionFlashBag
-
-	// 17. Initialize validator
-	a.Validator = validation.NewValidator()
 
 	// The sweep below records a.Log as the async and trace packages'
 	// logger and the async package's panic hook on the error handler, in
@@ -842,8 +911,12 @@ func New(opts ...Option) (*App, error) {
 	// token, leaving another app's in place (see package_state.go).
 	cleanups = append(cleanups, func() { releasePackageState(a) })
 
-	// Wire event dispatchers into service instances
-	wireInstanceEvents(a)
+	// First boundary: wire event dispatchers into service instances and
+	// record what the owned fields hold, so a module that replaces one is
+	// seen at the next boundary.
+	if err := rebind(a); err != nil {
+		return nil, err
+	}
 
 	// Run module lifecycle: Init all, then Start all. On failure,
 	// modules that already completed Init will be unwound by
@@ -868,16 +941,32 @@ func New(opts ...Option) (*App, error) {
 				_ = a.modules[i].Shutdown(shutdownCtx)
 			}
 		})
+		// Pushed last, so it runs first: retire what the modules displaced
+		// and wait for it before anything it may use is closed.
+		cleanups = append(cleanups, a.unwindRetire)
 		return nil, err
 	}
 
 	// Modules may have registered components or replaced service
-	// instances (e.g. Services.CSRF) during Init/Start; the
-	// wireInstanceEvents sweep above ran before the lifecycle, so it saw
-	// an empty component registry and the original instances. Re-sweep now
-	// that registrations are done; every wiring setter is an idempotent
-	// overwrite, so re-running the full sweep is safe.
-	wireInstanceEvents(a)
+	// instances (e.g. Services.CSRF) during Init/Start; the rebind above
+	// ran before the lifecycle, so it saw an empty component registry and
+	// the original instances. Rebind now that registrations are done: the
+	// framework's consumers follow every replaced field and each displaced
+	// instance is retired. A replacement a consumer cannot use fails New,
+	// unwinding the modules as a lifecycle failure does.
+	if err := rebind(a); err != nil {
+		cleanups = append(cleanups, func() {
+			shutdownComponents(context.Background(), a.Services, func(error) {})
+		})
+		cleanups = append(cleanups, func() {
+			shutdownCtx := context.Background()
+			for i := len(a.modules) - 1; i >= 0; i-- {
+				_ = a.modules[i].Shutdown(shutdownCtx)
+			}
+		})
+		cleanups = append(cleanups, a.unwindRetire)
+		return nil, err
+	}
 
 	// Run registered boot hooks (zero-config instrumentation that
 	// self-registers via app.OnBoot from a blank-imported package). Hooks
@@ -1078,7 +1167,7 @@ func (a *App) UseOutboxRelay(r *orm.Relay) *App {
 // A cache that cannot back it (no default store, or one without the
 // compare-and-swap and set operations) fails New; there is no fallback to
 // the cookie store.
-func sessionStoreFromConfig(cfg auth.SessionConfig, caches contract.CacheManager) ([]schemes.SessionSchemeOption, auth.ServerSessionStore, error) {
+func sessionStoreFromConfig(cfg auth.SessionConfig, caches contract.CacheManager, cell *bindingCell[sessionCacheBackend]) ([]schemes.SessionSchemeOption, auth.ServerSessionStore, error) {
 	if cfg.Store != auth.SessionStoreServer {
 		return nil, nil, nil
 	}
@@ -1089,7 +1178,14 @@ func sessionStoreFromConfig(cfg auth.SessionConfig, caches contract.CacheManager
 	if err != nil {
 		return nil, nil, errchain.Errorf("velocity: SESSION_STORE=server needs a cache store: %w", err)
 	}
-	records, err := session.NewCacheStore(backend)
+	full, ok := backend.(sessionCacheBackend)
+	if !ok {
+		return nil, nil, errchain.Errorf("velocity: SESSION_STORE=server: %w", session.ErrCacheStoreUnsupported)
+	}
+	// The records go through a forwarder to the default store of the cache
+	// Services.Cache holds at the last boundary (see rebindSessionCache).
+	cell.store(full)
+	records, err := session.NewCacheStore(appSessionCache{cell: cell})
 	if err != nil {
 		return nil, nil, errchain.Errorf("velocity: SESSION_STORE=server: %w", err)
 	}

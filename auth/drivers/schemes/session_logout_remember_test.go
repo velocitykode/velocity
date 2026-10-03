@@ -7,18 +7,18 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // rememberClearingStore exposes the UpdateRememberToken call so the test
 // can assert Logout cycled the persisted token.
 type rememberClearingStore struct {
-	user    auth.Authenticatable
+	user    contract.Authenticatable
 	updates []string
 	updated int32
 }
 
-func (p *rememberClearingStore) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *rememberClearingStore) FindByID(id interface{}) (contract.Authenticatable, error) {
 	if p.user == nil {
 		return nil, nil
 	}
@@ -31,13 +31,13 @@ func (p *rememberClearingStore) FindByID(id interface{}) (auth.Authenticatable, 
 	return nil, nil
 }
 
-func (p *rememberClearingStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (p *rememberClearingStore) FindByCredentials(map[string]interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
-func (p *rememberClearingStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (p *rememberClearingStore) ValidateCredentials(contract.Authenticatable, map[string]interface{}) bool {
 	return true
 }
-func (p *rememberClearingStore) UpdateRememberToken(user auth.Authenticatable, token string) error {
+func (p *rememberClearingStore) UpdateRememberToken(user contract.Authenticatable, token string) error {
 	p.updates = append(p.updates, token)
 	atomic.AddInt32(&p.updated, 1)
 	user.SetRememberToken(token)
@@ -124,12 +124,12 @@ func TestSessionScheme_Logout_NoUserInSessionSkipsClear(t *testing.T) {
 }
 
 // Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
-func (p *rememberClearingStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *rememberClearingStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *rememberClearingStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *rememberClearingStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *rememberClearingStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *rememberClearingStore) UpdateRememberTokenCtx(_ context.Context, user contract.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }

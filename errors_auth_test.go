@@ -36,7 +36,7 @@ func (stubAuthUser) SetRememberToken(string)        {}
 // counts user lookups.
 type stubAuthScheme struct {
 	authenticated bool
-	sess          auth.Session
+	sess          contract.Session
 
 	mu      sync.Mutex
 	lookups int
@@ -44,7 +44,7 @@ type stubAuthScheme struct {
 
 func (s *stubAuthScheme) Check(*http.Request) bool { return s.authenticated }
 
-func (s *stubAuthScheme) User(*http.Request) auth.Authenticatable {
+func (s *stubAuthScheme) User(*http.Request) contract.Authenticatable {
 	s.mu.Lock()
 	s.lookups++
 	s.mu.Unlock()
@@ -67,10 +67,10 @@ func (s *stubAuthScheme) lookupCount() int {
 	return s.lookups
 }
 
-func (s *stubAuthScheme) Session(*http.Request) auth.Session            { return s.sess }
+func (s *stubAuthScheme) Session(*http.Request) contract.Session        { return s.sess }
 func (*stubAuthScheme) SetUserStore(auth.UserStore)                     {}
 func (*stubAuthScheme) Logout(http.ResponseWriter, *http.Request) error { return nil }
-func (*stubAuthScheme) Login(http.ResponseWriter, *http.Request, auth.Authenticatable, ...bool) error {
+func (*stubAuthScheme) Login(http.ResponseWriter, *http.Request, contract.Authenticatable, ...bool) error {
 	return nil
 }
 func (*stubAuthScheme) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {
@@ -133,7 +133,7 @@ func TestAuthErrorRules_ThroughApp(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			a, _, rec := newPipelineApp(t)
 			a.Services.Errors.SetDebug(false)
-			m := auth.FromServices(a.Services)
+			m := a.Services.Auth.(*auth.Manager)
 			if m == nil {
 				t.Fatal("app has no *auth.Manager")
 			}
@@ -272,14 +272,14 @@ type countingUserStore struct {
 	lookups int
 }
 
-func (s *countingUserStore) FindByIDCtx(context.Context, interface{}) (auth.Authenticatable, error) {
+func (s *countingUserStore) FindByIDCtx(context.Context, interface{}) (contract.Authenticatable, error) {
 	s.mu.Lock()
 	s.lookups++
 	s.mu.Unlock()
 	return nil, nil
 }
 
-func (s *countingUserStore) FindByID(interface{}) (auth.Authenticatable, error) {
+func (s *countingUserStore) FindByID(interface{}) (contract.Authenticatable, error) {
 	return s.FindByIDCtx(context.Background(), nil)
 }
 
@@ -327,7 +327,7 @@ func TestErrorPipeline_RequestUserIDFromAuthManager(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a, _, rec := newPipelineApp(t)
-			auth.FromServices(a.Services).RegisterScheme("web", tt.scheme)
+			a.Services.Auth.(*auth.Manager).RegisterScheme("web", tt.scheme)
 			a.Router.Get("/boom", func(*router.Context) error { return errors.New("boom") })
 
 			a.Router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/boom", nil))
@@ -351,7 +351,7 @@ func TestErrorPipeline_RequestUserIDFromAuthManager(t *testing.T) {
 // Error component is never rendered at 401.
 func TestAuthErrorRules_InertiaWithErrorPageReachesLogin(t *testing.T) {
 	a := newInertiaApp(t, "Error", false)
-	m := auth.FromServices(a.Services)
+	m := a.Services.Auth.(*auth.Manager)
 	if m == nil {
 		t.Fatal("app has no *auth.Manager")
 	}
@@ -415,7 +415,7 @@ func TestAuthErrorRules_InertiaIntendedURLSurvivesCookieSession(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
 	a.Errors(func(h contract.ErrorHandler) { h.SetDebug(false) })
-	m := auth.FromServices(a.Services)
+	m := a.Services.Auth.(*auth.Manager)
 	if m == nil {
 		t.Fatal("app has no *auth.Manager")
 	}
@@ -510,7 +510,7 @@ func TestGuestErrorRule_ThroughApp(t *testing.T) {
 			a, _, rec := newPipelineApp(t)
 			a.Services.Errors.SetDebug(false)
 			a.Services.Errors.SetAPIMode(tt.apiMode)
-			m := auth.FromServices(a.Services)
+			m := a.Services.Auth.(*auth.Manager)
 			if m == nil {
 				t.Fatal("app has no *auth.Manager")
 			}
@@ -645,7 +645,7 @@ func TestAuthErrorRules_StatelessSchemeThroughApp(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
-	m := auth.FromServices(a.Services)
+	m := a.Services.Auth.(*auth.Manager)
 	if m == nil {
 		t.Fatal("app has no *auth.Manager")
 	}
@@ -702,7 +702,7 @@ func TestAuthErrorRules_StatelessSchemeThroughApp(t *testing.T) {
 // scheme's WWW-Authenticate challenge.
 func TestAuthErrorRules_StatelessChallengeSurvivesInertiaPage(t *testing.T) {
 	a := newInertiaApp(t, "Error", false)
-	m := auth.FromServices(a.Services)
+	m := a.Services.Auth.(*auth.Manager)
 	if m == nil {
 		t.Fatal("app has no *auth.Manager")
 	}

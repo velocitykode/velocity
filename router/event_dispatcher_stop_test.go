@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -43,30 +45,36 @@ func serveRecovering(r http.Handler, w http.ResponseWriter, req *http.Request) (
 	return nil
 }
 
-// TestShutdownEventDispatcher_LateRequestEventIsCountedDrop asserts that a
-// handler still running when ShutdownEventDispatcher returns (a straggler
-// past the server's shutdown deadline) finishes without a panic: its
-// RequestHandled, dispatched after the pool stopped, is dropped and counted
-// as a failed event and handed to the failure hook, while
-// every event queued before the stop reaches the pool's target.
-func TestShutdownEventDispatcher_LateRequestEventIsCountedDrop(t *testing.T) {
+// shutdownAsync runs r.Shutdown on a goroutine of its own and returns its
+// result channel once the router refuses a probe request (evidence that
+// its stop began), with the number of probes it admitted before that.
+func shutdownAsync(t *testing.T, r *router.VelocityRouterV2, probe string) (<-chan error, int) {
+	t.Helper()
+	stopped := make(chan error, 1)
+	go func() { stopped <- r.Shutdown(context.Background()) }() //safe-goroutine: the waiting Shutdown; its result is read by the caller
+	for admitted := 0; ; admitted++ {
+		w := httptest.NewRecorder()
+		if p := serveRecovering(r, w, httptest.NewRequest(http.MethodGet, probe, nil)); p != nil {
+			t.Fatalf("probe request panicked: %v", p)
+		}
+		if w.Code == http.StatusServiceUnavailable {
+			return stopped, admitted
+		}
+		runtime.Gosched()
+	}
+}
+
+// TestShutdown_StragglerEventsReachThePoolBeforeItStops asserts that a
+// handler still running when Shutdown is called holds the router's stop:
+// the pool stops only once the straggler returned, so its late
+// RequestHandled is delivered like every event queued before it, nothing
+// is dropped, and Shutdown returns nil once both drained.
+func TestShutdown_StragglerEventsReachThePoolBeforeItStops(t *testing.T) {
 	col := &stopEventCollector{}
 	r := router.New()
 	failures := &eventemit.Failures{}
 	r.ShareEventFailures(failures)
 	r.SetAsyncEventDispatcher(col.dispatch, 2, 64)
-
-	var (
-		dropMu     sync.Mutex
-		dropErrs   []error
-		dropEvents []any
-	)
-	failures.SetHook(func(err error, ev any) {
-		dropMu.Lock()
-		defer dropMu.Unlock()
-		dropErrs = append(dropErrs, err)
-		dropEvents = append(dropEvents, ev)
-	})
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -90,54 +98,49 @@ func TestShutdownEventDispatcher_LateRequestEventIsCountedDrop(t *testing.T) {
 	go func() {
 		escaped <- serveRecovering(r, httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/slow", nil))
 	}()
-	<-entered // the straggler's RequestStarted and RequestRouted are queued too
+	<-entered
 
-	const queuedBeforeStop = 3*3 + 2
-	if err := r.ShutdownEventDispatcher(context.Background()); err != nil {
-		t.Fatalf("ShutdownEventDispatcher: %v", err)
+	stopped, probes := shutdownAsync(t, r, "/fast")
+	select {
+	case err := <-stopped:
+		t.Fatalf("Shutdown returned while a request it admitted still ran: %v", err)
+	default:
 	}
-	if got := col.count(); got != queuedBeforeStop {
-		t.Fatalf("delivered %d events before the stop returned, want %d", got, queuedBeforeStop)
-	}
-	before := failures.Count()
 
 	close(release)
 	select {
 	case p := <-escaped:
 		if p != nil {
-			t.Fatalf("straggler panicked dispatching after the stop: %v", p)
+			t.Fatalf("straggler panicked: %v", p)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("straggler never finished")
 	}
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Shutdown = %v, want nil once the straggler and the pool drained", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown never returned after the straggler finished")
+	}
 
-	if got := failures.Count() - before; got != 1 {
-		t.Errorf("failed event count grew by %d, want 1 for the late RequestHandled", got)
+	if got := failures.Count(); got != 0 {
+		t.Errorf("failed event count = %d, want 0: the pool outlives every admitted request", got)
 	}
-	dropMu.Lock()
-	if len(dropEvents) != 1 {
-		t.Errorf("failure hook calls = %d, want 1", len(dropEvents))
-	} else {
-		if _, ok := dropEvents[0].(*router.RequestHandled); !ok {
-			t.Errorf("dropped event = %T, want *router.RequestHandled", dropEvents[0])
-		}
-		if dropErrs[0] == nil || errors.Is(dropErrs[0], router.ErrEventBufferFull) {
-			t.Errorf("drop error = %v, want the stopped-pool error, not a full buffer", dropErrs[0])
-		}
-	}
-	dropMu.Unlock()
-	if got := col.count(); got != queuedBeforeStop {
-		t.Errorf("delivered %d events after the stop, want %d (nothing after the stop)", got, queuedBeforeStop)
+	// Three fast requests, the admitted probes and the straggler; a
+	// refused probe dispatches nothing.
+	if got, delivered := col.count(), (4+probes)*3; got != delivered {
+		t.Errorf("delivered %d events, want %d", got, delivered)
 	}
 }
 
-// TestShutdownEventDispatcher_TimeoutPanicAfterStopIsReported asserts that
-// a Timeout handler goroutine panicking after the middleware answered 503
-// and after the async pool stopped reports the panic once through the
-// error sink: its RequestFailed is a counted drop instead of a send on a
-// stopped pool that would abort the report, and the goroutine runs to its
-// end (done is closed from its last deferred step).
-func TestShutdownEventDispatcher_TimeoutPanicAfterStopIsReported(t *testing.T) {
+// TestShutdown_TimeoutSurvivorHoldsTheStop asserts that a Timeout handler
+// goroutine still running after the middleware answered 503 holds the
+// router's stop: Shutdown returns only after the goroutine ended, its late
+// panic reported once through the error sink and its late RequestFailed
+// delivered to the pool, not dropped.
+func TestShutdown_TimeoutSurvivorHoldsTheStop(t *testing.T) {
 	col := &stopEventCollector{}
 	r := router.New()
 	failures := &eventemit.Failures{}
@@ -148,13 +151,11 @@ func TestShutdownEventDispatcher_TimeoutPanicAfterStopIsReported(t *testing.T) {
 		sinkMu sync.Mutex
 		lines  []string
 	)
-	reported := make(chan struct{}, 4)
 	r.SetLogger(levelLogger{
 		onError: func(msg string, kvs ...any) {
 			sinkMu.Lock()
 			lines = append(lines, msg+" "+fmt.Sprint(kvs...))
 			sinkMu.Unlock()
-			reported <- struct{}{}
 		},
 		onWarn: func(string, ...any) {},
 	})
@@ -168,6 +169,7 @@ func TestShutdownEventDispatcher_TimeoutPanicAfterStopIsReported(t *testing.T) {
 		<-release
 		panic(latePanicValue)
 	})
+	r.Get("/probe", func(c *router.Context) error { return c.NoContent() })
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/slow", nil)
@@ -179,23 +181,27 @@ func TestShutdownEventDispatcher_TimeoutPanicAfterStopIsReported(t *testing.T) {
 		t.Fatalf("status = %d, want 503", w.Code)
 	}
 
-	if err := r.ShutdownEventDispatcher(context.Background()); err != nil {
-		t.Fatalf("ShutdownEventDispatcher: %v", err)
+	stopped, _ := shutdownAsync(t, r, "/probe")
+	select {
+	case err := <-stopped:
+		t.Fatalf("Shutdown returned while the Timeout handler goroutine still ran: %v", err)
+	default:
 	}
-	before := failures.Count()
 
 	close(release)
 	select {
-	case <-done:
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Shutdown = %v, want nil", err)
+		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("late handler never finished")
+		t.Fatal("Shutdown never returned after the Timeout handler goroutine ended")
 	}
 	select {
-	case <-reported:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the late panic never reached the error sink")
+	case <-done:
+	default:
+		t.Fatal("Shutdown returned before the late handler finished")
 	}
-	time.Sleep(50 * time.Millisecond) // a second report would show here
 
 	sinkMu.Lock()
 	defer sinkMu.Unlock()
@@ -208,19 +214,30 @@ func TestShutdownEventDispatcher_TimeoutPanicAfterStopIsReported(t *testing.T) {
 	if n != 1 {
 		t.Errorf("error sink reports of the late panic = %d, want 1 (%q)", n, lines)
 	}
-	if got := failures.Count() - before; got != 1 {
-		t.Errorf("failed event count grew by %d, want 1 for the late RequestFailed", got)
+	if got := failures.Count(); got != 0 {
+		t.Errorf("failed event count = %d, want 0: the late RequestFailed reaches the pool", got)
+	}
+	failed := 0
+	col.mu.Lock()
+	for _, ev := range col.events {
+		if _, ok := ev.(*router.RequestFailed); ok {
+			failed++
+		}
+	}
+	col.mu.Unlock()
+	if failed != 2 {
+		t.Errorf("delivered RequestFailed events = %d, want 2 (the 503, then the late panic)", failed)
 	}
 }
 
-// TestShutdownEventDispatcher_ConcurrentSendersNeverPanic asserts that
-// requests dispatching while ShutdownEventDispatcher stops the pool never
-// panic, and that every event they dispatched is either delivered to the
-// pool's target or counted as a failed event (a full buffer or a
-// stopped pool), none lost silently. One gated request is released only
-// after the stop returned, so at least one event is always dispatched on
-// the stopped pool whatever the stress senders' scheduling.
-func TestShutdownEventDispatcher_ConcurrentSendersNeverPanic(t *testing.T) {
+// TestShutdown_ConcurrentSendersNeverPanic asserts that requests arriving
+// while Shutdown stops the router never panic: each is either admitted,
+// and every event it dispatched is delivered to the pool's target or
+// counted as a failed event (a full buffer), none lost silently, or
+// refused with 503, dispatching nothing. One gated request is released
+// only after the stop began, so the stop always waits for one admitted
+// request whatever the stress senders' scheduling.
+func TestShutdown_ConcurrentSendersNeverPanic(t *testing.T) {
 	col := &stopEventCollector{}
 	r := router.New()
 	failures := &eventemit.Failures{}
@@ -229,15 +246,13 @@ func TestShutdownEventDispatcher_ConcurrentSendersNeverPanic(t *testing.T) {
 	r.Get("/", func(c *router.Context) error { return c.NoContent() })
 
 	var (
-		dropMu     sync.Mutex
-		dropErrs   []error
-		dropEvents []any
+		dropMu   sync.Mutex
+		dropErrs []error
 	)
 	failures.SetHook(func(err error, ev any) {
 		dropMu.Lock()
 		defer dropMu.Unlock()
 		dropErrs = append(dropErrs, err)
-		dropEvents = append(dropEvents, ev)
 	})
 
 	gateEntered, gate := make(chan struct{}), make(chan struct{})
@@ -262,6 +277,7 @@ func TestShutdownEventDispatcher_ConcurrentSendersNeverPanic(t *testing.T) {
 
 	const senders, perSender = 8, 200
 	var wg sync.WaitGroup
+	var admitted atomic.Int64
 	start := make(chan struct{})
 	panics := make(chan any, senders)
 	for i := 0; i < senders; i++ {
@@ -270,58 +286,54 @@ func TestShutdownEventDispatcher_ConcurrentSendersNeverPanic(t *testing.T) {
 			defer wg.Done()
 			<-start
 			for j := 0; j < perSender; j++ {
-				if p := serveRecovering(r, httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil)); p != nil {
+				w := httptest.NewRecorder()
+				if p := serveRecovering(r, w, httptest.NewRequest(http.MethodGet, "/", nil)); p != nil {
 					panics <- p
 					return
+				}
+				if w.Code != http.StatusServiceUnavailable {
+					admitted.Add(1)
 				}
 			}
 		}()
 	}
 	close(start)
-	time.Sleep(time.Millisecond)
-	if err := r.ShutdownEventDispatcher(context.Background()); err != nil {
-		t.Fatalf("ShutdownEventDispatcher: %v", err)
-	}
+	stopped, probes := shutdownAsync(t, r, "/")
 	wg.Wait()
 	close(panics)
 	for p := range panics {
-		t.Fatalf("a request panicked dispatching while the pool stopped: %v", p)
+		t.Fatalf("a request panicked dispatching while the router stopped: %v", p)
 	}
 
-	// Only the gated request is left; its RequestHandled is dispatched
-	// after the stop returned.
-	droppedBefore := failures.Count()
-	dropMu.Lock()
-	callsBefore := len(dropEvents)
-	dropMu.Unlock()
 	openGate()
 	select {
 	case p := <-gatedEscaped:
 		if p != nil {
-			t.Fatalf("the gated request panicked dispatching after the stop: %v", p)
+			t.Fatalf("the gated request panicked: %v", p)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the gated request never finished")
 	}
-	if got := failures.Count() - droppedBefore; got != 1 {
-		t.Errorf("failed event count grew by %d after the stop, want 1 for the gated RequestHandled", got)
-	}
-	dropMu.Lock()
-	if late := dropEvents[callsBefore:]; len(late) != 1 {
-		t.Errorf("failure hook calls after the stop = %d, want 1", len(late))
-	} else {
-		if _, ok := late[0].(*router.RequestHandled); !ok {
-			t.Errorf("dropped event = %T, want *router.RequestHandled", late[0])
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Shutdown = %v, want nil", err)
 		}
-		if err := dropErrs[callsBefore]; err == nil || errors.Is(err, router.ErrEventBufferFull) {
-			t.Errorf("drop error = %v, want the stopped-pool error, not a full buffer", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown never returned")
+	}
+
+	dropMu.Lock()
+	for _, err := range dropErrs {
+		if !errors.Is(err, router.ErrEventBufferFull) {
+			t.Errorf("drop error = %v, want only full-buffer drops while the pool runs", err)
 		}
 	}
 	dropMu.Unlock()
 
-	// RequestStarted, RequestRouted and RequestHandled per request,
-	// the gated one included.
-	const dispatched = (senders*perSender + 1) * 3
+	// RequestStarted, RequestRouted and RequestHandled per admitted
+	// request, the probes and the gated one included.
+	dispatched := (uint64(admitted.Load()) + uint64(probes) + 1) * 3
 	if got := uint64(col.count()) + failures.Count(); got != dispatched {
 		t.Errorf("delivered %d + dropped %d = %d, want %d", col.count(), failures.Count(), got, dispatched)
 	}

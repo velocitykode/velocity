@@ -1,15 +1,9 @@
 package drain_test
 
 import (
-	"context"
-	"errors"
 	"os/exec"
 	"strings"
 	"testing"
-	"testing/synctest"
-	"time"
-
-	"github.com/velocitykode/velocity/internal/drain"
 )
 
 // internal/drain sits under the router's graph (through the scheduler),
@@ -36,49 +30,4 @@ func TestDrainImportsOnlyItsLeaves(t *testing.T) {
 			t.Errorf("internal/drain imports %s; it may import only the standard library, contract, internal/errchain, internal/goroutine, internal/panicerr and async", imp)
 		}
 	}
-}
-
-// Drain closes the drained channel after the stop, and Await returns nil
-// for it; a stop's goroutine is Nested while it runs, and only then.
-func TestCoordinator_DrainAndNested(t *testing.T) {
-	var c drain.Coordinator
-	if c.Ended() != nil {
-		t.Fatal("Ended before a stop: want nil")
-	}
-	d := c.Begin()
-	var nested bool
-	c.Drain(d, func() { nested = c.Nested() })
-	if !nested {
-		t.Error("the stop was not Nested while it ran")
-	}
-	if c.Nested() {
-		t.Error("Nested after the stop returned")
-	}
-	if !drain.Closed(d) || c.Ended() != d {
-		t.Fatal("drained not closed, or Ended is not it")
-	}
-	if err := c.Await(context.Background(), d, nil); err != nil {
-		t.Errorf("Await on a closed drain = %v", err)
-	}
-}
-
-// At its ctx, Await returns the ctx error and starts force, as stop work,
-// without waiting on it; with a nil force it only returns.
-func TestCoordinator_AwaitForcesAtItsDeadline(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		var c drain.Coordinator
-		d := c.Begin()
-		forced := make(chan bool, 1)
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-		defer cancel()
-		if err := c.Await(ctx, d, func() { forced <- c.Nested() }); !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("Await = %v, want the deadline", err)
-		}
-		if !<-forced {
-			t.Error("force did not run as stop work")
-		}
-		if err := c.Await(ctx, d, nil); !errors.Is(err, context.DeadlineExceeded) {
-			t.Errorf("Await without force = %v, want the deadline", err)
-		}
-	})
 }

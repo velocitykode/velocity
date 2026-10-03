@@ -8,6 +8,7 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/chain"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/events"
 )
 
@@ -33,6 +34,8 @@ func (p *dispatcherProbe) getDispatcher() func(ctx context.Context, event any) e
 // csrfProbe satisfies contract.CSRFProtector plus EventDispatcherAware so it
 // can stand in for a.Services.CSRF in the wireInstanceEvents candidate sweep.
 type csrfProbe struct {
+	// contract.CSRFProtector supplies the methods this fake does not use.
+	contract.CSRFProtector
 	dispatcherProbe
 }
 

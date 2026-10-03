@@ -300,7 +300,11 @@ func TestForm_Success_ReturnsT(t *testing.T) {
 
 // backView is a contract.ViewEngine whose Back answers 303 to a fixed path,
 // standing in for the view engine's redirect back.
-type backView struct{ to string }
+type backView struct {
+	// contract.ViewEngine supplies the methods this fake does not use.
+	contract.ViewEngine
+	to string
+}
 
 func (v backView) Back(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, v.to, http.StatusSeeOther)

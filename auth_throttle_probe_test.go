@@ -13,6 +13,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 )
 
@@ -33,17 +34,17 @@ type probeUsers struct {
 	release chan struct{}
 }
 
-func (*probeUsers) FindByID(any) (auth.Authenticatable, error) { return &probeUser{}, nil }
-func (*probeUsers) FindByIDCtx(context.Context, any) (auth.Authenticatable, error) {
+func (*probeUsers) FindByID(any) (contract.Authenticatable, error) { return &probeUser{}, nil }
+func (*probeUsers) FindByIDCtx(context.Context, any) (contract.Authenticatable, error) {
 	return &probeUser{}, nil
 }
-func (*probeUsers) FindByCredentials(map[string]any) (auth.Authenticatable, error) {
+func (*probeUsers) FindByCredentials(map[string]any) (contract.Authenticatable, error) {
 	return &probeUser{}, nil
 }
-func (*probeUsers) FindByCredentialsCtx(context.Context, map[string]any) (auth.Authenticatable, error) {
+func (*probeUsers) FindByCredentialsCtx(context.Context, map[string]any) (contract.Authenticatable, error) {
 	return &probeUser{}, nil
 }
-func (u *probeUsers) ValidateCredentials(_ auth.Authenticatable, c map[string]any) bool {
+func (u *probeUsers) ValidateCredentials(_ contract.Authenticatable, c map[string]any) bool {
 	u.mu.Lock()
 	u.checks++
 	u.mu.Unlock()
@@ -51,8 +52,8 @@ func (u *probeUsers) ValidateCredentials(_ auth.Authenticatable, c map[string]an
 	<-u.release
 	return c["password"] == "test-only-correct-candidate"
 }
-func (*probeUsers) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
-func (*probeUsers) UpdateRememberTokenCtx(context.Context, auth.Authenticatable, string) error {
+func (*probeUsers) UpdateRememberToken(contract.Authenticatable, string) error { return nil }
+func (*probeUsers) UpdateRememberTokenCtx(context.Context, contract.Authenticatable, string) error {
 	return nil
 }
 func (u *probeUsers) verified() int {

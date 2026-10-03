@@ -21,8 +21,9 @@ type Manager struct {
 	mu       sync.RWMutex
 	// events holds the event dispatcher and handles a failed dispatch.
 	events eventemit.Emitter
-	// shutdowns shuts the detached channels down, one run at a time (see
-	// Shutdown). Detach is called under mu.
+	// shutdowns is the channels' lifecycle: it shuts the registry down,
+	// one run at a time (see Shutdown), and retires a channel that leaves
+	// it otherwise. Called under mu.
 	shutdowns teardown.Children[Mailer]
 }
 
@@ -69,11 +70,21 @@ func (m *Manager) Channel(name string) (Mailer, error) {
 	return nil, errchain.Errorf("velocity/mail: channel %q not configured: %w", name, ErrChannelNotFound)
 }
 
-// SetChannel sets a specific mailer for a channel
+// SetChannel sets a specific mailer for a channel. It closes the mailer it
+// displaces before returning: contained, once, unless the manager still
+// holds it under another name; the call succeeds, so a failure to close
+// it is written once as a warning, through the fallback logger (the
+// manager has no logger of its own). A displaced mailer that calls
+// Shutdown on the manager while it closes is refused with
+// contract.ErrStopFromOwnWork. A configuration call, not concurrent with
+// Send.
 func (m *Manager) SetChannel(name string, mailer Mailer) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	old := m.channels[name]
 	m.channels[name] = mailer
+	retire := m.shutdowns.Retire(m.channels, old)
+	m.mu.Unlock()
+	teardown.Warn(nil, "mail", name, retire())
 }
 
 // HasChannel checks if a channel exists
@@ -208,18 +219,35 @@ func (m *Manager) Broadcast(ctx context.Context, channels []string, msg *Message
 	return nil
 }
 
-// RemoveChannel removes a channel
+// RemoveChannel removes a channel. It closes the mailer it removes before
+// returning (see SetChannel). A configuration call, not concurrent with
+// Send.
 func (m *Manager) RemoveChannel(name string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	old := m.channels[name]
 	delete(m.channels, name)
+	retire := m.shutdowns.Retire(m.channels, old)
+	m.mu.Unlock()
+	teardown.Warn(nil, "mail", name, retire())
 }
 
-// ClearChannels removes all channels
+// ClearChannels removes all channels. It closes the mailers it removes,
+// each once, before returning (see SetChannel). A configuration call, not
+// concurrent with Send.
 func (m *Manager) ClearChannels() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	held := m.channels
 	m.channels = make(map[string]Mailer)
+	names := make([]string, 0, len(held))
+	retires := make([]func() error, 0, len(held))
+	for name, mailer := range held {
+		names = append(names, name)
+		retires = append(retires, m.shutdowns.Retire(m.channels, mailer))
+	}
+	m.mu.Unlock()
+	for i, retire := range retires {
+		teardown.Warn(nil, "mail", names[i], retire())
+	}
 }
 
 // ShutdownableMailer is implemented by mailers that need to release resources
@@ -250,11 +278,16 @@ type ShutdownableMailer = contract.ShutdownAware
 // contract.ErrStopFromOwnWork at once: it would wait on itself.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
-	children := m.channels
-	m.channels = make(map[string]Mailer)
-	wait := m.shutdowns.Detach(children, func(name string, err error) error {
+	wait := m.shutdowns.Shutdown(&m.channels, func(name string, err error) error {
 		return errchain.Errorf("velocity/mail: shutdown channel %q: %w", name, err)
 	})
 	m.mu.Unlock()
 	return wait(ctx)
+}
+
+// OwnsCaller reports whether the calling goroutine is closing one of the
+// manager's channels, so a stop it calls that waits for the manager's
+// Shutdown would wait on itself. Read without a lock.
+func (m *Manager) OwnsCaller() bool {
+	return m.shutdowns.OwnsCaller()
 }

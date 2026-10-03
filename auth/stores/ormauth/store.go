@@ -7,6 +7,7 @@ import (
 	"reflect"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/orm"
 )
@@ -30,7 +31,7 @@ type Store[T any] struct {
 	// the model's own ORM tags already declare it.
 	pk orm.ColumnDef
 
-	// native records that *T implements auth.Authenticatable itself, in
+	// native records that *T implements contract.Authenticatable itself, in
 	// which case lookups hand the model straight to the caller and the
 	// password/remember-token column mapping is bypassed.
 	native bool
@@ -104,7 +105,7 @@ func (p *Store[T]) resolve() {
 	}
 	p.pk = pk
 
-	if _, ok := any(&zero).(auth.Authenticatable); ok {
+	if _, ok := any(&zero).(contract.Authenticatable); ok {
 		p.native = true
 	}
 
@@ -118,7 +119,7 @@ func (p *Store[T]) resolve() {
 
 	// The remember-token column is written on the login path and on
 	// rotation, so it is required even for a model that implements
-	// auth.Authenticatable itself: the interface exposes the token but
+	// contract.Authenticatable itself: the interface exposes the token but
 	// not where to persist it.
 	remember, ok := p.meta.ColumnByName(p.opts.RememberTokenColumn)
 	if !ok {
@@ -161,7 +162,7 @@ func (p *Store[T]) resolve() {
 }
 
 // FindByIDCtx retrieves a user by primary key.
-func (p *Store[T]) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *Store[T]) FindByIDCtx(ctx context.Context, id interface{}) (contract.Authenticatable, error) {
 	if p.err != nil {
 		return nil, p.err
 	}
@@ -174,13 +175,13 @@ func (p *Store[T]) FindByIDCtx(ctx context.Context, id interface{}) (auth.Authen
 // FindByID retrieves a user by primary key.
 //
 // Deprecated: use FindByIDCtx with a request-scoped context.Context.
-func (p *Store[T]) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *Store[T]) FindByID(id interface{}) (contract.Authenticatable, error) {
 	return p.FindByIDCtx(context.Background(), id)
 }
 
 // FindByCredentialsCtx retrieves a user by the configured identifier
 // column, read from the credentials map under the configured key.
-func (p *Store[T]) FindByCredentialsCtx(ctx context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *Store[T]) FindByCredentialsCtx(ctx context.Context, credentials map[string]interface{}) (contract.Authenticatable, error) {
 	if p.err != nil {
 		return nil, p.err
 	}
@@ -194,12 +195,12 @@ func (p *Store[T]) FindByCredentialsCtx(ctx context.Context, credentials map[str
 // FindByCredentials retrieves a user by credentials.
 //
 // Deprecated: use FindByCredentialsCtx with a request-scoped context.Context.
-func (p *Store[T]) FindByCredentials(credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *Store[T]) FindByCredentials(credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return p.FindByCredentialsCtx(context.Background(), credentials)
 }
 
 // first runs the single-row lookup shared by both find paths.
-func (p *Store[T]) first(ctx context.Context, column string, value any) (auth.Authenticatable, error) {
+func (p *Store[T]) first(ctx context.Context, column string, value any) (contract.Authenticatable, error) {
 	var model T
 	if err := (orm.Model[T]{}).Where(column+" = ?", value).First(ctx, &model); err != nil {
 		// orm.ErrRecordNotFound is sql.ErrNoRows; match the sentinel so
@@ -214,7 +215,7 @@ func (p *Store[T]) first(ctx context.Context, column string, value any) (auth.Au
 
 // ValidateCredentials compares a candidate password against the stored
 // hash. Pure CPU work; no query is issued.
-func (p *Store[T]) ValidateCredentials(user auth.Authenticatable, credentials map[string]interface{}) bool {
+func (p *Store[T]) ValidateCredentials(user contract.Authenticatable, credentials map[string]interface{}) bool {
 	if user == nil {
 		return false
 	}
@@ -228,7 +229,7 @@ func (p *Store[T]) ValidateCredentials(user auth.Authenticatable, credentials ma
 // UpdateRememberTokenCtx persists a freshly minted remember token. Used
 // on the login path, where no prior token is being consumed; rotation of
 // an existing token goes through CompareAndSwapRememberToken.
-func (p *Store[T]) UpdateRememberTokenCtx(ctx context.Context, user auth.Authenticatable, token string) error {
+func (p *Store[T]) UpdateRememberTokenCtx(ctx context.Context, user contract.Authenticatable, token string) error {
 	if p.err != nil {
 		return p.err
 	}
@@ -249,7 +250,7 @@ func (p *Store[T]) UpdateRememberTokenCtx(ctx context.Context, user auth.Authent
 // UpdateRememberToken persists a remember token.
 //
 // Deprecated: use UpdateRememberTokenCtx with a request-scoped context.Context.
-func (p *Store[T]) UpdateRememberToken(user auth.Authenticatable, token string) error {
+func (p *Store[T]) UpdateRememberToken(user contract.Authenticatable, token string) error {
 	return p.UpdateRememberTokenCtx(context.Background(), user, token)
 }
 
@@ -259,7 +260,7 @@ func (p *Store[T]) UpdateRememberToken(user auth.Authenticatable, token string) 
 // cookie cannot both mint a valid credential. Returns false with a nil
 // error when no row matched; the in-memory user is mutated only on a
 // successful swap.
-func (p *Store[T]) CompareAndSwapRememberToken(ctx context.Context, user auth.Authenticatable, oldToken, newToken string) (bool, error) {
+func (p *Store[T]) CompareAndSwapRememberToken(ctx context.Context, user contract.Authenticatable, oldToken, newToken string) (bool, error) {
 	if p.err != nil {
 		return false, p.err
 	}
@@ -282,10 +283,10 @@ func (p *Store[T]) CompareAndSwapRememberToken(ctx context.Context, user auth.Au
 	return true, nil
 }
 
-// wrap adapts a loaded model to auth.Authenticatable.
-func (p *Store[T]) wrap(model *T) (auth.Authenticatable, error) {
+// wrap adapts a loaded model to contract.Authenticatable.
+func (p *Store[T]) wrap(model *T) (contract.Authenticatable, error) {
 	if p.native {
-		return any(model).(auth.Authenticatable), nil
+		return any(model).(contract.Authenticatable), nil
 	}
 
 	value := reflect.ValueOf(model).Elem()
@@ -314,7 +315,7 @@ func (p *Store[T]) wrap(model *T) (auth.Authenticatable, error) {
 	}, nil
 }
 
-// mappedUser adapts a model that does not implement auth.Authenticatable
+// mappedUser adapts a model that does not implement contract.Authenticatable
 // itself, projecting the configured columns onto the interface.
 type mappedUser[T any] struct {
 	model         *T
@@ -325,7 +326,7 @@ type mappedUser[T any] struct {
 }
 
 // Model returns the underlying record, so application code holding an
-// auth.Authenticatable can recover its own model type:
+// contract.Authenticatable can recover its own model type:
 //
 //	if m, ok := user.(interface{ Model() *models.Admin }); ok { ... }
 func (u *mappedUser[T]) Model() *T { return u.model }

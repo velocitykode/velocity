@@ -25,11 +25,21 @@ import (
 // refused guest redirect is not logged.
 func installAuthErrorRules(h *problem.Handler) {
 	problem.FrameworkRenderFor[*auth.UnauthenticatedError](h, func(rc contract.RenderContext, err error, ctx *contract.ErrorContext) bool {
-		m := auth.FromServices(router.ServicesFromRequest(rc.Request()))
-		return m.RenderUnauthenticated(rc, err, ctx)
+		return requestAuthManager(rc).RenderUnauthenticated(rc, err, ctx)
 	})
 	problem.FrameworkRenderFor[*auth.AlreadyAuthenticatedError](h, func(rc contract.RenderContext, err error, ctx *contract.ErrorContext) bool {
-		m := auth.FromServices(router.ServicesFromRequest(rc.Request()))
-		return m.RenderAlreadyAuthenticated(rc, err, ctx)
+		return requestAuthManager(rc).RenderAlreadyAuthenticated(rc, err, ctx)
 	})
+}
+
+// requestAuthManager returns the *auth.Manager in the failed request's
+// services, or nil when there is none (no services, no auth, or an auth
+// manager of another type); the render methods take a nil manager.
+func requestAuthManager(rc contract.RenderContext) *auth.Manager {
+	s := router.ServicesFromRequest(rc.Request())
+	if s == nil {
+		return nil
+	}
+	m, _ := s.Auth.(*auth.Manager)
+	return m
 }

@@ -23,14 +23,36 @@ import (
 // after its last. A stop entered from one of them (Nested) is nested in
 // work that cannot finish until it returns, so it must not wait on that
 // work. The zero value is ready; an Owner must not be copied after use.
+//
+// Work entered per unit on a hot path (a request, an upload) is not
+// recorded goroutine by goroutine: the owner names the functions that
+// run it instead (NestedInside), and Nested looks for them on the
+// caller's stack, at stop time only. That answer is per function, not per
+// instance: a unit of one owner stopping another owner of the same type
+// is refused as nested, which is the safe direction.
 type Owner struct {
 	work goroutine.Set
+	// frames names the functions whose calls are the owner's work (see
+	// NestedInside); set before the owner is shared, read-only after.
+	frames []string
+}
+
+// NestedInside records fns as functions whose calls run the owner's work:
+// Nested is true for a caller with one of them on its stack. It is called
+// once, before the owner is shared.
+func (o *Owner) NestedInside(fns ...any) {
+	for _, fn := range fns {
+		o.frames = append(o.frames, goroutine.FuncName(fn))
+	}
 }
 
 // Nested reports whether the calling goroutine is running the owner's
 // work.
 func (o *Owner) Nested() bool {
-	return o.work.Contains(goroutine.ID())
+	if o.work.Contains(goroutine.ID()) {
+		return true
+	}
+	return len(o.frames) > 0 && goroutine.Inside(o.frames...)
 }
 
 // Enter records the calling goroutine as running the owner's work and
@@ -243,84 +265,6 @@ func (r *Run) Await(ctx context.Context, force func()) error {
 	}
 	if force != nil && r.forced.CompareAndSwap(false, true) {
 		r.owner.Go(force)
-	}
-	return ctx.Err()
-}
-
-// Coordinator is the stop coordination of a component that stops once:
-// the stop that ends it owns its drain, makes the drained channel with
-// Begin, runs the stop with Drain, which closes the channel when the stop
-// returns, and a stop that overlaps it waits on the channel, or its own
-// ctx, with Await. Its own work (a stop's diagnostic line, the transport
-// stop, a serve loop, a task) is recorded like an Owner's, so a stop
-// entered from it (Nested) neither waits on that work nor runs the
-// transport stop on the same goroutine. A component that runs more than
-// once uses an Owner and a Run per run instead. The zero value is ready.
-type Coordinator struct {
-	own Owner
-
-	// drained is the owning stop's channel, nil until a stop ended the
-	// component. Guarded by the component's lock.
-	drained chan struct{}
-
-	// forced claims the stop's one force (see Await).
-	forced atomic.Bool
-}
-
-// Begin makes the drain of the stop that owns it and returns it. The
-// caller holds the component's lock.
-func (c *Coordinator) Begin() chan struct{} {
-	c.drained = make(chan struct{})
-	return c.drained
-}
-
-// Ended returns the drain of the stop that ended the component, nil when
-// none has. The caller holds the component's lock.
-func (c *Coordinator) Ended() chan struct{} {
-	return c.drained
-}
-
-// Drain runs the owner's stop as stop work, then closes drained for every
-// stop that overlaps it, whatever stop does.
-func (c *Coordinator) Drain(drained chan struct{}, stop func()) {
-	defer close(drained)
-	c.own.Do(stop)
-}
-
-// Run runs fn with the calling goroutine recorded as running stop work.
-func (c *Coordinator) Run(fn func()) {
-	c.own.Do(fn)
-}
-
-// Work returns the set of goroutines running stop work, for work that
-// enters it on a goroutine of its own and leaves it later than a Run
-// would allow.
-func (c *Coordinator) Work() *goroutine.Set {
-	return &c.own.work
-}
-
-// Nested reports whether the calling goroutine is running stop work.
-func (c *Coordinator) Nested() bool {
-	return c.own.Nested()
-}
-
-// Await waits until done is closed or ctx is done. At ctx, unless done
-// closed meanwhile, it returns ctx.Err(), and the first Await to get there
-// with a force starts it as stop work on a goroutine of its own, without
-// waiting on it: the component stops once, so its stop is forced at most
-// once however many stops time out waiting on it. Otherwise it returns
-// nil.
-func (c *Coordinator) Await(ctx context.Context, done <-chan struct{}, force func()) error {
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-	}
-	if Closed(done) {
-		return nil
-	}
-	if force != nil && c.forced.CompareAndSwap(false, true) {
-		c.own.Go(force)
 	}
 	return ctx.Err()
 }

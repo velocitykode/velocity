@@ -2,6 +2,7 @@ package contract_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/velocitykode/velocity/broadcast"
@@ -42,6 +43,7 @@ func TestSentinelStability(t *testing.T) {
 		{"ErrInvalidPayload", contract.ErrInvalidPayload, "velocity/crypto: invalid payload format"},
 		{"ErrStopFromOwnWork", contract.ErrStopFromOwnWork, "velocity: stop called from inside the work it would wait for"},
 		{"ErrSessionRecordGone", contract.ErrSessionRecordGone, "velocity: the session's shared record is gone"},
+		{"ErrServiceNotConfigured", contract.ErrServiceNotConfigured, "velocity: service not configured"},
 	}
 	for _, tc := range stable {
 		if got := tc.err.Error(); got != tc.want {
@@ -74,6 +76,44 @@ func TestSentinelStability(t *testing.T) {
 		}
 		if !errors.Is(tc.alias, tc.canon) {
 			t.Errorf("%s: errors.Is(alias, canon) returned false", tc.name)
+		}
+	}
+}
+
+// TestServiceNotConfiguredError pins the missing-service error's text, its
+// match against ErrServiceNotConfigured through any wrapping, the name
+// errors.As recovers, and the nil and zero values.
+func TestServiceNotConfiguredError(t *testing.T) {
+	t.Parallel()
+
+	err := error(&contract.ServiceNotConfiguredError{Service: "database"})
+	if got, want := err.Error(), "velocity: database service not configured"; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+	wrapped := fmt.Errorf("loading user: %w", err)
+	if !errors.Is(wrapped, contract.ErrServiceNotConfigured) {
+		t.Error("errors.Is(wrapped, ErrServiceNotConfigured) = false, want true")
+	}
+	var snc *contract.ServiceNotConfiguredError
+	if !errors.As(wrapped, &snc) || snc.Service != "database" {
+		t.Errorf("errors.As recovered %+v, want Service %q", snc, "database")
+	}
+	if errors.Is(err, contract.ErrSessionRecordGone) {
+		t.Error("errors.Is matched an unrelated sentinel")
+	}
+
+	for _, tc := range []struct {
+		name string
+		err  *contract.ServiceNotConfiguredError
+	}{
+		{"nil", nil},
+		{"zero", &contract.ServiceNotConfiguredError{}},
+	} {
+		if got, want := tc.err.Error(), "velocity: service not configured"; got != want {
+			t.Errorf("%s: Error() = %q, want %q", tc.name, got, want)
+		}
+		if !tc.err.Is(contract.ErrServiceNotConfigured) {
+			t.Errorf("%s: Is(ErrServiceNotConfigured) = false, want true", tc.name)
 		}
 	}
 }

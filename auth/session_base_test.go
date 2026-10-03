@@ -8,32 +8,34 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 // mockSessionStore implements SessionStore interface for testing
 type mockSessionStore struct {
-	createFn         func(id string) (Session, error)
-	getFn            func(r *http.Request, id string) (Session, error)
-	saveFn           func(w http.ResponseWriter, session Session) error
+	createFn         func(id string) (contract.Session, error)
+	getFn            func(r *http.Request, id string) (contract.Session, error)
+	saveFn           func(w http.ResponseWriter, session contract.Session) error
 	destroyFn        func(id string) error
 	garbageCollectFn func(maxLifetime time.Duration) error
 }
 
-func (m *mockSessionStore) Create(id string) (Session, error) {
+func (m *mockSessionStore) Create(id string) (contract.Session, error) {
 	if m.createFn != nil {
 		return m.createFn(id)
 	}
 	return NewSession(id), nil
 }
 
-func (m *mockSessionStore) Get(r *http.Request, id string) (Session, error) {
+func (m *mockSessionStore) Get(r *http.Request, id string) (contract.Session, error) {
 	if m.getFn != nil {
 		return m.getFn(r, id)
 	}
 	return nil, errors.New("session not found")
 }
 
-func (m *mockSessionStore) Save(w http.ResponseWriter, session Session) error {
+func (m *mockSessionStore) Save(w http.ResponseWriter, session contract.Session) error {
 	if m.saveFn != nil {
 		return m.saveFn(w, session)
 	}
@@ -431,7 +433,7 @@ func TestGetSessionFromRequest(t *testing.T) {
 				return req
 			},
 			store: &mockSessionStore{
-				getFn: func(r *http.Request, id string) (Session, error) {
+				getFn: func(r *http.Request, id string) (contract.Session, error) {
 					if id == "existing-session-id" {
 						s := NewSession(id)
 						s.Put("user_id", 123)
@@ -455,7 +457,7 @@ func TestGetSessionFromRequest(t *testing.T) {
 				return req
 			},
 			store: &mockSessionStore{
-				getFn: func(r *http.Request, id string) (Session, error) {
+				getFn: func(r *http.Request, id string) (contract.Session, error) {
 					return nil, errors.New("session expired")
 				},
 			},
@@ -603,7 +605,7 @@ func TestBaseSessionSave(t *testing.T) {
 
 func TestSessionInterfaceImplementation(t *testing.T) {
 	// Compile-time check that BaseSession implements Session
-	var _ Session = (*BaseSession)(nil)
+	var _ contract.Session = (*BaseSession)(nil)
 
 	t.Run("BaseSession implements Session interface", func(t *testing.T) {
 		session := NewSession("test-id")

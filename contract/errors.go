@@ -116,7 +116,42 @@ var (
 	// csrf/stores.SharedBag.UpdateShared, and the CSRF session store
 	// checks for it.
 	ErrSessionRecordGone = errors.New("velocity: the session's shared record is gone")
+
+	// ErrServiceNotConfigured is matched by every missing-service error:
+	// a lookup of a service the application has not configured (absent,
+	// a typed nil, or no service container at all) returns a
+	// *ServiceNotConfiguredError naming the service, and
+	// errors.Is(err, ErrServiceNotConfigured) reports true for it.
+	ErrServiceNotConfigured = errors.New(serviceNotConfiguredText)
 )
+
+// serviceNotConfiguredText is ErrServiceNotConfigured's text, also the
+// text of a ServiceNotConfiguredError that names no service.
+const serviceNotConfiguredText = "velocity: service not configured"
+
+// ServiceNotConfiguredError reports a lookup of a service the application
+// has not configured. Service names it: the services field in lower case
+// ("database", "cache", "auth", ...), "services" when the caller has no
+// service container, or the component key for a registry lookup. It
+// matches ErrServiceNotConfigured through errors.Is; recover the name
+// with errors.As.
+type ServiceNotConfiguredError struct {
+	// Service names the missing service.
+	Service string
+}
+
+// Error returns "velocity: <service> service not configured".
+func (e *ServiceNotConfiguredError) Error() string {
+	if e == nil || e.Service == "" {
+		return serviceNotConfiguredText
+	}
+	return "velocity: " + e.Service + " service not configured"
+}
+
+// Is reports whether target is ErrServiceNotConfigured.
+func (e *ServiceNotConfiguredError) Is(target error) bool {
+	return target == ErrServiceNotConfigured
+}
 
 // HTTPError is the framework's one HTTP-shaped error value. Router, auth,
 // csrf, validation and application code all construct it (directly or via

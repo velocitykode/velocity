@@ -16,7 +16,7 @@ import (
 )
 
 // hasRole is a role checker over mockUser.roles.
-func hasRole(u Authenticatable, role string) bool {
+func hasRole(u contract.Authenticatable, role string) bool {
 	mu, ok := u.(*mockUser)
 	if !ok {
 		return false
@@ -64,12 +64,12 @@ func requireAdminAndEditor(m *Manager) router.MiddlewareFunc {
 }
 func requireAbility(ability string, allow bool) func(*Manager) router.MiddlewareFunc {
 	return func(m *Manager) router.MiddlewareFunc {
-		m.Access().Define(ability, func(Authenticatable, ...interface{}) bool { return allow })
+		m.Access().Define(ability, func(contract.Authenticatable, ...interface{}) bool { return allow })
 		return AuthorizeMiddleware(m, ability)
 	}
 }
 func requirePostOwner(m *Manager) router.MiddlewareFunc {
-	m.Access().Define("edit-post", func(u Authenticatable, args ...interface{}) bool {
+	m.Access().Define("edit-post", func(u contract.Authenticatable, args ...interface{}) bool {
 		owner, ok := args[0].(int)
 		return ok && u.GetAuthIdentifier() == owner
 	})

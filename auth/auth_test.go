@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func TestPasswordHashing(t *testing.T) {
@@ -256,16 +258,16 @@ func TestAuthManager(t *testing.T) {
 // mockScheme implements Scheme for Manager tests.
 type mockScheme struct {
 	name     string
-	user     Authenticatable
+	user     contract.Authenticatable
 	checkVal bool
 }
 
 func (g *mockScheme) Check(*http.Request) bool                        { return g.checkVal }
-func (g *mockScheme) User(*http.Request) Authenticatable              { return g.user }
+func (g *mockScheme) User(*http.Request) contract.Authenticatable     { return g.user }
 func (g *mockScheme) ID(*http.Request) interface{}                    { return nil }
 func (g *mockScheme) SetUserStore(UserStore)                          {}
 func (g *mockScheme) Logout(http.ResponseWriter, *http.Request) error { return nil }
-func (g *mockScheme) Login(http.ResponseWriter, *http.Request, Authenticatable, ...bool) error {
+func (g *mockScheme) Login(http.ResponseWriter, *http.Request, contract.Authenticatable, ...bool) error {
 	return nil
 }
 func (g *mockScheme) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {
@@ -278,21 +280,21 @@ func (g *mockScheme) Attempt(http.ResponseWriter, *http.Request, map[string]inte
 // mockStore implements UserStore for Manager tests.
 type mockStore struct{}
 
-func (p *mockStore) FindByID(interface{}) (Authenticatable, error) { return nil, nil }
-func (p *mockStore) FindByIDCtx(context.Context, interface{}) (Authenticatable, error) {
+func (p *mockStore) FindByID(interface{}) (contract.Authenticatable, error) { return nil, nil }
+func (p *mockStore) FindByIDCtx(context.Context, interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
-func (p *mockStore) FindByCredentials(map[string]interface{}) (Authenticatable, error) {
+func (p *mockStore) FindByCredentials(map[string]interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
-func (p *mockStore) FindByCredentialsCtx(context.Context, map[string]interface{}) (Authenticatable, error) {
+func (p *mockStore) FindByCredentialsCtx(context.Context, map[string]interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
-func (p *mockStore) ValidateCredentials(Authenticatable, map[string]interface{}) bool {
+func (p *mockStore) ValidateCredentials(contract.Authenticatable, map[string]interface{}) bool {
 	return false
 }
-func (p *mockStore) UpdateRememberToken(Authenticatable, string) error { return nil }
-func (p *mockStore) UpdateRememberTokenCtx(context.Context, Authenticatable, string) error {
+func (p *mockStore) UpdateRememberToken(contract.Authenticatable, string) error { return nil }
+func (p *mockStore) UpdateRememberTokenCtx(context.Context, contract.Authenticatable, string) error {
 	return nil
 }
 
@@ -456,7 +458,7 @@ func TestManagerAccess(t *testing.T) {
 	}
 
 	// Define an access rule and verify it works through the manager
-	m.Access().Define("edit-post", func(user Authenticatable, args ...interface{}) bool {
+	m.Access().Define("edit-post", func(user contract.Authenticatable, args ...interface{}) bool {
 		if len(args) == 0 {
 			return false
 		}
@@ -492,7 +494,7 @@ func TestManagerAllows_NoUser(t *testing.T) {
 	scheme := &mockScheme{name: "web", user: nil, checkVal: false}
 	m.RegisterScheme("web", scheme)
 
-	m.Access().Define("anything", func(user Authenticatable, args ...interface{}) bool {
+	m.Access().Define("anything", func(user contract.Authenticatable, args ...interface{}) bool {
 		return true
 	})
 
@@ -521,10 +523,10 @@ func TestManagerAuthorize(t *testing.T) {
 	scheme := &mockScheme{name: "web", user: user, checkVal: true}
 	m.RegisterScheme("web", scheme)
 
-	m.Access().Define("create-post", func(u Authenticatable, args ...interface{}) bool {
+	m.Access().Define("create-post", func(u contract.Authenticatable, args ...interface{}) bool {
 		return true
 	})
-	m.Access().Define("delete-post", func(u Authenticatable, args ...interface{}) bool {
+	m.Access().Define("delete-post", func(u contract.Authenticatable, args ...interface{}) bool {
 		return false
 	})
 

@@ -45,11 +45,10 @@ type Manager struct {
 	// builds creates each registered channel once at a time, with no lock
 	// held.
 	builds buildonce.Group[Channel]
-	// generation counts Shutdowns, so a channel created across one is not
-	// registered into the emptied manager. Guarded by mu.
-	generation uint64
-	// shutdowns shuts the detached channels down, one run at a time (see
-	// Shutdown). Detach is called under mu.
+	// shutdowns is the channels' lifecycle: it shuts the registry down,
+	// one run at a time (see Shutdown), retires a channel that leaves it
+	// otherwise, and counts Shutdowns, so a channel created across one is
+	// not registered into the emptied manager. Called under mu.
 	shutdowns teardown.Children[Channel]
 }
 
@@ -150,14 +149,18 @@ func (m *Manager) handTo(ch Channel) {
 // contract.ErrStopFromOwnWork at once: it would wait on itself.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
-	children := m.channels
-	m.channels = make(map[string]Channel)
-	wait := m.shutdowns.Detach(children, func(name string, err error) error {
+	wait := m.shutdowns.Shutdown(&m.channels, func(name string, err error) error {
 		return errchain.Errorf("velocity/notification: shutdown channel %q: %w", name, err)
 	})
-	m.generation++
 	m.mu.Unlock()
 	return wait(ctx)
+}
+
+// OwnsCaller reports whether the calling goroutine is closing one of the
+// manager's channels, so a stop it calls that waits for the manager's
+// Shutdown would wait on itself. Read without a lock.
+func (m *Manager) OwnsCaller() bool {
+	return m.shutdowns.OwnsCaller()
 }
 
 // Channel returns a registered channel driver by name, creating it from the
@@ -199,7 +202,7 @@ func (m *Manager) Channel(name string) (Channel, error) {
 func (m *Manager) createAndRegister(name string) (Channel, error) {
 	m.mu.RLock()
 	ch, exists := m.channels[name]
-	generation := m.generation
+	generation := m.shutdowns.Generation()
 	m.mu.RUnlock()
 	if exists {
 		return ch, nil
@@ -211,7 +214,7 @@ func (m *Manager) createAndRegister(name string) (Channel, error) {
 	}
 
 	m.mu.Lock()
-	if m.generation != generation {
+	if m.shutdowns.Generation() != generation {
 		m.mu.Unlock()
 		return nil, &createError{errors.Join(
 			fmt.Errorf("velocity/notification: channel %q: the manager was shut down while the channel was created", name),
@@ -221,14 +224,11 @@ func (m *Manager) createAndRegister(name string) (Channel, error) {
 	if existing, ok := m.channels[name]; ok {
 		// SetChannel registered one meanwhile: it wins, as it would have
 		// under the old write lock had it come first. The channel created
-		// here is shut down; the lookup succeeds, so a failure to shut it
+		// here is retired; the lookup succeeds, so a failure to shut it
 		// down is written as a warning instead.
+		retire := m.shutdowns.Retire(m.channels, ch)
 		m.mu.Unlock()
-		if err := disposeChannel(name, ch); err != nil {
-			fallbacklog.Write(m.log(), func(l contract.Logger) {
-				l.Warn("velocity/notification: a channel created while another was set under its name failed to shut down", "channel", name, "error", err)
-			})
-		}
+		teardown.Warn(m.log(), "notification", name, retire())
 		return existing, nil
 	}
 	m.channels[name] = ch
@@ -257,12 +257,19 @@ func (e *createError) Unwrap() error { return e.err }
 
 // SetChannel explicitly sets a channel driver instance. A channel that takes
 // a logger is handed the manager's forwarding logger when the manager hands
-// it (see SetLogger), right after it is registered.
+// it (see SetLogger), right after it is registered. SetChannel closes the
+// channel it displaces before returning: contained, once, unless the
+// manager still holds it under another name; the call succeeds, so a
+// failure to close it is written once as a warning. A configuration call,
+// not concurrent with Send.
 func (m *Manager) SetChannel(name string, ch Channel) {
 	m.mu.Lock()
+	old := m.channels[name]
 	m.channels[name] = ch
+	retire := m.shutdowns.Retire(m.channels, old)
 	m.mu.Unlock()
 	m.handLogger(ch)
+	teardown.Warn(m.log(), "notification", name, retire())
 }
 
 // Send delivers a notification to a single notifiable across all channels

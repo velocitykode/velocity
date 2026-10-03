@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/events"
 )
@@ -31,17 +32,17 @@ type rehashStubStore struct {
 	hasher auth.Hasher
 }
 
-func (p *rehashStubStore) FindByID(id interface{}) (auth.Authenticatable, error) {
+func (p *rehashStubStore) FindByID(id interface{}) (contract.Authenticatable, error) {
 	return p.user, nil
 }
-func (p *rehashStubStore) FindByCredentials(creds map[string]interface{}) (auth.Authenticatable, error) {
+func (p *rehashStubStore) FindByCredentials(creds map[string]interface{}) (contract.Authenticatable, error) {
 	return p.user, nil
 }
-func (p *rehashStubStore) ValidateCredentials(_ auth.Authenticatable, creds map[string]interface{}) bool {
+func (p *rehashStubStore) ValidateCredentials(_ contract.Authenticatable, creds map[string]interface{}) bool {
 	pw, _ := creds["password"].(string)
 	return p.hasher.Verify(pw, p.user.password)
 }
-func (p *rehashStubStore) UpdateRememberToken(auth.Authenticatable, string) error { return nil }
+func (p *rehashStubStore) UpdateRememberToken(contract.Authenticatable, string) error { return nil }
 
 func newRehashScheme(t *testing.T, needsRehash bool) (*SessionScheme, *rehashStubHasher) {
 	t.Helper()
@@ -194,13 +195,13 @@ func TestManager_SetEventDispatcher_PropagatesToSchemes(t *testing.T) {
 }
 
 // Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
-func (p *rehashStubStore) FindByIDCtx(_ context.Context, id interface{}) (auth.Authenticatable, error) {
+func (p *rehashStubStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {
 	return p.FindByID(id)
 }
-func (p *rehashStubStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (auth.Authenticatable, error) {
+func (p *rehashStubStore) FindByCredentialsCtx(_ context.Context, credentials map[string]interface{}) (contract.Authenticatable, error) {
 	return p.FindByCredentials(credentials)
 }
-func (p *rehashStubStore) UpdateRememberTokenCtx(_ context.Context, user auth.Authenticatable, token string) error {
+func (p *rehashStubStore) UpdateRememberTokenCtx(_ context.Context, user contract.Authenticatable, token string) error {
 	return p.UpdateRememberToken(user, token)
 }
 

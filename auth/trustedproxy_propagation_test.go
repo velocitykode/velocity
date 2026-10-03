@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
 )
 
@@ -34,11 +35,11 @@ func (g *fakeTrustedProxyScheme) snapshot() []*net.IPNet {
 // Implement the Scheme interface (no-op for everything besides
 // SetTrustedProxies; nothing under test exercises these paths).
 func (g *fakeTrustedProxyScheme) Check(*http.Request) bool { return false }
-func (g *fakeTrustedProxyScheme) User(*http.Request) Authenticatable {
+func (g *fakeTrustedProxyScheme) User(*http.Request) contract.Authenticatable {
 	return nil
 }
 func (g *fakeTrustedProxyScheme) ID(*http.Request) interface{} { return nil }
-func (g *fakeTrustedProxyScheme) Login(http.ResponseWriter, *http.Request, Authenticatable, ...bool) error {
+func (g *fakeTrustedProxyScheme) Login(http.ResponseWriter, *http.Request, contract.Authenticatable, ...bool) error {
 	return nil
 }
 func (g *fakeTrustedProxyScheme) LoginByID(http.ResponseWriter, *http.Request, interface{}, ...bool) error {

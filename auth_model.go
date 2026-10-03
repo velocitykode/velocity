@@ -1,11 +1,12 @@
 package velocity
 
 import (
-	"errors"
-
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/stores/ormauth"
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 // AuthOption configures the ORM-backed user store installed by
@@ -35,11 +36,6 @@ var (
 	WithAuthCredentialsKey = ormauth.WithCredentialsKey
 )
 
-// ErrAuthNotConfigured is returned by [SetAuthModel] when the application
-// has no auth manager, which means velocity.New built no schemes (AUTH_SCHEME
-// unset).
-var ErrAuthNotConfigured = errors.New("velocity: auth is not configured (set AUTH_SCHEME so schemes are built)")
-
 // SetAuthModel points authentication at the application's own model.
 //
 // This is the supported way to choose which model authenticates. The model
@@ -68,10 +64,21 @@ var ErrAuthNotConfigured = errors.New("velocity: auth is not configured (set AUT
 // absent mass-assignment policy is a boot error naming the problem rather
 // than a failure on the first login. The password hasher is inherited from
 // the auth manager, preserving the operator-configured bcrypt cost.
+//
+// With no auth manager (velocity.New built no schemes: AUTH_SCHEME unset)
+// it returns a *contract.ServiceNotConfiguredError naming "auth"; with a
+// nil s, one naming "services". An auth manager that is not an
+// *auth.Manager returns an error naming its type.
 func SetAuthModel[T any](s *app.Services, opts ...AuthOption) error {
-	manager := auth.FromServices(s)
-	if manager == nil {
-		return ErrAuthNotConfigured
+	if s == nil {
+		return &contract.ServiceNotConfiguredError{Service: "services"}
+	}
+	if nilval.Is(s.Auth) {
+		return &contract.ServiceNotConfiguredError{Service: "auth"}
+	}
+	manager, ok := s.Auth.(*auth.Manager)
+	if !ok {
+		return errchain.Errorf("velocity: SetAuthModel needs an *auth.Manager, the services carry %T", s.Auth)
 	}
 
 	userStore := ORMUserStore[T](append([]AuthOption{ormauth.WithHasher(manager.GetHasher())}, opts...)...)

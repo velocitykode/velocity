@@ -1,5 +1,7 @@
 package auth
 
+import "github.com/velocitykode/velocity/contract"
+
 // RequireTwoFactor returns an Access BeforeCallback that denies any ability
 // when the supplied status function reports the user has not completed a
 // 2FA challenge. When status reports true (2FA satisfied) the callback
@@ -13,7 +15,7 @@ package auth
 // When getStatus is nil the callback is a no-op (returns nil) so it does
 // not accidentally lock every user out.
 func RequireTwoFactor(getStatus func(actor any) bool) BeforeCallback {
-	return func(user Authenticatable, ability string, args ...interface{}) *bool {
+	return func(user contract.Authenticatable, ability string, args ...interface{}) *bool {
 		if getStatus == nil || user == nil {
 			return nil
 		}

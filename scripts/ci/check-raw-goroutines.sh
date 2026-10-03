@@ -51,6 +51,12 @@
 #   - router/event_dispatcher.go: safeInvokeListener wraps every
 #     listener invocation, see the file's package comment
 #
+# The same walk also holds the service accessors to their error contract:
+# router/context.go and router/service.go report a missing service with
+# contract.ServiceNotConfiguredError and contain no panic( call at all
+# (comment lines excepted). A panic there is a missing service crashing
+# the request instead of an error the pipeline can answer.
+#
 # Prints "file:line:code" for each offender. Prints nothing on success.
 # The CI job treats any output as failure.
 
@@ -76,7 +82,15 @@ OFFENDERS=$(
 	|| true
 )
 
-if [ -n "$OFFENDERS" ]; then
-	echo "$OFFENDERS"
+# Service accessors never panic: zero panic( calls in these two files.
+PANICS=$(
+	grep -nHE '(^|[^A-Za-z0-9_.])panic\(' router/context.go router/service.go 2>/dev/null \
+	| grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
+	|| true
+)
+
+if [ -n "$OFFENDERS$PANICS" ]; then
+	[ -n "$OFFENDERS" ] && echo "$OFFENDERS"
+	[ -n "$PANICS" ] && echo "$PANICS"
 	exit 1
 fi

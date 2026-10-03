@@ -12,7 +12,6 @@ package view
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/velocitykode/velocity/bond"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -250,30 +250,34 @@ const defaultTemplate = `<!DOCTYPE html>
 </body>
 </html>`
 
-// ErrNoEngine is returned by Render and (*ReqEngine).Render when no view
-// engine is wired on the request context. It is a configuration fault:
-// the request answers 500 and the error is reported.
-var ErrNoEngine = errors.New("velocity/view: engine not configured on context")
-
 // Render renders a component using the view engine on the given context.
-// It returns ErrNoEngine and writes nothing when no engine is wired.
+// With no engine wired (a nil ctx included) it writes nothing and returns
+// a *contract.ServiceNotConfiguredError naming "view" (see engineOf), a
+// configuration fault the pipeline answers with a reported 500. With a
+// view engine that is not an *Engine it writes nothing and returns an
+// error naming the engine's type.
 func Render(ctx *router.Context, component string, props ...Props) error {
-	engine := FromContext(ctx)
-	if engine == nil {
-		return ErrNoEngine
+	engine, err := engineOf(ctx)
+	if err != nil {
+		return err
 	}
 	return engine.Render(ctx.Response, ctx.Request, component, props...)
 }
 
-// FromContext extracts the *Engine from a router.Context.
-// Returns nil if view is not configured, including when the context has
-// no service container at all (e.g. a bare test context), so callers
-// can rely on the documented nil contract instead of a panic.
-func FromContext(ctx *router.Context) *Engine {
-	s := ctx.ServicesIfSet()
-	if s == nil || s.View == nil {
-		return nil
+// engineOf returns the *Engine wired on ctx, for the helpers whose method
+// contract.ViewEngine does not carry (Render, Location, For). A nil ctx or
+// one without services reports the error naming "services"; an absent or
+// typed-nil view engine reports it naming "view". A view engine of
+// another type is present, not absent: it is reported with an error
+// naming its type, never with a *contract.ServiceNotConfiguredError.
+func engineOf(ctx *router.Context) (*Engine, error) {
+	v, err := ctx.View()
+	if err != nil {
+		return nil, err
 	}
-	e, _ := s.View.(*Engine)
-	return e
+	e, ok := v.(*Engine)
+	if !ok {
+		return nil, errchain.Errorf("velocity/view: Render, Location and For need a *view.Engine, the services carry %T", v)
+	}
+	return e, nil
 }

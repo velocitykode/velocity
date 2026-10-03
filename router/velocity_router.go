@@ -18,9 +18,11 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -62,9 +64,19 @@ type VelocityRouterV2 struct {
 	// async pool dropped (see internal/eventemit).
 	events eventemit.Emitter
 
-	// asyncStop is the stop of the latest pool SetAsyncEventDispatcher
-	// started, nil when none was; ShutdownEventDispatcher drains it.
+	// own is the router's work in flight, and requests the run admitting
+	// every ServeHTTP (see admission.go); made by NewV2.
+	own      drain.Owner
+	requests *drain.Run
+
+	// asyncStop is the stop of the current async pool, nil in sync mode.
 	asyncStop *asyncEventStop
+
+	// pools holds every async pool the router started whose run has not
+	// finished, the current one and the retired ones still draining;
+	// Shutdown stops and awaits each. Guarded by poolsMu.
+	poolsMu sync.Mutex
+	pools   []*asyncEventStop
 
 	// asyncPool is the worker pool the current async delivery mode
 	// (SetAsyncEventDispatcher) feeds, nil in sync mode. It holds the
@@ -179,6 +191,7 @@ func NewV2() *VelocityRouterV2 {
 		rootGroup:   NewGroupDefinition("", nil),
 	}
 	r.events.UseLogger(r.eventLogger)
+	r.initAdmission()
 	r.tree.Store(NewTree())
 	r.ctxPool.New = func() interface{} {
 		return &Context{
@@ -365,15 +378,17 @@ func (r *VelocityRouterV2) CloseFileRoot() error {
 // Bootstrap() returns and before Serve().
 //
 // Router event configuration calls (SetEventDispatcher,
-// SetAsyncEventDispatcher, BindEventDispatcher, ShutdownEventDispatcher)
-// must be serialized and must not overlap serving. Concurrent
-// configuration is not supported. The normal lifecycle keeps them apart.
-// Dispatching is not a configuration call: when the HTTP server's drain
-// times out on Shutdown, a straggling handler may still dispatch while or
-// after ShutdownEventDispatcher runs, and under SetAsyncEventDispatcher
-// such an event is dropped and counted as a failed event.
+// SetAsyncEventDispatcher, BindEventDispatcher) must be serialized and
+// must not overlap serving or Shutdown. Concurrent configuration is not
+// supported. The normal lifecycle keeps them apart. Dispatching is not a
+// configuration call: a pool stopped while a request still runs (a
+// replaced pool, or Shutdown past its deadline) drops that request's
+// later events and counts each as a failed event.
+//
+// A running async pool is stopped first, as SetAsyncEventDispatcher stops
+// it (see there).
 func (r *VelocityRouterV2) SetEventDispatcher(fn func(ctx context.Context, event interface{}) error) {
-	r.asyncPool = nil
+	r.retireAsyncPool()
 	r.events.Set(fn)
 }
 
@@ -400,10 +415,10 @@ func (r *VelocityRouterV2) BindEventDispatcher(fn func(ctx context.Context, even
 // through: its own logger (SetLogger), else its services' logger, else nil
 // (the framework's standalone fallback logger).
 func (r *VelocityRouterV2) eventLogger() contract.Logger {
-	if r.logger != nil {
+	if !nilval.Is(r.logger) {
 		return r.logger
 	}
-	if r.services != nil {
+	if r.services != nil && !nilval.Is(r.services.Log) {
 		return r.services.Log
 	}
 	return nil
@@ -756,7 +771,17 @@ func (r *VelocityRouterV2) dispatchRequestHandled(req *http.Request, rw *respons
 }
 
 // ServeHTTP implements http.Handler interface.
+//
+// A request arriving once the router's Shutdown began is refused with 503
+// (see Shutdown); every other one is admitted into the router's request
+// run until ServeHTTP returns, so Shutdown waits for it.
 func (r *VelocityRouterV2) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if !r.requests.Admit() {
+		r.refuse(w, req)
+		return
+	}
+	defer r.requests.Release()
+
 	// Lock-free fast path: once committed, skip the mutex entirely.
 	if !r.committed.Load() {
 		r.commitOnce()
@@ -1107,6 +1132,7 @@ func (r *VelocityRouterV2) currentWiring() ctxWiring {
 		validateFn:           r.validateFn,
 		validateDataFn:       r.validateDataFn,
 		intendedFn:           r.intendedFn,
+		requests:             r.requests,
 	}
 }
 

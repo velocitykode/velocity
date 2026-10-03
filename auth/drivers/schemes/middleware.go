@@ -392,7 +392,7 @@ func commitSessionHeld(g *SessionScheme, r *http.Request, w http.ResponseWriter,
 		return nil, nil
 	}
 	// A Logout of the request ended the session: the holder says so even
-	// when the session cannot (a custom auth.Session without IsDestroyed),
+	// when the session cannot (a custom contract.Session without IsDestroyed),
 	// and it is not ended a second time as a cookie deletion.
 	ended := holder.isEnded()
 	if !ended {
@@ -555,7 +555,7 @@ func (g *SessionScheme) endSessionDeletedAfterSave(r *http.Request, w http.Respo
 // from the scheme's server session store, so a captured copy of the cookie
 // is refused on every instance sharing that store; a failed removal is
 // logged.
-func (g *SessionScheme) endSessionDeletedBy(r *http.Request, w http.ResponseWriter, session auth.Session) bool {
+func (g *SessionScheme) endSessionDeletedBy(r *http.Request, w http.ResponseWriter, session contract.Session) bool {
 	if ms, ok := session.(modifiedSession); ok && ms.IsDestroyed() {
 		return false
 	}
@@ -627,7 +627,7 @@ type renewableSession interface {
 // as expiry. When that consult fails (the record was revoked or expired,
 // or the store is down) the cookie is not renewed; a save the handler
 // asked for still happens.
-func (g *SessionScheme) renewOnActivity(r *http.Request, session auth.Session) {
+func (g *SessionScheme) renewOnActivity(r *http.Request, session contract.Session) {
 	ms, ok := session.(modifiedSession)
 	if !ok || ms.IsDestroyed() {
 		return
@@ -686,7 +686,7 @@ var ensureSession = func(g *SessionScheme, r *http.Request) {
 // session's save writes the cookie deletion whether or not its server-side
 // teardown then fails. The failure is logged; an oversize cookie gets its
 // own line naming the fix.
-var saveSessionFromMiddleware = func(g *SessionScheme, w http.ResponseWriter, s auth.Session) error {
+var saveSessionFromMiddleware = func(g *SessionScheme, w http.ResponseWriter, s contract.Session) error {
 	if err := s.Save(w); err != nil {
 		if errchain.Is(err, session.ErrCookieTooLarge) {
 			g.logWarn("velocity/auth: session not saved: the session cookie would exceed 4096 bytes, so none was sent; keep less in the session or set SESSION_STORE=server", "session_id", s.ID(), "error", err)

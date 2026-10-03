@@ -8,11 +8,12 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 	"github.com/velocitykode/velocity/router"
 )
 
-// plainSession is a custom auth.Session with neither IsModified nor
+// plainSession is a custom contract.Session with neither IsModified nor
 // IsDestroyed: nothing the scheme can ask tells it the session was
 // invalidated. A second Invalidate fails.
 type plainSession struct {
@@ -56,7 +57,7 @@ type plainStore struct {
 	next     int
 }
 
-func (s *plainStore) Create(string) (auth.Session, error) {
+func (s *plainStore) Create(string) (contract.Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.next++
@@ -66,7 +67,7 @@ func (s *plainStore) Create(string) (auth.Session, error) {
 	return ps, nil
 }
 
-func (s *plainStore) Get(r *http.Request, _ string) (auth.Session, error) {
+func (s *plainStore) Get(r *http.Request, _ string) (contract.Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if c, err := r.Cookie("vel_session"); err == nil {
@@ -77,7 +78,7 @@ func (s *plainStore) Get(r *http.Request, _ string) (auth.Session, error) {
 	return nil, errors.New("no session")
 }
 
-func (s *plainStore) Save(w http.ResponseWriter, session auth.Session) error {
+func (s *plainStore) Save(w http.ResponseWriter, session contract.Session) error {
 	return session.Save(w)
 }
 

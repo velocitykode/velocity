@@ -25,7 +25,7 @@ func TestGenPolicy_CreatesFile(t *testing.T) {
 	if !strings.Contains(s, "PostPolicy") {
 		t.Error("expected PostPolicy struct")
 	}
-	if !strings.Contains(s, "func (p PostPolicy) Authorize(user auth.Authenticatable, action string, resource any) bool") {
+	if !strings.Contains(s, "func (p PostPolicy) Authorize(user contract.Authenticatable, action string, resource any) bool") {
 		t.Error("expected Authorize method satisfying auth.Policy")
 	}
 	if !strings.Contains(s, "var _ auth.Policy = PostPolicy{}") {
@@ -91,7 +91,7 @@ func TestGenPolicy_VerifiesContent(t *testing.T) {
 	if !strings.Contains(s, `"github.com/velocitykode/velocity/auth"`) {
 		t.Error("expected velocity auth import")
 	}
-	if !strings.Contains(s, `auth.FromServices(s).Access().RegisterPolicy("Comment", CommentPolicy{})`) {
+	if !strings.Contains(s, `s.Auth.(*auth.Manager).Access().RegisterPolicy("Comment", CommentPolicy{})`) {
 		t.Error("expected registration hint comment")
 	}
 }

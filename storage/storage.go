@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"errors"
+	"maps"
+	"slices"
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
@@ -46,12 +48,15 @@ type Manager struct {
 	disks       map[string]Driver
 	config      Config
 	defaultDisk string
-	// generation counts Shutdowns, so a Configure whose drivers are built
-	// across one publishes nothing into the emptied manager. Guarded by mu.
-	generation uint64
-	// shutdowns shuts the detached disks down, one run at a time (see
-	// Shutdown). Detach is called under mu.
+	// shutdowns is the disks' lifecycle: it shuts the registry down, one
+	// run at a time (see Shutdown), retires a disk that leaves it
+	// otherwise, and counts Shutdowns, so a Configure whose drivers are
+	// built across one publishes nothing into the emptied manager. Called
+	// under mu.
 	shutdowns teardown.Children[Driver]
+	// owners asks the disks whether they own the caller, and remembers
+	// whose panic it reported. Called with mu released.
+	owners teardown.Owners
 }
 
 // NewManager creates a new storage manager
@@ -78,13 +83,16 @@ func (m *Manager) Configure(config Config) error {
 // its error), the drivers built before it are still published and the
 // error is returned, as before.
 //
+// A disk Configure replaces is closed before it returns, as AddDisk
+// closes one.
+//
 // A Configure whose drivers are built across a Shutdown publishes nothing:
 // it shuts down every driver it built, writes neither the configuration
 // nor the default disk, and returns an error that holds those drivers'
 // Shutdown errors.
 func (m *Manager) ConfigureWithContext(ctx context.Context, config Config) error {
 	m.mu.RLock()
-	generation := m.generation
+	generation := m.shutdowns.Generation()
 	m.mu.RUnlock()
 
 	built := make(map[string]Driver, len(config.Disks))
@@ -104,7 +112,7 @@ func (m *Manager) ConfigureWithContext(ctx context.Context, config Config) error
 	}
 
 	m.mu.Lock()
-	if m.generation != generation {
+	if m.shutdowns.Generation() != generation {
 		m.mu.Unlock()
 		errs := []error{errors.New("velocity/storage: the manager was shut down while the disks were configured")}
 		for name, driver := range built {
@@ -117,13 +125,26 @@ func (m *Manager) ConfigureWithContext(ctx context.Context, config Config) error
 		}
 		return errors.Join(errs...)
 	}
-	defer m.mu.Unlock()
 	m.config = config
 	m.defaultDisk = config.Default
+	retires := make([]retirement, 0, len(built))
 	for name, driver := range built {
+		old := m.disks[name]
 		m.disks[name] = driver
+		retires = append(retires, retirement{name, m.shutdowns.Retire(m.disks, old)})
+	}
+	m.mu.Unlock()
+	for _, r := range retires {
+		teardown.Warn(nil, "storage", r.name, r.close())
 	}
 	return err
+}
+
+// retirement is the close of a disk that left the registry, under its
+// name.
+type retirement struct {
+	name  string
+	close func() error
 }
 
 // Disk returns a specific disk driver.
@@ -152,11 +173,19 @@ func (m *Manager) diskLocked(name string) (Driver, error) {
 	return nil, errchain.Errorf("velocity/storage: disk %q not found: %w", name, ErrDiskNotFound)
 }
 
-// AddDisk adds a new disk to the manager
+// AddDisk adds a new disk to the manager. It closes the disk it displaces
+// before returning: contained, once, unless the manager still holds it
+// under another name; the call succeeds, so a failure to close it is
+// written once as a warning, through the fallback logger (the manager has
+// no logger of its own). A configuration call, not concurrent with the
+// disks' use.
 func (m *Manager) AddDisk(name string, driver Driver) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	old := m.disks[name]
 	m.disks[name] = driver
+	retire := m.shutdowns.Retire(m.disks, old)
+	m.mu.Unlock()
+	teardown.Warn(nil, "storage", name, retire())
 }
 
 // SetDefault sets the default disk
@@ -188,18 +217,51 @@ func (m *Manager) SetDefault(name string) error {
 // instead of nil, also when a child was published and removed again since.
 // A Shutdown's result covers every child published before the call,
 // including those an earlier Shutdown was still closing. A Shutdown called
-// from a child's Shutdown returns an error wrapping
-// contract.ErrStopFromOwnWork at once: it would wait on itself.
+// from a child's Shutdown, or from work a disk's Shutdown waits for (the
+// stream of a write the local driver is copying, also on a disk an earlier
+// Shutdown is still draining), returns an error wrapping
+// contract.ErrStopFromOwnWork at once and changes nothing: it would wait
+// on itself.
 func (m *Manager) Shutdown(ctx context.Context) error {
+	if m.diskOwnsCaller() {
+		return errchain.Errorf("velocity/storage: Shutdown called from work a disk's Shutdown waits for: %w", contract.ErrStopFromOwnWork)
+	}
 	m.mu.Lock()
-	children := m.disks
-	m.disks = make(map[string]Driver)
-	wait := m.shutdowns.Detach(children, func(name string, err error) error {
+	wait := m.shutdowns.Shutdown(&m.disks, func(name string, err error) error {
 		return errchain.Errorf("velocity/storage: shutdown disk %q: %w", name, err)
 	})
-	m.generation++
 	m.mu.Unlock()
 	return wait(ctx)
+}
+
+// OwnsCaller reports whether the calling goroutine is closing one of the
+// manager's disks, or runs work a disk's Shutdown waits for (a write the
+// local driver is copying from its stream), so a stop it calls that waits
+// for the manager's Shutdown would wait on itself. A disk answers for its
+// own work by exporting OwnsCaller() bool. The disks asked are the
+// registered ones and the ones that left the registry and are still
+// closing (a Shutdown under way drains them, or AddDisk displaced them):
+// the manager's Shutdown waits for those too. They are read under the
+// manager's read lock and asked after it is released. A disk's OwnsCaller
+// is user code: one that panics is taken as not owning the caller, and the
+// panic is written once per disk as a warning, through the fallback logger
+// (the manager has no logger of its own).
+func (m *Manager) OwnsCaller() bool {
+	return m.shutdowns.OwnsCaller() || m.diskOwnsCaller()
+}
+
+// diskOwnsCaller reports whether a disk, registered or still closing,
+// answers that the calling goroutine runs its own work.
+func (m *Manager) diskOwnsCaller() bool {
+	m.mu.RLock()
+	disks := slices.AppendSeq(m.shutdowns.Closing(), maps.Values(m.disks))
+	m.mu.RUnlock()
+	for _, disk := range disks {
+		if m.owners.Owns(disk) {
+			return true
+		}
+	}
+	return false
 }
 
 // createDriverWithContext creates a driver using the provided context for

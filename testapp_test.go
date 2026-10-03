@@ -10,7 +10,14 @@ import (
 // keeping this here (in a _test.go file) ensures the defaults never ship in
 // a production binary. Keep velocitytest.NewApp in sync with this config.
 func NewTestApp(opts ...Option) (*App, error) {
-	config := Config{
+	allOpts := []Option{WithConfig(testAppConfig())}
+	allOpts = append(allOpts, opts...)
+	return New(allOpts...)
+}
+
+// testAppConfig is the config NewTestApp starts from.
+func testAppConfig() Config {
+	return Config{
 		Env:   "testing",
 		Debug: true,
 		Port:  "0",
@@ -29,8 +36,4 @@ func NewTestApp(opts ...Option) (*App, error) {
 			Driver: "log",
 		},
 	}
-
-	allOpts := []Option{WithConfig(config)}
-	allOpts = append(allOpts, opts...)
-	return New(allOpts...)
 }

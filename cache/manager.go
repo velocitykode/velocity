@@ -53,11 +53,10 @@ type Manager struct {
 	logger contract.Logger
 	// builds builds each store once at a time, with no lock held.
 	builds buildonce.Group[Store]
-	// generation counts Shutdowns, so a store built across one is not
-	// published into the emptied manager. Guarded by mu.
-	generation uint64
-	// shutdowns shuts the detached stores down, one run at a time (see
-	// Shutdown). Detach is called under mu.
+	// shutdowns is the stores' lifecycle: it shuts the registry down, one
+	// run at a time (see Shutdown), and counts Shutdowns, so a store built
+	// across one is not published into the emptied manager. Called under
+	// mu.
 	shutdowns teardown.Children[Store]
 }
 
@@ -215,7 +214,7 @@ func (m *Manager) buildStore(ctx context.Context, name string) (Store, error) {
 	config, exists := m.config.Stores[name]
 	prefix := m.config.Prefix
 	logger := m.logger
-	generation := m.generation
+	generation := m.shutdowns.Generation()
 	m.mu.RUnlock()
 
 	if !exists {
@@ -259,7 +258,7 @@ func (m *Manager) buildStore(ctx context.Context, name string) (Store, error) {
 	}
 
 	m.mu.Lock()
-	if m.generation != generation {
+	if m.shutdowns.Generation() != generation {
 		m.mu.Unlock()
 		return nil, &storeBuildError{errors.Join(
 			fmt.Errorf("velocity/cache: store %q: the manager was shut down while the store was built", name),
@@ -325,12 +324,16 @@ func (m *Manager) DefaultStoreWithContext(ctx context.Context) (Store, error) {
 // contract.ErrStopFromOwnWork at once: it would wait on itself.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
-	children := m.stores
-	m.stores = make(map[string]Store)
-	wait := m.shutdowns.Detach(children, func(name string, err error) error { return errchain.Errorf("cache store %q shutdown: %w", name, err) })
-	m.generation++
+	wait := m.shutdowns.Shutdown(&m.stores, func(name string, err error) error { return errchain.Errorf("cache store %q shutdown: %w", name, err) })
 	m.mu.Unlock()
 	return wait(ctx)
+}
+
+// OwnsCaller reports whether the calling goroutine is closing one of the
+// manager's stores, so a stop it calls that waits for the manager's
+// Shutdown would wait on itself. Read without a lock.
+func (m *Manager) OwnsCaller() bool {
+	return m.shutdowns.OwnsCaller()
 }
 
 // Implementation of Cache interface for default store

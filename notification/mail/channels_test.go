@@ -382,3 +382,47 @@ func TestCreateUnregisteredChannel(t *testing.T) {
 		t.Error("expected error for unregistered channel")
 	}
 }
+
+// TestMailChannel_SetMailerWhileSending replaces the mailer while sends
+// run: each send reaches one of the mailers whole (run with -race).
+func TestMailChannel_SetMailerWhileSending(t *testing.T) {
+	mailers := []*testMailer{{}, {}}
+	ch := NewMailChannel()
+	ch.SetMailer(mailers[0])
+	n := &simpleMailNotification{subject: "Welcome"}
+	notifiable := &testNotifiable{email: "user@example.com", id: "1"}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				if err := ch.Send(context.Background(), notifiable, n); err != nil {
+					t.Errorf("Send: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	for i := range 200 {
+		ch.SetMailer(mailers[i%2])
+	}
+	wg.Wait()
+	mailers[0].mu.Lock()
+	mailers[1].mu.Lock()
+	defer mailers[0].mu.Unlock()
+	defer mailers[1].mu.Unlock()
+	if got := len(mailers[0].sent) + len(mailers[1].sent); got != 8*50 {
+		t.Fatalf("mailers received %d messages, want %d", got, 8*50)
+	}
+}
+
+func TestMailChannel_SetMailerNilSendsNothing(t *testing.T) {
+	ch := NewMailChannel()
+	ch.SetMailer(&testMailer{})
+	ch.SetMailer(nil)
+	err := ch.Send(context.Background(), &testNotifiable{email: "user@example.com"}, &simpleMailNotification{subject: "s"})
+	if err == nil || !strings.Contains(err.Error(), "no mailer configured") {
+		t.Fatalf("Send = %v, want the no-mailer error", err)
+	}
+}

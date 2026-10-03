@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 )
 
@@ -60,7 +61,7 @@ func rememberRecallRequest(t *testing.T, c *http.Cookie, w http.ResponseWriter) 
 // recallThroughSeam reads the user on a request carrying only c, then
 // commits the request's session the way SessionMiddleware does after the
 // handler, which writes the rotated remember cookie queued behind the save.
-func recallThroughSeam(t *testing.T, scheme *SessionScheme, c *http.Cookie, w http.ResponseWriter) auth.Authenticatable {
+func recallThroughSeam(t *testing.T, scheme *SessionScheme, c *http.Cookie, w http.ResponseWriter) contract.Authenticatable {
 	t.Helper()
 	r := rememberRecallRequest(t, c, w)
 	u := scheme.User(r)
@@ -257,16 +258,16 @@ type casRememberStore struct {
 
 var _ auth.RememberTokenCompareAndSwapper = (*casRememberStore)(nil)
 
-func (p *casRememberStore) UpdateRememberToken(u auth.Authenticatable, tok string) error {
+func (p *casRememberStore) UpdateRememberToken(u contract.Authenticatable, tok string) error {
 	p.plainCalls++
 	return p.rememberRevivalStore.UpdateRememberToken(u, tok)
 }
 
-func (p *casRememberStore) UpdateRememberTokenCtx(_ context.Context, u auth.Authenticatable, tok string) error {
+func (p *casRememberStore) UpdateRememberTokenCtx(_ context.Context, u contract.Authenticatable, tok string) error {
 	return p.UpdateRememberToken(u, tok)
 }
 
-func (p *casRememberStore) CompareAndSwapRememberToken(_ context.Context, u auth.Authenticatable, oldToken, newToken string) (bool, error) {
+func (p *casRememberStore) CompareAndSwapRememberToken(_ context.Context, u contract.Authenticatable, oldToken, newToken string) (bool, error) {
 	p.casCalls++
 	if p.forceStale || p.user == nil || p.user.rememberToken != oldToken {
 		return false, nil
@@ -389,20 +390,20 @@ type failingUpdateStore struct {
 	failUpdates bool
 }
 
-func (p *failingUpdateStore) UpdateRememberToken(u auth.Authenticatable, tok string) error {
+func (p *failingUpdateStore) UpdateRememberToken(u contract.Authenticatable, tok string) error {
 	if p.failUpdates {
 		return errors.New("test: persist outage")
 	}
 	return p.rememberRevivalStore.UpdateRememberToken(u, tok)
 }
 
-func (p *failingUpdateStore) UpdateRememberTokenCtx(_ context.Context, u auth.Authenticatable, tok string) error {
+func (p *failingUpdateStore) UpdateRememberTokenCtx(_ context.Context, u contract.Authenticatable, tok string) error {
 	return p.UpdateRememberToken(u, tok)
 }
 
 // CompareAndSwapRememberToken shadows the embedded implementation so the
 // armed outage also hits the swap path the scheme uses during recall.
-func (p *failingUpdateStore) CompareAndSwapRememberToken(ctx context.Context, u auth.Authenticatable, oldToken, newToken string) (bool, error) {
+func (p *failingUpdateStore) CompareAndSwapRememberToken(ctx context.Context, u contract.Authenticatable, oldToken, newToken string) (bool, error) {
 	if p.failUpdates {
 		return false, errors.New("test: persist outage")
 	}

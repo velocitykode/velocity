@@ -199,14 +199,6 @@ func (e *RememberClearError) Unwrap() []error {
 	return []error{ErrRememberClearPartial, e.Err}
 }
 
-// Authenticatable represents a user that can be authenticated
-type Authenticatable interface {
-	GetAuthIdentifier() interface{}
-	GetAuthPassword() string
-	GetRememberToken() string
-	SetRememberToken(token string)
-}
-
 // UserStore handles user retrieval and validation.
 //
 // Every method that performs I/O (database query, identity provider RPC,
@@ -235,27 +227,27 @@ type UserStore interface {
 	// nil error is tolerated): revocation relies on it to tell a user that
 	// is gone, whose remember credential needs no clearing, from a failed
 	// lookup, which it reports as ErrRememberClearPartial.
-	FindByIDCtx(ctx context.Context, id interface{}) (Authenticatable, error)
+	FindByIDCtx(ctx context.Context, id interface{}) (contract.Authenticatable, error)
 
 	// Deprecated: use FindByIDCtx with a request-scoped context.Context.
-	FindByID(id interface{}) (Authenticatable, error)
+	FindByID(id interface{}) (contract.Authenticatable, error)
 
 	// FindByCredentialsCtx retrieves a user by credentials (e.g. email).
-	FindByCredentialsCtx(ctx context.Context, credentials map[string]interface{}) (Authenticatable, error)
+	FindByCredentialsCtx(ctx context.Context, credentials map[string]interface{}) (contract.Authenticatable, error)
 
 	// Deprecated: use FindByCredentialsCtx with a request-scoped context.Context.
-	FindByCredentials(credentials map[string]interface{}) (Authenticatable, error)
+	FindByCredentials(credentials map[string]interface{}) (contract.Authenticatable, error)
 
 	// ValidateCredentials validates user credentials against the in-memory user
 	// representation. Pure CPU work (bcrypt compare), so no Ctx variant.
-	ValidateCredentials(user Authenticatable, credentials map[string]interface{}) bool
+	ValidateCredentials(user contract.Authenticatable, credentials map[string]interface{}) bool
 
 	// UpdateRememberTokenCtx persists the remember token through the user store's
 	// backing store.
-	UpdateRememberTokenCtx(ctx context.Context, user Authenticatable, token string) error
+	UpdateRememberTokenCtx(ctx context.Context, user contract.Authenticatable, token string) error
 
 	// Deprecated: use UpdateRememberTokenCtx with a request-scoped context.Context.
-	UpdateRememberToken(user Authenticatable, token string) error
+	UpdateRememberToken(user contract.Authenticatable, token string) error
 }
 
 // RememberTokenCompareAndSwapper is a UserStore capability required for
@@ -273,7 +265,7 @@ type UserStore interface {
 // never revive a session); the unconditional UpdateRememberTokenCtx is used
 // only on the login path, where no prior token is being consumed.
 type RememberTokenCompareAndSwapper interface {
-	CompareAndSwapRememberToken(ctx context.Context, user Authenticatable, oldToken, newToken string) (swapped bool, err error)
+	CompareAndSwapRememberToken(ctx context.Context, user contract.Authenticatable, oldToken, newToken string) (swapped bool, err error)
 }
 
 // SessionAware is an optional capability interface implemented by schemes
@@ -285,7 +277,7 @@ type SessionAware interface {
 	// the cookie store on first call and caching in the request context
 	// for subsequent calls. Returns nil when no session is available
 	// (no cookie, decode error, or the scheme does not maintain sessions).
-	Session(r *http.Request) Session
+	Session(r *http.Request) contract.Session
 }
 
 // StatelessScheme is an optional capability interface implemented by
@@ -322,13 +314,13 @@ type Scheme interface {
 	Check(r *http.Request) bool
 
 	// Get authenticated user
-	User(r *http.Request) Authenticatable
+	User(r *http.Request) contract.Authenticatable
 
 	// Get user ID
 	ID(r *http.Request) interface{}
 
 	// Login user
-	Login(w http.ResponseWriter, r *http.Request, user Authenticatable, remember ...bool) error
+	Login(w http.ResponseWriter, r *http.Request, user contract.Authenticatable, remember ...bool) error
 
 	// Login by user ID
 	LoginByID(w http.ResponseWriter, r *http.Request, id interface{}, remember ...bool) error
@@ -487,7 +479,7 @@ const DefaultUserStoreName = "default"
 // framework default. This is the supported way to change which model
 // authenticates:
 //
-//	auth.FromServices(s).SetUserStore(ormauth.New[models.Admin](
+//	s.Auth.(*auth.Manager).SetUserStore(ormauth.New[models.Admin](
 //	    ormauth.WithIdentifierColumn("username"),
 //	))
 //
@@ -589,7 +581,7 @@ func (m *Manager) Check(r *http.Request) bool {
 }
 
 // User returns the authenticated user using the default scheme.
-func (m *Manager) User(r *http.Request) Authenticatable {
+func (m *Manager) User(r *http.Request) contract.Authenticatable {
 	scheme, err := m.DefaultScheme()
 	if err != nil {
 		return nil
@@ -601,7 +593,7 @@ func (m *Manager) User(r *http.Request) Authenticatable {
 // scheme, or nil when the scheme does not implement SessionAware or no
 // session is available. Handlers use this to set flash messages or
 // read/write session data without reaching into a specific scheme impl.
-func (m *Manager) Session(r *http.Request) Session {
+func (m *Manager) Session(r *http.Request) contract.Session {
 	scheme, err := m.DefaultScheme()
 	if err != nil {
 		return nil
@@ -623,7 +615,7 @@ func (m *Manager) ID(r *http.Request) interface{} {
 }
 
 // Login logs in a user using the default scheme.
-func (m *Manager) Login(w http.ResponseWriter, r *http.Request, user Authenticatable, remember ...bool) error {
+func (m *Manager) Login(w http.ResponseWriter, r *http.Request, user contract.Authenticatable, remember ...bool) error {
 	scheme, err := m.DefaultScheme()
 	if err != nil {
 		return err

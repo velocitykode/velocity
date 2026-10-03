@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/goroutine"
 )
 
@@ -43,7 +44,7 @@ import (
 // and waits for it) is not detected: it ends when the request's context
 // does.
 //
-// The session object itself (auth.Session, which a custom SessionStore
+// The session object itself (contract.Session, which a custom SessionStore
 // implements) is changed in place by the operation that holds the gate:
 // Regenerate, the user id, Invalidate. What makes that safe is that
 // nothing reads or saves it halfway: no scheme read touches it while
@@ -68,7 +69,7 @@ var errOperationTorn = errors.New("velocity/auth: session not saved: an authenti
 // resolvedIdentity is the outcome of a read of the signed-in user: the
 // user, whether the request is authenticated, and the reason it is not.
 type resolvedIdentity struct {
-	user auth.Authenticatable
+	user contract.Authenticatable
 	ok   bool
 	err  error
 }
@@ -124,7 +125,7 @@ type gateOp struct {
 	endsSession bool
 	// fresh is the session a sign-in started after the holder's session
 	// was ended: publishing installs it and clears the mark.
-	fresh auth.Session
+	fresh contract.Session
 }
 
 // take reserves the gate for an operation that may change the request's

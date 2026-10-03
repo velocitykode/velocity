@@ -7,6 +7,7 @@ import (
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/stores/ormauth"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/orm"
 )
 
@@ -93,11 +94,20 @@ func TestSetAuthModel_RejectsUnmappableModel(t *testing.T) {
 // TestSetAuthModel_WithoutAuthConfigured covers an app whose schemes were
 // never built.
 func TestSetAuthModel_WithoutAuthConfigured(t *testing.T) {
-	if err := SetAuthModel[ormauth.User](&app.Services{}); !errors.Is(err, ErrAuthNotConfigured) {
-		t.Errorf("err = %v, want ErrAuthNotConfigured", err)
-	}
-	if err := SetAuthModel[ormauth.User](nil); !errors.Is(err, ErrAuthNotConfigured) {
-		t.Errorf("nil services: err = %v, want ErrAuthNotConfigured", err)
+	for _, tc := range []struct {
+		name string
+		s    *app.Services
+		want string
+	}{
+		{"no auth", &app.Services{}, "auth"},
+		{"typed-nil auth", &app.Services{Auth: (*auth.Manager)(nil)}, "auth"},
+		{"nil services", nil, "services"},
+	} {
+		err := SetAuthModel[ormauth.User](tc.s)
+		var snc *contract.ServiceNotConfiguredError
+		if !errors.Is(err, contract.ErrServiceNotConfigured) || !errors.As(err, &snc) || snc.Service != tc.want {
+			t.Errorf("%s: err = %v, want a ServiceNotConfiguredError naming %q", tc.name, err, tc.want)
+		}
 	}
 }
 

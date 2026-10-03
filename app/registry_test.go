@@ -242,7 +242,7 @@ func TestGetErrorTexts(t *testing.T) {
 	if err == nil {
 		t.Fatal("missing-key Get should error")
 	}
-	wantMissing := "velocity/app: component *app_test.concreteThing not registered"
+	wantMissing := "velocity: *app_test.concreteThing service not configured"
 	if err.Error() != wantMissing {
 		t.Fatalf("missing error = %q, want %q", err.Error(), wantMissing)
 	}

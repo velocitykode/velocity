@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // countingThrottler is a deterministic per-dimension counter at the
@@ -75,7 +76,7 @@ type delayTestStore struct {
 
 func newDelayTestStore(correct string) *delayTestStore {
 	s := &delayTestStore{}
-	s.validateCredentialsFunc = func(_ auth.Authenticatable, c map[string]interface{}) bool {
+	s.validateCredentialsFunc = func(_ contract.Authenticatable, c map[string]interface{}) bool {
 		s.mu.Lock()
 		s.checks++
 		s.mu.Unlock()
@@ -115,7 +116,7 @@ func TestSessionScheme_Attempt_IdentifierOverCap_PaysDelay(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := &mockSessionSchemeUserStore{
-				validateCredentialsFunc: func(auth.Authenticatable, map[string]interface{}) bool { return tc.valid },
+				validateCredentialsFunc: func(contract.Authenticatable, map[string]interface{}) bool { return tc.valid },
 			}
 			throttler := &recordingThrottler{denyPrefix: auth.ThrottleKeyIdentifierPrefix, delay: delay}
 			scheme := newThrottleDimensionsSessionScheme(t, store, throttler)
@@ -309,7 +310,7 @@ func TestJWTScheme_Attempt_IdentifierOverCap_PaysDelay(t *testing.T) {
 	const delay = 40 * time.Millisecond
 	for _, valid := range []bool{false, true} {
 		store := &mockSessionSchemeUserStore{
-			validateCredentialsFunc: func(auth.Authenticatable, map[string]interface{}) bool { return valid },
+			validateCredentialsFunc: func(contract.Authenticatable, map[string]interface{}) bool { return valid },
 		}
 		scheme, err := NewJWTScheme(store, auth.JWTConfig{Secret: strings.Repeat("s", 64), Algorithm: "HS256", TTL: 60})
 		if err != nil {

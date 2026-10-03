@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/validation"
 )
@@ -17,7 +18,7 @@ import (
 // rules and a rule set naming unique / exists is reported as a configuration
 // error rather than evaluated. A DB-less app is a supported configuration.
 func dbHandlers(ctx context.Context, db orm.Database) map[string]validation.RuleHandler {
-	if isNilDatabase(db) {
+	if nilval.Is(db) {
 		return nil
 	}
 	return map[string]validation.RuleHandler{

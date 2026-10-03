@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/contract"
 )
 
 // orderTrackingSession records every Regenerate / Put("user_id") call so
@@ -57,7 +58,7 @@ type orderTrackingStore struct {
 	mu      sync.Mutex
 }
 
-func (s *orderTrackingStore) Create(id string) (auth.Session, error) {
+func (s *orderTrackingStore) Create(id string) (contract.Session, error) {
 	sess := newOrderTrackingSession(id)
 	s.mu.Lock()
 	s.created = sess
@@ -65,11 +66,11 @@ func (s *orderTrackingStore) Create(id string) (auth.Session, error) {
 	return sess, nil
 }
 
-func (s *orderTrackingStore) Get(r *http.Request, id string) (auth.Session, error) {
+func (s *orderTrackingStore) Get(r *http.Request, id string) (contract.Session, error) {
 	return s.Create("")
 }
 
-func (s *orderTrackingStore) Save(w http.ResponseWriter, session auth.Session) error {
+func (s *orderTrackingStore) Save(w http.ResponseWriter, session contract.Session) error {
 	return nil
 }
 

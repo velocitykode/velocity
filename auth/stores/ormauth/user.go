@@ -20,7 +20,7 @@ import "github.com/velocitykode/velocity/orm"
 // who have never used remember-me; scanning SQL NULL into a plain string
 // field is a driver error.
 //
-// User implements [auth.Authenticatable] directly, which is the path
+// User implements [contract.Authenticatable] directly, which is the path
 // applications should prefer for their own models: it skips the
 // reflection-based column mapping entirely.
 type User struct {

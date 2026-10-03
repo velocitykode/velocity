@@ -7,6 +7,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/drain"
 	"github.com/velocitykode/velocity/internal/goroutine"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
@@ -83,13 +84,18 @@ type eventPump struct {
 	// the goroutine itself before it runs any user code, so a flush can
 	// tell it was called from one of them.
 	own goroutine.Set
+
+	// drain is the manager's drain run; each of the two goroutines is a unit
+	// admitted into it until it returns.
+	drain *drain.Run
 }
 
 // newEventPump returns a pump that hands each recovered listener panic to
 // fail and each dropped event to failLater, running the report failLater
 // returns on its reporter goroutine.
-func newEventPump(fail func(ctx context.Context, err error, event any), failLater func(ctx context.Context, err error, event any) func()) *eventPump {
+func newEventPump(fail func(ctx context.Context, err error, event any), failLater func(ctx context.Context, err error, event any) func(), run *drain.Run) *eventPump {
 	return &eventPump{
+		drain:     run,
 		ch:        make(chan pendingEvent, queryEventQueueSize),
 		reports:   make(chan func(), queryEventQueueSize),
 		quit:      make(chan struct{}),
@@ -100,10 +106,15 @@ func newEventPump(fail func(ctx context.Context, err error, event any), failLate
 	}
 }
 
-// start launches the delivery goroutine and the reporter goroutine.
+// start launches the delivery goroutine and the reporter goroutine, each
+// admitted into the manager's run, which the caller (holding the
+// manager's lock, with the manager not closed) has not closed yet.
 // dispatch is called once per event on the delivery goroutine.
 func (p *eventPump) start(dispatch func(context.Context, contract.Event)) {
+	p.drain.Admit()
+	p.drain.Admit()
 	async.Go(func() {
+		defer p.drain.Release()
 		defer close(p.delivered)
 		id := goroutine.ID()
 		p.own.Enter(id)
@@ -111,6 +122,7 @@ func (p *eventPump) start(dispatch func(context.Context, contract.Event)) {
 		p.run(dispatch)
 	})
 	async.Go(func() {
+		defer p.drain.Release()
 		defer close(p.reported)
 		id := goroutine.ID()
 		p.own.Enter(id)

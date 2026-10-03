@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/hostile"
 )
 
@@ -31,7 +32,11 @@ func (c *hostileComponent) Shutdown(context.Context) error {
 }
 
 // hostileView is a view engine whose Shutdown runs its code.
-type hostileView struct{ code *hostile.Code }
+type hostileView struct {
+	// contract.ViewEngine supplies the methods this fake does not use.
+	contract.ViewEngine
+	code *hostile.Code
+}
 
 func (hostileView) Back(http.ResponseWriter, *http.Request) {}
 func (v hostileView) Shutdown(context.Context) error {

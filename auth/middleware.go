@@ -10,7 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/router"
 )
@@ -106,45 +105,6 @@ func denyUnauthenticated(manager *Manager, c *router.Context) error {
 func denyForbidden(manager *Manager, c *router.Context) error {
 	manager.logWarn("velocity/auth: authorization denied", "method", c.Request.Method, "path", c.Request.URL.Path, "ip_hash", hashClientIP(manager, c.Request))
 	return &ForbiddenError{}
-}
-
-// FromContext extracts the *Manager from a router.Context.
-// Returns nil if auth is not configured, including when the context has
-// no service container at all (e.g. a bare test context), so callers
-// can rely on the documented nil contract instead of a panic.
-func FromContext(ctx *router.Context) *Manager {
-	s := ctx.ServicesIfSet()
-	if s == nil || s.Auth == nil {
-		return nil
-	}
-	m, _ := s.Auth.(*Manager)
-	return m
-}
-
-// FromServices extracts the *Manager from a service container, which is
-// what a Module's Init/Start receives. It is the Services-side
-// counterpart to [FromContext]: app.Services types the field as
-// contract.AuthManager (contract is a stdlib-only leaf and cannot name
-// auth's types), so a module that needs the concrete manager - to install
-// its own user store, for instance - goes through here.
-//
-// Returns nil when auth is not configured, so callers get the documented
-// nil contract rather than a panic.
-//
-//	func (p *AppModule) Init(s *velocity.Services) error {
-//	    manager := auth.FromServices(s)
-//	    if manager == nil {
-//	        return errors.New("auth is not configured")
-//	    }
-//	    manager.SetUserStore(ormauth.New[models.User]())
-//	    return nil
-//	}
-func FromServices(s *app.Services) *Manager {
-	if s == nil || s.Auth == nil {
-		return nil
-	}
-	m, _ := s.Auth.(*Manager)
-	return m
 }
 
 // AuthMiddleware returns a router.MiddlewareFunc that requires authentication

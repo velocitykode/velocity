@@ -342,3 +342,61 @@ func TestNotification_NewIDUniquenessAndFormat(t *testing.T) {
 		seen[id] = struct{}{}
 	}
 }
+
+// TestDatabaseChannel_SetDBWhileSending replaces the database while sends
+// run: each send uses one SetDB's database and driver together (run with
+// -race).
+func TestDatabaseChannel_SetDBWhileSending(t *testing.T) {
+	dbs := []*sql.DB{newSQLiteDB(t), newSQLiteDB(t)}
+	for _, db := range dbs {
+		// One connection: each :memory: connection is its own database.
+		db.SetMaxOpenConns(1)
+	}
+	ch := NewDatabaseChannel()
+	ch.SetDB(dbs[0], "sqlite")
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 25 {
+				if err := ch.Send(context.Background(), &databaseTestNotifiable{id: "1"}, &dbNotification{subject: "s"}); err != nil {
+					t.Errorf("Send: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	for i := range 100 {
+		ch.SetDB(dbs[i%2], "sqlite")
+	}
+	wg.Wait()
+}
+
+// TestDatabaseChannel_SetDBWithoutDriverKeepsTheDriver keeps the driver
+// name an earlier SetDB gave.
+func TestDatabaseChannel_SetDBWithoutDriverKeepsTheDriver(t *testing.T) {
+	ch := NewDatabaseChannel()
+	ch.SetDB(nil, "postgres")
+	db := newSQLiteDB(t)
+	ch.SetDB(db)
+	if c := ch.conn.Load(); c.db != db || c.driver != "postgres" {
+		t.Fatalf("conn = %+v, want the new database with the earlier driver", c)
+	}
+}
+
+func TestDatabaseChannel_DB(t *testing.T) {
+	ch := NewDatabaseChannel()
+	if db, driver := ch.DB(); db != nil || driver != "" {
+		t.Fatalf("zero channel DB() = %p, %q", db, driver)
+	}
+	db := newSQLiteDB(t)
+	ch.SetDB(db, "sqlite")
+	if got, driver := ch.DB(); got != db || driver != "sqlite" {
+		t.Fatalf("DB() = %p, %q, want %p, sqlite", got, driver, db)
+	}
+	ch.SetDB(nil)
+	if got, driver := ch.DB(); got != nil || driver != "sqlite" {
+		t.Fatalf("after SetDB(nil) DB() = %p, %q", got, driver)
+	}
+}

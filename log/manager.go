@@ -18,8 +18,10 @@ type Manager struct {
 	config   LoggingConfig
 	channels map[string]Logger
 	mu       sync.RWMutex
-	// shutdowns shuts the detached channels down, one run at a time (see
-	// Shutdown). Detach is called under mu.
+	// shutdowns is the channels' lifecycle: it shuts the registry down,
+	// one run at a time (see Shutdown), retires a discarded duplicate, and
+	// counts Shutdowns, so a channel built across one is not published
+	// into the emptied manager. Called under mu.
 	shutdowns teardown.Children[Logger]
 }
 
@@ -57,6 +59,7 @@ func (m *Manager) Channel(name string) (Logger, error) {
 		return nil, fmt.Errorf("channel %s not configured", name)
 	}
 
+	generation := m.shutdowns.Generation()
 	// Release lock before creating logger to avoid deadlock with stack driver
 	m.mu.Unlock()
 
@@ -68,22 +71,35 @@ func (m *Manager) Channel(name string) (Logger, error) {
 	// Re-acquire lock to store the logger. We released the lock during
 	// createLogger (to avoid a stack-driver deadlock), so a concurrent
 	// caller may have built and stored the same channel meanwhile. If so,
-	// prefer the already-stored instance and discard ours; otherwise two
-	// callers would receive different loggers and the loser's resources
-	// (e.g. FileLogger descriptors) would leak. Best-effort Shutdown the
-	// duplicate outside the lock via the optional Shutdowner interface.
+	// prefer the already-stored instance and retire ours: two callers
+	// receive the same logger and the loser's resources (e.g. FileLogger
+	// descriptors) are released. The retirement closes it contained, with
+	// no lock held; the lookup succeeds, so a failure to close it is
+	// written once as a warning through the fallback logger (the manager
+	// has no logger of its own).
 	//
-	// Every discarded duplicate, including a *StackLogger, gets a Shutdown
-	// attempt. A manager-built stack does not own its children (they are
-	// shared, manager-owned channels resolved via m.Channel above), so its
+	// Every discarded duplicate, including a *StackLogger, is closed. A
+	// manager-built stack does not own its children (they are shared,
+	// manager-owned channels resolved via m.Channel above), so its
 	// Shutdown is non-destructive and will not close those shared children
 	// out from under the winning stack.
+	//
+	// A channel built across a Shutdown is not published into the emptied
+	// manager: it is closed, contained, and the lookup's error holds its
+	// close error.
 	m.mu.Lock()
-	if existing, exists := m.channels[name]; exists {
+	if m.shutdowns.Generation() != generation {
 		m.mu.Unlock()
-		if sd, ok := logger.(Shutdowner); ok {
-			_ = sd.Shutdown(context.Background())
+		errs := []error{errchain.Errorf("velocity/log: channel %s: the manager was shut down while the channel was built", name)}
+		if err := teardown.Close(context.Background(), logger); err != nil {
+			errs = append(errs, errchain.Errorf("velocity/log: shut down unpublished channel %q: %w", name, err))
 		}
+		return nil, errors.Join(errs...)
+	}
+	if existing, exists := m.channels[name]; exists {
+		retire := m.shutdowns.Retire(m.channels, logger)
+		m.mu.Unlock()
+		teardown.Warn(nil, "log", name, retire())
 		return existing, nil
 	}
 	m.channels[name] = logger
@@ -119,13 +135,18 @@ func (m *Manager) Default() (Logger, error) {
 // their own channel entries (see newManagerStackLogger / StackLogger.Shutdown).
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
-	children := m.channels
-	m.channels = make(map[string]Logger)
-	wait := m.shutdowns.Detach(children, func(name string, err error) error {
+	wait := m.shutdowns.Shutdown(&m.channels, func(name string, err error) error {
 		return errchain.Errorf("velocity/log: shutdown channel %q: %w", name, err)
 	})
 	m.mu.Unlock()
 	return wait(ctx)
+}
+
+// OwnsCaller reports whether the calling goroutine is closing one of the
+// manager's channels, so a stop it calls that waits for the manager's
+// Shutdown would wait on itself. Read without a lock.
+func (m *Manager) OwnsCaller() bool {
+	return m.shutdowns.OwnsCaller()
 }
 
 // createLogger creates a logger instance based on the channel configuration.

@@ -522,9 +522,8 @@ func TestRender_PackageLevel(t *testing.T) {
 	}
 }
 
-// FromContext returns nil when no engine is configured, so the
-// package-level Render surfaces that as an error instead of the old
-// panic out of ctx.View().
+// With no engine configured the package-level Render returns the
+// missing-service error instead of panicking.
 func TestRender_PackageLevel_NoEngine_ReturnsError(t *testing.T) {
 	ctx, _ := router.NewTestContext("GET", "/")
 	ctx.SetServices(&app.Services{})

@@ -37,33 +37,33 @@ type fieldLogger struct {
 	bound []any
 }
 
-func newFieldLogger() fieldLogger { return fieldLogger{sink: &fieldSink{}} }
+func newFieldLogger() *fieldLogger { return &fieldLogger{sink: &fieldSink{}} }
 
-func (l fieldLogger) Debug(msg string, kvs ...any) { l.add("debug", msg, kvs) }
-func (l fieldLogger) Info(msg string, kvs ...any)  { l.add("info", msg, kvs) }
-func (l fieldLogger) Warn(msg string, kvs ...any)  { l.add("warn", msg, kvs) }
-func (l fieldLogger) Error(msg string, kvs ...any) { l.add("error", msg, kvs) }
-func (l fieldLogger) Fatal(msg string, kvs ...any) { l.add("fatal", msg, kvs) }
+func (l *fieldLogger) Debug(msg string, kvs ...any) { l.add("debug", msg, kvs) }
+func (l *fieldLogger) Info(msg string, kvs ...any)  { l.add("info", msg, kvs) }
+func (l *fieldLogger) Warn(msg string, kvs ...any)  { l.add("warn", msg, kvs) }
+func (l *fieldLogger) Error(msg string, kvs ...any) { l.add("error", msg, kvs) }
+func (l *fieldLogger) Fatal(msg string, kvs ...any) { l.add("fatal", msg, kvs) }
 
-func (l fieldLogger) With(kvs ...any) contract.Logger {
+func (l *fieldLogger) With(kvs ...any) contract.Logger {
 	bound := append(append([]any(nil), l.bound...), kvs...)
-	return fieldLogger{sink: l.sink, bound: bound}
+	return &fieldLogger{sink: l.sink, bound: bound}
 }
 
-func (l fieldLogger) add(level, msg string, kvs []any) {
+func (l *fieldLogger) add(level, msg string, kvs []any) {
 	all := append(append([]any(nil), l.bound...), kvs...)
 	l.sink.mu.Lock()
 	defer l.sink.mu.Unlock()
 	l.sink.lines = append(l.sink.lines, fieldLine{level: level, msg: msg, kvs: all})
 }
 
-func (l fieldLogger) snapshot() []fieldLine {
+func (l *fieldLogger) snapshot() []fieldLine {
 	l.sink.mu.Lock()
 	defer l.sink.mu.Unlock()
 	return append([]fieldLine(nil), l.sink.lines...)
 }
 
-func (l fieldLogger) reset() {
+func (l *fieldLogger) reset() {
 	l.sink.mu.Lock()
 	defer l.sink.mu.Unlock()
 	l.sink.lines = nil

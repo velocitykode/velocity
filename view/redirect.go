@@ -7,49 +7,70 @@ import (
 	"github.com/velocitykode/velocity/router"
 )
 
-// Redirect performs an SPA-compatible redirect using the engine on ctx.
-// No-op when no view engine is wired on the context.
-func Redirect(ctx *router.Context, url string) {
-	if e := FromContext(ctx); e != nil {
-		e.Redirect(ctx.Response, ctx.Request, url)
+// Redirect performs an SPA-compatible redirect using the view engine on
+// ctx, whatever its type: the method is on contract.ViewEngine. With no
+// view engine wired it writes nothing and returns the
+// *contract.ServiceNotConfiguredError ctx.View reports.
+func Redirect(ctx *router.Context, url string) error {
+	v, err := ctx.View()
+	if err != nil {
+		return err
 	}
+	v.Redirect(ctx.Response, ctx.Request, url)
+	return nil
 }
 
 // Location performs a same-origin full-page reload. The target is validated
 // against the redirect host allowlist (safe for user-controlled input; an
-// external host collapses to "/"). No-op when no view engine is wired.
-func Location(ctx *router.Context, url string) {
-	if e := FromContext(ctx); e != nil {
-		e.Location(ctx.Response, ctx.Request, url)
+// external host collapses to "/"). With no view engine wired it writes
+// nothing and returns the missing-service error; with one that is not an
+// *Engine, an error naming its type (see engineOf).
+func Location(ctx *router.Context, url string) error {
+	e, err := engineOf(ctx)
+	if err != nil {
+		return err
 	}
+	e.Location(ctx.Response, ctx.Request, url)
+	return nil
 }
 
 // LocationExternal performs a full-page reload to an arbitrary external host
-// (the explicit opt-out of Location's allowlist). SECURITY: only pass trusted
-// or statically-known URLs. No-op when no view engine is wired.
-func LocationExternal(ctx *router.Context, url string) {
-	if e := FromContext(ctx); e != nil {
-		e.LocationExternal(ctx.Response, ctx.Request, url)
+// (the explicit opt-out of Location's allowlist) using the view engine on
+// ctx, whatever its type. SECURITY: only pass trusted or statically-known
+// URLs. With no view engine wired it writes nothing and returns the
+// missing-service error.
+func LocationExternal(ctx *router.Context, url string) error {
+	v, err := ctx.View()
+	if err != nil {
+		return err
 	}
+	v.LocationExternal(ctx.Response, ctx.Request, url)
+	return nil
 }
 
-// Back redirects to the Referer (or "/" when missing). No-op when no
-// view engine is wired.
-func Back(ctx *router.Context) {
-	if e := FromContext(ctx); e != nil {
-		e.Back(ctx.Response, ctx.Request)
+// Back redirects to the Referer (or "/" when missing) using the view
+// engine on ctx, whatever its type. With no view engine wired it writes
+// nothing and returns the missing-service error.
+func Back(ctx *router.Context) error {
+	v, err := ctx.View()
+	if err != nil {
+		return err
 	}
+	v.Back(ctx.Response, ctx.Request)
+	return nil
 }
 
 // ReqEngine binds the view engine to a single request so handlers can
 // chain flash and terminal calls:
 //
-//	view.For(ctx).Flash("error", msg).Redirect("/path")
+//	re, err := view.For(ctx)
+//	if err != nil {
+//	    return err
+//	}
+//	re.Flash("error", msg).Redirect("/path")
 //
-// All methods are nil-safe: when no view engine is wired on the request
-// context, For returns nil and every chain method is a no-op, except
-// Render, which returns ErrNoEngine so the handler's error reaches the
-// error pipeline instead of an empty response.
+// For reports a missing view engine, so a ReqEngine always has one; For's
+// error is the one absence path.
 type ReqEngine struct {
 	ctx *router.Context
 	e   *Engine
@@ -58,14 +79,16 @@ type ReqEngine struct {
 	bag contract.FlashBag
 }
 
-// For returns a request-bound view handle for chainable handler calls,
-// or nil when no view engine is wired on the context.
-func For(ctx *router.Context) *ReqEngine {
-	e := FromContext(ctx)
-	if e == nil {
-		return nil
+// For returns a request-bound view handle for chainable handler calls, or
+// nil and the error engineOf reports: a *contract.ServiceNotConfiguredError
+// when no view engine is wired on the context, an error naming the
+// engine's type when it is not an *Engine.
+func For(ctx *router.Context) (*ReqEngine, error) {
+	e, err := engineOf(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return &ReqEngine{ctx: ctx, e: e, w: ctx.Response, r: ctx.Request}
+	return &ReqEngine{ctx: ctx, e: e, w: ctx.Response, r: ctx.Request}, nil
 }
 
 // Flash sets a one-shot flash entry in the session flash bag
@@ -78,9 +101,6 @@ func For(ctx *router.Context) *ReqEngine {
 // carries no session (the default scheme keeps none, e.g. JWT-only
 // deployments).
 func (re *ReqEngine) Flash(key string, value any) *ReqEngine {
-	if re == nil {
-		return nil
-	}
 	if re.bag == nil {
 		services := re.ctx.ServicesIfSet()
 		if services == nil || services.FlashBag == nil {
@@ -97,11 +117,8 @@ func (re *ReqEngine) Flash(key string, value any) *ReqEngine {
 }
 
 // FlashMany sets multiple flash entries in one call. Returns the receiver
-// for chaining. See Flash for nil semantics.
+// for chaining. See Flash for a request without a session.
 func (re *ReqEngine) FlashMany(values map[string]any) *ReqEngine {
-	if re == nil {
-		return nil
-	}
 	for k, v := range values {
 		re.Flash(k, v)
 	}
@@ -112,18 +129,12 @@ func (re *ReqEngine) FlashMany(values map[string]any) *ReqEngine {
 // saves any pending flash bag with it, so the redirect target's render
 // can drain it onto Page.Flash.
 func (re *ReqEngine) Redirect(url string) {
-	if re == nil {
-		return
-	}
 	re.e.Redirect(re.w, re.r, url)
 }
 
 // Location performs a same-origin full-page reload (allowlist-validated,
 // safe for user-controlled input). Any pending flash bag is saved with it.
 func (re *ReqEngine) Location(url string) {
-	if re == nil {
-		return
-	}
 	re.e.Location(re.w, re.r, url)
 }
 
@@ -131,28 +142,18 @@ func (re *ReqEngine) Location(url string) {
 // (the explicit opt-out of Location's allowlist). Any pending flash bag is
 // saved with it. SECURITY: only pass trusted or statically-known URLs.
 func (re *ReqEngine) LocationExternal(url string) {
-	if re == nil {
-		return
-	}
 	re.e.LocationExternal(re.w, re.r, url)
 }
 
 // Back redirects to the Referer (or "/"). Any pending flash bag is saved
 // with it.
 func (re *ReqEngine) Back() {
-	if re == nil {
-		return
-	}
 	re.e.Back(re.w, re.r)
 }
 
 // Render renders an Inertia component. bond.Render drains any pending
 // flash bag onto Page.Flash on this (full) response, and the session
-// middleware saves the drained session with it. On a nil receiver (no
-// view engine wired) it returns ErrNoEngine and writes nothing.
+// middleware saves the drained session with it.
 func (re *ReqEngine) Render(component string, props ...Props) error {
-	if re == nil {
-		return ErrNoEngine
-	}
 	return re.e.Render(re.w, re.r, component, props...)
 }

@@ -58,13 +58,13 @@ func csrfBagInstance(t *testing.T, sessionStore string, records auth.ServerSessi
 		return c.String(http.StatusOK, tok)
 	})
 	a.Router.Post("/login", func(c *router.Context) error {
-		if err := auth.FromServices(a.Services).Login(c.Response, c.Request, &saveSeamUser{id: 9}); err != nil {
+		if err := a.Services.Auth.(*auth.Manager).Login(c.Response, c.Request, &saveSeamUser{id: 9}); err != nil {
 			return err
 		}
 		return c.String(http.StatusOK, "in")
 	})
 	a.Router.Post("/logout", func(c *router.Context) error {
-		if err := auth.FromServices(a.Services).Logout(c.Response, c.Request); err != nil {
+		if err := a.Services.Auth.(*auth.Manager).Logout(c.Response, c.Request); err != nil {
 			return err
 		}
 		return c.String(http.StatusOK, "out")

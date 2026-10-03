@@ -10,6 +10,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/csrf/stores"
@@ -134,25 +135,25 @@ func TestCSRF_EagerBootstrap_AnonymousGETMintsTokenAndCookie(t *testing.T) {
 // anonymous-bootstrap test path.
 type eagerStubStore struct{}
 
-func (eagerStubStore) FindByID(interface{}) (auth.Authenticatable, error) {
+func (eagerStubStore) FindByID(interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
-func (eagerStubStore) FindByIDCtx(context.Context, interface{}) (auth.Authenticatable, error) {
+func (eagerStubStore) FindByIDCtx(context.Context, interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
-func (eagerStubStore) FindByCredentials(map[string]interface{}) (auth.Authenticatable, error) {
+func (eagerStubStore) FindByCredentials(map[string]interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
-func (eagerStubStore) FindByCredentialsCtx(context.Context, map[string]interface{}) (auth.Authenticatable, error) {
+func (eagerStubStore) FindByCredentialsCtx(context.Context, map[string]interface{}) (contract.Authenticatable, error) {
 	return nil, nil
 }
-func (eagerStubStore) ValidateCredentials(auth.Authenticatable, map[string]interface{}) bool {
+func (eagerStubStore) ValidateCredentials(contract.Authenticatable, map[string]interface{}) bool {
 	return false
 }
-func (eagerStubStore) UpdateRememberToken(auth.Authenticatable, string) error {
+func (eagerStubStore) UpdateRememberToken(contract.Authenticatable, string) error {
 	return nil
 }
-func (eagerStubStore) UpdateRememberTokenCtx(context.Context, auth.Authenticatable, string) error {
+func (eagerStubStore) UpdateRememberTokenCtx(context.Context, contract.Authenticatable, string) error {
 	return nil
 }
 

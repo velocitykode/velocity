@@ -2,6 +2,8 @@ package auth
 
 import (
 	"testing"
+
+	"github.com/velocitykode/velocity/contract"
 )
 
 func TestAuthUserMethods(t *testing.T) {
@@ -45,7 +47,7 @@ func TestAuthUserMethods(t *testing.T) {
 
 func TestAuthUserInterfaceImplementation(t *testing.T) {
 	// Compile-time check that AuthUser implements Authenticatable
-	var _ Authenticatable = (*AuthUser)(nil)
+	var _ contract.Authenticatable = (*AuthUser)(nil)
 
 	t.Run("AuthUser implements Authenticatable interface", func(t *testing.T) {
 		user := &AuthUser{
