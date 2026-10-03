@@ -15,7 +15,8 @@
 #
 # Suppression: a same-line `//lock-held-ok: <rationale>` comment, the
 # rationale at least 5 characters, saying why the held call is safe or that
-# its fix is filed; for rmw, `//store-rmw-ok: <rationale>` on the write.
+# its fix is filed; for rmw, `//store-rmw-ok: <rationale>` on the write
+# or the delete.
 #
 # Prints "file:line: kind: call while holding lock" per offender, then on
 # stderr how to fix each kind reported, and exits non-zero when there is

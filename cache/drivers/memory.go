@@ -255,6 +255,28 @@ func (s *MemoryStore) CompareAndSwapCtx(ctx context.Context, key string, expecte
 	return true, nil
 }
 
+// CompareAndDeleteCtx implements contract.CacheSwapper: under the store
+// mutex, the entry for key is removed only when it is live and holds a
+// value reflect.DeepEqual to expected, the equality CompareAndSwapCtx has.
+// An absent, expired or different entry yields (false, nil) and nothing is
+// removed.
+func (s *MemoryStore) CompareAndDeleteCtx(ctx context.Context, key string, expected interface{}) (bool, error) {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prefixedKey := s.prefixedKey(key)
+	existing, exists := s.items[prefixedKey]
+	if !exists || (existing.expiration != nil && !time.Now().Before(*existing.expiration)) {
+		return false, nil
+	}
+	if !reflect.DeepEqual(existing.value, expected) {
+		return false, nil
+	}
+	s.removeLocked(prefixedKey, existing)
+	return true, nil
+}
+
 // liveSetLocked returns the string set stored under prefixedKey when the
 // entry is live and holds a set; ok is false otherwise. Caller holds s.mu.
 func (s *MemoryStore) liveSetLocked(prefixedKey string) (map[string]struct{}, bool) {

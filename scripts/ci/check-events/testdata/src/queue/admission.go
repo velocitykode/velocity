@@ -13,7 +13,10 @@ type Job = contract.QueueJob
 
 type OnQueuer interface{ OnQueue() string }
 
-type Batchable interface{ SetBatchID(id string) }
+type Batchable interface {
+	GetBatchID() string
+	SetBatchID(id string)
+}
 
 var ErrNilJob = errors.New("nil job")
 
@@ -158,7 +161,7 @@ type LateBatch struct{ jobs []Job }
 func (lb *LateBatch) DispatchStampingFirst(ctx context.Context, d *Driver) error {
 	for _, j := range lb.jobs { // want admission
 		if b, ok := j.(Batchable); ok {
-			b.SetBatchID("x")
+			b.SetBatchID("x") // want contain
 		}
 	}
 	return admitBatch(lb.jobs)

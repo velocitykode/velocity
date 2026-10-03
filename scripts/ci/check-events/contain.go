@@ -29,7 +29,22 @@ import (
 // body, on a parameter of that function (Subscribe(subscriber) calling
 // subscriber.Subscribe): the caller handed the value in and the call runs
 // on its goroutine before returning, so a panic reaches the code that
-// passed it, as if it had made the call itself.
+// passed it, as if it had made the call itself. The same holds one or more
+// levels down: a parameter of an unexported function every call of which
+// (at least one, none in a go statement, never taken as a value) passes
+// such a caller's own value in that position, and a variable bound once to
+// a type assertion of one (admitJob(job) reading oq.OnQueue() for a push
+// that handed job in).
+//
+// The queue package tree has a second kind of user code: the job. The job
+// interfaces a batch calls (Batchable: SetBatchID, GetBatchID; OnQueuer:
+// OnQueue) are callback interfaces there whether or not a registry holds
+// them, since a batch holds its jobs as plain jobs and a worker pops them
+// from a driver. A batch dispatch (the jobs are the pending batch's, not a
+// parameter) and the worker (the job came off the queue) must contain
+// every call of them: a panic after the batch is saved leaves a batch that
+// never settles, and one on the worker's pump goroutine ends that pump.
+// A push of the caller's own job is the caller's own call, as above.
 //
 // A callback call is contained when the function it is written in is:
 //   - one whose body defers a function that calls recover;
@@ -55,10 +70,15 @@ type callbackSite struct {
 	contained bool
 }
 
-// inScope reports whether the import path is in the events or orm trees.
+// jobCallbackIfaces names the queue package's job interfaces the contain
+// rule treats as callback interfaces in the queue tree.
+var jobCallbackIfaces = []string{"Batchable", "OnQueuer"}
+
+// inScope reports whether the import path is in the events, orm or queue
+// trees.
 func (c *checker) containScope(path string) bool {
 	rel := strings.TrimPrefix(strings.TrimPrefix(path, c.module), "/")
-	for _, root := range []string{"events", "orm"} {
+	for _, root := range []string{"events", "orm", "queue"} {
 		if rel == root || strings.HasPrefix(rel, root+"/") {
 			return true
 		}
@@ -83,10 +103,12 @@ func (c *checker) contains(u *unit) {
 		escaped:  map[*types.Func]bool{},
 		argSites: map[*types.Func][]*ast.CallExpr{},
 		asserted: map[types.Object]bool{},
+		origin:   map[types.Object]ast.Expr{},
 		memo:     map[ast.Node]int{},
 		pmemo:    map[types.Object]int{},
 	}
 	s.collectIfaces()
+	s.seedJobIfaces()
 	if len(s.ifaces) == 0 {
 		return
 	}
@@ -94,7 +116,7 @@ func (c *checker) contains(u *unit) {
 	for _, site := range s.callbacks() {
 		c.callbacks = append(c.callbacks, fmt.Sprintf("%s: %s contained=%t", c.pos(site.pos), site.call, site.contained))
 		if !site.contained {
-			c.report(site.pos, ruleContain, fmt.Sprintf("%s calls into a registered callback with no recover around it: run it through the package's containment helper (panicerr.FromRecovered in a deferred recover)", site.call))
+			c.report(site.pos, ruleContain, fmt.Sprintf("%s calls into user code (a registered callback, or a job's batch method) with no recover around it: run it through the package's containment helper (panicerr.FromRecovered in a deferred recover)", site.call))
 		}
 	}
 }
@@ -118,6 +140,9 @@ type containScan struct {
 	// asserted holds the variables bound to a type assertion of a callback
 	// interface value.
 	asserted map[types.Object]bool
+	// origin maps a variable bound to a type assertion to the asserted
+	// expression; nil when it is bound more than once.
+	origin map[types.Object]ast.Expr
 	// memo and pmemo cache containment of a function and of a parameter
 	// (or local variable) holding a function: 1 in progress, 2 no, 3 yes.
 	memo  map[ast.Node]int
@@ -184,6 +209,41 @@ func (s *containScan) registryElem(t types.Type, inColl, deep bool) {
 		if st, ok := tt.Underlying().(*types.Struct); ok && deep {
 			for i := 0; i < st.NumFields(); i++ {
 				s.registryElem(st.Field(i).Type(), true, false)
+			}
+		}
+	}
+}
+
+// seedJobIfaces adds the queue package's job interfaces to the callback
+// interfaces of a package in the queue tree: the package's own when it is
+// the queue package, else the ones of the queue package it imports.
+func (s *containScan) seedJobIfaces() {
+	queuePath := s.c.module + "/queue"
+	path := s.u.pkg.Path()
+	if path != queuePath && !strings.HasPrefix(path, queuePath+"/") {
+		return
+	}
+	pkgs := []*types.Package{s.u.pkg}
+	if path != queuePath {
+		pkgs = pkgs[:0]
+		for _, imp := range s.u.pkg.Imports() {
+			if imp.Path() == queuePath {
+				pkgs = append(pkgs, imp)
+			}
+		}
+	}
+	for _, pkg := range pkgs {
+		for _, name := range jobCallbackIfaces {
+			tn, ok := pkg.Scope().Lookup(name).(*types.TypeName)
+			if !ok {
+				continue
+			}
+			n, ok := types.Unalias(tn.Type()).(*types.Named)
+			if !ok {
+				continue
+			}
+			if _, isIface := n.Underlying().(*types.Interface); isIface {
+				s.ifaces[n] = true
 			}
 		}
 	}
@@ -275,15 +335,27 @@ func (s *containScan) recordAssert(lhs, rhs []ast.Expr) {
 		return
 	}
 	ta, ok := ast.Unparen(rhs[0]).(*ast.TypeAssertExpr)
-	if !ok || !s.callbackValue(ta.X) {
+	if !ok {
 		return
 	}
-	if id, ok := lhs[0].(*ast.Ident); ok {
-		if obj := s.u.info.Defs[id]; obj != nil {
-			s.asserted[obj] = true
-		} else if obj := s.u.info.Uses[id]; obj != nil {
-			s.asserted[obj] = true
-		}
+	id, ok := lhs[0].(*ast.Ident)
+	if !ok {
+		return
+	}
+	obj := s.u.info.Defs[id]
+	if obj == nil {
+		obj = s.u.info.Uses[id]
+	}
+	if obj == nil {
+		return
+	}
+	if _, bound := s.origin[obj]; bound {
+		s.origin[obj] = nil
+	} else {
+		s.origin[obj] = ta.X
+	}
+	if s.callbackValue(ta.X) {
+		s.asserted[obj] = true
 	}
 }
 
@@ -352,31 +424,81 @@ func (s *containScan) callbacks() []callbackSite {
 	return out
 }
 
-// callersOwn reports whether x is a parameter of the exported function
-// declaration the call is written in, called directly in its body (an
-// unexported helper's parameter is the framework's own pass of a
-// registered value, not the caller's): the caller handed
-// the value in and the call runs it on the caller's goroutine before
-// returning (registering a subscriber), so a panic reaches the code that
-// passed it, as if it had called it itself. Nothing is fanned out.
+// callersOwn reports whether x is the caller's own value: a parameter of
+// the exported function declaration the call is written in, used directly
+// in its body. The caller handed the value in and the call runs it on the
+// caller's goroutine before returning (registering a subscriber, pushing a
+// job), so a panic reaches the code that passed it, as if it had called it
+// itself. Nothing is fanned out. A type assertion of such a value, and a
+// variable bound once to one, is the same value. A parameter of an
+// unexported function is the caller's own when every call of the function
+// (at least one, none in a go statement, the function never taken as a
+// value) passes a caller's own value in that position; otherwise it is the
+// framework's own pass of a registered or popped value.
 func (s *containScan) callersOwn(x ast.Expr) bool {
-	id, ok := ast.Unparen(x).(*ast.Ident)
+	return s.ownValue(x, map[types.Object]bool{})
+}
+
+// ownValue is callersOwn with the variables being resolved, so a recursive
+// helper ends as not the caller's own.
+func (s *containScan) ownValue(x ast.Expr, busy map[types.Object]bool) bool {
+	x = ast.Unparen(x)
+	if ta, ok := x.(*ast.TypeAssertExpr); ok {
+		return s.ownValue(ta.X, busy)
+	}
+	id, ok := x.(*ast.Ident)
 	if !ok {
 		return false
 	}
-	decl, ok := s.encl[id].(*ast.FuncDecl)
-	if !ok || !decl.Name.IsExported() {
+	obj := s.u.info.Uses[id]
+	if obj == nil || busy[obj] {
 		return false
 	}
-	obj := s.u.info.Uses[id]
-	for _, field := range decl.Type.Params.List {
-		for _, name := range field.Names {
-			if obj != nil && s.u.info.Defs[name] == obj {
-				return true
-			}
+	busy[obj] = true
+	defer delete(busy, obj)
+	if src, bound := s.origin[obj]; bound {
+		return src != nil && s.ownValue(src, busy)
+	}
+	decl, ok := s.encl[id].(*ast.FuncDecl)
+	if !ok {
+		return false
+	}
+	idx := s.paramIndex(decl, obj)
+	if idx < 0 {
+		return false
+	}
+	if decl.Name.IsExported() {
+		return true
+	}
+	fn, _ := s.u.info.Defs[decl.Name].(*types.Func)
+	if fn == nil || s.escaped[fn] || len(s.argSites[fn]) > 0 || len(s.sites[fn]) == 0 {
+		return false
+	}
+	for _, site := range s.sites[fn] {
+		call, ok := site.(*ast.CallExpr)
+		if !ok || s.inGo(call) || idx >= len(call.Args) || !s.ownValue(call.Args[idx], busy) {
+			return false
 		}
 	}
-	return false
+	return true
+}
+
+// paramIndex returns the position of obj among decl's parameters, or -1.
+func (s *containScan) paramIndex(decl *ast.FuncDecl, obj types.Object) int {
+	n := 0
+	for _, field := range decl.Type.Params.List {
+		if len(field.Names) == 0 {
+			n++
+			continue
+		}
+		for _, name := range field.Names {
+			if s.u.info.Defs[name] == obj {
+				return n
+			}
+			n++
+		}
+	}
+	return -1
 }
 
 // decorator reports whether call is written in a method of a type that

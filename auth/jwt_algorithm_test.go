@@ -163,6 +163,11 @@ func TestJWTValidateToken_AlgorithmMatrix(t *testing.T) {
 						method = jwt.SigningMethodHS512
 					}
 					tok := jwt.NewWithClaims(method, Claims{
+						// ValidateToken requires an expiry and an id.
+						RegisteredClaims: jwt.RegisteredClaims{
+							ID:        "matrix-jti",
+							ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+						},
 						UserID:    42,
 						TokenType: "access",
 					})
@@ -180,6 +185,11 @@ func TestJWTValidateToken_AlgorithmMatrix(t *testing.T) {
 						method = jwt.SigningMethodRS512
 					}
 					tok := jwt.NewWithClaims(method, Claims{
+						// ValidateToken requires an expiry and an id.
+						RegisteredClaims: jwt.RegisteredClaims{
+							ID:        "matrix-jti",
+							ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+						},
 						UserID:    42,
 						TokenType: "access",
 					})

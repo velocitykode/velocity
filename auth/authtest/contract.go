@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -625,6 +626,189 @@ func RunServerSessionStoreContractTests(t *testing.T, factory ServerSessionStore
 		_, err := s.Get(context.Background(), "del-1")
 		if !errors.Is(err, auth.ErrSessionNotFound) {
 			t.Fatalf("expected ErrSessionNotFound after Delete, got %v", err)
+		}
+	})
+
+	t.Run("DeleteIf_ConditionTrue_RemovesAndReportsIt", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		_ = s.Put(ctx, makeSession("delif-1", "user-1"))
+		var seen *auth.SessionMeta
+		deleted, err := s.DeleteIf(ctx, "delif-1", func(meta *auth.SessionMeta) bool {
+			seen = meta
+			return true
+		})
+		if err != nil || !deleted {
+			t.Fatalf("DeleteIf = %v, %v; want true, nil", deleted, err)
+		}
+		if seen == nil || seen.ID != "delif-1" || seen.UserID != "user-1" || seen.CreatedAt.IsZero() || seen.LastSeenAt.IsZero() {
+			t.Fatalf("cond received %+v, want the record's listing projection", seen)
+		}
+		if _, err := s.Get(ctx, "delif-1"); !errors.Is(err, auth.ErrSessionNotFound) {
+			t.Fatalf("expected ErrSessionNotFound after DeleteIf, got %v", err)
+		}
+		if list, _ := s.ListForUser(ctx, "user-1"); len(list) != 0 {
+			t.Fatalf("the removed record is still listed: %v", list)
+		}
+		// Gone is gone: a second conditional delete removes nothing.
+		if deleted, err := s.DeleteIf(ctx, "delif-1", func(*auth.SessionMeta) bool { return true }); err != nil || deleted {
+			t.Fatalf("DeleteIf on a removed record = %v, %v; want false, nil", deleted, err)
+		}
+	})
+
+	t.Run("DeleteIf_ConditionFalse_KeepsTheRecord", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		_ = s.Put(ctx, makeSession("delif-keep", "user-1"))
+		deleted, err := s.DeleteIf(ctx, "delif-keep", func(*auth.SessionMeta) bool { return false })
+		if err != nil || deleted {
+			t.Fatalf("DeleteIf = %v, %v; want false, nil", deleted, err)
+		}
+		if _, err := s.Get(ctx, "delif-keep"); err != nil {
+			t.Fatalf("a refused conditional delete removed the record: %v", err)
+		}
+	})
+
+	t.Run("DeleteIf_UnknownOrExpiredID_ReportsFalse", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		asked := false
+		cond := func(*auth.SessionMeta) bool { asked = true; return true }
+		if deleted, err := s.DeleteIf(ctx, "never-existed", cond); err != nil || deleted {
+			t.Fatalf("DeleteIf on an absent id = %v, %v; want false, nil", deleted, err)
+		}
+		expired := makeSession("delif-expired", "user-1")
+		expired.ExpiresAt = time.Now().Add(-time.Minute)
+		_ = s.Put(ctx, expired)
+		if deleted, err := s.DeleteIf(ctx, "delif-expired", cond); err != nil || deleted {
+			t.Fatalf("DeleteIf on an expired record = %v, %v; want false, nil", deleted, err)
+		}
+		if asked {
+			t.Fatal("cond was asked about a record that is not live")
+		}
+	})
+
+	// cond is asked about the record as the store holds it, not as a
+	// caller read it earlier: after a renewal, a condition that held for
+	// the idle record no longer holds and nothing is removed. (That a
+	// write landing between cond's answer and the removal is not lost
+	// needs a hook inside the store to force; each store proves it in its
+	// own tests, and DeleteIf_ConcurrentCallersOneRemoves races it here.)
+	t.Run("DeleteIf_AsksAboutTheRecordAsItIsNow", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		if err := s.Put(ctx, makeSession("delif-renewed", "user-1")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		read, err := s.Get(ctx, "delif-renewed")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		renewedAt := read.LastSeenAt.Add(30 * time.Minute).Truncate(time.Second)
+		idle := func(meta *auth.SessionMeta) bool { return meta.LastSeenAt.Before(renewedAt) }
+		if !idle(read.ToMeta()) {
+			t.Fatal("fixture: the record as read is not idle")
+		}
+		if err := s.Touch(ctx, "delif-renewed", renewedAt, renewedAt.Add(time.Hour)); err != nil {
+			t.Fatalf("Touch: %v", err)
+		}
+		var seen time.Time
+		deleted, err := s.DeleteIf(ctx, "delif-renewed", func(meta *auth.SessionMeta) bool {
+			seen = meta.LastSeenAt
+			return idle(meta)
+		})
+		if err != nil || deleted {
+			t.Fatalf("DeleteIf after the renewal = %v, %v; want false, nil", deleted, err)
+		}
+		if !seen.Equal(renewedAt) {
+			t.Fatalf("cond saw LastSeenAt %v, want the renewed %v", seen, renewedAt)
+		}
+		if _, err := s.Get(ctx, "delif-renewed"); err != nil {
+			t.Fatalf("the renewed record was removed: %v", err)
+		}
+	})
+
+	// N callers that each decide to remove one record: exactly one removal
+	// is reported.
+	t.Run("DeleteIf_ConcurrentCallersOneRemoves", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		_ = s.Put(ctx, makeSession("delif-race", "user-1"))
+		const callers = 16
+		var removed atomic.Int32
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for range callers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				deleted, err := s.DeleteIf(ctx, "delif-race", func(*auth.SessionMeta) bool { return true })
+				if err != nil {
+					t.Errorf("DeleteIf: %v", err)
+				}
+				if deleted {
+					removed.Add(1)
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		if got := removed.Load(); got != 1 {
+			t.Fatalf("%d callers reported the removal, want exactly 1", got)
+		}
+	})
+
+	// A write delayed past a later one never moves the record back in
+	// time: the older lastSeen keeps the later activity stamp and expiry,
+	// and UpdateData still writes its Data.
+	t.Run("Touch_And_UpdateData_NeverMoveTheRecordBackInTime", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		if err := s.Put(ctx, makeSession("monotonic", "user-1")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		later := time.Now().Add(20 * time.Minute).Truncate(time.Second)
+		laterEnd := later.Add(2 * time.Hour)
+		if err := s.Touch(ctx, "monotonic", later, laterEnd); err != nil {
+			t.Fatalf("Touch: %v", err)
+		}
+		earlier := later.Add(-10 * time.Minute)
+		if err := s.Touch(ctx, "monotonic", earlier, earlier.Add(time.Hour)); err != nil {
+			t.Fatalf("delayed Touch: %v", err)
+		}
+		if err := s.UpdateData(ctx, "monotonic", func(map[string]any) (map[string]any, error) {
+			return map[string]any{"k": "delayed write"}, nil
+		}, earlier, earlier.Add(time.Hour)); err != nil {
+			t.Fatalf("delayed UpdateData: %v", err)
+		}
+		got, err := s.Get(ctx, "monotonic")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if !got.LastSeenAt.Equal(later) || !got.ExpiresAt.Equal(laterEnd) {
+			t.Fatalf("LastSeenAt %v ExpiresAt %v after delayed writes, want the later %v and %v", got.LastSeenAt, got.ExpiresAt, later, laterEnd)
+		}
+		if got.Data["k"] != "delayed write" {
+			t.Fatalf("the delayed UpdateData did not write its Data: %v", got.Data)
+		}
+
+		// Each timestamp moves forward on its own: a write with the same
+		// or a newer lastSeen and an earlier expiry advances the activity
+		// stamp and keeps the later expiry.
+		if err := s.Touch(ctx, "monotonic", later, laterEnd.Add(-time.Hour)); err != nil {
+			t.Fatalf("Touch with an equal lastSeen: %v", err)
+		}
+		newer := later.Add(5 * time.Minute)
+		if err := s.UpdateData(ctx, "monotonic", func(d map[string]any) (map[string]any, error) { return d, nil }, newer, laterEnd.Add(-time.Minute)); err != nil {
+			t.Fatalf("UpdateData with a newer lastSeen: %v", err)
+		}
+		got, err = s.Get(ctx, "monotonic")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if !got.LastSeenAt.Equal(newer) || !got.ExpiresAt.Equal(laterEnd) {
+			t.Fatalf("LastSeenAt %v ExpiresAt %v, want the newer activity %v and the unshortened expiry %v", got.LastSeenAt, got.ExpiresAt, newer, laterEnd)
 		}
 	})
 

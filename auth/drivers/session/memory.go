@@ -34,6 +34,12 @@ type MemoryStore struct {
 	stopOnce      sync.Once
 	started       bool
 	clock         func() time.Time
+
+	// beforeConditionalRemove, when non-nil, is invoked by DeleteIf after
+	// its condition reported true and before the record is removed. Test
+	// instrumentation only: lets a test try to land a write between the
+	// two, which the store mutex held across both must make impossible.
+	beforeConditionalRemove func()
 }
 
 // MemoryOption configures a MemoryStore at construction time.
@@ -215,9 +221,15 @@ func (s *MemoryStore) Get(ctx context.Context, id string) (*auth.StoredSession, 
 	if !ok {
 		return nil, auth.ErrSessionNotFound
 	}
-	if !snap.ExpiresAt.IsZero() && s.clock().After(snap.ExpiresAt) {
+	if now := s.clock(); !snap.ExpiresAt.IsZero() && now.After(snap.ExpiresAt) {
+		// The removal is decided again under the write lock, on the record
+		// the store holds then: the snapshot above was taken under the read
+		// lock, and a record written under this id since is not the one
+		// that expired.
 		s.mu.Lock()
-		s.removeLocked(id)
+		if cur, ok := s.byID[id]; ok && !cur.ExpiresAt.IsZero() && now.After(cur.ExpiresAt) {
+			s.removeLocked(id)
+		}
 		s.mu.Unlock()
 		return nil, auth.ErrSessionExpired
 	}
@@ -296,8 +308,27 @@ func (s *MemoryStore) UpdateData(ctx context.Context, id string, update func(dat
 	return s.slide(ctx, id, lastSeen, expiresAt, update)
 }
 
+// slideForward returns the activity stamp and expiry a record holds after
+// a write that carries lastSeen and expiresAt: each the later of the
+// record's and the write's, on its own. A write delayed past a later one
+// never moves the record back in time, and no write shortens the expiry a
+// record already has (a zero expiry is no expiry, the latest there is).
+func slideForward(recSeen, recExpires, lastSeen, expiresAt time.Time) (time.Time, time.Time) {
+	if lastSeen.After(recSeen) {
+		recSeen = lastSeen
+	}
+	if recExpires.IsZero() || expiresAt.IsZero() {
+		return recSeen, time.Time{}
+	}
+	if expiresAt.After(recExpires) {
+		recExpires = expiresAt
+	}
+	return recSeen, recExpires
+}
+
 // slide is the update-if-present write behind Touch and UpdateData; a nil
-// update keeps the record's Data.
+// update keeps the record's Data. LastSeenAt and ExpiresAt only move
+// forward (slideForward).
 func (s *MemoryStore) slide(ctx context.Context, id string, lastSeen, expiresAt time.Time, update func(map[string]any) (map[string]any, error)) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -320,9 +351,40 @@ func (s *MemoryStore) slide(ctx context.Context, id string, lastSeen, expiresAt 
 		}
 		sess.Data = cloneData(data)
 	}
-	sess.LastSeenAt = lastSeen
-	sess.ExpiresAt = expiresAt
+	sess.LastSeenAt, sess.ExpiresAt = slideForward(sess.LastSeenAt, sess.ExpiresAt, lastSeen, expiresAt)
 	return nil
+}
+
+// DeleteIf removes the record for id when cond reports true for the record
+// the store holds, under the store mutex, so no write lands between cond's
+// answer and the removal. A missing or expired record (the latter removed
+// by the store's own rule) reports false.
+func (s *MemoryStore) DeleteIf(ctx context.Context, id string, cond func(meta *auth.SessionMeta) bool) (bool, error) {
+	if cond == nil {
+		return false, errors.New("velocity/auth/session: nil delete condition")
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	now := s.clock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.byID[id]
+	if !ok {
+		return false, nil
+	}
+	if !sess.ExpiresAt.IsZero() && now.After(sess.ExpiresAt) {
+		s.removeLocked(id)
+		return false, nil
+	}
+	if !cond(sess.ToMeta()) { //lock-held-ok: conditional-delete callback, atomic by contract; it must not call the store (auth.ServerSessionStore.DeleteIf)
+		return false, nil
+	}
+	if s.beforeConditionalRemove != nil {
+		s.beforeConditionalRemove() //lock-held-ok: beforeConditionalRemove is a test-only hook, nil outside tests
+	}
+	s.removeLocked(id)
+	return true, nil
 }
 
 // Delete removes a single session. It is idempotent: deleting a missing

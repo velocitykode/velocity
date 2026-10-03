@@ -354,19 +354,9 @@ func (s *RedisStore) CompareAndSwapCtx(ctx context.Context, key string, expected
 	if err != nil || swapped {
 		return swapped, err
 	}
-	stored, err := s.client.Get(ctx, prefixed).Bytes()
-	if errchain.Is(err, redis.Nil) {
-		return false, nil
-	}
-	if err != nil {
-		return false, errchain.Errorf("velocity/cache: redis get failed: %w", err)
-	}
-	same, err := drivers.MatchesStoredValue(stored, expected)
-	if err != nil {
-		return false, errchain.Errorf("velocity/cache: failed to compare expected value: %w", err)
-	}
-	if !same {
-		return false, nil
+	stored, same, err := s.storedMatches(ctx, prefixed, expected)
+	if err != nil || !same {
+		return false, err
 	}
 	return s.swapStoredBytes(ctx, prefixed, stored, data, ttlMS)
 }
@@ -379,6 +369,69 @@ func (s *RedisStore) swapStoredBytes(ctx context.Context, prefixed string, want,
 		return false, errchain.Errorf("velocity/cache: redis compare-and-swap failed: %w", err)
 	}
 	return swapped == 1, nil
+}
+
+// compareAndDeleteScript removes the key only while it holds exact bytes.
+//
+// KEYS[1] = key, ARGV[1] = expected bytes.
+var compareAndDeleteScript = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+if current == false or current ~= ARGV[1] then
+  return 0
+end
+redis.call('DEL', KEYS[1])
+return 1
+`)
+
+// CompareAndDeleteCtx implements contract.CacheSwapper through
+// compareAndDeleteScript, with the two attempts CompareAndSwapCtx makes:
+// the removal is first conditioned on expected re-serialized, and when
+// that does not match, on the stored bytes read and compared with expected
+// in the shape a read produces, so a write landing after that read still
+// makes the removal fail.
+func (s *RedisStore) CompareAndDeleteCtx(ctx context.Context, key string, expected interface{}) (bool, error) {
+	want, err := drivers.MarshalValue(expected)
+	if err != nil {
+		return false, errchain.Errorf("velocity/cache: failed to marshal expected value: %w", err)
+	}
+	prefixed := s.prefixedKey(key)
+	deleted, err := s.deleteStoredBytes(ctx, prefixed, want)
+	if err != nil || deleted {
+		return deleted, err
+	}
+	stored, same, err := s.storedMatches(ctx, prefixed, expected)
+	if err != nil || !same {
+		return false, err
+	}
+	return s.deleteStoredBytes(ctx, prefixed, stored)
+}
+
+// deleteStoredBytes runs compareAndDeleteScript on the prefixed key: it is
+// removed only while it holds exactly want.
+func (s *RedisStore) deleteStoredBytes(ctx context.Context, prefixed string, want []byte) (bool, error) {
+	deleted, err := compareAndDeleteScript.Run(ctx, s.client, []string{prefixed}, want).Int()
+	if err != nil {
+		return false, errchain.Errorf("velocity/cache: redis compare-and-delete failed: %w", err)
+	}
+	return deleted == 1, nil
+}
+
+// storedMatches reads the bytes the prefixed key holds and reports whether
+// they are expected in the shape a read produces
+// (drivers.MatchesStoredValue). An absent key matches nothing.
+func (s *RedisStore) storedMatches(ctx context.Context, prefixed string, expected interface{}) (stored []byte, same bool, err error) {
+	stored, err = s.client.Get(ctx, prefixed).Bytes()
+	if errchain.Is(err, redis.Nil) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, errchain.Errorf("velocity/cache: redis get failed: %w", err)
+	}
+	same, err = drivers.MatchesStoredValue(stored, expected)
+	if err != nil {
+		return nil, false, errchain.Errorf("velocity/cache: failed to compare expected value: %w", err)
+	}
+	return stored, same, nil
 }
 
 // setAddScript adds members and applies the extend-only expiry contract in

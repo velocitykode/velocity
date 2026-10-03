@@ -350,18 +350,19 @@ type nonCASStore struct {
 	auth.UserStore
 }
 
-// TestRememberRecall_NonCASStoreFailsClosed pins that recall rotation
-// requires the atomic swap: a user store without
-// auth.RememberTokenCompareAndSwapper must fail every recall closed
-// instead of downgrading to an unconditional last-writer-wins update.
-// Login-time issuance (no prior token consumed) must keep working.
+// TestRememberRecall_NonCASStoreFailsClosed pins that a remember credential
+// is only ever consumed by the atomic swap: once the scheme's user store
+// lacks auth.RememberTokenCompareAndSwapper, a remember cookie (issued
+// while the store still had it) is deleted on the response and ignored,
+// with no downgrade to an unconditional last-writer-wins update.
 func TestRememberRecall_NonCASStoreFailsClosed(t *testing.T) {
 	scheme, _ := newRevokeScheme(t, nil)
 	base := &rememberRevivalStore{user: &revokeTestUser{id: "u1"}}
-	scheme.SetUserStore(nonCASStore{base})
+	scheme.SetUserStore(base)
 
 	oldCookie := mintRememberCookie(t, scheme)
 	oldHash := base.user.rememberToken
+	scheme.SetUserStore(nonCASStore{base})
 
 	w := httptest.NewRecorder()
 	r := rememberRecallRequest(t, oldCookie, w)
@@ -371,8 +372,8 @@ func TestRememberRecall_NonCASStoreFailsClosed(t *testing.T) {
 	if base.user.rememberToken != oldHash {
 		t.Error("stored hash mutated; non-CAS recall must not fall back to an unconditional update")
 	}
-	if c := findRememberCookie(w); c != nil {
-		t.Error("rotated remember cookie issued despite fail-closed recall")
+	if c := findRememberCookie(w); c == nil || c.Value != "" || c.MaxAge >= 0 {
+		t.Errorf("remember cookie on the response = %+v, want its deletion", c)
 	}
 	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil {
 		if sess := holder.getSession(); sess != nil {

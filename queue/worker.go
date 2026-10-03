@@ -411,8 +411,23 @@ func (w *Worker) processJob() error {
 	// different process than the dispatcher still updates the shared
 	// pending_jobs counter; see queue/batch_repository.go for the
 	// in-memory and database implementations.
-	if bj, ok := job.(Batchable); ok {
-		if batch, found := FindBatch(bj.GetBatchID()); found && batch.Cancelled() {
+	//
+	// The job's batch id is read once, here, contained (batchIDOf): the
+	// skip below and the success and failure accounting all use this read.
+	// A job whose GetBatchID panics is not run: its own Batchable contract
+	// is broken, so it is failed for good with the contained panic, through
+	// failJob like any terminal failure (recorded by the driver, reported
+	// or logged once). Its batch cannot be told, so none is settled.
+	batchID, batched, batchErr := batchIDOf(job)
+	if batchErr != nil {
+		failure := errchain.Errorf("velocity/queue: job GetBatchID panicked: %w", batchErr)
+		key := w.attemptKey(job, reservation)
+		attempt := w.attemptNumber(key, reservation)
+		w.failJob(jobCtx, log, job, jobType, failure, time.Since(startTime), attempt, attempt, key, reservation, "", false)
+		return &jobFailedError{err: failure}
+	}
+	if batched {
+		if batch, found := FindBatch(batchID); found && batch.Cancelled() {
 			// Ack first; the batch counter decrement is a side effect
 			// and must only fire on the worker that actually owned the
 			// lease. If the lease was lost, the new owner will run the
@@ -489,7 +504,7 @@ func (w *Worker) processJob() error {
 				)
 				return nil
 			}
-			w.handleJobFailure(jobCtx, job, jobType, err, duration, reservation)
+			w.handleJobFailure(jobCtx, job, jobType, err, duration, reservation, batchID, batched)
 			return &jobFailedError{err: errchain.Errorf("velocity/queue: job failed: %w", err)}
 		}
 		// Success: ack first, then run side effects only if we still
@@ -507,8 +522,8 @@ func (w *Worker) processJob() error {
 		if !owned {
 			return nil
 		}
-		if bj, ok := job.(Batchable); ok {
-			if batch, found := FindBatch(bj.GetBatchID()); found {
+		if batched {
+			if batch, found := FindBatch(batchID); found {
 				batch.recordSuccess(jobCtx)
 			}
 		}
@@ -540,9 +555,29 @@ func (w *Worker) processJob() error {
 			return nil
 		}
 		timeoutErr := fmt.Errorf("velocity/queue: job timed out")
-		w.handleJobFailure(jobCtx, job, jobType, timeoutErr, duration, reservation)
+		w.handleJobFailure(jobCtx, job, jobType, timeoutErr, duration, reservation, batchID, batched)
 		return &jobFailedError{err: timeoutErr}
 	}
+}
+
+// batchIDOf reads a popped job's batch id, contained. GetBatchID is the
+// job's method and the worker calls it on its pump goroutine, outside the
+// handler goroutine's recover, so a panic in it comes back as the error (a
+// *panicerr.Error) instead of unwinding the pump: the recover the pump
+// starts under would end that pump for good, with the popped job neither
+// run nor failed. batched is false for a job that does not implement
+// Batchable, and when the read panicked.
+func batchIDOf(job Job) (id BatchID, batched bool, err error) {
+	bj, ok := job.(Batchable)
+	if !ok {
+		return "", false, nil
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			id, batched, err = "", false, panicerr.FromRecovered(r)
+		}
+	}()
+	return bj.GetBatchID(), true, nil
 }
 
 // ackReservation deletes the leased row after handler success on
@@ -662,7 +697,7 @@ func jobIDOf(job Job) string {
 // retries through; the persisted column survives the bounce. For
 // drivers without reservations (memory), the worker's sync.Map cache is
 // the only source available and remains in use.
-func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, err error, duration time.Duration, reservation ReservationToken) {
+func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, err error, duration time.Duration, reservation ReservationToken, batchID BatchID, batched bool) {
 	log := w.jobLogger(ctx, job, jobType)
 	maxAttempts := w.maxRetries
 	if ma, ok := job.(MaxAttempter); ok {
@@ -681,7 +716,7 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 	// Check if the job opts out of retrying this specific error
 	if rd, ok := job.(RetryDecider); ok {
 		if !rd.ShouldRetry(err) {
-			w.failJob(ctx, log, job, jobType, err, duration, attempt, maxAttempts, key, reservation)
+			w.failJob(ctx, log, job, jobType, err, duration, attempt, maxAttempts, key, reservation, batchID, batched)
 			return
 		}
 	}
@@ -728,7 +763,7 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 				return
 			}
 			log.Error("Failed to re-queue job for retry", "error", requeueErr)
-			w.failJob(ctx, log, job, jobType, err, duration, attempt, maxAttempts, key, reservation)
+			w.failJob(ctx, log, job, jobType, err, duration, attempt, maxAttempts, key, reservation, batchID, batched)
 			return
 		}
 		// Requeue confirmed (or no lease to lose): now safe to fire
@@ -743,7 +778,7 @@ func (w *Worker) handleJobFailure(ctx context.Context, job Job, jobType string, 
 		return
 	}
 
-	w.failJob(ctx, log, job, jobType, err, duration, attempt, maxAttempts, key, reservation)
+	w.failJob(ctx, log, job, jobType, err, duration, attempt, maxAttempts, key, reservation, batchID, batched)
 }
 
 // attemptNumber returns the authoritative attempt count for MaxAttempts
@@ -809,7 +844,7 @@ func (w *Worker) attemptKey(job Job, token ReservationToken) interface{} {
 // error level through the job's logger (job_type, queue, job_id and the
 // job's trace, see jobLogger) with the attempts, unless the job's Failed
 // hook already reported it (FailureSelfReporter).
-func (w *Worker) failJob(ctx context.Context, log contract.Logger, job Job, jobType string, err error, duration time.Duration, attempt, maxAttempts int, key interface{}, reservation ReservationToken) {
+func (w *Worker) failJob(ctx context.Context, log contract.Logger, job Job, jobType string, err error, duration time.Duration, attempt, maxAttempts int, key interface{}, reservation ReservationToken, batchID BatchID, batched bool) {
 	// Cleanup attempt cache regardless of ownership; this is pure
 	// per-worker state. key is the precomputed attempt-tracking key
 	// threaded from handleJobFailure (nil when the reservation already
@@ -870,8 +905,8 @@ func (w *Worker) failJob(ctx context.Context, log contract.Logger, job Job, jobT
 	}
 
 	// Side effects below run only on confirmed-ownership paths above.
-	if bj, ok := job.(Batchable); ok {
-		if batch, found := FindBatch(bj.GetBatchID()); found {
+	if batched {
+		if batch, found := FindBatch(batchID); found {
 			batch.recordFailure(ctx, err)
 		}
 	}

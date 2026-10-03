@@ -15,6 +15,7 @@ import (
 	"github.com/velocitykode/velocity/auth/drivers/session"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
+	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
 // revokeTestUser is the minimal Authenticatable used by the revocation
@@ -264,20 +265,17 @@ func TestSessionScheme_LastSeenAtRefresh(t *testing.T) {
 		t.Errorf("LastSeenAt advanced inside debounce window: %v -> %v", first, list[0].LastSeenAt)
 	}
 
-	// Backdate LastSeenAt past the window, then Check should refresh.
-	// Touch, not Put: Put stamps LastSeenAt with the current time, so a
-	// Put-based backdate would silently leave the record inside the window.
-	backdated := time.Now().Add(-2 * scheme.activityRefreshInterval())
-	if err := store.Touch(context.Background(), id, backdated, time.Now().Add(time.Hour)); err != nil {
-		t.Fatalf("Touch backdated: %v", err)
-	}
+	// Move the clock past the window, then Check should refresh. The
+	// record cannot be backdated instead: no store write moves a record's
+	// LastSeenAt back in time.
 	rec, err := store.Get(context.Background(), id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if !rec.LastSeenAt.Equal(backdated) {
-		t.Fatalf("backdate did not stick: %v", rec.LastSeenAt)
+	if !rec.LastSeenAt.Equal(first) {
+		t.Fatalf("LastSeenAt moved before the clock did: %v -> %v", first, rec.LastSeenAt)
 	}
+	defer sessionclock.Set(func() time.Time { return time.Now().Add(2 * scheme.activityRefreshInterval()) })()
 
 	// Use a fresh request so the cached holder result does not short-circuit
 	// the store lookup.
@@ -340,10 +338,8 @@ func TestSessionScheme_RevokeBetweenReadAndRefresh_DeniesRequest(t *testing.T) {
 			}
 			id := list[0].ID
 
-			// Backdate LastSeenAt past the debounce so the next Check refreshes.
-			if err := inner.Touch(context.Background(), id, time.Now().Add(-2*scheme.activityRefreshInterval()), time.Now().Add(time.Hour)); err != nil {
-				t.Fatalf("Touch backdated: %v", err)
-			}
+			// Move the clock past the debounce so the next Check refreshes.
+			defer sessionclock.Set(func() time.Time { return time.Now().Add(2 * scheme.activityRefreshInterval()) })()
 
 			// Revoke in the window between the read and the refresh write.
 			var fired atomic.Bool
@@ -391,11 +387,9 @@ func TestSessionScheme_LastSeenAtRefresh_UsesTouchNotPut(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("expected 1 session, got %d", len(list))
 	}
-	backdated := time.Now().Add(-2 * scheme.activityRefreshInterval())
-	if err := inner.Touch(context.Background(), list[0].ID, backdated, time.Now().Add(time.Hour)); err != nil {
-		t.Fatalf("Touch backdated: %v", err)
-	}
 	rec, _ := inner.Get(context.Background(), list[0].ID)
+	// Past the debounce window, so the next Check refreshes.
+	defer sessionclock.Set(func() time.Time { return time.Now().Add(2 * scheme.activityRefreshInterval()) })()
 
 	store.armed.Store(true)
 	if !scheme.Check(requestWith(cookie)) {
@@ -530,6 +524,9 @@ func (f *flakyStore) UpdateData(ctx context.Context, id string, update func(map[
 	return f.inner.UpdateData(ctx, id, update, lastSeen, expiresAt)
 }
 func (f *flakyStore) Delete(ctx context.Context, id string) error { return f.inner.Delete(ctx, id) }
+func (f *flakyStore) DeleteIf(ctx context.Context, id string, cond func(*auth.SessionMeta) bool) (bool, error) {
+	return f.inner.DeleteIf(ctx, id, cond)
+}
 func (f *flakyStore) DeleteAllForUser(ctx context.Context, userID string) error {
 	return f.inner.DeleteAllForUser(ctx, userID)
 }

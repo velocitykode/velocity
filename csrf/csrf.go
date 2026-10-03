@@ -845,7 +845,7 @@ func (c *CSRF) RotateToken(ctx context.Context, oldID, newID string) error {
 		return fmt.Errorf("velocity/csrf: RotateToken: newID is required")
 	}
 	if oldID != "" && oldID != newID {
-		if err := c.config.Store.Delete(ctx, oldID); err != nil {
+		if err := c.config.Store.Delete(ctx, oldID); err != nil { //store-rmw-ok: the rotation retires the old id for good: the session left it, so no token is minted under it again
 			c.log(ctx).Error("velocity/csrf: rotate token: delete the old session's token failed; it stays valid until it expires", "error", err)
 		}
 	}
@@ -904,7 +904,7 @@ func (c *CSRF) RevokeToken(ctx context.Context, id string) error {
 	if id == "" {
 		return nil
 	}
-	return c.config.Store.Delete(ctx, id)
+	return c.config.Store.Delete(ctx, id) //store-rmw-ok: a revocation of the id's token, decided on no read; a token minted after it belongs to a later request and is that request's to keep
 }
 
 // GetToken retrieves or generates a token for the given session ID. ctx

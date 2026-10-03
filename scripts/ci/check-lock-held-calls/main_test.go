@@ -101,11 +101,14 @@ func TestStaleMarkers(t *testing.T) {
 				stale = append(stale, h)
 			}
 		}
-		// Sorted: the //store-rmw-ok: one in csrf/rmw.go, then the
-		// //lock-held-ok: one in rules.go StaleMarker.
-		if len(stale) != 2 || !strings.HasPrefix(stale[0], "csrf/rmw.go:") || !strings.Contains(stale[0], "//store-rmw-ok:") ||
-			!strings.HasPrefix(stale[1], "rules.go:") || !strings.Contains(stale[1], "//lock-held-ok:") {
-			t.Errorf("all=%v: stale markers = %q, want the rmw one in csrf/rmw.go and the one in rules.go StaleMarker", all, stale)
+		// Sorted: the //store-rmw-ok: ones in auth/blacklist.go, csrf/rmw.go
+		// and csrf/rmwdelete.go, then the //lock-held-ok: one in rules.go
+		// StaleMarker.
+		if len(stale) != 4 || !strings.HasPrefix(stale[0], "auth/blacklist.go:") || !strings.Contains(stale[0], "//store-rmw-ok:") ||
+			!strings.HasPrefix(stale[1], "csrf/rmw.go:") || !strings.Contains(stale[1], "//store-rmw-ok:") ||
+			!strings.HasPrefix(stale[2], "csrf/rmwdelete.go:") || !strings.Contains(stale[2], "//store-rmw-ok:") ||
+			!strings.HasPrefix(stale[3], "rules.go:") || !strings.Contains(stale[3], "//lock-held-ok:") {
+			t.Errorf("all=%v: stale markers = %q, want the rmw ones in auth/blacklist.go, csrf/rmw.go and csrf/rmwdelete.go and the one in rules.go StaleMarker", all, stale)
 		}
 	}
 }
@@ -129,7 +132,7 @@ func TestHints(t *testing.T) {
 // out the lock wording when only rmw was reported.
 func TestHintsRMW(t *testing.T) {
 	out := hints([]string{"csrf/a.go:3: rmw: s.Set after s.Get (line 2) on the same key"})
-	for _, want := range []string{"1 store read(s)", "rmw: ", "//store-rmw-ok: <rationale"} {
+	for _, want := range []string{"1 store read(s)", "rmw: ", "compare-and-delete", "//store-rmw-ok: <rationale"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("hints lack %q:\n%s", want, out)
 		}

@@ -86,6 +86,18 @@ func (f *fakeServerSessionStore) Delete(_ context.Context, id string) error {
 	return nil
 }
 
+func (f *fakeServerSessionStore) DeleteIf(_ context.Context, id string, cond func(*SessionMeta) bool) (bool, error) {
+	f.record("deleteif:" + id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.byID[id]
+	if !ok || !cond(s.ToMeta()) {
+		return false, nil
+	}
+	delete(f.byID, id)
+	return true, nil
+}
+
 func (f *fakeServerSessionStore) DeleteAllForUser(_ context.Context, userID string) error {
 	f.record("deleteall:" + userID)
 	f.mu.Lock()

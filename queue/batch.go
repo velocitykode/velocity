@@ -13,6 +13,7 @@ import (
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // BatchID is a unique identifier for a batch.
@@ -29,6 +30,18 @@ type BatchID string
 // the worker settles the batch through each job's BatchID, so a batch
 // holding a job that does not implement it is refused (ErrJobNotBatchable).
 // A job pushed on its own need not implement it.
+//
+// Both methods are called contained. Dispatch calls SetBatchID once per
+// job before the batch is saved (then the job's OnQueue, which may read
+// the id), and a panic in either refuses the batch whole. Both run before
+// the batch exists in the repository, so neither can find it (FindBatch
+// answers not found). A job stamped before a later job's method panics,
+// or before the save fails, keeps the id: it is not undone, and no batch
+// answers to it. The worker calls GetBatchID once per popped job, before
+// it runs it. A job whose GetBatchID panics is not supported: the worker
+// does not run it and fails it for good with the contained panic, and the
+// batch it belonged to, which cannot be told, is not settled through it
+// and stays pending.
 type Batchable interface {
 	GetBatchID() BatchID
 	SetBatchID(id BatchID)
@@ -623,7 +636,10 @@ func (pb *PendingBatch) AllowFailures() *PendingBatch {
 	return pb
 }
 
-// OnQueue sets the queue name for all jobs in the batch
+// OnQueue sets the queue the batch's jobs go to. It is the fallback, not
+// an override: a job that implements OnQueuer and returns a non-empty name
+// goes to its own queue; a job that does not, or whose OnQueue returns "",
+// goes to this one; an empty name here means "default".
 func (pb *PendingBatch) OnQueue(queue string) *PendingBatch {
 	pb.queue = queue
 	return pb
@@ -642,10 +658,76 @@ func (pb *PendingBatch) WithEventDispatcher(fn func(ctx context.Context, event i
 	return pb
 }
 
+// batchSettleTimeout bounds the settlement of a batch whose dispatch
+// failed part way (the repository may be remote).
+const batchSettleTimeout = 5 * time.Second
+
+// batchJobQueue is the one place a batch job's queue is decided: the
+// job's own OnQueue when it implements OnQueuer and returns a non-empty
+// name, else the batch's queue (PendingBatch.OnQueue), else "default".
+// OnQueue is the job's method: call it only through bindBatchJob.
+func batchJobQueue(job Job, batchQueue string) string {
+	if oq, ok := job.(OnQueuer); ok {
+		if name := oq.OnQueue(); name != "" {
+			return name
+		}
+	}
+	if batchQueue != "" {
+		return batchQueue
+	}
+	return "default"
+}
+
+// bindBatchJob runs an admitted job's batch methods, contained: it hands
+// the job its batch id, then resolves the job's queue (batchJobQueue), in
+// that order so an OnQueue that reads the id sees it. SetBatchID and
+// OnQueue are the job's methods, so a panic in either comes back as the
+// error (a *panicerr.Error under it) and never unwinds the dispatch.
+func bindBatchJob(job Job, id BatchID, batchQueue string) (name string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			name, err = "", panicerr.FromRecovered(r)
+		}
+	}()
+	job.(Batchable).SetBatchID(id)
+	return batchJobQueue(job, batchQueue), nil
+}
+
+// bindBatchJobs binds every job of a batch before the batch exists and
+// returns the queue each one goes to, in job order. The first job whose
+// OnQueue or SetBatchID panics ends the pass: the error names it by its
+// position and wraps the contained panic.
+func bindBatchJobs(jobs []Job, id BatchID, batchQueue string) ([]string, error) {
+	names := make([]string, len(jobs))
+	for i, job := range jobs {
+		name, err := bindBatchJob(job, id, batchQueue)
+		if err != nil {
+			return nil, errchain.Errorf("batch: job %d/%d: %w", i+1, len(jobs), err)
+		}
+		names[i] = name
+	}
+	return names, nil
+}
+
 // Dispatch creates the batch, sets each job's BatchID, and pushes all jobs
 // to the driver. A batch holding a nil job (ErrNilJob) or a job that does
 // not implement Batchable (ErrJobNotBatchable) is refused whole before it
 // is saved or any job is pushed.
+//
+// Every job method Dispatch itself calls runs in one pass before the batch
+// is saved: SetBatchID hands it the batch id, then its queue is resolved
+// (its own non-empty OnQueue, else the batch's OnQueue, else "default").
+// A panic in either refuses the batch whole, as an error naming the job
+// by its position and wrapping the recovered panic: nothing is saved, no
+// job is pushed, no callback or event fires. The jobs before it keep the
+// id of the batch that was never created; no batch answers to it. After
+// the save Dispatch only pushes, each job to its resolved queue.
+//
+// When a push fails the batch is cancelled and the slots of the jobs not
+// pushed are released, so it still reaches its terminal state. That
+// settlement runs detached from ctx's cancellation, bounded by a short
+// timeout: a push that failed because ctx ended would otherwise fail the
+// settlement with it and leave the batch pending for good.
 func (pb *PendingBatch) Dispatch(ctx context.Context, driver Driver) (*Batch, error) {
 	if len(pb.jobs) == 0 {
 		return nil, fmt.Errorf("batch: cannot dispatch empty batch")
@@ -655,6 +737,10 @@ func (pb *PendingBatch) Dispatch(ctx context.Context, driver Driver) (*Batch, er
 	}
 
 	id := newBatchID()
+	queues, err := bindBatchJobs(pb.jobs, id, pb.queue)
+	if err != nil {
+		return nil, err
+	}
 	repo := DefaultBatchRepository()
 
 	batch := &Batch{
@@ -690,33 +776,33 @@ func (pb *PendingBatch) Dispatch(ctx context.Context, driver Driver) (*Batch, er
 		return nil, errchain.Errorf("batch: failed to save batch: %w", err)
 	}
 
-	// Set BatchID on every job and push them; admitBatch made sure each
-	// one is Batchable.
+	// Push every job to the queue the pass above resolved for it; no
+	// method of the job is called here.
 	pushed := 0
-	for _, job := range pb.jobs {
-		job.(Batchable).SetBatchID(id)
-		queueName := pb.queue
-		if oq, ok := job.(OnQueuer); ok {
-			queueName = oq.OnQueue()
-		}
-		if err := driver.PushCtx(ctx, job, queueName); err != nil {
+	for i, job := range pb.jobs {
+		if err := driver.PushCtx(ctx, job, queues[i]); err != nil {
 			// Adjust pendingJobs to reflect only the jobs that were actually pushed,
 			// then cancel the batch so it can still reach Finished state.
+			//
+			// The settlement keeps ctx's values and drops its cancellation
+			// (see Dispatch's godoc), bounded by batchSettleTimeout.
+			settleCtx, settleCancel := context.WithTimeout(context.WithoutCancel(ctx), batchSettleTimeout)
+			defer settleCancel()
 			unpushed := len(pb.jobs) - pushed
 			anyFinished := false
 			for i := 0; i < unpushed; i++ {
-				_, justFinished, derr := repo.DecrementPending(ctx, batch.id)
+				_, justFinished, derr := repo.DecrementPending(settleCtx, batch.id)
 				if derr == nil && justFinished {
 					anyFinished = true
 				}
 			}
 			// Reflect the repository's view onto the local Batch for callers.
 			var refreshed *Batch
-			if found, ferr := repo.Find(ctx, batch.id); ferr == nil && found != nil {
+			if found, ferr := repo.Find(settleCtx, batch.id); ferr == nil && found != nil {
 				refreshed = found
 				batch.copyCountersFrom(refreshed)
 			}
-			batch.CancelCtx(ctx)
+			batch.CancelCtx(settleCtx)
 			// Draining the unpushed slots can be what drives the batch to its
 			// terminal state - notably when the very FIRST push fails, every
 			// slot is drained here and no worker will ever observe completion.
@@ -724,7 +810,7 @@ func (pb *PendingBatch) Dispatch(ctx context.Context, driver Driver) (*Batch, er
 			// or Finally/BatchCompleted never fire for a batch that failed to
 			// dispatch. Ordering mirrors recordFailure: cancel, then fire.
 			if anyFinished {
-				batch.fireTerminalCallbacks(ctx, refreshed)
+				batch.fireTerminalCallbacks(settleCtx, refreshed)
 			}
 			return batch, errchain.Errorf("batch: failed to push job %d/%d: %w", pushed+1, len(pb.jobs), err)
 		}

@@ -110,12 +110,28 @@ type SessionMeta struct {
 // UserStore). UpdateData runs its update callback under the store's own
 // lock, so the callback must not call the store.
 //
+// A store must not call back into the session it is serving from inside a
+// store method. session.ServerStore runs each transition of a session (a
+// save, a flash read's record step, a shared write, Regenerate, Clear,
+// Invalidate) one at a time and calls the store from inside that turn; a
+// store method that calls Save, GetFlash, FlushFlash, UpdateShared,
+// Regenerate, Clear or Invalidate on that same session asks for a turn its
+// own caller holds and blocks, for as long as the session's context lives
+// (it has no cancellation). This is unsupported and is not detected.
+// Calling into a different session is allowed and waits for that session's
+// turn like any other caller.
+//
 // Implementations must pass authtest.RunServerSessionStoreContractTests.
 // See authtest for the executable specification.
 type ServerSessionStore interface {
 	// Get returns the StoredSession for id. Returns ErrSessionNotFound
 	// when no record exists; returns ErrSessionExpired (and removes the
-	// record) when the record has passed ExpiresAt.
+	// record) when the record has passed ExpiresAt. The removal is part of
+	// the store's own atomic step, conditioned on the record that expired:
+	// a record written under the id after the read that found it expired
+	// (a renewal on an instance whose clock had not reached the expiry, a
+	// Put) is never removed on that earlier read. The same holds for every
+	// removal the store decides by itself (Touch, UpdateData, a sweep).
 	Get(ctx context.Context, id string) (*StoredSession, error)
 
 	// Put creates or replaces a session record. Implementations must
@@ -159,6 +175,12 @@ type ServerSessionStore interface {
 	// Like Touch it is update-if-present: ErrSessionNotFound when no
 	// record exists for id (never an insert), ErrSessionExpired (and the
 	// record removed) when the record has passed its current ExpiresAt.
+	// Like Touch it only moves the record's timestamps forward (see
+	// Touch); Data is rewritten whatever the timestamps do. A store that
+	// keeps a listing index beside the record reports the write by what
+	// happened to the record: once the record holds the new Data the call
+	// succeeds, and upkeep of the index that fails afterwards is the
+	// store's to log, not an error of the write.
 	UpdateData(ctx context.Context, id string, update func(data map[string]any) (map[string]any, error), lastSeen, expiresAt time.Time) error
 
 	// Touch is the activity refresh: it sets LastSeenAt to lastSeen and
@@ -173,8 +195,36 @@ type ServerSessionStore interface {
 	// insert one, so a refresh racing a revocation cannot recreate the
 	// deleted row. It returns ErrSessionExpired (and removes the record)
 	// when the record has already passed its current ExpiresAt; an expired
-	// session is never revived by a Touch.
+	// session is never revived by a Touch. LastSeenAt and ExpiresAt only
+	// move forward, each on its own: the record keeps the later of its
+	// LastSeenAt and lastSeen, and the later of its ExpiresAt and expiresAt
+	// (a zero ExpiresAt, no expiry, is the latest there is). A refresh
+	// delayed past a later one therefore changes nothing, and no write
+	// shortens the life a record already has; ending a record early is a
+	// removal (Delete, DeleteIf), never a Touch.
 	Touch(ctx context.Context, id string, lastSeen, expiresAt time.Time) error
+
+	// DeleteIf removes the record for id when cond reports true for it,
+	// and reports whether it removed one. cond receives the record the
+	// store holds when the removal lands (its listing projection, never
+	// the Data), and the read, cond and the removal are one atomic step
+	// against every other write to the record, on every instance sharing
+	// the store, as with UpdateData: a store that serializes writes runs
+	// cond under its lock, one that writes only while the record is
+	// unchanged since its read runs cond again on the newer record. cond
+	// may therefore run more than once, must depend on nothing but its
+	// argument and the clock, and must not call the store.
+	//
+	// It is how a caller that read a record and decided it must go (the
+	// lifetime policy ended it) removes it without removing a record that
+	// was renewed or replaced after that read: the decision is made again
+	// on the record as it is. Delete is for the removals that hold
+	// whatever the record contains (a revocation, a destroyed session).
+	//
+	// No live record for id (absent, or past its ExpiresAt, which the
+	// store handles by its own rule) is (false, nil), as is a cond that
+	// reports false; nothing is removed then.
+	DeleteIf(ctx context.Context, id string, cond func(meta *SessionMeta) bool) (deleted bool, err error)
 
 	// Delete removes a single session by id. Returns nil when the
 	// record does not exist (idempotent).

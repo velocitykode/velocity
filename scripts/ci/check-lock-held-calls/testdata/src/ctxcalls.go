@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"example.com/lockheld/internal/buildonce"
 	"example.com/lockheld/internal/ownctx"
 )
 
@@ -14,9 +15,10 @@ import (
 // user code, and so is any code the context is handed to.
 
 type CtxStore struct {
-	mu sync.Mutex
-	db *sql.DB
-	be Backend
+	mu    sync.Mutex
+	db    *sql.DB
+	be    Backend
+	turns buildonce.Serial
 }
 
 // Backend is a pluggable operation taking a context: any code.
@@ -135,4 +137,20 @@ func (s *CtxStore) OwnedByOwnctx(ctx context.Context) {
 	_ = s.db.PingContext(owned)
 	_ = s.db.PingContext(bounded)
 	_ = s.db.PingContext(ownctx.Bridge(ctx)) // want reach
+}
+
+// Serialized: a store call that must not overlap another transition of the
+// value runs inside a buildonce.Serial turn, which holds no sync lock
+// while it runs, so nothing is reported. The same call serialized with
+// the mutex is: a plain mutex across a store call does not pass.
+func (s *CtxStore) Serialized(ctx context.Context) error {
+	return s.turns.Do(ctx, func() {
+		_, _ = s.be.Get(ctx, "k")
+	})
+}
+
+func (s *CtxStore) SerializedByMutex(ctx context.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, _ = s.be.Get(ctx, "k") // want ctx
 }

@@ -7,8 +7,10 @@
 # event emitter that records failures it originates into Failures the app
 # never shares with it, so they miss App.FailedEventCount; a call into
 # a registered observer, listener or subscriber of the events or orm
-# packages that no recover contains, so a panic in user code unwinds the
-# framework code that fired it; and a queue entry point (every exported
+# packages, or into a job's batch method (SetBatchID, GetBatchID, OnQueue)
+# on a job a batch or a worker of the queue packages holds, that no recover
+# contains, so a panic in user code unwinds the framework code that fired
+# it; and a queue entry point (every exported
 # Push*/Dispatch* taking a job) that touches the job before admitting it,
 # so a nil job could reach one of its own methods before being refused.
 #

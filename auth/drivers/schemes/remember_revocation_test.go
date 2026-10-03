@@ -264,13 +264,12 @@ func TestServerStore_EvictedRecordReportsRevoked(t *testing.T) {
 	b.do(http.MethodPost, "/login")
 	id := b.cookies[sessionCookieName].Value
 
-	// Shorten the record's life to the backend's one-second TTL floor and
-	// let the backend evict it.
-	now := time.Now()
-	if err := records.Touch(context.Background(), id, now, now.Add(time.Millisecond)); err != nil {
-		t.Fatalf("Touch: %v", err)
+	// The backend drops the record, as it does when the key's TTL runs
+	// out. (A Touch cannot shorten a record's life to get there: no store
+	// write moves a record's expiry back.)
+	if err := backend.ForgetCtx(context.Background(), "session:meta:"+id); err != nil {
+		t.Fatalf("ForgetCtx: %v", err)
 	}
-	time.Sleep(1100 * time.Millisecond)
 	if _, err := records.Get(context.Background(), id); !errors.Is(err, auth.ErrSessionNotFound) {
 		t.Fatalf("record after its TTL: %v, want the backend to have evicted it (auth.ErrSessionNotFound)", err)
 	}

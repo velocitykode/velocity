@@ -54,8 +54,10 @@
 // the tests of the framework's wiring prove it hands them over.
 //
 // Rule "contain": a call into a registered callback of the events or orm
-// packages (a model observer, a listener, a statement observer) that no
-// recover contains; contain.go documents the proof.
+// packages (a model observer, a listener, a statement observer), or into a
+// job's batch method in the queue packages (SetBatchID, GetBatchID,
+// OnQueue on a job a batch or a worker holds), that no recover contains;
+// contain.go documents the proof.
 //
 // Rule "admission": a queue entry point that touches a job its caller
 // handed in before admitting it. A job's optional interfaces (OnQueue,
@@ -96,7 +98,8 @@
 // each rule reported, and exits 1 when there is any; prints nothing and
 // exits 0 otherwise. -events prints every event type found instead (for
 // inventories); -callbacks prints every registered-callback call of the
-// events and orm packages with whether it is contained.
+// events and orm packages and every job batch-method call of the queue
+// packages with whether it is contained.
 package main
 
 import (
@@ -127,14 +130,14 @@ const (
 var fixes = []struct{ rule, fix string }{
 	{ruleField, "field: carry metadata with a concrete type (a string ID, a formatted message, a type label); an error field needs the event's MarshalJSON/UnmarshalJSON pair (eventmeta.ErrorText / eventmeta.TextError)"},
 	{ruleEnvelope, "envelope: embed contract.EventMeta in the event and fill it from the context the event is built under (eventmeta.Current, or eventmeta.Child for an operation that runs as a span of its own)"},
-	{ruleContain, "contain: call the registered callback inside the package's containment helper, the one function that defers a recover and returns panicerr.FromRecovered as that callback's error"},
+	{ruleContain, "contain: call the registered callback (or the job's SetBatchID, GetBatchID or OnQueue) inside the package's containment helper, the one function that defers a recover and returns panicerr.FromRecovered as that call's error"},
 	{ruleAdmission, "admission: admit the job first: name, err := admitJob(job, queueName...) in the queue package (queue.AdmitJob in a leaf driver, admitBatch for a batch's jobs), before any method, type assertion or log of it"},
 	{ruleEmitter, "emitter: have the framework hand the emitter the app's Failures (Share, or SetShared for a process-wide emitter) where it wires the component's dispatcher"},
 }
 
 func main() {
 	list := flag.Bool("events", false, "print every event type found")
-	cbs := flag.Bool("callbacks", false, "print every registered-callback call in events and orm, contained or not")
+	cbs := flag.Bool("callbacks", false, "print every registered-callback call in events and orm and every job batch-method call in queue, contained or not")
 	flag.Parse()
 	patterns := flag.Args()
 	if len(patterns) == 0 {

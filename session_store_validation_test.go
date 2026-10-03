@@ -148,7 +148,10 @@ func (stubServerStore) Touch(_ context.Context, _ string, _, _ time.Time) error 
 func (stubServerStore) UpdateData(_ context.Context, _ string, _ func(map[string]any) (map[string]any, error), _, _ time.Time) error {
 	return nil
 }
-func (stubServerStore) Delete(_ context.Context, _ string) error           { return nil }
+func (stubServerStore) Delete(_ context.Context, _ string) error { return nil }
+func (stubServerStore) DeleteIf(context.Context, string, func(*auth.SessionMeta) bool) (bool, error) {
+	return false, nil
+}
 func (stubServerStore) DeleteAllForUser(_ context.Context, _ string) error { return nil }
 func (stubServerStore) ListForUser(_ context.Context, _ string) ([]*auth.SessionMeta, error) {
 	return nil, nil

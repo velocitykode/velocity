@@ -5,6 +5,10 @@
 // can call back into the component: holding the component's lock across
 // it deadlocks, and building twice under a race runs user code twice.
 //
+// Serial is the second shape of the same idea, for a value whose
+// transitions must not overlap: it runs functions one at a time, each
+// caller its own, again with no lock held while a function runs.
+//
 // It imports the standard library, internal/goroutine and
 // internal/panicerr only.
 package buildonce

@@ -170,6 +170,18 @@ var (
 	// records. Retrying RevokeSession does not: its record is already
 	// deleted, so a retry finds no owner and returns nil.
 	ErrRememberClearPartial = errors.New("velocity/auth: remember token clear partially failed")
+
+	// ErrRememberTokenStoreUnsupported is returned by the session scheme's
+	// Login, LoginByID and Attempt when remember-me is asked for and the
+	// user store does not implement RememberTokenCompareAndSwapper. The
+	// remember credential is consumed (rotated on use, ended on a revoked
+	// session) by a compare-and-swap on the stored token, and a store that
+	// can only overwrite it cannot do that without writing over a
+	// credential issued in between, so such a scheme never issues one: the
+	// sign-in is refused before anything changes. Sign in without
+	// remember-me, or give the scheme a user store with the capability
+	// (ormauth.Store has it).
+	ErrRememberTokenStoreUnsupported = errors.New("velocity/auth: user store does not implement RememberTokenCompareAndSwapper; remember-me is unavailable")
 )
 
 // RememberClearError reports a revocation whose remember-me credential
@@ -250,20 +262,36 @@ type UserStore interface {
 	UpdateRememberToken(user contract.Authenticatable, token string) error
 }
 
-// RememberTokenCompareAndSwapper is a UserStore capability required for
-// atomic rotate-on-use of the remember-me credential.
-// CompareAndSwapRememberToken must replace the persisted remember token
-// with newToken only when the currently stored value still equals
-// oldToken, and report swapped=false (with a nil error) when it does not.
+// RememberTokenCompareAndSwapper is the UserStore capability the session
+// scheme's remember-me needs. CompareAndSwapRememberToken must replace the
+// persisted remember token with newToken only when the currently stored
+// value still equals oldToken, and report swapped=false (with a nil error)
+// when it does not.
 //
-// SessionScheme's remember-cookie recall persists rotation exclusively
-// through this interface: two parallel recalls presenting the same cookie
-// both validate before either write, but only one swap can succeed, so
-// the loser is rejected instead of minting a second valid credential via
-// last-writer-wins. A user store that does not implement it fails every
-// recall closed (remember cookies are still issued at login but can
-// never revive a session); the unconditional UpdateRememberTokenCtx is used
-// only on the login path, where no prior token is being consumed.
+// SessionScheme consumes a remember credential exclusively through this
+// interface. A recall rotates the token with it: two parallel recalls
+// presenting the same cookie both validate before either write, but only
+// one swap can succeed, so the loser is rejected instead of minting a
+// second valid credential via last-writer-wins. A revoked session's
+// credential is ended with it, from the hash the cookie matched, so a
+// credential a sign-in issued since survives. A scheme whose user store
+// does not implement it has no remember-me at all: a sign-in asking for it
+// returns ErrRememberTokenStoreUnsupported, and a remember cookie a request
+// presents is deleted on the response and ignored. The unconditional
+// UpdateRememberTokenCtx writes the token where nothing is consumed: the
+// sign-in that issues it, and the logout and revocation that end every
+// remember credential of the user.
+//
+// The store owns the user value it handed out. The scheme writes the
+// token through the store only and never calls SetRememberToken on the
+// user itself: with a store that hands every request one shared user
+// value, a set made after the swap returned would land over a credential
+// another request swapped in or cleared since. A store that wants its user
+// value to show the token it persisted sets it itself, as part of a
+// successful swap (and of UpdateRememberTokenCtx), under whatever guards
+// that value; ormauth.Store does. The scheme does not read the token from
+// the user again after it validated a cookie, so a store that leaves the
+// user value alone loses nothing.
 type RememberTokenCompareAndSwapper interface {
 	CompareAndSwapRememberToken(ctx context.Context, user contract.Authenticatable, oldToken, newToken string) (swapped bool, err error)
 }
@@ -1103,7 +1131,7 @@ func (m *Manager) RevokeSession(ctx context.Context, sessionID string) error {
 		m.logWarn("velocity/auth: revoke session: record read failed; remember-me not cleared", "session_id", sessionID, "error", err)
 		partialErrs = append(partialErrs, errchain.Errorf("session record read: %w", err))
 	}
-	if err := store.Delete(ctx, sessionID); err != nil {
+	if err := store.Delete(ctx, sessionID); err != nil { //store-rmw-ok: a revocation ends the id for good, whatever its record holds: update-if-present writes cannot bring it back, and the read above only names the owner
 		return err
 	}
 	if len(partialErrs) > 0 {

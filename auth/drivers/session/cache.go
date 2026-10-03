@@ -12,6 +12,7 @@ import (
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
@@ -76,6 +77,10 @@ const recordWriteAttempts = 32
 //
 //   - the per-user index is a backend set (contract.CacheSetStore), never
 //     read-modify-written in this process;
+//   - a record Get, Touch or UpdateData reads as expired or revoked in
+//     bulk is removed through the swapper's compare-and-delete, against
+//     the bytes that were read: a record written after the read is never
+//     removed on a decision made about an earlier one;
 //   - Touch and UpdateData read a record, change it and write it back
 //     through contract.CacheSwapper, which lands only while the record
 //     still holds exactly the bytes that were read (one Lua script on
@@ -228,7 +233,8 @@ func (s *CacheStore) newGeneration() (string, error) {
 // live loads the record for id and applies the liveness rules: absent is
 // ErrSessionNotFound; past ExpiresAt is evicted and ErrSessionExpired;
 // issued under a superseded generation is evicted and ErrSessionNotFound
-// (it was revoked in bulk).
+// (it was revoked in bulk). An eviction ends only the record that was read
+// (see evict).
 func (s *CacheStore) live(ctx context.Context, id string) (*cacheRecord, error) {
 	_, rec, err := s.liveRaw(ctx, id)
 	return rec, err
@@ -246,7 +252,7 @@ func (s *CacheStore) liveRaw(ctx context.Context, id string) (string, *cacheReco
 		return "", nil, err
 	}
 	if !rec.ExpiresAt.IsZero() && s.clock().After(rec.ExpiresAt) {
-		s.evict(ctx, rec)
+		s.evict(ctx, raw, rec)
 		return "", nil, auth.ErrSessionExpired
 	}
 	// A signed-out visitor's record has no user to revoke in bulk.
@@ -256,18 +262,64 @@ func (s *CacheStore) liveRaw(ctx context.Context, id string) (string, *cacheReco
 	// Fail closed: a record without a token, or one whose token does not
 	// match the current (possibly unreadable) generation, is revoked.
 	if rec.Generation == "" || rec.Generation != s.generation(ctx, rec.UserID) {
-		s.evict(ctx, rec)
+		s.evict(ctx, raw, rec)
 		return "", nil, auth.ErrSessionNotFound
 	}
 	return raw, rec, nil
 }
 
-// evict drops a record and its index membership, best effort: the meta key
-// may already have been TTL-evicted and a stale index member is skipped by
-// ListForUser.
-func (s *CacheStore) evict(ctx context.Context, rec *cacheRecord) {
-	_ = s.backend.ForgetCtx(ctx, cacheMetaKey(rec.ID))
-	_ = s.backend.SetRemoveCtx(ctx, cacheUserKey(rec.UserID), rec.ID)
+// evict removes the record that was read as raw, and only that one,
+// through the backend's compare-and-delete, which lands only while the key
+// still holds exactly the bytes that were read. A record written after the
+// read (a renewal on an instance whose clock had not reached the expiry, a
+// Put under the same id) makes it fail and is left as it is; the caller's
+// answer, which was decided on the record it read, stands either way. The
+// index membership goes only with a record this call removed; a stale
+// member is skipped by ListForUser. Best effort: a failure leaves the
+// record to its own TTL.
+func (s *CacheStore) evict(ctx context.Context, raw string, rec *cacheRecord) {
+	deleted, err := s.backend.CompareAndDeleteCtx(ctx, cacheMetaKey(rec.ID), raw)
+	if err != nil || !deleted {
+		return
+	}
+	s.unlink(ctx, rec.UserID, rec.ID)
+}
+
+// unlink takes ids out of userID's index after their records were removed
+// (or found gone), and then looks at each id again: when a record of the
+// user is there (one put under the id after the removal, whose own index
+// write may have landed before this removal of the membership), the
+// membership is added back. A Put writes the record first and the
+// membership second, so whichever order the two interleave in, a record
+// that exists once both are done is listed. The index is a listing aid
+// only: revocation never depends on it (DeleteAllForUser is authoritative
+// through the generation token).
+func (s *CacheStore) unlink(ctx context.Context, userID string, ids ...string) {
+	if userID == "" || len(ids) == 0 {
+		return
+	}
+	if err := s.backend.SetRemoveCtx(ctx, cacheUserKey(userID), ids...); err != nil {
+		// The records are gone (or were never there); only the listing
+		// still names them, and ListForUser drops a member with no record
+		// the next time it runs. Logged, not returned: the removal the
+		// caller asked for happened.
+		fallbacklog.Logger{}.Warn("velocity/auth/session: session records were removed, but their ids were not taken out of the user index", "user_id", userID, "sessions", len(ids), "error", err)
+	}
+	for _, id := range ids {
+		raw, ok := s.backend.GetStringCtx(ctx, cacheMetaKey(id))
+		if !ok {
+			continue
+		}
+		rec, err := decodeRecord(raw)
+		if err != nil || rec.UserID != userID {
+			continue
+		}
+		if err := s.extendIndex(ctx, rec, recordTTL(rec.ExpiresAt, s.clock())); err != nil {
+			// The record put under the id since stays unlisted until its
+			// next write extends the index again.
+			fallbacklog.Logger{}.Warn("velocity/auth/session: a session record written during a removal was not put back into the user index", "user_id", userID, "error", err)
+		}
+	}
 }
 
 // Get implements auth.ServerSessionStore.
@@ -352,8 +404,9 @@ func (s *CacheStore) Put(ctx context.Context, sess *auth.StoredSession) error {
 	}
 	if err := s.backend.SetAddCtx(ctx, cacheUserKey(rec.UserID), indexTTL, rec.ID); err != nil {
 		// Roll the meta write back so no record exists that the user can
-		// neither list nor revoke.
-		_ = s.backend.ForgetCtx(ctx, cacheMetaKey(rec.ID))
+		// neither list nor revoke: exactly the record this Put wrote, so
+		// one written under the id since is not removed.
+		_, _ = s.backend.CompareAndDeleteCtx(ctx, cacheMetaKey(rec.ID), encoded)
 		return errchain.Errorf("velocity/auth/session: index session: %w", err)
 	}
 	return nil
@@ -404,7 +457,19 @@ func (s *CacheStore) slide(ctx context.Context, id string, lastSeen, expiresAt t
 			return err
 		}
 		if swapped {
-			return s.extendIndex(ctx, rec, ttl)
+			// The record write landed: that is the outcome the caller
+			// asked for and gets. The index extension that follows is
+			// upkeep of the listing (a shorter-lived index only drops the
+			// listing early, and the next write extends it again), so its
+			// failure is logged and never reported as a failed write: a
+			// caller told "failed" would treat a change the record already
+			// holds (a consumed flash, a saved payload) as not made. The
+			// line names the user, never the session id: the id is the
+			// session's bearer credential and stays out of the logs.
+			if err := s.extendIndex(ctx, rec, ttl); err != nil {
+				fallbacklog.Logger{}.Warn("velocity/auth/session: the session record was written, but its user index was not extended", "user_id", rec.UserID, "error", err)
+			}
+			return nil
 		}
 	}
 	return errchain.Errorf("velocity/auth/session: write session %s: %w", id, errRecordContended)
@@ -424,8 +489,9 @@ func (s *CacheStore) slideOnce(ctx context.Context, id string, lastSeen, expires
 		}
 		rec.Data = data
 	}
-	rec.LastSeenAt = lastSeen
-	rec.ExpiresAt = expiresAt
+	// The activity stamp and the expiry (and so the key's TTL) only move
+	// forward, each on its own.
+	rec.LastSeenAt, rec.ExpiresAt = slideForward(rec.LastSeenAt, rec.ExpiresAt, lastSeen, expiresAt)
 	encoded, err := encodeRecord(rec)
 	if err != nil {
 		return nil, 0, false, err
@@ -456,6 +522,46 @@ func (s *CacheStore) extendIndex(ctx context.Context, rec *cacheRecord, ttl time
 	return nil
 }
 
+// DeleteIf implements auth.ServerSessionStore. It reads the live record,
+// asks cond and removes the record through the backend's compare-and-delete
+// against the bytes it read: a write that landed after the read makes the
+// removal fail, and cond is asked again about the record as it now is, so
+// a record renewed or replaced after the read is removed only if cond says
+// so of the newer one. A record that is absent, expired or revoked in bulk
+// reports false.
+func (s *CacheStore) DeleteIf(ctx context.Context, id string, cond func(meta *auth.SessionMeta) bool) (bool, error) {
+	if cond == nil {
+		return false, errors.New("velocity/auth/session: nil delete condition")
+	}
+	if id == "" {
+		return false, nil
+	}
+	for range recordWriteAttempts {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		raw, rec, err := s.liveRaw(ctx, id)
+		if errchain.Is(err, auth.ErrSessionNotFound) || errchain.Is(err, auth.ErrSessionExpired) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if !cond(rec.toStored().ToMeta()) {
+			return false, nil
+		}
+		deleted, err := s.backend.CompareAndDeleteCtx(ctx, cacheMetaKey(id), raw)
+		if err != nil {
+			return false, errchain.Errorf("velocity/auth/session: delete session: %w", err)
+		}
+		if deleted {
+			s.unlink(ctx, rec.UserID, id)
+			return true, nil
+		}
+	}
+	return false, errchain.Errorf("velocity/auth/session: delete session %s: %w", id, errRecordContended)
+}
+
 // Delete implements auth.ServerSessionStore. Idempotent: a missing id is
 // a no-op.
 func (s *CacheStore) Delete(ctx context.Context, id string) error {
@@ -471,19 +577,19 @@ func (s *CacheStore) Delete(ctx context.Context, id string) error {
 			userID = rec.UserID
 		}
 	}
-	if err := s.backend.ForgetCtx(ctx, cacheMetaKey(id)); err != nil {
+	if err := s.backend.ForgetCtx(ctx, cacheMetaKey(id)); err != nil { //store-rmw-ok: Delete is the revocation of the id, whatever its record holds: update-if-present writes cannot bring it back, and the read above only names the index to update
 		return errchain.Errorf("velocity/auth/session: delete session: %w", err)
 	}
-	if userID != "" {
-		_ = s.backend.SetRemoveCtx(ctx, cacheUserKey(userID), id)
-	}
+	s.unlink(ctx, userID, id)
 	return nil
 }
 
 // DeleteAllForUser implements auth.ServerSessionStore. The generation
 // token is rotated first, which on its own invalidates every record issued
-// before this call (Get and Touch compare tokens); the indexed records are
-// then removed so listings and storage catch up. A user with no sessions
+// before this call (Get and Touch compare tokens); the indexed records
+// issued before it are then removed so listings and storage catch up (a
+// record that carries the user's current token at its removal, issued by
+// a sign-in meanwhile, is kept). A user with no sessions
 // still gets a rotated token, which is harmless and keeps the call a
 // single code path.
 func (s *CacheStore) DeleteAllForUser(ctx context.Context, userID string) error {
@@ -504,16 +610,41 @@ func (s *CacheStore) DeleteAllForUser(ctx context.Context, userID string) error 
 	if err != nil {
 		return errchain.Errorf("velocity/auth/session: load index: %w", err)
 	}
+	// A record that carries the user's current generation token is live
+	// and stays, with its membership: a sign-in that ran after the
+	// rotation above, or after a later sign-out-everywhere that overlapped
+	// this one (this call's own token is then no longer the current one,
+	// and comparing with it would remove that later sign-in). The current
+	// token is read for each record, at its removal. Every other indexed
+	// record is removed by a compare-and-delete against the bytes read,
+	// so nothing written under the id since is removed either. An
+	// unreadable token keeps nothing: Get rejects every record then.
+	gone := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if err := s.backend.ForgetCtx(ctx, cacheMetaKey(id)); err != nil {
+		raw, ok := s.backend.GetStringCtx(ctx, cacheMetaKey(id))
+		if !ok {
+			gone = append(gone, id)
+			continue
+		}
+		rec, decodeErr := decodeRecord(raw)
+		if decodeErr == nil && rec.UserID != userID {
+			// The id was re-bound to another user: only the stale
+			// membership goes.
+			gone = append(gone, id)
+			continue
+		}
+		if decodeErr == nil && rec.Generation != "" && rec.Generation == s.generation(ctx, userID) {
+			continue
+		}
+		deleted, err := s.backend.CompareAndDeleteCtx(ctx, cacheMetaKey(id), raw)
+		if err != nil {
 			return errchain.Errorf("velocity/auth/session: delete session %s: %w", id, err)
 		}
-	}
-	if len(ids) > 0 {
-		if err := s.backend.SetRemoveCtx(ctx, cacheUserKey(userID), ids...); err != nil {
-			return errchain.Errorf("velocity/auth/session: clear index: %w", err)
+		if deleted {
+			gone = append(gone, id)
 		}
 	}
+	s.unlink(ctx, userID, gone...)
 	return nil
 }
 
@@ -552,9 +683,10 @@ func (s *CacheStore) ListForUser(ctx context.Context, userID string) ([]*auth.Se
 		}
 		out = append(out, rec.toStored().ToMeta())
 	}
-	if len(stale) > 0 {
-		_ = s.backend.SetRemoveCtx(ctx, cacheUserKey(userID), stale...)
-	}
+	// unlink looks at each id again after removing the membership: the
+	// answer above was about the record as read, and a record of the user
+	// that is there now (renewed or put since) keeps its membership.
+	s.unlink(ctx, userID, stale...)
 	return out, nil
 }
 

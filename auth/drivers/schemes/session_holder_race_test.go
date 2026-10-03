@@ -54,7 +54,10 @@ func (s *holderRaceStore) Touch(context.Context, string, time.Time, time.Time) e
 func (s *holderRaceStore) UpdateData(context.Context, string, func(map[string]any) (map[string]any, error), time.Time, time.Time) error {
 	return nil
 }
-func (s *holderRaceStore) Delete(context.Context, string) error           { return nil }
+func (s *holderRaceStore) Delete(context.Context, string) error { return nil }
+func (s *holderRaceStore) DeleteIf(context.Context, string, func(*auth.SessionMeta) bool) (bool, error) {
+	return false, nil
+}
 func (s *holderRaceStore) DeleteAllForUser(context.Context, string) error { return nil }
 func (s *holderRaceStore) ListForUser(context.Context, string) ([]*auth.SessionMeta, error) {
 	return nil, nil

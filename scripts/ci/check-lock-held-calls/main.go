@@ -84,11 +84,30 @@
 //     auth/drivers/session and auth/drivers/schemes, a writer method (Set,
 //     Put, Store) called on an interface-typed store after a reader method
 //     (Get, Load, Exists) on the same receiver with the same key, outside
-//     an internal/buildonce Group's Do: two requests of one session racing
-//     the pair each write their own value and the last write wins. Use the
+//     an internal/buildonce Group's or Serial's Do: two requests of one
+//     session racing the pair each write their own value and the last
+//     write wins. Use the
 //     store's compare-and-set (LoadOrStore, UpdateShared, UpdateData) or
 //     the per-key flight; a pair that is safe carries
-//     `//store-rmw-ok: <rationale>`;
+//     `//store-rmw-ok: <rationale>`. On a BlacklistStore-typed receiver
+//     the pair is IsBlacklisted then Add: branch on Add's result instead
+//     of reading first;
+//     `//store-rmw-ok: <rationale>`. The same rule reports, in those
+//     packages, every unconditional delete (Delete, Forget, ForgetCtx) on
+//     an interface-typed store outside the per-key flight: a delete
+//     decided on an earlier read removes a record renewed in between. Use
+//     the store's compare-and-delete inside its own atomic step; a delete
+//     that is right whatever the record holds (a destroy, a retired id)
+//     carries the marker;
+//
+// The flight shape. internal/buildonce is how a component runs user code (a
+// store, a driver, a factory) in a step that must not overlap another: a
+// Group's Do (one build per key at a time) and a Serial's Do (the
+// transitions of one value, one at a time) run their function with no
+// sync lock held, so nothing above reports a user-code call inside one.
+// A sync.Mutex held across the same call is reported (ctx, func, logger,
+// ...): serializing a store call with a plain mutex does not pass.
+//
 //   - reach: a call to a function of the module whose body makes one of the
 //     calls above, directly or through other module functions. Only code
 //     that runs during the call counts: the body itself, func literals it
@@ -204,7 +223,7 @@ var fixes = []struct{ kind, fix string }{
 	{kindCallback, "callback: encode, decode or copy before taking the lock or after releasing it (json, gob, xml and io calls run methods of the values they are given)"},
 	{kindStmt, "statement: run the statement on an ownctx.Hold context and release the Held after unlocking (the pool's statement observer and query logger then run off the lock); call a driver or observer method after unlocking"},
 	{kindHold, "hold: release the Held on a defer registered right after the Hold (before the lock's deferred unlock), so a panic or early return still delivers its statement reports after the lock is released"},
-	{kindRMW, "rmw: run the read and the write of one key as one step: inside the per-key flight (an internal/buildonce Group's Do), or as a compare-and-set the store offers (LoadOrStore, UpdateShared, UpdateData)"},
+	{kindRMW, "rmw: run the read and the write of one key as one step: inside the per-key flight (an internal/buildonce Group's Do), or as a compare-and-set the store offers (LoadOrStore, UpdateShared, UpdateData; on a BlacklistStore, branch on what Add returns and drop the IsBlacklisted read); a delete decided on a read of the record goes through the store's compare-and-delete (CompareAndDeleteCtx, or the store's own step under its lock)"},
 	{kindCtx, "ctx: read the caller's context before taking the lock, and hand code under the lock a context the framework owns (built from context.Background)"},
 }
 
@@ -222,7 +241,7 @@ func hints(hits []string) string {
 		fmt.Fprintf(&b, "%d call(s) to user code while a lock or sync.Once is held. User code can panic, block, or call back into this component.\n", n)
 	}
 	if rmw > 0 {
-		fmt.Fprintf(&b, "%d store read(s) followed by a write of the same key. Two requests of one session that both read before either writes each write their own value, and the last write wins.\n", rmw)
+		fmt.Fprintf(&b, "%d store read(s) followed by a write of the same key, or unconditional store delete(s). Two requests of one session that both read before either writes each write their own value, and the last write wins; a delete decided on an earlier read removes a record renewed since.\n", rmw)
 	}
 	for _, f := range fixes {
 		for _, h := range hits {
@@ -236,7 +255,7 @@ func hints(hits []string) string {
 		b.WriteString("  a call that is safe under the lock: same-line //lock-held-ok: <rationale of at least 5 characters>\n")
 	}
 	if rmw > 0 {
-		b.WriteString("  a read-then-write that is safe: same-line //store-rmw-ok: <rationale of at least 5 characters> on the write\n")
+		b.WriteString("  a read-then-write or a delete that is safe: same-line //store-rmw-ok: <rationale of at least 5 characters> on the write or the delete\n")
 	}
 	return b.String()
 }

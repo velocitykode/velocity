@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -394,6 +395,107 @@ func RunSwapperContractTests(t *testing.T, factory SwapperFactory, advance func(
 		}
 		if v, _ := s.GetCtx(ctx, "cas-forever"); v != "kept" {
 			t.Fatalf("a swap with ttl 0 did not keep the value forever: %v", v)
+		}
+	})
+
+	t.Run("CompareAndDeleteCtx_Match_RemovesKey", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		_ = s.PutCtx(ctx, "cad-1", "first", time.Minute)
+		ok, err := s.CompareAndDeleteCtx(ctx, "cad-1", "first")
+		if err != nil || !ok {
+			t.Fatalf("CompareAndDeleteCtx on a matching value: ok=%v err=%v", ok, err)
+		}
+		if _, found := s.GetCtx(ctx, "cad-1"); found {
+			t.Fatal("the matched key is still there")
+		}
+		// Gone is gone: a second removal of the same value matches nothing.
+		if ok, err := s.CompareAndDeleteCtx(ctx, "cad-1", "first"); err != nil || ok {
+			t.Fatalf("CompareAndDeleteCtx on a removed key: ok=%v err=%v", ok, err)
+		}
+	})
+
+	t.Run("CompareAndDeleteCtx_Mismatch_RemovesNothing", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		_ = s.PutCtx(ctx, "cad-2", "first", time.Minute)
+		// A write lands between the caller's read and its removal.
+		_ = s.PutCtx(ctx, "cad-2", "renewed", time.Minute)
+		ok, err := s.CompareAndDeleteCtx(ctx, "cad-2", "first")
+		if err != nil {
+			t.Fatalf("CompareAndDeleteCtx: %v", err)
+		}
+		if ok {
+			t.Fatal("CompareAndDeleteCtx removed a value it did not expect")
+		}
+		if v, _ := s.GetCtx(ctx, "cad-2"); v != "renewed" {
+			t.Fatalf("value after a refused removal = %v, want the intervening write", v)
+		}
+	})
+
+	t.Run("CompareAndDeleteCtx_StructReadBack_Removes", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		if err := s.PutCtx(ctx, "cad-struct", swapRecord{Z: 1, A: 2}, time.Minute); err != nil {
+			t.Fatalf("PutCtx: %v", err)
+		}
+		read, found := s.GetCtx(ctx, "cad-struct")
+		if !found {
+			t.Fatal("GetCtx did not find the stored struct")
+		}
+		// A write lands after the read: the stale read removes nothing.
+		_ = s.PutCtx(ctx, "cad-struct", swapRecord{Z: 1, A: 3}, time.Minute)
+		if ok, err := s.CompareAndDeleteCtx(ctx, "cad-struct", read); err != nil || ok {
+			t.Fatalf("CompareAndDeleteCtx on a stale read: ok=%v err=%v", ok, err)
+		}
+		current, _ := s.GetCtx(ctx, "cad-struct")
+		if ok, err := s.CompareAndDeleteCtx(ctx, "cad-struct", current); err != nil || !ok {
+			t.Fatalf("CompareAndDeleteCtx on the value a read returned: ok=%v err=%v", ok, err)
+		}
+		if _, found := s.GetCtx(ctx, "cad-struct"); found {
+			t.Fatal("the matched struct is still there")
+		}
+	})
+
+	t.Run("CompareAndDeleteCtx_AbsentOrExpiredKey_ReturnsFalse", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		if ok, err := s.CompareAndDeleteCtx(ctx, "cad-absent", "v"); err != nil || ok {
+			t.Fatalf("CompareAndDeleteCtx on an absent key: ok=%v err=%v", ok, err)
+		}
+		_ = s.PutCtx(ctx, "cad-exp", "v", 30*time.Millisecond)
+		advance(80 * time.Millisecond)
+		if ok, err := s.CompareAndDeleteCtx(ctx, "cad-exp", "v"); err != nil || ok {
+			t.Fatalf("CompareAndDeleteCtx on an expired key: ok=%v err=%v", ok, err)
+		}
+	})
+
+	// N callers that read one value and remove it: exactly one removal
+	// lands, whatever the interleaving.
+	t.Run("CompareAndDeleteCtx_Concurrent_OneWins", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		_ = s.PutCtx(ctx, "cad-race", "v", time.Minute)
+		const callers = 16
+		var wins atomic.Int32
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for range callers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				if ok, err := s.CompareAndDeleteCtx(ctx, "cad-race", "v"); err != nil {
+					t.Errorf("CompareAndDeleteCtx: %v", err)
+				} else if ok {
+					wins.Add(1)
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		if got := wins.Load(); got != 1 {
+			t.Fatalf("%d removals landed, want exactly 1", got)
 		}
 	})
 }

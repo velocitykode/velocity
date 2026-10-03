@@ -23,6 +23,7 @@ type protector struct {
 	s     store
 	m     memory
 	mints buildonce.Group[string]
+	turns buildonce.Serial
 }
 
 // Read, then blind write of the same key: flagged at the write.
@@ -59,6 +60,16 @@ func (p *protector) flight(ctx context.Context, id string) (string, error) {
 	}
 	return p.mints.Do(ctx, id, func() (string, error) {
 		return "new", p.s.Set(ctx, id, "new")
+	})
+}
+
+// Inside a Serial's turn (the transitions of one value, one at a time):
+// not flagged, nor is a delete there.
+func (p *protector) turn(ctx context.Context, id string) error {
+	return p.turns.Do(ctx, func() {
+		if _, err := p.s.Get(ctx, id); err != nil {
+			_ = p.s.Set(ctx, id, "new")
+		}
 	})
 }
 

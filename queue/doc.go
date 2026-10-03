@@ -48,10 +48,16 @@
 //	                    counting across serialisation boundaries.
 //
 //	OnQueuer            OnQueue() selects a non-default queue when no
-//	                    explicit name is passed to Push/PushDelayed.
+//	                    explicit name is passed to Push/PushDelayed. In a
+//	                    batch a non-empty name wins over the batch's
+//	                    OnQueue; an empty one takes the batch's queue.
 //
 //	Batchable           Sets/reads the BatchID so the worker can update
-//	                    batch progress on success/failure.
+//	                    batch progress on success/failure. A batch calls
+//	                    SetBatchID (and OnQueue) once per job before it is
+//	                    saved; a panic in either refuses the batch whole.
+//	                    The worker reads GetBatchID once per job; a panic
+//	                    there fails the job for good without running it.
 //
 // Capability detection uses a plain type assertion at the call site
 // (e.g. `if d, ok := driver.(ReservationDriver); ok { ... }`); no

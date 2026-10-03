@@ -598,7 +598,16 @@ func (g *JWTScheme) GenerateRefreshToken(user contract.Authenticatable) (string,
 	return g.jwtManager.GenerateRefreshToken(user)
 }
 
-// RefreshToken refreshes an access token using refresh token
+// RefreshToken refreshes an access token using refresh token.
+//
+// With JWTConfig.BlacklistEnabled the refresh token is spent once: of N
+// calls presenting one token exactly one gets an access token and the
+// others get auth.ErrRefreshTokenUsed. A token that expires before it is
+// consumed buys nothing (jwt.ErrTokenExpired). A user-store failure leaves the
+// token usable for a retry; a failure after the consume burns it and the
+// client signs in again. With BlacklistEnabled false the refresh token is
+// reusable until it expires or the user's refresh generation is bumped.
+// See auth.JWTManager.RefreshToken.
 func (g *JWTScheme) RefreshToken(refreshToken string) (string, error) {
 	return g.jwtManager.RefreshToken(refreshToken, g.loadUserStore())
 }

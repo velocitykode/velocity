@@ -935,7 +935,7 @@ func TestSessionScheme_LoginByID(t *testing.T) {
 						config: newTestSessionConfig(),
 						hasher: auth.NewBcryptHasher(10),
 					}
-					g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
+					g.userStore.Store(&userStoreHolder{p: casSessionSchemeUserStore{&mockSessionSchemeUserStore{}}})
 					return g
 				}()
 			},

@@ -99,7 +99,7 @@ func TestSetRememberCookie_StoresHashedToken(t *testing.T) {
 	user := &mockRememberUser{id: "u1"}
 	w := httptest.NewRecorder()
 
-	c, err := g.issueRememberCookie(context.Background(), user)
+	c, err := g.issueRememberCookie(context.Background(), g.loadUserStore(), user)
 	if err != nil {
 		t.Fatalf("issueRememberCookie: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestSetRememberCookie_NonStringIdentifier(t *testing.T) {
 	user := &uintIDUser{id: 42}
 	w := httptest.NewRecorder()
 
-	c, err := g.issueRememberCookie(context.Background(), user)
+	c, err := g.issueRememberCookie(context.Background(), g.loadUserStore(), user)
 	if err != nil {
 		t.Fatalf("issueRememberCookie with uint identifier: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestSetRememberCookie_UsesRememberLifetime(t *testing.T) {
 			g.userStore.Store(&userStoreHolder{p: &mockRememberStore{}})
 			g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
 			w := httptest.NewRecorder()
-			c, err := g.issueRememberCookie(context.Background(), &mockRememberUser{id: "u1"})
+			c, err := g.issueRememberCookie(context.Background(), g.loadUserStore(), &mockRememberUser{id: "u1"})
 			if err != nil {
 				t.Fatalf("issueRememberCookie: %v", err)
 			}
@@ -256,6 +256,12 @@ func (p *remLookupStore) ValidateCredentials(contract.Authenticatable, map[strin
 	return false
 }
 func (p *remLookupStore) UpdateRememberToken(contract.Authenticatable, string) error { return nil }
+
+// CompareAndSwapRememberToken gives the store the capability a scheme
+// needs to honour a remember cookie at all.
+func (p *remLookupStore) CompareAndSwapRememberToken(context.Context, contract.Authenticatable, string, string) (bool, error) {
+	return true, nil
+}
 
 // Ctx-suffixed shims for auth.UserStore, added in Sweep 1b.
 func (p *mockRememberStore) FindByIDCtx(_ context.Context, id interface{}) (contract.Authenticatable, error) {

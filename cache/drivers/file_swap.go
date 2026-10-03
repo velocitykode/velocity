@@ -84,23 +84,9 @@ func (s *FileStore) CompareAndSwapCtx(ctx context.Context, key string, expected,
 	if !ok {
 		return false, nil
 	}
-	if item.isSet() {
-		current, _ := item.value()
-		if !reflect.DeepEqual(current, expected) {
-			return false, nil
-		}
-	} else {
-		have, err := UnmarshalValue(item.Value)
-		if err != nil {
-			// A read reports this entry as a miss: nothing to match.
-			return false, nil
-		}
-		if wantErr != nil {
-			return false, errchain.Errorf("velocity/cache: failed to compare expected value: %w", wantErr)
-		}
-		if !reflect.DeepEqual(have, want) {
-			return false, nil
-		}
+	matched, err := item.matches(expected, want, wantErr)
+	if err != nil || !matched {
+		return false, err
 	}
 	if s.swapMatchedHook != nil {
 		s.swapMatchedHook() //lock-held-ok: swapMatchedHook is a test-only hook, nil outside tests
@@ -109,6 +95,64 @@ func (s *FileStore) CompareAndSwapCtx(ctx context.Context, key string, expected,
 		return false, err
 	}
 	return true, nil
+}
+
+// CompareAndDeleteCtx implements contract.CacheSwapper: the entry for key
+// is removed only when it is live and holds expected, compared as
+// CompareAndSwapCtx compares, under the same locks (the key's write lock
+// and the store mutex), so the removal is atomic against the exact stored
+// value it matched, across instances and processes. An absent, expired or
+// different entry yields (false, nil) and nothing is removed. On a
+// platform without flock it returns an error wrapping ErrLockNotSupported.
+func (s *FileStore) CompareAndDeleteCtx(ctx context.Context, key string, expected interface{}) (bool, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+	}
+	want, wantErr := expectedShape(expected)
+	unlock, err := s.lockKeyForWrite(ctx, key)
+	if err != nil {
+		return false, errchain.Errorf("velocity/cache: FileStore.CompareAndDelete: %w", err)
+	}
+	defer unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := s.getCacheFilePath(key)
+	item, ok := s.readLiveItemLocked(path)
+	if !ok {
+		return false, nil
+	}
+	matched, err := item.matches(expected, want, wantErr)
+	if err != nil || !matched {
+		return false, err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	return true, nil
+}
+
+// matches reports whether the live item holds expected, in the equality a
+// read of the store has: a set compares as the member map a read returns,
+// any other value as its decoded shape against want (expectedShape of
+// expected, wantErr its error). An entry a read reports as a miss matches
+// nothing.
+func (item fileCacheItem) matches(expected, want interface{}, wantErr error) (bool, error) {
+	if item.isSet() {
+		current, _ := item.value()
+		return reflect.DeepEqual(current, expected), nil
+	}
+	have, err := UnmarshalValue(item.Value)
+	if err != nil {
+		// A read reports this entry as a miss: nothing to match.
+		return false, nil
+	}
+	if wantErr != nil {
+		return false, errchain.Errorf("velocity/cache: failed to compare expected value: %w", wantErr)
+	}
+	return reflect.DeepEqual(have, want), nil
 }
 
 // SetAddCtx implements contract.CacheSetStore. The set is stored under

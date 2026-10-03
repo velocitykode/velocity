@@ -25,6 +25,7 @@ import (
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
@@ -634,6 +635,43 @@ type SessionScheme struct {
 	// a stored hash that no longer matches the configured Hasher
 	// parameters (M-08). No dispatcher disables event emission.
 	events eventemit.Emitter
+
+	// rememberUnsupportedLogged is set once the scheme has logged that a
+	// request presented a remember cookie its user store cannot consume
+	// (see rememberStore), so the warning is written once per scheme.
+	rememberUnsupportedLogged atomic.Bool
+}
+
+// rememberStore returns the user store's remember-token compare-and-swap,
+// the one way the scheme consumes a remember credential; ok is false when
+// the user store lacks the capability (or is a nil value), and the scheme
+// then has no remember-me: it issues no credential and honours none.
+func (g *SessionScheme) rememberStore() (cas auth.RememberTokenCompareAndSwapper, ok bool) {
+	return rememberCapability(g.loadUserStore())
+}
+
+// rememberCapability is rememberStore for one snapshot of the user store,
+// so a caller that also looks the user up asks the same store both times.
+func rememberCapability(userStore auth.UserStore) (cas auth.RememberTokenCompareAndSwapper, ok bool) {
+	if nilval.Is(userStore) {
+		return nil, false
+	}
+	cas, ok = userStore.(auth.RememberTokenCompareAndSwapper)
+	return cas, ok
+}
+
+// rememberMatch is a remember cookie that validated: the user it names,
+// the stored hash the presented token matched, and the store that hash was
+// read from. Whatever consumes the credential afterwards (the rotation of a
+// recall, the burn of a revoked session) compare-and-swaps from this hash
+// on this store. It never reads the token from the user value again: a
+// store that hands out a shared user value would show the hash a concurrent
+// recall already swapped in, and the second swap would land on a credential
+// this request never presented.
+type rememberMatch struct {
+	user  contract.Authenticatable
+	hash  string
+	store auth.RememberTokenCompareAndSwapper
 }
 
 // loadUserStore returns the active auth.UserStore via atomic load.
@@ -1110,6 +1148,11 @@ func (g *SessionScheme) resolveReserved(r *http.Request, op *gateOp) (contract.A
 // resolveAuthenticationChange is resolveAuthenticatedUser's ladder for
 // session. The caller holds the request's gate for op.
 func (g *SessionScheme) resolveAuthenticationChange(r *http.Request, session contract.Session, op *gateOp) (contract.Authenticatable, bool, error) {
+	// A remember cookie this scheme cannot honour goes on every request
+	// that presents one, signed in or not, before the ladder decides
+	// whether a recall is tried at all.
+	g.dropUnsupportedRememberCookie(r)
+
 	userID := session.Get(auth.UserIDSessionKey)
 	if userID == nil {
 		// A server-held session whose record was deleted arrives as an
@@ -1125,11 +1168,11 @@ func (g *SessionScheme) resolveAuthenticationChange(r *http.Request, session con
 		// flushed by the save-at-end session middleware (H-05); this
 		// path mutates the in-memory session AND, when a server store
 		// is configured, writes a record keyed on the rotated id.
-		if user := g.checkRememberCookie(r); user != nil {
-			if !g.anchorRecalledUser(r, session, user, op) {
+		if match, ok := g.matchRememberCookie(r); ok {
+			if !g.anchorRecalledUser(r, session, match, op) {
 				return nil, false, nil
 			}
-			return user, true, nil
+			return match.user, true, nil
 		}
 		// A signed-in cookie the lifetime policy ended arrives as an
 		// empty replacement session; say so, so the caller can tell an
@@ -1152,11 +1195,11 @@ func (g *SessionScheme) resolveAuthenticationChange(r *http.Request, session con
 			// while the cookie is still live: the identity it carries is
 			// stale. A valid remember cookie signs the user back in on a
 			// new session, exactly as when the cookie itself expired.
-			if recalled := g.checkRememberCookie(r); recalled != nil {
+			if match, ok := g.matchRememberCookie(r); ok {
 				op.beginMutation()
 				session.Remove(auth.UserIDSessionKey)
-				if g.anchorRecalledUser(r, session, recalled, op) {
-					return recalled, true, nil
+				if g.anchorRecalledUser(r, session, match, op) {
+					return match.user, true, nil
 				}
 			}
 		case errchain.Is(err, auth.ErrSessionRevoked):
@@ -1177,8 +1220,11 @@ func (g *SessionScheme) resolveAuthenticationChange(r *http.Request, session con
 // stored token is a single per-user hash, so a validating cookie is the
 // one live remember credential: clearing it signs out exactly the device
 // (or copy) that holds it. The clear is a compare-and-swap from the
-// matched hash when the user store supports it, so a credential a
-// concurrent Login just minted elsewhere survives.
+// hash the cookie validated against (rememberMatch), never an unconditional
+// write, so a credential a concurrent Login just minted elsewhere survives.
+// A scheme whose user store has no compare-and-swap never issued a
+// credential: matchRememberCookie reports none and there is nothing stored
+// to clear.
 func (g *SessionScheme) burnPresentedRememberToken(r *http.Request) {
 	if _, err := r.Cookie("remember_" + g.config.Name); err != nil {
 		return
@@ -1188,19 +1234,11 @@ func (g *SessionScheme) burnPresentedRememberToken(r *http.Request) {
 			g.clearRememberCookie(w)
 		}
 	}
-	user := g.checkRememberCookie(r)
-	if user == nil {
+	match, ok := g.matchRememberCookie(r)
+	if !ok {
 		return
 	}
-	matched := user.GetRememberToken()
-	userStore := g.loadUserStore()
-	var err error
-	if cas, ok := userStore.(auth.RememberTokenCompareAndSwapper); ok {
-		_, err = cas.CompareAndSwapRememberToken(r.Context(), user, matched, "")
-	} else {
-		err = userStore.UpdateRememberTokenCtx(r.Context(), user, "")
-	}
-	if err != nil {
+	if _, err := match.store.CompareAndSwapRememberToken(r.Context(), match.user, match.hash, ""); err != nil {
 		g.logWarn("velocity/auth: clear remember token (revoked session) failed", "error", err)
 	}
 }
@@ -1246,7 +1284,8 @@ func (g *SessionScheme) User(r *http.Request) contract.Authenticatable {
 //
 // The caller holds the request's gate for op, which stages the recall's
 // transition and credential writes until it ends.
-func (g *SessionScheme) anchorRecalledUser(r *http.Request, session contract.Session, user contract.Authenticatable, op *gateOp) bool {
+func (g *SessionScheme) anchorRecalledUser(r *http.Request, session contract.Session, match rememberMatch, op *gateOp) bool {
+	user := match.user
 	// Capture the pre-rotation id so the CSRF rotator (when wired) can
 	// drop any token bound to the planted id. Required to keep the
 	// session-fixation defense complete: H-02 says the CSRF token MUST
@@ -1349,7 +1388,7 @@ func (g *SessionScheme) anchorRecalledUser(r *http.Request, session contract.Ses
 	// token), the recall fails closed. user_id is removed again so the
 	// save-at-end middleware does not persist an authenticated session
 	// that would bypass rotation on the next request.
-	if err := g.rotateRememberToken(r, user, op); err != nil {
+	if err := g.rotateRememberToken(r, match, op); err != nil {
 		g.logWarn("velocity/auth: remember-cookie revival: remember-token rotation failed; rejecting recall", "error", err)
 		session.Remove(auth.UserIDSessionKey)
 		return false
@@ -1386,24 +1425,26 @@ var errRememberTokenStale = errors.New("velocity/auth: remember token rotated co
 //     SessionMiddleware have nowhere to deliver the replacement cookie),
 //   - minting or encrypting the replacement failed,
 //   - persisting the new hash failed,
-//   - the user store does not implement auth.RememberTokenCompareAndSwapper, or
+//   - the user store does not implement auth.RememberTokenCompareAndSwapper
+//     (auth.ErrRememberTokenStoreUnsupported; matchRememberCookie honours
+//     no cookie on such a scheme, so a recall does not get here), or
 //   - the stored hash no longer matches the presented token.
 //
 // The compare-and-swap is what closes the parallel-recall race: two
 // requests presenting the same old cookie both validate before either
 // write, but only one swap can land; the loser fails here instead of
 // minting a second valid credential via last-writer-wins. An unconditional
-// UpdateRememberTokenCtx cannot give that guarantee, so a user store without
-// the capability fails the recall closed rather than silently downgrading
-// to last-writer-wins; the unconditional update remains in use only on the
-// login path, where no previously issued token is being consumed.
+// UpdateRememberTokenCtx cannot give that guarantee, so a scheme whose user
+// store lacks the capability has no remember-me (see
+// auth.ErrRememberTokenStoreUnsupported); the unconditional update writes
+// the token only where none is consumed: the sign-in that issues it.
 //
 // Rotation is strict; there is no grace window for the previous token.
 // The storage shape (a single remember_token hash on the user record)
 // offers no durable slot for a previous-token grace entry, and scheme-local
 // memory would not survive multi-host deployments, so we fail secure: at
 // worst the user signs in again.
-func (g *SessionScheme) rotateRememberToken(r *http.Request, user contract.Authenticatable, op *gateOp) error {
+func (g *SessionScheme) rotateRememberToken(r *http.Request, match rememberMatch, op *gateOp) error {
 	holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder)
 	if !ok || holder == nil {
 		return errors.New("velocity/auth: no session holder on request; cannot deliver rotated remember cookie")
@@ -1411,14 +1452,14 @@ func (g *SessionScheme) rotateRememberToken(r *http.Request, user contract.Authe
 	if holder.getResponseWriter() == nil {
 		return errors.New("velocity/auth: no response writer on request; cannot deliver rotated remember cookie")
 	}
-	cas, ok := g.loadUserStore().(auth.RememberTokenCompareAndSwapper)
-	if !ok {
-		return errors.New("velocity/auth: user store does not implement RememberTokenCompareAndSwapper; cannot rotate remember token atomically")
+	user, cas := match.user, match.store
+	if nilval.Is(cas) {
+		return auth.ErrRememberTokenStoreUnsupported
 	}
 
-	// The stored hash the presented token matched in checkRememberCookie;
-	// the compare-and-swap below anchors on it.
-	oldToken := user.GetRememberToken()
+	// The stored hash the presented token matched in matchRememberCookie,
+	// as it was read then; the compare-and-swap below anchors on it.
+	oldToken := match.hash
 
 	var newToken string
 	cookie, err := g.mintRememberCookie(user, func(hashed string) error {
@@ -1443,12 +1484,14 @@ func (g *SessionScheme) rotateRememberToken(r *http.Request, user contract.Authe
 	op.queueCredentialWrite(afterSaveWrite{write: func(w http.ResponseWriter) {
 		http.SetCookie(w, cookie)
 	}, undo: func() {
+		// The store restores the token, on the user value too if it keeps
+		// one in step (see auth.RememberTokenCompareAndSwapper): the scheme
+		// never writes the user value itself, which would land over
+		// whatever replaced or cleared the credential since the swap.
 		swapped, err := cas.CompareAndSwapRememberToken(ctx, user, newToken, oldToken)
 		if err != nil || !swapped {
 			g.logWarn("velocity/auth: remember-cookie revival: session not saved and the remember token could not be restored; the visitor signs in again", "swapped", swapped, "error", err)
-			return
 		}
-		user.SetRememberToken(oldToken)
 	}})
 	return nil
 }
@@ -1483,6 +1526,11 @@ func (g *SessionScheme) ID(r *http.Request) interface{} {
 // ends with its TTL. Outside the session middleware and WithSessionContext,
 // a store that calls back into the scheme for the same request is not
 // detected: the request carries nothing to reserve.
+//
+// Remember-me needs a user store implementing
+// auth.RememberTokenCompareAndSwapper: with any other store a Login asking
+// for it returns auth.ErrRememberTokenStoreUnsupported and changes nothing
+// (no session change, no credential).
 //
 // A failed Login may leave side effects, depending on where it fails:
 //
@@ -1562,6 +1610,21 @@ func (g *SessionScheme) signInReserved(w http.ResponseWriter, r *http.Request, h
 func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, user contract.Authenticatable, op *gateOp, remember ...bool) (contract.Session, error) {
 	if holder.isSealed() {
 		return nil, errSessionSaved
+	}
+	// Remember-me needs a user store that can consume the credential by
+	// compare-and-swap. Without one the sign-in is refused here, before
+	// anything changed, instead of issuing a credential the scheme could
+	// only ever overwrite.
+	// The store checked here is the one the credential is issued through
+	// after the save: a SetUserStore in between does not get a credential
+	// issued through a store that was never checked.
+	wantsRemember := len(remember) > 0 && remember[0]
+	var rememberUsers auth.UserStore
+	if wantsRemember {
+		rememberUsers = g.loadUserStore()
+		if _, ok := rememberCapability(rememberUsers); !ok {
+			return nil, auth.ErrRememberTokenStoreUnsupported
+		}
 	}
 	// The user's identifier is the session's key to the user: read it
 	// before anything changes, so an unreadable one signs nobody in and
@@ -1670,12 +1733,12 @@ func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, us
 	// the seam still holds the request's gate after the save, and its
 	// cookie written with the other queued writes, so a logout that
 	// follows the commit clears it after it was stored.
-	if len(remember) > 0 && remember[0] {
+	if wantsRemember {
 		ctx := r.Context()
 		var cookie *http.Cookie
 		op.queueCredentialWrite(afterSaveWrite{
 			settle: func() {
-				c, err := g.issueRememberCookie(ctx, user)
+				c, err := g.issueRememberCookie(ctx, rememberUsers, user)
 				if err != nil {
 					g.logWarn("velocity/auth: remember-me cookie not set; login still succeeded", "error", err)
 					return
@@ -1943,7 +2006,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 			rev.Revoke(id)
 		}
 		if store := g.getServerStore(); store != nil {
-			if err := store.Delete(r.Context(), id); err != nil {
+			if err := store.Delete(r.Context(), id); err != nil { //store-rmw-ok: logout retires the id for good: no request writes a record under a retired id again, so nothing newer can be removed
 				g.logWarn("velocity/auth: server session store delete (logout) failed", "session_id", id, "error", err)
 			}
 		}
@@ -2135,7 +2198,11 @@ func (g *SessionScheme) consultServerStore(r *http.Request, session contract.Ses
 		// Records written before the cap existed, or by another writer,
 		// may carry an ExpiresAt past the cap: the cap is enforced on
 		// CreatedAt directly. The record is reaped best-effort.
-		_ = store.Delete(r.Context(), sessionID)
+		// The reap is conditional on the record the store holds when it
+		// lands: a record put under the id since this read is kept.
+		_, _ = store.DeleteIf(r.Context(), sessionID, func(meta *auth.SessionMeta) bool {
+			return g.pastAbsoluteCapAt(meta.CreatedAt)
+		})
 		rec, err = nil, auth.ErrSessionExpired
 	}
 	if err != nil {
@@ -2216,8 +2283,14 @@ func (g *SessionScheme) recordExpiry(createdAt, lastActive time.Time) time.Time 
 
 // pastAbsoluteCap reports whether rec is older than the absolute lifetime.
 func (g *SessionScheme) pastAbsoluteCap(rec *auth.StoredSession) bool {
+	return rec != nil && g.pastAbsoluteCapAt(rec.CreatedAt)
+}
+
+// pastAbsoluteCapAt reports whether a session created at createdAt is older
+// than the absolute lifetime.
+func (g *SessionScheme) pastAbsoluteCapAt(createdAt time.Time) bool {
 	abs := g.config.AbsoluteTimeout()
-	return rec != nil && abs > 0 && !rec.CreatedAt.IsZero() && sessionclock.Now().After(rec.CreatedAt.Add(abs))
+	return abs > 0 && !createdAt.IsZero() && sessionclock.Now().After(createdAt.Add(abs))
 }
 
 // recordServerSession writes the freshly-issued session to the server-side
@@ -2268,7 +2341,7 @@ func (g *SessionScheme) retireServerRecord(r *http.Request, id string) error {
 	if store == nil || id == "" {
 		return nil
 	}
-	if err := store.Delete(r.Context(), id); err != nil && !errchain.Is(err, auth.ErrSessionNotFound) {
+	if err := store.Delete(r.Context(), id); err != nil && !errchain.Is(err, auth.ErrSessionNotFound) { //store-rmw-ok: the sign-in retires the old id for good: the session moves to a fresh id, so no record is written under the old one again
 		return err
 	}
 	return nil
@@ -2313,25 +2386,75 @@ func (g *SessionScheme) clientIP(r *http.Request) string {
 	return clientip.ExtractString(r, g.getTrustedProxies())
 }
 
-// checkRememberCookie checks and validates remember cookie.
-// Returns the authenticated user if the cookie is valid, nil otherwise.
+// checkRememberCookie reports the user a valid remember cookie names, or
+// nil; see matchRememberCookie.
+func (g *SessionScheme) checkRememberCookie(r *http.Request) contract.Authenticatable {
+	match, ok := g.matchRememberCookie(r)
+	if !ok {
+		return nil
+	}
+	return match.user
+}
+
+// dropUnsupportedRememberCookie applies the policy for a remember cookie
+// presented to a scheme whose user store cannot consume the credential by
+// compare-and-swap: the cookie is deleted on the response (once per
+// request) and the scheme says so once. It does nothing when the store has
+// the capability, which it checks first, so a scheme with remember-me pays
+// no cookie lookup here.
+func (g *SessionScheme) dropUnsupportedRememberCookie(r *http.Request) {
+	if _, ok := g.rememberStore(); ok {
+		return
+	}
+	if _, err := r.Cookie("remember_" + g.config.Name); err != nil {
+		return
+	}
+	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil {
+		if w := holder.getResponseWriter(); w != nil {
+			dropCookieDeletions(w.Header(), "remember_"+g.config.Name)
+			g.clearRememberCookie(w)
+		}
+	}
+	if g.rememberUnsupportedLogged.CompareAndSwap(false, true) {
+		g.logWarn("velocity/auth: a remember cookie was presented, but the user store does not implement RememberTokenCompareAndSwapper; the cookie is deleted and ignored (logged once)")
+	}
+}
+
+// matchRememberCookie validates the request's remember cookie and returns
+// the match (the user, the stored hash the token matched and the store it
+// was read from); ok is false when there is no valid cookie. On a scheme
+// without remember-me (a user store that lacks
+// auth.RememberTokenCompareAndSwapper) every cookie is invalid: it is
+// deleted on the response and the miss is logged once per scheme.
 //
 // Validation only: rotate-on-use (V2-08) happens in anchorRecalledUser,
 // which calls rotateRememberToken once the revival fully anchors, so a
 // recall that fails fixation/store checks does not burn the token.
-func (g *SessionScheme) checkRememberCookie(r *http.Request) contract.Authenticatable {
+func (g *SessionScheme) matchRememberCookie(r *http.Request) (rememberMatch, bool) {
 	cookie, err := r.Cookie("remember_" + g.config.Name)
 	if err != nil {
-		return nil
+		return rememberMatch{}, false
+	}
+
+	// A scheme whose user store cannot consume the credential by
+	// compare-and-swap issues none (auth.ErrRememberTokenStoreUnsupported),
+	// so the cookie is not one of its own: it is deleted on the response
+	// and ignored, whatever it holds, and the user store is not asked.
+	// One snapshot of the store serves the capability and the lookup.
+	userStore := g.loadUserStore()
+	cas, ok := rememberCapability(userStore)
+	if !ok {
+		g.dropUnsupportedRememberCookie(r)
+		return rememberMatch{}, false
 	}
 
 	// Decrypt cookie value
 	if g.encryptor == nil {
-		return nil
+		return rememberMatch{}, false
 	}
 	decrypted, err := g.encryptor.Decrypt(cookie.Value)
 	if err != nil {
-		return nil
+		return rememberMatch{}, false
 	}
 
 	// The payload is userID|issuedAt|token (see mintRememberCookie). The
@@ -2340,44 +2463,44 @@ func (g *SessionScheme) checkRememberCookie(r *http.Request) contract.Authentica
 	// captured copy replayed by hand must not outlive it.
 	userID, issuedAt, token, ok := parseRememberPayload(decrypted)
 	if !ok {
-		return nil
+		return rememberMatch{}, false
 	}
 	if sessionclock.Now().After(issuedAt.Add(g.config.RememberTimeout())) {
-		return nil
+		return rememberMatch{}, false
 	}
 
 	// Look up user by ID
-	user, err := g.loadUserStore().FindByIDCtx(r.Context(), userID)
+	user, err := userStore.FindByIDCtx(r.Context(), userID)
 	if err != nil || user == nil {
-		return nil
+		return rememberMatch{}, false
 	}
 
 	// Verify remember token with constant-time comparison.
 	// We hash the incoming token with SHA-256 and compare against the stored
 	// hash. Legacy rows that still hold a raw token continue to work because
-	// we fall through to a direct compare.
+	// we fall through to a direct compare. The stored token is read once:
+	// the value compared here is the one the match carries.
 	storedToken := user.GetRememberToken()
 	if storedToken == "" {
-		return nil
+		return rememberMatch{}, false
 	}
-	candidateHash := hashRememberToken(token)
-	if crypto.EqualString(storedToken, candidateHash) {
-		return user
+	if crypto.EqualString(storedToken, hashRememberToken(token)) || crypto.EqualString(storedToken, token) {
+		return rememberMatch{user: user, hash: storedToken, store: cas}, true
 	}
-	if crypto.EqualString(storedToken, token) {
-		return user
-	}
-	return nil
+	return rememberMatch{}, false
 }
 
 // issueRememberCookie issues the remember-me credential at login: it
 // persists the new token hash unconditionally through the user store
 // (there is no prior credential to guard against; login may always
-// overwrite) and returns the cookie for the caller to write. ctx is the
+// overwrite) and returns the cookie for the caller to write. userStore is
+// the store loginReserved checked for the compare-and-swap capability
+// (auth.ErrRememberTokenStoreUnsupported otherwise), captured once for the
+// sign-in. ctx is the
 // request context so a client disconnect aborts the user store write.
-func (g *SessionScheme) issueRememberCookie(ctx context.Context, user contract.Authenticatable) (*http.Cookie, error) {
+func (g *SessionScheme) issueRememberCookie(ctx context.Context, userStore auth.UserStore, user contract.Authenticatable) (*http.Cookie, error) {
 	return g.mintRememberCookie(user, func(hashed string) error {
-		return g.loadUserStore().UpdateRememberTokenCtx(ctx, user, hashed)
+		return userStore.UpdateRememberTokenCtx(ctx, user, hashed)
 	})
 }
 
@@ -2424,15 +2547,17 @@ func (g *SessionScheme) mintRememberCookie(user contract.Authenticatable, persis
 		return nil, err
 	}
 
-	// Store only the hash of the token on the user record. The in-memory
-	// user is mutated only after a successful persist so a failed (or
-	// lost-race) write leaves the object holding the hash that is still
-	// authoritative in the store.
+	// Store only the hash of the token on the user record. The scheme
+	// writes the token through the store alone and never sets it on the
+	// user value: a store that hands every request one shared user value
+	// may have swapped or cleared the credential again by the time an
+	// unconditional set here would land, and that set would write over it.
+	// The store keeps the user value it handed out in step with what it
+	// persisted, inside its own write (auth.RememberTokenCompareAndSwapper).
 	hashed := hashRememberToken(token)
 	if err := persist(hashed); err != nil {
 		return nil, err
 	}
-	user.SetRememberToken(hashed)
 
 	cookie := g.config.CookiePolicy().Cookie("remember_"+g.config.Name, encrypted, int(ttl.Seconds()), true)
 	cookie.Expires = issuedAt.Add(ttl)

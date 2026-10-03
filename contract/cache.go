@@ -205,8 +205,17 @@ type CacheReplacer interface {
 // read-equivalent value on a serializing store, and a value changed and
 // changed back (ABA) on any store, let the swap land. A caller that must
 // see every write stores a version that each write changes.
+//
+// CompareAndDeleteCtx is the same step with a removal for the write: it
+// returns (true, nil) when the live entry for key held expected and is now
+// gone, and (false, nil) when the entry is absent, expired or holds
+// anything else, with the equality and the atomicity CompareAndSwapCtx has
+// on the driver. It is how a caller that read an entry and decided it must
+// go (an expired or revoked record) removes exactly the entry it read: an
+// entry written after the read is left as it is.
 type CacheSwapper interface {
 	CompareAndSwapCtx(ctx context.Context, key string, expected, value interface{}, ttl time.Duration) (bool, error)
+	CompareAndDeleteCtx(ctx context.Context, key string, expected interface{}) (bool, error)
 }
 
 // CacheSetStore is the optional capability a Cache implements to keep an

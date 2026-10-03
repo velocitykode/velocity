@@ -27,3 +27,23 @@ func (d *Driver) PushDelayedCtx(ctx context.Context, job queue.Job) error {
 }
 
 func admitJob(job queue.Job) (string, error) { return queue.AdmitJob(job) }
+
+func (d *Driver) pop() queue.Job { return nil }
+
+// Settle reads a popped job's batch id through the queue package's
+// interface with no recover: the leaf is in the contain rule's scope.
+func (d *Driver) Settle() string {
+	if bj, ok := d.pop().(queue.Batchable); ok {
+		return bj.GetBatchID() // want contain
+	}
+	return ""
+}
+
+// SettleContained defers the recover: fine.
+func (d *Driver) SettleContained() (id string) {
+	defer func() { _ = recover() }()
+	if bj, ok := d.pop().(queue.Batchable); ok {
+		return bj.GetBatchID()
+	}
+	return ""
+}

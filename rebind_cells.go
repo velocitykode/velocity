@@ -215,6 +215,9 @@ func (c appSessionCache) Has(key string) bool                         { return c
 func (c appSessionCache) CompareAndSwapCtx(ctx context.Context, key string, expected, value interface{}, ttl time.Duration) (bool, error) {
 	return c.b().CompareAndSwapCtx(ctx, key, expected, value, ttl)
 }
+func (c appSessionCache) CompareAndDeleteCtx(ctx context.Context, key string, expected interface{}) (bool, error) {
+	return c.b().CompareAndDeleteCtx(ctx, key, expected)
+}
 func (c appSessionCache) SetAddCtx(ctx context.Context, key string, ttl time.Duration, members ...string) error {
 	return c.b().SetAddCtx(ctx, key, ttl, members...)
 }

@@ -89,7 +89,7 @@ func TestProcessJob_NonIdentifiable_HashesOnce(t *testing.T) {
 
 	atomic.StoreInt64(&marshalCalls, 0)
 	w.handleJobFailure(context.Background(), hashCountJob{N: 7}, "hashCountJob",
-		errBench, 0, ReservationToken{})
+		errBench, 0, ReservationToken{}, "", false)
 
 	if got := atomic.LoadInt64(&marshalCalls); got != 1 {
 		t.Fatalf("payload hashed %d times over one lifecycle, want 1 "+
@@ -144,7 +144,7 @@ func BenchmarkProcessJob_NonIdentifiable(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		w.handleJobFailure(ctx, job, "hashCountJob", errBench, 0, ReservationToken{})
+		w.handleJobFailure(ctx, job, "hashCountJob", errBench, 0, ReservationToken{}, "", false)
 	}
 	b.StopTimer()
 

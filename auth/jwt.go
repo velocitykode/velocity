@@ -14,6 +14,8 @@ import (
 	"github.com/velocitykode/velocity/auth/internal/identity"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
+	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
 // ErrUnsupportedSigningMethod is returned when the configured JWT algorithm
@@ -30,11 +32,71 @@ var ErrUnsupportedSigningMethod = errors.New("velocity/auth: unsupported jwt sig
 // against a stale generation and is rejected.
 var ErrRefreshGenerationStale = errors.New("velocity/auth: refresh token generation is stale")
 
+// ErrRefreshTokenUsed is returned from RefreshToken when the refresh
+// token's JTI is already on the blacklist. Two things put it there: an
+// earlier refresh consumed it (with the blacklist enabled a refresh token
+// buys exactly one access token, and of N calls presenting the same token,
+// at once or one after another, one succeeds and the others get this
+// error), or the application revoked the JTI through RevokeToken. The
+// client's action is the same in both cases: it signs in again.
+//
+// A refresh token whose expiry passes before it is consumed is not
+// reported as used: RefreshToken refuses it with jwt.ErrTokenExpired, the
+// error ValidateToken gives an expired token.
+var ErrRefreshTokenUsed = errors.New("velocity/auth: refresh token has already been used")
+
+// ErrTokenClaimMissing is returned from ValidateToken (and so from
+// ValidateAccessToken and RefreshToken) for a correctly signed token that
+// carries no expiry (exp) or no token id (jti). Both are required of every
+// token: a token without an expiry never lapses, and the blacklist keys on
+// the id, so tokens without one would share a single entry and one
+// revocation or refresh would spend them all. Tokens minted by this
+// manager always carry both.
+var ErrTokenClaimMissing = errors.New("velocity/auth: jwt is missing a required claim")
+
+// errTokenRevoked is ValidateToken's answer for a token whose JTI is on
+// the blacklist. RefreshToken reports it as ErrRefreshTokenUsed, so a
+// reused refresh token gets one error whether it lost the consume or
+// arrived after it.
+var errTokenRevoked = errors.New("velocity/auth: token has been revoked")
+
 // BlacklistStore defines the interface for JWT token blacklist storage.
 // Implement with Redis or another persistent store for production use.
+//
+// Implementations MUST be safe for concurrent use.
 type BlacklistStore interface {
-	// Add adds a token JTI to the blacklist with an expiration time.
-	Add(jti string, expiresAt time.Time)
+	// Add puts a token JTI on the blacklist until expiresAt and reports
+	// whether this call consumed it: true when the JTI was not on the
+	// blacklist before the call (an entry past its expiry counts as
+	// absent), false when it already was. The check and the write are one
+	// atomic step in the store (a set-if-absent, e.g. Redis SET NX with
+	// the expiry): of N concurrent calls with one JTI exactly one returns
+	// true. RefreshToken relies on this to spend a refresh token once.
+	//
+	// The step is atomic across every process sharing the backend, not
+	// only within one: a Redis store uses SET NX with the expiry or one
+	// Lua script, never a get followed by a set.
+	//
+	// A backend failure fails closed: the store returns false (the refresh
+	// is refused), never true.
+	//
+	// An Add that returns false never shortens the existing entry: the
+	// entry keeps the later of its own expiry and expiresAt, so a
+	// revocation repeated with a longer expiry holds for the longer one.
+	//
+	// A deadline that has already passed consumes nothing: when expiresAt
+	// is not after the store's current time, Add returns false and writes
+	// no entry, whatever the blacklist holds. The store compares against
+	// its own clock inside the same atomic step (a Redis store does both
+	// in one Lua script; one that turns expiresAt into a relative TTL
+	// returns false when the TTL is not positive). Without the
+	// rule the entry such a call wrote would be absent on arrival, so every
+	// later call with that JTI would also report true: a refresh token
+	// that expires between its validation and its consume would buy one
+	// access token per caller. With it, a call that returns true leaves an
+	// entry that stays live until expiresAt, and every call after
+	// expiresAt returns false.
+	Add(jti string, expiresAt time.Time) bool
 	// IsBlacklisted checks whether a token JTI has been blacklisted.
 	IsBlacklisted(jti string) bool
 	// Cleanup removes expired entries.
@@ -54,10 +116,28 @@ func NewInMemoryBlacklistStore() *InMemoryBlacklistStore {
 	}
 }
 
-func (s *InMemoryBlacklistStore) Add(jti string, expiresAt time.Time) {
+// Add puts jti on the blacklist until expiresAt and reports whether it was
+// absent before the call (an expired entry counts as absent). The check
+// and the write run under one write lock, so of N concurrent calls with
+// one JTI exactly one returns true. A call that returns false never
+// shortens the live entry: it keeps the later of the two expiries. An
+// expiresAt that is not after the current time returns false and writes
+// nothing: the clock is read once, under the lock, for both checks.
+func (s *InMemoryBlacklistStore) Add(jti string, expiresAt time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now()
+	if !expiresAt.After(now) {
+		return false
+	}
+	if current, exists := s.entries[jti]; exists && !now.After(current) {
+		if expiresAt.After(current) {
+			s.entries[jti] = expiresAt
+		}
+		return false
+	}
 	s.entries[jti] = expiresAt
+	return true
 }
 
 func (s *InMemoryBlacklistStore) IsBlacklisted(jti string) bool {
@@ -68,8 +148,12 @@ func (s *InMemoryBlacklistStore) IsBlacklisted(jti string) bool {
 		return false
 	}
 	if time.Now().After(expiresAt) {
+		// Drop the entry only if it is still the expired one read above:
+		// an Add between the two locks may have put a live entry there.
 		s.mu.Lock()
-		delete(s.entries, jti)
+		if current, still := s.entries[jti]; still && current.Equal(expiresAt) {
+			delete(s.entries, jti)
+		}
 		s.mu.Unlock()
 		return false
 	}
@@ -89,12 +173,21 @@ func (s *InMemoryBlacklistStore) Cleanup() {
 
 // JWTConfig holds JWT configuration
 type JWTConfig struct {
-	Secret           string
-	Algorithm        string
-	TTL              int    // Minutes
-	RefreshTTL       int    // Minutes
-	Issuer           string // Optional JWT issuer (iss claim)
-	Audience         string // Optional JWT audience (aud claim)
+	Secret     string
+	Algorithm  string
+	TTL        int    // Minutes
+	RefreshTTL int    // Minutes
+	Issuer     string // Optional JWT issuer (iss claim)
+	Audience   string // Optional JWT audience (aud claim)
+	// BlacklistEnabled turns on JTI revocation: Logout blacklists the access
+	// token, ValidateToken refuses a blacklisted JTI, and RefreshToken
+	// spends each refresh token once (a second use gets
+	// ErrRefreshTokenUsed). When false there is no one-shot refresh: a
+	// refresh token mints access tokens as often as it is presented until
+	// it expires or its generation is revoked (Logout and RevokeAll bump
+	// the user's refresh generation; that check runs in either mode). The
+	// mode offers no replay exclusion and no reuse signal: a copied
+	// refresh token works alongside the original and nothing reports it.
 	BlacklistEnabled bool
 	BlacklistStore   BlacklistStore // Optional persistent store; defaults to in-memory
 
@@ -646,9 +739,19 @@ func (j *JWTManager) ValidateToken(tokenString string) (*Claims, error) {
 		return nil, errors.New("velocity/auth: invalid token")
 	}
 
+	// Every token carries an expiry and an id. Without the expiry the
+	// revocation and refresh paths have no time to key a blacklist entry
+	// on; without the id every such token would share one blacklist key.
+	if claims.ExpiresAt == nil {
+		return nil, errchain.Errorf("%w: exp", ErrTokenClaimMissing)
+	}
+	if claims.ID == "" {
+		return nil, errchain.Errorf("%w: jti", ErrTokenClaimMissing)
+	}
+
 	// Check if token is blacklisted
 	if j.config.BlacklistEnabled && j.IsBlacklisted(claims.ID) {
-		return nil, errors.New("velocity/auth: token has been revoked")
+		return nil, errTokenRevoked
 	}
 
 	return claims, nil
@@ -677,10 +780,33 @@ func (j *JWTManager) ValidateAccessToken(tokenString string) (*Claims, error) {
 // H-07 fix uses this to invalidate every outstanding refresh token on
 // Logout: bumping the counter immediately stales all prior refresh
 // tokens for that user, without writing each JTI to a blacklist.
+//
+// With JWTConfig.BlacklistEnabled a refresh token is spent once. The steps
+// run in this order: validate, type check, generation check, user lookup,
+// consume (BlacklistStore.Add), issue. The consume is the store's one
+// atomic step, so of N calls presenting one token, concurrent or not,
+// exactly one gets an access token and the others get ErrRefreshTokenUsed.
+// The store refuses a consume whose deadline has passed, so a token that
+// was valid at the first step and expired before the consume (a slow
+// generation store or user lookup) buys nothing: every caller is refused
+// with jwt.ErrTokenExpired, as ValidateToken refuses an expired token.
+// A failure before the consume (a stale generation, a user-store error)
+// leaves the token usable for a retry. A failure after it (the store's Add
+// panicking, or signing the new token failing) burns the token and issues
+// nothing: the refresh fails closed and the client signs in again.
+//
+// With BlacklistEnabled false nothing is consumed: the refresh token stays
+// usable until it expires or its generation is revoked, with no replay
+// exclusion and no reuse signal.
 func (j *JWTManager) RefreshToken(refreshTokenString string, userStore UserStore) (string, error) {
 	// Validate refresh token
 	claims, err := j.ValidateToken(refreshTokenString)
 	if err != nil {
+		if errchain.Is(err, errTokenRevoked) {
+			// The JTI is on the blacklist: for a refresh token that is a
+			// consume that already landed.
+			return "", ErrRefreshTokenUsed
+		}
 		return "", err
 	}
 
@@ -714,31 +840,74 @@ func (j *JWTManager) RefreshToken(refreshTokenString string, userStore UserStore
 	}
 	// FindByID may return (nil, nil) for an unknown id (user deleted since
 	// the refresh token was minted). Surface that as an error so the
-	// GenerateToken claims deref below never sees a nil user.
-	if user == nil {
+	// GenerateToken claims deref below never sees a nil user. A typed nil
+	// is the same answer: refused here, before the consume, so the token is
+	// not spent on a user that cannot be issued for.
+	if nilval.Is(user) {
 		return "", ErrUserNotFound
 	}
 
-	// Blacklist old refresh token using its actual expiry
+	// Consume the refresh token: last, so a failure above leaves it usable,
+	// and before issuance, so only the call that consumed it issues.
 	if j.config.BlacklistEnabled {
-		j.RevokeToken(claims.ID, claims.ExpiresAt.Time)
+		consumed, err := j.consumeJTI(claims.ID, claims.ExpiresAt.Time)
+		if err != nil {
+			return "", err
+		}
+		if !consumed {
+			// The store refuses for two reasons: the JTI is on the
+			// blacklist, or the token's expiry passed since ValidateToken
+			// accepted it. This clock read only names the error; the
+			// refusal itself was decided inside the store's atomic step.
+			if !time.Now().Before(claims.ExpiresAt.Time) {
+				return "", errchain.Errorf("velocity/auth: refresh token expired before it was consumed: %w", jwt.ErrTokenExpired)
+			}
+			return "", ErrRefreshTokenUsed
+		}
 	}
 
 	// Generate new access token
 	return j.GenerateToken(user)
 }
 
+// consumeJTI spends jti on the blacklist store and reports whether this
+// call was the one that consumed it. The store is user code: it is called
+// under no framework lock (blStore copies the interface out first), and a
+// panic in its Add is returned as an error, so the caller issues nothing.
+func (j *JWTManager) consumeJTI(jti string, expiresAt time.Time) (consumed bool, err error) {
+	store := j.blStore()
+	defer func() {
+		if r := recover(); r != nil {
+			consumed = false
+			err = errchain.Errorf("velocity/auth: jwt blacklist store failed: %w", panicerr.FromRecovered(r))
+		}
+	}()
+	return store.Add(jti, j.blacklistExpiry(expiresAt)), nil
+}
+
+// blacklistExpiry is the expiry a blacklist entry gets: the token's own
+// when known, else the access token TTL from now.
+func (j *JWTManager) blacklistExpiry(expiresAt time.Time) time.Time {
+	if !expiresAt.IsZero() {
+		return expiresAt
+	}
+	return time.Now().Add(time.Duration(j.config.TTL) * time.Minute)
+}
+
 // RevokeToken adds token to blacklist. If expiresAt is provided, use it as the
-// blacklist expiry; otherwise falls back to the access token TTL.
+// blacklist expiry; otherwise falls back to the access token TTL. Revoking
+// a JTI that is already on the blacklist never shortens its entry: the
+// later of the two expiries holds. An expiresAt that has already passed
+// writes nothing: the token it names no longer validates.
 func (j *JWTManager) RevokeToken(jti string, expiresAt ...time.Time) {
 	if j.config.BlacklistEnabled {
 		var expiry time.Time
-		if len(expiresAt) > 0 && !expiresAt[0].IsZero() {
+		if len(expiresAt) > 0 {
 			expiry = expiresAt[0]
-		} else {
-			expiry = time.Now().Add(time.Duration(j.config.TTL) * time.Minute)
 		}
-		j.blStore().Add(jti, expiry)
+		// Revocation is idempotent: whether the JTI was already on the
+		// blacklist does not matter here.
+		_ = j.blStore().Add(jti, j.blacklistExpiry(expiry))
 	}
 }
 

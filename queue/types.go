@@ -239,7 +239,9 @@ type Identifiable interface {
 // OnQueuer is an optional interface that jobs can implement to specify
 // which queue they should be dispatched to. When a job implements this
 // interface and no explicit queue name is passed to Push/PushDelayed,
-// the value from OnQueue() is used.
+// the value from OnQueue() is used. In a batch the job's non-empty name
+// wins over the batch's queue (PendingBatch.OnQueue) and an empty name
+// takes the batch's queue.
 type OnQueuer interface {
 	OnQueue() string
 }

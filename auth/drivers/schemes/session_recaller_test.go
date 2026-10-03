@@ -94,7 +94,10 @@ func (failingServerStore) Touch(_ context.Context, _ string, _, _ time.Time) err
 func (failingServerStore) UpdateData(_ context.Context, _ string, _ func(map[string]any) (map[string]any, error), _, _ time.Time) error {
 	return errStoreOffline
 }
-func (failingServerStore) Delete(_ context.Context, _ string) error           { return nil }
+func (failingServerStore) Delete(_ context.Context, _ string) error { return nil }
+func (failingServerStore) DeleteIf(context.Context, string, func(*auth.SessionMeta) bool) (bool, error) {
+	return false, errStoreOffline
+}
 func (failingServerStore) DeleteAllForUser(_ context.Context, _ string) error { return nil }
 func (failingServerStore) ListForUser(_ context.Context, _ string) ([]*auth.SessionMeta, error) {
 	return nil, nil
