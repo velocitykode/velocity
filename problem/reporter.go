@@ -8,6 +8,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 // ErrorContext carries the facts about where and how an error happened.
@@ -196,7 +197,7 @@ func (r *MultiReporter) Report(err error, ctx *ErrorContext) {
 
 // AddReporter appends a reporter.
 func (r *MultiReporter) AddReporter(reporter Reporter) {
-	if reporter == nil {
+	if nilval.Is(reporter) {
 		return
 	}
 	r.mu.Lock()

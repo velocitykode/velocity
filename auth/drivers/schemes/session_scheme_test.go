@@ -839,7 +839,7 @@ func TestSessionScheme_Login(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			scheme := tt.setupScheme()
-			req := tt.setupReq()
+			req := ensureSessionContext(tt.setupReq())
 			w := httptest.NewRecorder()
 
 			err := scheme.Login(w, req, tt.user, tt.remember...)
@@ -966,7 +966,7 @@ func TestSessionScheme_LoginByID(t *testing.T) {
 				scheme.encryptor = enc
 			}
 
-			req := tt.setupReq()
+			req := ensureSessionContext(tt.setupReq())
 			w := httptest.NewRecorder()
 
 			err := scheme.LoginByID(w, req, tt.id, tt.remember...)
@@ -1136,7 +1136,7 @@ func TestSessionScheme_Attempt(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			scheme := tt.setupScheme()
-			req := tt.setupReq()
+			req := ensureSessionContext(tt.setupReq())
 			w := httptest.NewRecorder()
 
 			success, err := scheme.Attempt(w, req, tt.credentials, tt.remember...)
@@ -1295,7 +1295,7 @@ func TestSessionScheme_Logout(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			scheme := tt.setupScheme()
-			req := tt.setupReq()
+			req := ensureSessionContext(tt.setupReq())
 			w := httptest.NewRecorder()
 
 			err := scheme.Logout(w, req)
@@ -1504,7 +1504,7 @@ func TestSessionScheme_SessionRegeneration(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			scheme, session := tt.setupScheme()
-			req := httptest.NewRequest("POST", "/login", nil)
+			req := WithSessionContext(httptest.NewRequest("POST", "/login", nil))
 			req.AddCookie(&http.Cookie{Name: "test_session", Value: "session-id"})
 			w := httptest.NewRecorder()
 
@@ -1557,7 +1557,7 @@ func TestSessionScheme_SessionInvalidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			scheme, session := tt.setupScheme()
-			req := httptest.NewRequest("POST", "/logout", nil)
+			req := WithSessionContext(httptest.NewRequest("POST", "/logout", nil))
 			req.AddCookie(&http.Cookie{Name: "test_session", Value: "session-id"})
 			w := httptest.NewRecorder()
 
@@ -1601,7 +1601,7 @@ func TestLogin_RegenerateErrorFailsLogin(t *testing.T) {
 		return g
 	}()
 
-	req := httptest.NewRequest("POST", "/login", nil)
+	req := WithSessionContext(httptest.NewRequest("POST", "/login", nil))
 	req.AddCookie(&http.Cookie{Name: "test_session", Value: originalID})
 	w := httptest.NewRecorder()
 	user := &mockSessionSchemeUser{id: "victim123"}
@@ -1649,7 +1649,7 @@ func TestSessionScheme_LoginByID_UnknownID(t *testing.T) {
 	g.userStore.Store(&userStoreHolder{p: userStore})
 
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "/login", nil)
+	r := WithSessionContext(httptest.NewRequest("POST", "/login", nil))
 
 	var err error
 	func() {
@@ -1672,7 +1672,8 @@ func TestSessionScheme_LoginByID_UnknownID(t *testing.T) {
 // TestSessionScheme_Login_NilUser guards the deref site directly: Login is
 // exported, so any caller (not just LoginByID) can reach it with a nil user.
 // It must return auth.ErrUserNotFound before touching the session, never
-// panic, and write nothing.
+// panic, and write nothing. The request carries a session context: one
+// without is refused for that first, whatever the user.
 func TestSessionScheme_Login_NilUser(t *testing.T) {
 	g := &SessionScheme{
 		store:  &mockSessionSchemeStore{},
@@ -1682,7 +1683,7 @@ func TestSessionScheme_Login_NilUser(t *testing.T) {
 	g.userStore.Store(&userStoreHolder{p: &mockSessionSchemeUserStore{}})
 
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "/login", nil)
+	r := WithSessionContext(httptest.NewRequest("POST", "/login", nil))
 
 	var err error
 	func() {
@@ -1700,4 +1701,14 @@ func TestSessionScheme_Login_NilUser(t *testing.T) {
 	if cookies := w.Result().Cookies(); len(cookies) != 0 {
 		t.Fatalf("Login(nil) wrote %d cookie(s), want 0", len(cookies))
 	}
+}
+
+// ensureSessionContext gives r the session context a caller outside the
+// session middleware attaches before it calls Login, LoginByID, Attempt or
+// Logout (WithSessionContext), unless r already carries one.
+func ensureSessionContext(r *http.Request) *http.Request {
+	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); ok && holder != nil {
+		return r
+	}
+	return WithSessionContext(r)
 }

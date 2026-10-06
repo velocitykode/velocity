@@ -38,6 +38,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 // Logger is the fallback logger. The zero value is ready to use and every
@@ -66,7 +67,7 @@ func (l Logger) With(kvs ...any) contract.Logger { return contract.BindFields(l,
 
 // Resolve returns l, or the fallback Logger when l is nil.
 func Resolve(l contract.Logger) contract.Logger {
-	if l == nil {
+	if nilval.Is(l) {
 		return Logger{}
 	}
 	return l

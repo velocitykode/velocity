@@ -21,6 +21,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
@@ -62,7 +63,7 @@ type CookieStore struct {
 
 // NewCookieStore creates a new cookie session store with an injected encryptor.
 func NewCookieStore(config auth.SessionConfig, encryptor crypto.Encryptor) (*CookieStore, error) {
-	if encryptor == nil {
+	if nilval.Is(encryptor) {
 		return nil, fmt.Errorf("cookie store requires an encryptor")
 	}
 	return &CookieStore{

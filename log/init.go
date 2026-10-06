@@ -7,6 +7,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/driverregistry"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/log/drivers"
 )
 
@@ -107,10 +108,10 @@ func ExtractLevel(config map[string]any) contract.LogLevel {
 //     stricter compliance environment covers every channel.
 //
 // Returns inner unchanged when no opt-in is in effect so the common
-// path stays allocation-free.
+// path stays allocation-free, and nil for a nil inner, typed or not.
 func WrapWithRedactors(inner Logger, cfg LogConfig) Logger {
-	if inner == nil {
-		return inner
+	if nilval.Is(inner) {
+		return nil
 	}
 	if rs, ok := cfg.Config["redactors"].([]Redactor); ok && len(rs) > 0 {
 		return WithRedactors(inner, rs...)

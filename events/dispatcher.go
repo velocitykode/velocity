@@ -16,6 +16,7 @@ import (
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/goroutine"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -256,7 +257,7 @@ func sameFailureEvent(marker, event interface{}) bool {
 // can be used with Off() to unregister the listener. Panics with
 // *contract.RegistrationError if listener is nil or key is a zero EventType.
 func (d *DefaultDispatcher) Listen(key interface{}, listener Listener) int {
-	if listener == nil {
+	if nilval.Is(listener) {
 		panic(contract.NewRegistrationError("events", "nil listener"))
 	}
 	if k, ok := key.(EventType); ok && k.matches == nil {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/queue"
 )
@@ -671,7 +672,7 @@ func InitializeQueueIntegration(dispatcher *QueueIntegratedDispatcher, driver qu
 		return &job, nil
 	})
 
-	if dispatcher != nil && driver != nil {
+	if dispatcher != nil && !nilval.Is(driver) {
 		dispatcher.SetQueueDriver(driver)
 	}
 

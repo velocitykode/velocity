@@ -19,6 +19,7 @@ import (
 	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 const (
@@ -153,7 +154,7 @@ func (g *JWTScheme) effectiveHasher() auth.Hasher {
 // cost as the real verify; without this, a configured cost of 14 would
 // have the dummy at cost 10 and the H-09 timing channel would reopen.
 func (g *JWTScheme) SetHasher(h auth.Hasher) {
-	if h == nil {
+	if nilval.Is(h) {
 		return
 	}
 	g.mu.Lock()
@@ -192,7 +193,7 @@ func (g *JWTScheme) getTrustedProxies() []*net.IPNet {
 // Stored via atomic.Pointer so concurrent Attempt() readers cannot tear the
 // two-word interface fetch on the throttler field (H-10 fix).
 func (g *JWTScheme) SetLoginThrottler(t contract.LoginThrottler) {
-	if t == nil {
+	if nilval.Is(t) {
 		g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
 		return
 	}
@@ -234,6 +235,9 @@ func NewJWTScheme(userStore auth.UserStore, config auth.JWTConfig) (*JWTScheme, 
 	if err != nil {
 		return nil, err
 	}
+	// The scheme reads plain settings from its config copy; the manager
+	// owns the blacklist store, and no second reference to it is kept.
+	config.BlacklistStore = nil
 	g := &JWTScheme{
 		jwtManager:  manager,
 		config:      config,
@@ -344,30 +348,69 @@ func (g *JWTScheme) cacheUser(token string, user contract.Authenticatable) {
 	g.userCache[token] = cachedUser{user: user, cachedAt: time.Now()}
 }
 
-// Check if user is authenticated via JWT
+// Check reports whether the request carries a valid access token for a
+// user that still exists.
+//
+// The token's validity (signature, expiry, revocation) is decided once, at
+// validation, before the user is looked up: a decision that grants one
+// request is taken once at validation, and a decision that mints a
+// credential is re-decided inside the minting step (see RefreshToken). A
+// token that expires or is revoked after that instant, during the user
+// lookup or while the handler runs, still serves this call and stops
+// authenticating at the next one.
+//
+// Errors are swallowed: a blacklist store that cannot answer refuses the
+// request like an invalid token does. Callers that need to tell an outage
+// from a bad credential use CheckWithError.
 func (g *JWTScheme) Check(r *http.Request) bool {
+	ok, _ := g.CheckWithError(r)
+	return ok
+}
+
+// CheckWithError reports whether the request is authenticated and, when it
+// is not, whether that is the credential's doing. The returned error is:
+//
+//   - nil: the request is unauthenticated for ordinary reasons (no token,
+//     an invalid, expired or revoked token, a user that no longer exists
+//     or could not be loaded)
+//   - an error wrapping auth.ErrBlacklistUnavailable: the blacklist store
+//     could not say whether the token is revoked; fail-closed (returns
+//     false). The credential may be good: answer with a service failure,
+//     not a 401
+//
+// Validity is decided once, at validation, as for Check.
+func (g *JWTScheme) CheckWithError(r *http.Request) (bool, error) {
 	token := g.getTokenFromRequest(r)
 	if token == "" {
-		return false
+		return false, nil
 	}
 
 	claims, err := g.jwtManager.ValidateAccessToken(token)
 	if err != nil {
-		return false
+		if errchain.Is(err, auth.ErrBlacklistUnavailable) {
+			return false, err
+		}
+		return false, nil
 	}
 
 	// Validate user still exists
 	user, err := g.loadUserStore().FindByIDCtx(r.Context(), claims.UserID)
 	if err != nil || user == nil {
-		return false
+		return false, nil
 	}
 
 	// Cache user for this request
 	g.cacheUser(token, user)
-	return true
+	return true, nil
 }
 
-// User returns the authenticated user from JWT
+// User returns the authenticated user from JWT, or nil.
+//
+// The token's validity is decided once, at validation, before the user is
+// looked up, under the same rule as Check: a token that expires or is
+// revoked during the lookup still serves this call and stops
+// authenticating at the next one. A blacklist store that cannot answer
+// refuses the request (nil).
 func (g *JWTScheme) User(r *http.Request) contract.Authenticatable {
 	token := g.getTokenFromRequest(r)
 	if token == "" {
@@ -518,38 +561,47 @@ func (g *JWTScheme) RevokeAllRefreshTokensForUser(_ context.Context, userID stri
 
 // Logout revokes the JWT token
 //
-// In addition to blacklisting the access token's JTI, Logout bumps the
-// user's refresh-token generation so every outstanding refresh token for
-// the user is rejected on the next /auth/refresh call (audit H-07).
+// It signs the user out with the token the request carries, an access
+// token or a refresh token: the token's JTI is blacklisted and the user's
+// refresh-token generation is bumped, so every outstanding refresh token
+// for the user is rejected on the next /auth/refresh call (audit H-07).
 // Without the bump a phished refresh token would survive Logout for up
-// to RefreshTTL (default 14 days).
+// to RefreshTTL (default 14 days). Both steps are the manager's
+// SignOutToken, which verifies the token without reading the blacklist: a
+// sign-out does not depend on the store it writes to.
+//
+// A request with no token, or with a token that does not verify (expired,
+// forged, malformed), is already signed out: Logout returns nil and
+// changes nothing. A refresh token from before the user's last generation
+// bump gets the same nil and nothing is written; it is held back by the
+// generation counter alone, not by the blacklist (see
+// auth.JWTManager.SignOutToken). A refresh generation store that cannot
+// say whether a refresh token is that old is an error, returned with
+// nothing written. When the blacklist store cannot take the revocation,
+// Logout has still bumped the refresh generation and dropped the cached
+// user, and returns the error (it wraps auth.ErrBlacklistUnavailable): the
+// token is not known to be revoked and the caller must not report the
+// sign-out complete. A refresh generation store that fails is returned
+// the same way. Calling Logout again with the same token completes a
+// sign-out that failed part-way.
+//
+// Signing out with only a refresh token does not end access tokens
+// already issued; they live until they expire. See
+// auth.JWTManager.SignOutToken for that limit and for what a revoked or
+// spent token can still do until it expires.
 func (g *JWTScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	token := g.getTokenFromRequest(r)
 	if token == "" {
 		return nil
 	}
 
-	// Parse token to get JTI
-	claims, err := g.jwtManager.ValidateToken(token)
-	if err != nil {
-		// Even if token is invalid, we proceed with logout
+	// Nil claims mean the token signs nobody out (it does not verify, or
+	// it is a refresh token of a past generation): already signed out,
+	// whatever error describes why. A store failure always comes with
+	// claims, so it is never dropped here.
+	claims, err := g.jwtManager.SignOutToken(token)
+	if claims == nil {
 		return nil
-	}
-
-	// Revoke token using its actual expiry for blacklist duration
-	g.jwtManager.RevokeToken(claims.ID, claims.ExpiresAt.Time)
-
-	// Bump the user's refresh-token generation so every outstanding
-	// refresh token for this user is invalidated on its next use.
-	// Best-effort: a counter-store transport error is swallowed so
-	// Logout still completes; the access JTI is already blacklisted
-	// above, so the immediate logout still has effect.
-	userIDStr, _ := claims.UserID.(string)
-	if userIDStr == "" && claims.UserID != nil {
-		userIDStr = errchain.Sprintf("%v", claims.UserID)
-	}
-	if userIDStr != "" {
-		_, _ = g.jwtManager.BumpRefreshGeneration(userIDStr)
 	}
 
 	// Clear cache
@@ -557,7 +609,7 @@ func (g *JWTScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	delete(g.userCache, token)
 	g.mu.Unlock()
 
-	return nil
+	return err
 }
 
 // SetUserStore sets the user store. Stored via atomic.Pointer so
@@ -565,7 +617,7 @@ func (g *JWTScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 // interface fetch on the user store field (H-10 fix). Passing nil leaves
 // the previously installed user store in place.
 func (g *JWTScheme) SetUserStore(userStore auth.UserStore) {
-	if userStore == nil {
+	if nilval.Is(userStore) {
 		return
 	}
 	g.userStore.Store(&userStoreHolder{p: userStore})
@@ -603,9 +655,12 @@ func (g *JWTScheme) GenerateRefreshToken(user contract.Authenticatable) (string,
 // With JWTConfig.BlacklistEnabled the refresh token is spent once: of N
 // calls presenting one token exactly one gets an access token and the
 // others get auth.ErrRefreshTokenUsed. A token that expires before it is
-// consumed buys nothing (jwt.ErrTokenExpired). A user-store failure leaves the
-// token usable for a retry; a failure after the consume burns it and the
-// client signs in again. With BlacklistEnabled false the refresh token is
+// consumed buys nothing (jwt.ErrTokenExpired), and so does one whose user
+// signs out while the user is looked up (auth.ErrRefreshGenerationStale).
+// A user-store failure leaves the token usable for a retry; a blacklist
+// store that cannot answer issues nothing (auth.ErrBlacklistUnavailable);
+// a failure after the consume burns the token and the client signs in
+// again. With BlacklistEnabled false the refresh token is
 // reusable until it expires or the user's refresh generation is bumped.
 // See auth.JWTManager.RefreshToken.
 func (g *JWTScheme) RefreshToken(refreshToken string) (string, error) {

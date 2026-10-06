@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/auth/drivers/schemes"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/router"
 )
@@ -47,7 +48,7 @@ func csrfResolverApp(t *testing.T) *App {
 func csrfResolverLogin(t *testing.T, a *App) *http.Cookie {
 	t.Helper()
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodPost, "/login", nil)
+	r := schemes.WithSessionContext(httptest.NewRequest(http.MethodPost, "/login", nil))
 	if err := a.Services.Auth.(*auth.Manager).Login(w, r, &saveSeamUser{id: 9}); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestCSRFSessionResolver_RejectsSessionsTheStoreRejects(t *testing.T) {
 		m := a.Services.Auth.(*auth.Manager)
 		cookie := csrfResolverLogin(t, a)
 		loginID := m.Session(csrfResolverRequest(http.MethodGet, cookie)).ID()
-		if err := m.Logout(httptest.NewRecorder(), csrfResolverRequest(http.MethodPost, cookie)); err != nil {
+		if err := m.Logout(httptest.NewRecorder(), schemes.WithSessionContext(csrfResolverRequest(http.MethodPost, cookie))); err != nil {
 			t.Fatalf("Logout: %v", err)
 		}
 		if id := m.Session(csrfResolverRequest(http.MethodGet, cookie)).ID(); id == loginID {
@@ -226,7 +227,7 @@ func TestCSRFSessionResolver_ExpiredSessionPostGets419(t *testing.T) {
 		mux := http.NewServeMux()
 		mux.Handle("/form", a.Services.CSRF.(*csrf.CSRF).Middleware(http.HandlerFunc(ok)))
 		lw := httptest.NewRecorder()
-		if err := a.Services.Auth.(*auth.Manager).Login(lw, httptest.NewRequest(http.MethodPost, "/login", nil), &saveSeamUser{id: 9}); err != nil {
+		if err := a.Services.Auth.(*auth.Manager).Login(lw, schemes.WithSessionContext(httptest.NewRequest(http.MethodPost, "/login", nil)), &saveSeamUser{id: 9}); err != nil {
 			t.Fatalf("Login: %v", err)
 		}
 		var live *http.Cookie

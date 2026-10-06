@@ -4,6 +4,7 @@ import (
 	"sync/atomic"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -24,8 +25,12 @@ type forwardTarget struct{ logger contract.Logger }
 
 var _ contract.Logger = (*Forwarder)(nil)
 
-// Set makes l the target; nil forwards to the fallback.
+// Set makes l the target; nil, or a typed nil, forwards to the fallback
+// and is stored as nil, so Installed reports none.
 func (f *Forwarder) Set(l contract.Logger) {
+	if nilval.Is(l) {
+		l = nil
+	}
 	f.target.Store(&forwardTarget{logger: l})
 }
 
@@ -37,11 +42,21 @@ func (f *Forwarder) Installed() contract.Logger {
 	return nil
 }
 
-func (f *Forwarder) Debug(msg string, kvs ...any) { Resolve(f.Installed()).Debug(msg, kvs...) }
-func (f *Forwarder) Info(msg string, kvs ...any)  { Resolve(f.Installed()).Info(msg, kvs...) }
-func (f *Forwarder) Warn(msg string, kvs ...any)  { Resolve(f.Installed()).Warn(msg, kvs...) }
-func (f *Forwarder) Error(msg string, kvs ...any) { Resolve(f.Installed()).Error(msg, kvs...) }
-func (f *Forwarder) Fatal(msg string, kvs ...any) { Resolve(f.Installed()).Fatal(msg, kvs...) }
+// current returns the target a line is written to: the logger Set stored,
+// or the fallback Logger. Set stores a typed nil as nil, so a comparison
+// with nil is enough here and a line pays for no more.
+func (f *Forwarder) current() contract.Logger {
+	if t := f.target.Load(); t != nil && t.logger != nil {
+		return t.logger
+	}
+	return Logger{}
+}
+
+func (f *Forwarder) Debug(msg string, kvs ...any) { f.current().Debug(msg, kvs...) }
+func (f *Forwarder) Info(msg string, kvs ...any)  { f.current().Info(msg, kvs...) }
+func (f *Forwarder) Warn(msg string, kvs ...any)  { f.current().Warn(msg, kvs...) }
+func (f *Forwarder) Error(msg string, kvs ...any) { f.current().Error(msg, kvs...) }
+func (f *Forwarder) Fatal(msg string, kvs ...any) { f.current().Fatal(msg, kvs...) }
 
 // With binds kvs on the forwarder itself, not on the current target, so a
 // bound logger follows a later Set too. The pairs come before each line's
@@ -57,7 +72,7 @@ func (f *Forwarder) With(kvs ...any) contract.Logger {
 // either), la keeps the logger it had, and the caller goes on to hand the
 // rest. A nil la is ignored.
 func (f *Forwarder) Hand(la contract.LoggerAware, warning string) {
-	if la == nil {
+	if nilval.Is(la) {
 		return
 	}
 	defer func() {

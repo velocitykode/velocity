@@ -90,3 +90,65 @@ func Format[T any](err error, v any, x fmt.Stringer, w io.Writer, kvs []any, c *
 	_ = fmt.Errorf("w: %w", err)     /* want format */ //error-inspection-ok: bare
 	_ = fmt.Errorf("w: %w", err)     //error-inspection-ok: a sentinel this package made
 }
+
+// Store is an interface this module declares; StoreAlias names it too.
+type Store interface{ Get() int }
+
+type StoreAlias = Store
+
+func Boundary(s Store, a StoreAlias, e error, v any, x fmt.Stringer, c *concrete) bool {
+	if s == nil { // want nil
+		return true
+	}
+	if nil != a { // want nil
+		return true
+	}
+	_ = e == nil                           // error: a non-nil error is an error
+	_ = v == nil                           // the empty interface
+	_ = x == nil                           // declared outside the module
+	_ = c == nil                           // concrete pointer
+	f := func() bool { return (s) == nil } // want nil
+	local := s
+	_ = local == nil // a local, not the parameter
+	return f()
+}
+
+func unexportedBoundary(s Store) bool { return s == nil } // not callable from outside
+
+type hidden struct{}
+
+func (hidden) Exported(s Store) bool { return s == nil } // want nil
+
+type Shown struct{}
+
+func (*Shown) Set(s Store) bool { return s == nil } // want nil
+func (*Shown) set(s Store) bool { return s == nil } // not exported
+
+type Box[T any] struct{}
+
+func (Box[T]) Put(s Store) bool { return s != nil } // want nil
+
+func NilMarkers(s Store) bool {
+	_ = s == nil    //error-inspection-ok: every caller passes a value type
+	return s == nil /* want nil */ //error-inspection-ok: x
+}
+
+var _ = unexportedBoundary
+var _ = (*Shown).set
+
+// AnonAlias names an interface with no name of its own; the module still
+// declares it. EmptyAlias is the empty interface under another name.
+type AnonAlias = interface{ Get() int }
+
+type AnonAliasAlias = AnonAlias
+
+type EmptyAlias = interface{}
+
+func AnonBoundary(s AnonAlias, a AnonAliasAlias, e EmptyAlias, in interface{ Get() int }) bool {
+	_ = e == nil  // the empty interface
+	_ = in == nil // an interface literal in the signature, declared nowhere
+	if a == nil { // want nil
+		return true
+	}
+	return s == nil // want nil
+}

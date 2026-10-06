@@ -366,22 +366,33 @@ func configuredLoginThrottleDecay() time.Duration {
 	return defaultLoginThrottleDecay
 }
 
+// installLoginThrottler gives manager the framework's login throttler,
+// counting in cm's default store, and returns it; with no manager it
+// installs none and returns nil. New calls it once. It always installs:
+// when cm is nil or has no default store the throttler holds no store and
+// throttles nothing (every method is a no-op without one), with a warning
+// through log, contained. The framework never sets a throttler on the
+// manager again: a cache that arrives or changes later is given to this
+// same throttler by rebindLoginThrottler, so a throttler a module set on
+// the manager in the meantime is never replaced.
 func installLoginThrottler(manager *auth.Manager, cm cache.CacheManager, log contract.Logger) *cacheLoginThrottler {
-	if manager == nil || cm == nil {
+	if manager == nil {
 		return nil
 	}
-
-	store, err := cm.DefaultStore()
-	if err != nil || store == nil {
-		if log != nil {
-			log.Warn(
+	var store contract.CacheStore
+	var err error
+	if !nilval.Is(cm) {
+		store, err = cm.DefaultStore()
+	}
+	if err != nil || nilval.Is(store) {
+		store = nil
+		fallbacklog.Write(log, func(l contract.Logger) {
+			l.Warn(
 				"velocity/auth: cache default store unavailable; falling back to no-op login throttler; Scheme.Attempt brute-force protection will NOT work",
 				"error", err,
 			)
-		}
-		return nil
+		})
 	}
-
 	t := newCacheLoginThrottler(
 		store,
 		configuredLoginThrottleMaxAttempts(),
@@ -397,25 +408,28 @@ func installLoginThrottler(manager *auth.Manager, cm cache.CacheManager, log con
 }
 
 // rebindLoginThrottler moves the login throttler New installed to the
-// default store of the cache Services.Cache holds now. The throttler is
-// the framework's own value: one a module gave the auth manager instead
-// is not touched. A cache with no default store leaves login attempts
-// unthrottled, with the warning New gives in that case.
+// default store of the cache Services.Cache holds now: the store is the
+// only thing that changes after New, so a cache that arrives late starts
+// the throttling and one with no default store stops it, with a warning.
+// The throttler is the framework's own value: one a module gave the auth
+// manager instead is not touched, and the framework holds none only when
+// New found no auth manager of its own.
 func rebindLoginThrottler(a *App, _, cur ownedSet) (func(), error) {
 	t := a.loginThrottler
 	if t == nil {
 		return nil, nil
 	}
+	cm, _ := cur[fieldCache].(cache.CacheManager)
 	var store contract.CacheStore
 	var err error
-	if cm, _ := cur[fieldCache].(cache.CacheManager); cm != nil {
+	if cm != nil {
 		store, err = cm.DefaultStore()
 	}
 	return func() {
 		if nilval.Is(store) {
 			store = nil
 			fallbacklog.Write(a.Log, func(l contract.Logger) {
-				l.Warn("velocity/auth: cache default store unavailable; login attempts are no longer throttled; Scheme.Attempt brute-force protection will NOT work", "error", err)
+				l.Warn("velocity/auth: cache default store unavailable; login attempts are not throttled; Scheme.Attempt brute-force protection will NOT work", "error", err)
 			})
 		}
 		t.setStore(store)

@@ -67,7 +67,7 @@ func TestAddConnection_DefaultRegisteredOnceShutdownBeganIsClosedOnce(t *testing
 // Any other driver registered once Shutdown began is still closed, once.
 func TestAddConnection_AnotherDriverRegisteredOnceShutdownBeganIsClosed(t *testing.T) {
 	m := newTestManager(t)
-	other := &closeCounter{Driver: newTestManager(t).DefaultDriver()}
+	other := &closeCounter{Driver: ownSQLiteDriver(t, drivers.ConnectionConfig{})}
 	within(t, hostile.Deadline, "Shutdown", func() {
 		if err := m.Shutdown(context.Background()); err != nil {
 			t.Errorf("Shutdown = %v, want nil", err)
@@ -84,7 +84,7 @@ func TestAddConnection_AnotherDriverRegisteredOnceShutdownBeganIsClosed(t *testi
 // registration closes nothing and Shutdown closes it once.
 func TestAddConnection_NamedDriverRegisteredAgainOnceShutdownBeganIsClosedOnce(t *testing.T) {
 	m := newTestManager(t)
-	named := &closeCounter{Driver: newTestManager(t).DefaultDriver()}
+	named := &closeCounter{Driver: ownSQLiteDriver(t, drivers.ConnectionConfig{})}
 	m.AddConnection("a", named)
 
 	release := blockPump(t, m, 0)
@@ -127,7 +127,7 @@ func (d *blockingCloser) Close() error {
 func TestAddConnection_NamedDriverRegisteredAgainWhileItClosesIsClosedOnce(t *testing.T) {
 	m := newTestManager(t)
 	code := hostile.New(t, hostile.Block, nil)
-	named := &blockingCloser{closeCounter: closeCounter{Driver: newTestManager(t).DefaultDriver()}, code: code}
+	named := &blockingCloser{closeCounter: closeCounter{Driver: ownSQLiteDriver(t, drivers.ConnectionConfig{})}, code: code}
 	m.AddConnection("a", named)
 	done := make(chan error, 1)
 	go func() { done <- m.Shutdown(context.Background()) }()

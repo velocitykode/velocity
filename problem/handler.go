@@ -11,6 +11,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -230,7 +231,7 @@ func (h *Handler) GetEnvironment() string {
 
 // AddReporter appends a reporter.
 func (h *Handler) AddReporter(reporter Reporter) {
-	if reporter == nil {
+	if nilval.Is(reporter) {
 		return
 	}
 	h.mu.Lock()
@@ -247,7 +248,7 @@ func (h *Handler) SetReporters(reporters ...Reporter) {
 
 // AddRenderer sets the renderer for a content type key ("json", "html").
 func (h *Handler) AddRenderer(contentType string, renderer Renderer) {
-	if renderer == nil {
+	if nilval.Is(renderer) {
 		return
 	}
 	h.mu.Lock()

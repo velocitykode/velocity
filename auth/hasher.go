@@ -9,6 +9,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 const minSecureBcryptCost = 10
@@ -72,7 +73,7 @@ func clampBcryptCost(cost int) (int, bool) {
 func (h *BcryptHasher) SetLogger(l contract.Logger) {
 	h.mu.Lock()
 	h.logger = l
-	pending := h.clampedAtInit && l != nil
+	pending := h.clampedAtInit && !nilval.Is(l)
 	requested := h.requestedCost
 	effective := h.cost
 	if pending {

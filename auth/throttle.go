@@ -15,6 +15,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 // ErrLoginThrottled is returned from scheme Attempt() methods when the
@@ -184,7 +185,7 @@ func AdmitIdentifierTrial(throttler contract.LoginThrottler, fallback *LocalLogi
 // answer when it implements one, DefaultIdentifierDelay otherwise.
 // Negative answers are clamped to 0.
 func IdentifierDelay(throttler contract.LoginThrottler, r *http.Request, key string) time.Duration {
-	if throttler == nil {
+	if nilval.Is(throttler) {
 		return 0
 	}
 	if d, ok := throttler.(contract.LoginDelayer); ok {

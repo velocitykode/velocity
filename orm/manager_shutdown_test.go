@@ -29,9 +29,7 @@ func TestQueryAfterShutdown_ReturnsErrManagerShutdown(t *testing.T) {
 
 	// A named connection registered pre-shutdown must also surface the
 	// sentinel post-shutdown instead of a stale or nil driver.
-	other := newTestManager(t)
-	t.Cleanup(func() { other.Shutdown(context.Background()) })
-	m.AddConnection("other", other.DefaultDriver())
+	m.AddConnection("other", ownSQLiteDriver(t, drivers.ConnectionConfig{}))
 
 	ctx := context.Background()
 	if err := m.Shutdown(ctx); err != nil {

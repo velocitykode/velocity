@@ -7,6 +7,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -240,7 +241,7 @@ func (m *Manager) RequestUserID(r *http.Request) (id string) {
 // body to the redirect, and replaying it after login would be the wrong
 // intent. A nil manager, or a request with no session, stashes nothing.
 func (m *Manager) RenderUnauthenticated(rc contract.RenderContext, err error, _ *contract.ErrorContext) bool {
-	if rc == nil {
+	if nilval.Is(rc) {
 		return false
 	}
 	target := ""
@@ -357,7 +358,7 @@ func (m *Manager) stashIntended(rc contract.RenderContext) {
 // same-origin and not an allowed host) is logged at warn and returns
 // false, leaving the 403 to the pipeline.
 func (m *Manager) RenderAlreadyAuthenticated(rc contract.RenderContext, err error, _ *contract.ErrorContext) bool {
-	if rc == nil || rc.WantsJSON() {
+	if nilval.Is(rc) || rc.WantsJSON() {
 		return false
 	}
 	target := ""

@@ -4,6 +4,7 @@ import (
 	"github.com/velocitykode/prism"
 
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/migrate"
 )
@@ -15,7 +16,7 @@ import (
 // `vel db wipe` CLI command; programmatic callers are expected to apply their
 // own safeguards.
 func DBWipe(db orm.Database) error {
-	if db == nil {
+	if nilval.Is(db) {
 		prism.Warning("No database configured")
 		return nil
 	}

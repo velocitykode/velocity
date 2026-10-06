@@ -4,6 +4,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 // Default column names. They reproduce the column set the framework
@@ -61,7 +62,7 @@ type Option func(*Options)
 // disable verification.
 func WithHasher(h auth.Hasher) Option {
 	return func(o *Options) {
-		if h != nil {
+		if !nilval.Is(h) {
 			o.Hasher = h
 		}
 	}

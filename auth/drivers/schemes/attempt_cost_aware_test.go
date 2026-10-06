@@ -94,7 +94,7 @@ func TestSessionScheme_Attempt_DummyHashTracksBcryptCost(t *testing.T) {
 
 	measure := func(label, email string) time.Duration {
 		w := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodPost, "/login", nil)
+		r := WithSessionContext(httptest.NewRequest(http.MethodPost, "/login", nil))
 		start := time.Now()
 		_, _ = scheme.Attempt(w, r, map[string]interface{}{
 			"email":    email,

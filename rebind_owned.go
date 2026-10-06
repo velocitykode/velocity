@@ -308,13 +308,22 @@ func bindConsumers(a *App, prev, cur ownedSet) error {
 // manager Services.DB holds now, when it is still the one the field held
 // before (the default New installed or an earlier boundary moved). A
 // replacement that is not an *orm.Manager, or none, clears it, as New
-// leaves it without a database.
+// leaves it without a database. When the field held no manager before and
+// the process has no default, the manager the field holds now becomes it,
+// as New makes its own database the default: a default something else
+// installed is kept.
 func rebindORMDefault(_ *App, prev, cur ownedSet) (func(), error) {
 	old, _ := prev[fieldDB].(*orm.Manager)
-	if old == nil || orm.Default() != old {
+	next, _ := cur[fieldDB].(*orm.Manager)
+	if old == nil {
+		if next == nil || orm.Default() != nil {
+			return nil, nil
+		}
+		return func() { orm.SetDefault(next) }, nil
+	}
+	if orm.Default() != old {
 		return nil, nil
 	}
-	next, _ := cur[fieldDB].(*orm.Manager)
 	return func() {
 		if next == nil {
 			orm.ResetDefault()
@@ -333,9 +342,10 @@ type notificationDBChannel interface {
 
 // rebindNotificationDB points the notification database channel New built
 // at the database Services.DB holds now, with its driver name, while the
-// channel still holds the *sql.DB the framework gave it: one a module set
-// on the channel itself is kept. With no database the channel holds none,
-// and its sends fail as they do without one.
+// channel still holds the *sql.DB the framework gave it (none, when New
+// had no database): one a module set on the channel itself is kept. With
+// no database the channel holds none, and its sends fail as they do
+// without one.
 func rebindNotificationDB(a *App, _, cur ownedSet) (func(), error) {
 	ch := a.dbChannel
 	if ch == nil {

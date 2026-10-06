@@ -157,7 +157,7 @@ func TestJWTBlacklist(t *testing.T) {
 	}
 
 	// Revoke token
-	manager.RevokeToken(claims.ID)
+	noErr(manager.RevokeToken(claims.ID))
 
 	// Token should be invalid after revocation
 	_, err = manager.ValidateToken(token)

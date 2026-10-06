@@ -110,7 +110,7 @@ func TestSessionScheme_Attempt_DeniedWhenHardDimensionThrottled(t *testing.T) {
 		scheme := newThrottleDimensionsSessionScheme(t, &mockSessionSchemeUserStore{}, throttler)
 
 		w := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodPost, "/login", nil)
+		r := WithSessionContext(httptest.NewRequest(http.MethodPost, "/login", nil))
 		ok, err := scheme.Attempt(w, r, map[string]interface{}{
 			"email":    "victim@example.com",
 			"password": "x",
@@ -134,7 +134,7 @@ func TestSessionScheme_Attempt_IdentifierThrottleAllowsValidCredentials(t *testi
 	scheme := newThrottleDimensionsSessionScheme(t, &mockSessionSchemeUserStore{}, throttler)
 
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodPost, "/login", nil)
+	r := WithSessionContext(httptest.NewRequest(http.MethodPost, "/login", nil))
 	creds := map[string]interface{}{"email": "victim@example.com", "password": "correct"}
 	ok, err := scheme.Attempt(w, r, creds)
 	if !ok || err != nil {
@@ -158,7 +158,7 @@ func TestSessionScheme_Attempt_IdentifierThrottleDeniesInvalidCredentials(t *tes
 	scheme := newThrottleDimensionsSessionScheme(t, userStore, throttler)
 
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodPost, "/login", nil)
+	r := WithSessionContext(httptest.NewRequest(http.MethodPost, "/login", nil))
 	creds := map[string]interface{}{"email": "victim@example.com", "password": "wrong"}
 	ok, err := scheme.Attempt(w, r, creds)
 	if ok || err != auth.ErrLoginThrottled {
@@ -179,7 +179,7 @@ func TestSessionScheme_Attempt_RecordsFailureOnEveryDimension(t *testing.T) {
 	scheme := newThrottleDimensionsSessionScheme(t, userStore, throttler)
 
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodPost, "/login", nil)
+	r := WithSessionContext(httptest.NewRequest(http.MethodPost, "/login", nil))
 	creds := map[string]interface{}{"email": "ghost@example.com", "password": "x"}
 	if ok, err := scheme.Attempt(w, r, creds); ok || err != nil {
 		t.Fatalf("Attempt = (%v, %v), want (false, nil)", ok, err)

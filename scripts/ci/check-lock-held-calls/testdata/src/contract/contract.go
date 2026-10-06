@@ -10,3 +10,6 @@ type Logger interface {
 	Fatal(msg string, kvs ...any)
 	With(kvs ...any) Logger
 }
+
+// BindFields returns a Logger that writes each line through l with kvs.
+func BindFields(l Logger, kvs ...any) Logger { return l }

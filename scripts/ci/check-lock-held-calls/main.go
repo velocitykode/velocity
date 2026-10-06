@@ -99,6 +99,12 @@
 //     the store's compare-and-delete inside its own atomic step; a delete
 //     that is right whatever the record holds (a destroy, a retired id)
 //     carries the marker;
+//   - mark and session-id (not calls under a lock, session.go): a read of
+//     a session's modified mark outside the session driver package, which
+//     a save in flight makes wrong (`//session-mark-ok: <rationale>` for a
+//     read that decides something other than the save); and a session id
+//     handed to a log call or built into an error text, anywhere in the
+//     module (no marker: name the session by sessionref.Of(id)).
 //
 // The flight shape. internal/buildonce is how a component runs user code (a
 // store, a driver, a factory) in a step that must not overlap another: a
@@ -224,6 +230,8 @@ var fixes = []struct{ kind, fix string }{
 	{kindStmt, "statement: run the statement on an ownctx.Hold context and release the Held after unlocking (the pool's statement observer and query logger then run off the lock); call a driver or observer method after unlocking"},
 	{kindHold, "hold: release the Held on a defer registered right after the Hold (before the lock's deferred unlock), so a panic or early return still delivers its statement reports after the lock is released"},
 	{kindRMW, "rmw: run the read and the write of one key as one step: inside the per-key flight (an internal/buildonce Group's Do), or as a compare-and-set the store offers (LoadOrStore, UpdateShared, UpdateData; on a BlacklistStore, branch on what Add returns and drop the IsBlacklisted read); a delete decided on a read of the record goes through the store's compare-and-delete (CompareAndDeleteCtx, or the store's own step under its lock)"},
+	{kindMark, "mark: call the session's Save and let it decide inside its own save whether there is anything to write; do not read IsModified first (a save in flight has cleared the mark and puts it back when it fails)"},
+	{kindSessionID, "session-id: name the session by its reference, auth/internal/sessionref.Of(id), under a key other than session_id; a session id is a bearer credential and stays out of logs and error texts"},
 	{kindCtx, "ctx: read the caller's context before taking the lock, and hand code under the lock a context the framework owns (built from context.Background)"},
 }
 
@@ -231,17 +239,26 @@ var fixes = []struct{ kind, fix string }{
 // syntax.
 func hints(hits []string) string {
 	var b strings.Builder
-	rmw := 0
+	rmw, session, mark := 0, 0, 0
 	for _, h := range hits {
-		if strings.Contains(h, ": "+kindRMW+": ") {
+		switch {
+		case strings.Contains(h, ": "+kindRMW+": "):
 			rmw++
+		case strings.Contains(h, ": "+kindMark+": "):
+			session++
+			mark++
+		case strings.Contains(h, ": "+kindSessionID+": "):
+			session++
 		}
 	}
-	if n := len(hits) - rmw; n > 0 {
+	if n := len(hits) - rmw - session; n > 0 {
 		fmt.Fprintf(&b, "%d call(s) to user code while a lock or sync.Once is held. User code can panic, block, or call back into this component.\n", n)
 	}
 	if rmw > 0 {
 		fmt.Fprintf(&b, "%d store read(s) followed by a write of the same key, or unconditional store delete(s). Two requests of one session that both read before either writes each write their own value, and the last write wins; a delete decided on an earlier read removes a record renewed since.\n", rmw)
+	}
+	if session > 0 {
+		fmt.Fprintf(&b, "%d decision(s) about a session made outside it: a read of its modified mark outside its own save, or its id handed to a log line or an error text.\n", session)
 	}
 	for _, f := range fixes {
 		for _, h := range hits {
@@ -251,11 +268,14 @@ func hints(hits []string) string {
 			}
 		}
 	}
-	if rmw < len(hits) {
+	if rmw+session < len(hits) {
 		b.WriteString("  a call that is safe under the lock: same-line //lock-held-ok: <rationale of at least 5 characters>\n")
 	}
 	if rmw > 0 {
 		b.WriteString("  a read-then-write or a delete that is safe: same-line //store-rmw-ok: <rationale of at least 5 characters> on the write or the delete\n")
+	}
+	if mark > 0 {
+		b.WriteString("  a read of the mark that decides something other than the save and is right whatever a save in flight does: same-line //session-mark-ok: <rationale of at least 5 characters>\n")
 	}
 	return b.String()
 }
@@ -508,6 +528,7 @@ func (a *analysis) run() []string {
 	a.staleMarkers()
 	a.unreleasedHolds()
 	a.storeRMW()
+	a.sessionRules()
 	out := make([]string, 0, len(a.hits))
 	for h := range a.hits {
 		out = append(out, h)

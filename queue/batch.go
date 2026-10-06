@@ -13,6 +13,7 @@ import (
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/eventmeta"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/internal/panicerr"
 )
 
@@ -548,7 +549,7 @@ var globalBatchEvents eventemit.Emitter
 // logger. SetGlobalEventDispatcher(nil, nil, nil) clears all three.
 func SetGlobalEventDispatcher(fn func(ctx context.Context, event interface{}) error, failures *eventemit.Failures, logger contract.Logger) {
 	var source func() contract.Logger
-	if logger != nil {
+	if !nilval.Is(logger) {
 		source = func() contract.Logger { return logger }
 	}
 	globalBatchEvents.SetShared(fn, failures, source)

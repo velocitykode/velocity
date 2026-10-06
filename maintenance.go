@@ -21,6 +21,7 @@ import (
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/maintpath"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -177,7 +178,7 @@ func WithMaintenanceExcludePaths(paths ...string) MaintenanceOption {
 // instance are not consulted for that line.
 func WithMaintenanceLogger(logger contract.Logger) MaintenanceOption {
 	return func(c *maintenanceConfig) {
-		if logger != nil {
+		if !nilval.Is(logger) {
 			c.logger = logger
 		}
 	}

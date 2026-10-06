@@ -12,11 +12,13 @@
 // Calls flagged, told apart by type only:
 //
 //   - is, as, unwrap: a call to errors.Is, errors.As or errors.Unwrap;
+//
 //   - text, unwrap, is, as: a method call on a value whose static type is
 //     an interface, when the method is Error() string, Unwrap() error,
 //     Unwrap() []error, Is(error) bool or As(any) bool (matched by
 //     signature, so a logger's Error(msg, kvs...) is not a hit, and a hand
 //     walk's x.Unwrap() after err.(interface{ Unwrap() error }) is);
+//
 //   - format: a call to a fmt print function (Errorf, Sprintf, Sprint,
 //     Fprintf, Appendf and the rest) with an operand whose static type is
 //     an interface (error, any, fmt.Stringer, a type parameter), or a
@@ -24,6 +26,23 @@
 //     String or Format method once, but it formats the panic value too,
 //     and re-panics when that panics: a writer or buffer argument and
 //     the format string are not operands.
+//
+//   - nil: a comparison with nil (== or !=) of a parameter of an exported
+//     function or method, in the function's body or a function literal
+//     inside it, when the parameter's type is an interface this module
+//     declares (through an alias too, and an alias of an interface with
+//     no name of its own). The caller is user code, and a
+//     typed nil (a nil *T held in the interface) is not equal to nil: the
+//     check lets it through and a later call runs a method on a nil
+//     receiver. internal/nilval.Is answers for both. An exported method
+//     counts whatever its receiver's type is named: an unexported type
+//     reaches the caller through a constructor or an interface. Not
+//     flagged: the
+//     error type (a non-nil error value is an error, whatever it holds),
+//     context.Context and other interfaces declared outside the module,
+//     the empty interface, a type parameter, and a comparison of anything
+//     but the parameter itself (a field or local it was stored in: the
+//     entry point is where a typed nil is made a plain nil).
 //
 // Every error-typed (and, for format, interface-typed) value is treated
 // as possibly user-made: types cannot tell a framework sentinel from a
@@ -111,6 +130,7 @@ const (
 	kindText   = "text"
 	kindStale  = "stale"
 	kindFormat = "format"
+	kindNil    = "nil"
 )
 
 var fixes = []struct{ kind, fix string }{
@@ -119,6 +139,7 @@ var fixes = []struct{ kind, fix string }{
 	{kindUnwrap, "unwrap: errchain.Unwrap(err), or errchain.Walk for a walk of the chain"},
 	{kindText, "text: errchain.Text(err)"},
 	{kindFormat, "format: errchain.Errorf, errchain.Sprintf or errchain.Sprint(v) in place of the fmt call"},
+	{kindNil, "nil: nilval.Is(v) in place of v == nil (and !nilval.Is(v) for v != nil): a typed nil is nil too"},
 	{kindStale, "stale: remove the //error-inspection-ok: marker; nothing on its line inspects an error any more"},
 }
 
@@ -126,7 +147,7 @@ var fixes = []struct{ kind, fix string }{
 // syntax.
 func hints(hits []string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d uncontained inspection(s) of an error or formatting of a value. Its Error, String, Format, Unwrap, Is and As methods can panic, and its chain can loop.\n", len(hits))
+	fmt.Fprintf(&b, "%d uncontained inspection(s) of a value user code supplied. An error's or value's Error, String, Format, Unwrap, Is and As methods can panic, and its chain can loop; a typed nil passes a comparison with nil.\n", len(hits))
 	for _, f := range fixes {
 		for _, h := range hits {
 			if strings.Contains(h, ": "+f.kind+": ") {
@@ -253,6 +274,7 @@ func check(dir string, patterns []string) ([]string, error) {
 		}
 		info := &types.Info{
 			Types:      map[ast.Expr]types.TypeAndValue{},
+			Defs:       map[*ast.Ident]types.Object{},
 			Uses:       map[*ast.Ident]types.Object{},
 			Selections: map[*ast.SelectorExpr]*types.Selection{},
 		}
@@ -269,7 +291,7 @@ func check(dir string, patterns []string) ([]string, error) {
 			return nil, fmt.Errorf("type-check %s: %w", p.ImportPath, typeErr)
 		}
 		for _, f := range files {
-			checkFile(fset, mod.Dir, info, f, hits)
+			checkFile(fset, mod.Dir, mod.Path, info, f, hits)
 		}
 	}
 	out := make([]string, 0, len(hits))
@@ -281,7 +303,7 @@ func check(dir string, patterns []string) ([]string, error) {
 }
 
 // checkFile adds f's offenders and stale markers to hits.
-func checkFile(fset *token.FileSet, root string, info *types.Info, f *ast.File, hits map[string]bool) {
+func checkFile(fset *token.FileSet, root, module string, info *types.Info, f *ast.File, hits map[string]bool) {
 	markers := map[int]string{} // line -> comment text
 	for _, cg := range f.Comments {
 		for _, c := range cg.List {
@@ -298,32 +320,121 @@ func checkFile(fset *token.FileSet, root string, info *types.Info, f *ast.File, 
 		return filepath.ToSlash(r)
 	}
 	used := map[int]bool{}
+	// report records one offender at at, unless a marker with a rationale
+	// is on its line.
+	report := func(at token.Pos, kind, what string) {
+		pos := fset.Position(at)
+		if m, ok := markers[pos.Line]; ok {
+			used[pos.Line] = true
+			if markerRE.MatchString(m) {
+				return
+			}
+			hits[fmt.Sprintf("%s:%d: %s: %s (the marker on this line has no rationale)", rel(pos.Filename), pos.Line, kind, what)] = true
+			return
+		}
+		hits[fmt.Sprintf("%s:%d: %s: %s", rel(pos.Filename), pos.Line, kind, what)] = true
+	}
 	ast.Inspect(f, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
-		kind := classify(info, call)
-		if kind == "" {
-			return true
+		if kind := classify(info, call); kind != "" {
+			report(call.Pos(), kind, types.ExprString(call.Fun))
 		}
-		pos := fset.Position(call.Pos())
-		if m, ok := markers[pos.Line]; ok {
-			used[pos.Line] = true
-			if markerRE.MatchString(m) {
-				return true
-			}
-			hits[fmt.Sprintf("%s:%d: %s: %s (the marker on this line has no rationale)", rel(pos.Filename), pos.Line, kind, types.ExprString(call.Fun))] = true
-			return true
-		}
-		hits[fmt.Sprintf("%s:%d: %s: %s", rel(pos.Filename), pos.Line, kind, types.ExprString(call.Fun))] = true
 		return true
 	})
+	for _, decl := range f.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Body == nil || !exportedFunc(fd) {
+			continue
+		}
+		params := boundaryParams(info, module, fd)
+		if len(params) == 0 {
+			continue
+		}
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			be, ok := n.(*ast.BinaryExpr)
+			if ok && nilComparison(info, be, params) {
+				report(be.Pos(), kindNil, types.ExprString(be))
+			}
+			return true
+		})
+	}
 	for line := range markers {
 		if !used[line] {
 			hits[fmt.Sprintf("%s:%d: %s: the //error-inspection-ok: marker suppresses no inspection", rel(fset.File(f.Pos()).Name()), line, kindStale)] = true
 		}
 	}
+}
+
+// exportedFunc reports whether fd is callable from outside its package:
+// an exported function, or an exported method whatever its receiver's
+// type is named. An unexported type's exported methods are reachable too:
+// an exported constructor returns the value, or it satisfies an interface
+// the caller holds.
+func exportedFunc(fd *ast.FuncDecl) bool {
+	return fd.Name.IsExported()
+}
+
+// boundaryParams returns the parameters of fd whose type is an interface
+// the module declares, other than error.
+func boundaryParams(info *types.Info, module string, fd *ast.FuncDecl) map[types.Object]bool {
+	var params map[types.Object]bool
+	for _, field := range fd.Type.Params.List {
+		for _, name := range field.Names {
+			obj := info.Defs[name]
+			if obj == nil || !moduleInterface(module, obj.Type()) {
+				continue
+			}
+			if params == nil {
+				params = map[types.Object]bool{}
+			}
+			params[obj] = true
+		}
+	}
+	return params
+}
+
+// moduleInterface reports whether t is an interface type declared in a
+// package of module: a named interface (seen through aliases), or a
+// module-declared alias of a non-empty interface that has no name of its
+// own (type Store = interface{ Get() int }).
+func moduleInterface(module string, t types.Type) bool {
+	inModule := func(pkg *types.Package) bool {
+		return pkg != nil && (pkg.Path() == module || strings.HasPrefix(pkg.Path(), module+"/"))
+	}
+	aliased := false
+	for {
+		alias, ok := t.(*types.Alias)
+		if !ok {
+			break
+		}
+		aliased = aliased || inModule(alias.Obj().Pkg())
+		t = alias.Rhs()
+	}
+	switch x := t.(type) {
+	case *types.Named:
+		return types.IsInterface(x) && inModule(x.Obj().Pkg())
+	case *types.Interface:
+		return aliased && !x.Empty()
+	}
+	return false
+}
+
+// nilComparison reports whether be compares one of params with nil.
+func nilComparison(info *types.Info, be *ast.BinaryExpr, params map[types.Object]bool) bool {
+	if be.Op != token.EQL && be.Op != token.NEQ {
+		return false
+	}
+	operand := be.X
+	if tv, ok := info.Types[be.X]; ok && tv.IsNil() {
+		operand = be.Y
+	} else if tv, ok := info.Types[be.Y]; !ok || !tv.IsNil() {
+		return false
+	}
+	id, ok := ast.Unparen(operand).(*ast.Ident)
+	return ok && params[info.Uses[id]]
 }
 
 // classify returns the kind of an inspection call, or "".

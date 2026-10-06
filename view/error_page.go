@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 // The engine is the error pipeline's error page renderer.
@@ -21,7 +22,7 @@ var _ contract.ErrorPageRenderer = (*Engine)(nil)
 // false with the error, so the caller can still answer; once anything was
 // written it reports true.
 func (e *Engine) RenderErrorPage(rc contract.RenderContext, status int, message string) (bool, error) {
-	if rc == nil || rc.Request() == nil {
+	if nilval.Is(rc) || rc.Request() == nil {
 		return false, nil
 	}
 	component := e.bond.ErrorComponent()

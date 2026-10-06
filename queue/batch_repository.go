@@ -8,6 +8,7 @@ import (
 
 	"github.com/velocitykode/velocity/async"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 // BatchRepository is the persistent store for batch metadata and counters.
@@ -543,7 +544,7 @@ func DefaultBatchRepository() BatchRepository {
 // Panics if repo is nil; accepting nil would silently break batch
 // dispatching since every worker path goes through this accessor.
 func SetDefaultBatchRepository(repo BatchRepository) {
-	if repo == nil {
+	if nilval.Is(repo) {
 		panic("velocity/queue: SetDefaultBatchRepository called with nil repository")
 	}
 	prev := defaultBatchRepo.Swap(&batchRepoHolder{BatchRepository: repo, userSet: true})
@@ -574,7 +575,7 @@ func SetDefaultBatchRepository(repo BatchRepository) {
 // Panics if repo is nil for the same reason SetDefaultBatchRepository
 // does: silently installing nil would break every worker code path.
 func EnsureDefaultBatchRepository(repo BatchRepository) bool {
-	if repo == nil {
+	if nilval.Is(repo) {
 		panic("velocity/queue: EnsureDefaultBatchRepository called with nil repository")
 	}
 	cur := defaultBatchRepo.Load()

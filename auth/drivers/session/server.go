@@ -16,6 +16,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/buildonce"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
@@ -65,7 +66,7 @@ type recordsHolder struct{ store auth.ServerSessionStore }
 // the revocation checks read. Returns auth.ErrNoServerSessionStore when
 // records is nil.
 func NewServerStore(config auth.SessionConfig, records auth.ServerSessionStore) (*ServerStore, error) {
-	if records == nil {
+	if nilval.Is(records) {
 		return nil, auth.ErrNoServerSessionStore
 	}
 	s := &ServerStore{config: config}

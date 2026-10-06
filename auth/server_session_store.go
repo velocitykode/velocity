@@ -38,6 +38,14 @@ var (
 	// user, Check false).
 	ErrOperationInProgress = errors.New("velocity/auth: another authentication operation is in progress on this request")
 
+	// ErrNoSessionContext is what the session scheme's Login, LoginByID,
+	// Attempt and Logout return, before any side effect, for a request
+	// that carries no session context: neither the session middleware nor
+	// schemes.WithSessionContext put one on it. Without it the scheme has
+	// nothing to reserve for the request, so a store that calls back into
+	// the scheme for the same request could not be told from a first call.
+	ErrNoSessionContext = errors.New("velocity/auth: session context required: use session middleware or schemes.WithSessionContext")
+
 	// ErrNoServerSessionStore is returned by Manager.RevokeSession,
 	// RevokeAllSessions, and ListActiveSessions when no server-side
 	// session store has been installed via SetServerSessionStore.

@@ -89,7 +89,7 @@ func TestSessionScheme_Attempt_EmitsRehashEvent(t *testing.T) {
 	})
 
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodPost, "/login", nil)
+	r := WithSessionContext(httptest.NewRequest(http.MethodPost, "/login", nil))
 	ok, err := scheme.Attempt(w, r, map[string]interface{}{
 		"email":    "alice@example.com",
 		"password": "correct",
@@ -130,7 +130,7 @@ func TestSessionScheme_Attempt_NoEventWhenHashFresh(t *testing.T) {
 	})
 
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodPost, "/login", nil)
+	r := WithSessionContext(httptest.NewRequest(http.MethodPost, "/login", nil))
 	if _, err := scheme.Attempt(w, r, map[string]interface{}{
 		"email":    "alice@example.com",
 		"password": "correct",
@@ -155,7 +155,7 @@ func TestSessionScheme_Attempt_NoEventOnInvalidPassword(t *testing.T) {
 	})
 
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodPost, "/login", nil)
+	r := WithSessionContext(httptest.NewRequest(http.MethodPost, "/login", nil))
 	if _, err := scheme.Attempt(w, r, map[string]interface{}{
 		"email":    "alice@example.com",
 		"password": "wrong",
@@ -182,7 +182,7 @@ func TestManager_SetEventDispatcher_PropagatesToSchemes(t *testing.T) {
 	})
 
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodPost, "/login", nil)
+	r := WithSessionContext(httptest.NewRequest(http.MethodPost, "/login", nil))
 	if _, err := scheme.Attempt(w, r, map[string]interface{}{
 		"email":    "alice@example.com",
 		"password": "correct",
@@ -233,7 +233,7 @@ func attemptStaleLogin(t *testing.T, dispatch func(context.Context, any) error) 
 	scheme, _ := newRehashScheme(t, true)
 	scheme.SetEventDispatcher(dispatch)
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodPost, "/login", nil)
+	r := WithSessionContext(httptest.NewRequest(http.MethodPost, "/login", nil))
 	ok, err := scheme.Attempt(w, r, map[string]interface{}{
 		"email":    "alice@example.com",
 		"password": "correct",

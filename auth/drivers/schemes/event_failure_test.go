@@ -20,7 +20,7 @@ func TestSessionScheme_FailedRehashEventLoggedOncePerEvent(t *testing.T) {
 	scheme, _ := newRehashScheme(t, true)
 	scheme.SetEventDispatcher(func(context.Context, any) error { return errors.New("listener failed") })
 	for i := 0; i < 2; i++ {
-		ok, err := scheme.Attempt(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/login", nil), map[string]interface{}{
+		ok, err := scheme.Attempt(httptest.NewRecorder(), WithSessionContext(httptest.NewRequest(http.MethodPost, "/login", nil)), map[string]interface{}{
 			"email":    "alice@example.com",
 			"password": "correct",
 		})

@@ -7,6 +7,7 @@ import (
 	"github.com/velocitykode/prism"
 
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/migrate"
 )
@@ -18,7 +19,7 @@ type MigrateOptions struct {
 
 // Migrate runs all pending database migrations.
 func Migrate(db orm.Database, opts ...MigrateOptions) error {
-	if db == nil {
+	if nilval.Is(db) {
 		prism.Warning("No database configured (DB_CONNECTION not set), skipping migrations")
 		return nil
 	}
@@ -90,7 +91,7 @@ func migratePretend(migrator *migrate.Migrator, pending []migrate.Migration) err
 // check or confirmation. The production gate lives in the `vel migrate fresh`
 // CLI command.
 func MigrateFresh(db orm.Database) error {
-	if db == nil {
+	if nilval.Is(db) {
 		prism.Warning("No database configured (DB_CONNECTION not set), skipping migrations")
 		return nil
 	}
@@ -138,7 +139,7 @@ func MigrateFresh(db orm.Database) error {
 // check or confirmation. The production gate lives in the
 // `vel migrate rollback` CLI command.
 func MigrateRollback(db orm.Database, steps int) error {
-	if db == nil {
+	if nilval.Is(db) {
 		prism.Warning("No database configured (DB_CONNECTION not set), skipping rollback")
 		return nil
 	}

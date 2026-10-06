@@ -2,6 +2,7 @@ package router
 
 import (
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 // CSRFMiddleware returns a MiddlewareFunc that runs the CSRF instance's
@@ -27,11 +28,13 @@ import (
 //
 // Usage: router.Use(router.CSRFMiddleware(app.CSRF))
 func CSRFMiddleware(csrfInstance contract.CSRFProtector) MiddlewareFunc {
+	// Decided once, not per request: with no protector (nil, or a typed
+	// nil) the middleware is the next handler itself.
+	if nilval.Is(csrfInstance) {
+		return func(next HandlerFunc) HandlerFunc { return next }
+	}
 	return func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
-			if csrfInstance == nil {
-				return next(c)
-			}
 			r, err := csrfInstance.Protect(c.Response, c.Request)
 			if r != nil {
 				c.Request = r

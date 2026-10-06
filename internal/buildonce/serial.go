@@ -33,8 +33,10 @@ type Serial struct {
 
 // Do takes the turn, runs fn on the calling goroutine and releases the
 // turn, and returns nil. While another Do's function runs it waits for the
-// turn, or returns ctx.Err() when ctx ends first (fn is then not run). A
-// function that panics releases the turn and the panic reaches Do's
+// turn, or returns ctx.Err() when ctx ends first (fn is then not run): a
+// waiter the released turn wakes looks at ctx once more before it takes
+// the turn. A caller that finds the turn free takes it without looking at
+// ctx. A function that panics releases the turn and the panic reaches Do's
 // caller.
 //
 // The order in which waiters get the turn is not promised: when the turn
@@ -52,13 +54,24 @@ func (s *Serial) Do(ctx context.Context, fn func()) error {
 		free := s.free
 		s.waiting++
 		s.mu.Unlock()
+		woken := false
 		select {
 		case <-free:
-			s.mu.Lock()
-			s.waiting--
+			// Woken by the released turn. The context may have ended while
+			// this caller was parked, or in the same instant (a select
+			// with both cases ready picks either): it is asked again here,
+			// before the turn is taken and outside mu (a context is user
+			// code), so a caller whose context ended first never runs fn.
+			select {
+			case <-ctx.Done():
+			default:
+				woken = true
+			}
 		case <-ctx.Done():
-			s.mu.Lock()
-			s.waiting--
+		}
+		s.mu.Lock()
+		s.waiting--
+		if !woken {
 			s.mu.Unlock()
 			return ctx.Err()
 		}

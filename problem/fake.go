@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 // Verify *FakeHandler implements contract.ErrorHandler at compile time.
@@ -105,7 +106,7 @@ func (f *FakeHandler) Render(rc RenderContext, err error, ctx *ErrorContext) {
 	if outsidePanic(err, ctx, contract.IsResponseWritten) {
 		return
 	}
-	if rc != nil && !rc.Written() {
+	if !nilval.Is(rc) && !rc.Written() {
 		status, _, _ := contract.StatusOf(err)
 		rc.WriteHeader(status)
 	}

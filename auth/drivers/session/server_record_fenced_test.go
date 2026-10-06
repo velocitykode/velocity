@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"sync"
 	"sync/atomic"
@@ -246,6 +247,79 @@ func TestCacheStore_ListForUserKeepsTheMembershipOfARenewedRecord(t *testing.T) 
 	}
 }
 
+// errProcessDied is what diesInIndexRemoval panics with.
+var errProcessDied = errors.New("test: the process died")
+
+// diesInIndexRemoval models a process that dies right after a member
+// removal naming id reached the backend: the removal lands and nothing
+// after it in that call runs.
+type diesInIndexRemoval struct {
+	cacheBackend
+	id string
+}
+
+func (b *diesInIndexRemoval) SetRemoveCtx(ctx context.Context, key string, members ...string) error {
+	err := b.cacheBackend.SetRemoveCtx(ctx, key, members...)
+	for _, m := range members {
+		if m == b.id {
+			panic(errProcessDied)
+		}
+	}
+	return err
+}
+
+// A record renewed between the read that found it expired and the unlink is
+// live. Its membership is never taken out of the index, so there is no
+// removal for the listing instance to die after: the record stays listed
+// for the instances that are still up, which can revoke it by id. (Taking
+// the membership out and putting it back, an instance that died between the
+// two left the live record unlisted.)
+func TestCacheStore_ARenewedRecordIsNeverTakenOutOfTheIndex(t *testing.T) {
+	for _, bf := range sharedBackends() {
+		t.Run(bf.name, func(t *testing.T) {
+			inner := bf.new(t).(cacheBackend)
+			s := newCacheStore(t, &diesInIndexRemoval{cacheBackend: inner, id: "sid"})
+			other := newCacheStore(t, inner)
+			ctx := context.Background()
+			if err := other.Put(ctx, cacheSession("sid", "u1")); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			late := time.Now().Add(2 * time.Hour)
+			var renewed atomic.Bool
+			s.clock = func() time.Time {
+				if renewed.CompareAndSwap(false, true) {
+					rec := cacheSession("sid", "u1")
+					rec.ExpiresAt = late.Add(time.Hour)
+					if err := other.Put(ctx, rec); err != nil {
+						t.Errorf("renewing Put: %v", err)
+					}
+				}
+				return late
+			}
+			// The listing reads the record as expired; it was renewed after
+			// that read.
+			func() {
+				defer func() {
+					if p := recover(); p != nil && p != errProcessDied {
+						panic(p)
+					}
+				}()
+				_, _ = s.ListForUser(ctx, "u1")
+			}()
+			if !renewed.Load() {
+				t.Fatal("premise: the record was not renewed during the listing")
+			}
+
+			if _, err := other.Get(ctx, "sid"); err != nil {
+				t.Fatalf("premise: the renewed record is not live: %v", err)
+			}
+			if got := listedIDs(t, other, "u1"); !got["sid"] {
+				t.Fatalf("the user's listing = %v: the membership of the live, renewed record was taken out, and the instance died before putting it back", got)
+			}
+		})
+	}
+}
+
 // MemoryStore.DeleteIf holds the store mutex from its condition through
 // the removal. The hook between the two tries to land a renewal: if the
 // critical section had ended there, the renewal would land and the record
@@ -425,13 +499,20 @@ type unlinkFailBackend struct {
 	cacheBackend
 	failRemove atomic.Bool
 	failAdd    atomic.Bool
+	// onRemove runs once, after a member removal landed.
+	onRemove func()
 }
 
 func (b *unlinkFailBackend) SetRemoveCtx(ctx context.Context, key string, members ...string) error {
 	if b.failRemove.Load() {
 		return errors.New("test: index offline")
 	}
-	return b.cacheBackend.SetRemoveCtx(ctx, key, members...)
+	err := b.cacheBackend.SetRemoveCtx(ctx, key, members...)
+	if fn := b.onRemove; fn != nil {
+		b.onRemove = nil
+		fn()
+	}
+	return err
 }
 
 func (b *unlinkFailBackend) SetAddCtx(ctx context.Context, key string, ttl time.Duration, members ...string) error {
@@ -469,26 +550,19 @@ func TestCacheStore_FailedIndexUpkeepIsLoggedAndTheRemovalStands(t *testing.T) {
 		t.Fatalf("the failed member removal was logged %d times, want once:\n%s", n, logs.String())
 	}
 
-	// The repair of a membership fails: a record renewed between the read
-	// that found it expired and the unlink.
+	// The repair of a membership fails: a record put under the id as its
+	// membership is removed, after the unlink looked and found none.
 	if err := s.Put(ctx, cacheSession("two", "u1")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	late := time.Now().Add(2 * time.Hour)
-	var renewed atomic.Bool
-	s.clock = func() time.Time {
-		if renewed.CompareAndSwap(false, true) {
-			rec := cacheSession("two", "u1")
-			rec.ExpiresAt = late.Add(time.Hour)
-			if err := other.Put(ctx, rec); err != nil {
-				t.Errorf("renewing Put: %v", err)
-			}
-			backend.failAdd.Store(true)
+	backend.onRemove = func() {
+		if err := other.Put(ctx, cacheSession("two", "u1")); err != nil {
+			t.Errorf("the Put during the removal: %v", err)
 		}
-		return late
+		backend.failAdd.Store(true)
 	}
-	if _, err := s.ListForUser(ctx, "u1"); err != nil {
-		t.Fatalf("ListForUser with the index offline: %v", err)
+	if err := s.Delete(ctx, "two"); err != nil {
+		t.Fatalf("Delete with the index offline: %v", err)
 	}
 	backend.failAdd.Store(false)
 	const repairLine = "velocity/auth/session: a session record written during a removal was not put back into the user index"
@@ -989,11 +1063,17 @@ func TestServerSession_InvalidateFromAnotherSessionsTransitionWaits(t *testing.T
 	}
 	y := loadSession(t, yStore, yID)
 
-	var xSaved, invalidatedBeforeXSaved atomic.Bool
+	// x's save writes its cookie inside its turn, so the writer says, to an
+	// Invalidate that has just returned, whether the save had got that far.
+	// A flag set once Save has returned would not: the turn is released
+	// inside Save, and the invalidation can take it before the saving
+	// goroutine runs again.
+	xWriter := &cookieSeenWriter{ResponseRecorder: httptest.NewRecorder()}
+	var invalidatedBeforeXSaved atomic.Bool
 	invalidated := make(chan struct{})
 	yRecords.before = func() {
 		_ = x.Invalidate()
-		if !xSaved.Load() {
+		if !xWriter.wrote.Load() {
 			invalidatedBeforeXSaved.Store(true)
 		}
 		close(invalidated)
@@ -1004,10 +1084,9 @@ func TestServerSession_InvalidateFromAnotherSessionsTransitionWaits(t *testing.T
 	x.Put("a", "x's save")
 	go func() {
 		defer close(xDone)
-		if err := x.Save(httptest.NewRecorder()); err != nil {
+		if err := x.Save(xWriter); err != nil {
 			t.Errorf("x's save: %v", err)
 		}
-		xSaved.Store(true)
 	}()
 	hostile.Within(t, hostile.Deadline, func() { <-xRecords.entered })
 	y.Put("b", "y's save")
@@ -1029,4 +1108,19 @@ func TestServerSession_InvalidateFromAnotherSessionsTransitionWaits(t *testing.T
 	if !x.IsDestroyed() {
 		t.Fatal("x is not destroyed")
 	}
+	if len(xWriter.Result().Cookies()) != 1 {
+		t.Fatalf("x's save wrote %d cookies, want the one it issued inside its turn", len(xWriter.Result().Cookies()))
+	}
+}
+
+// cookieSeenWriter records that the save it was handed reached its cookie
+// write: http.SetCookie asks the writer for its headers to add the cookie.
+type cookieSeenWriter struct {
+	*httptest.ResponseRecorder
+	wrote atomic.Bool
+}
+
+func (w *cookieSeenWriter) Header() http.Header {
+	w.wrote.Store(true)
+	return w.ResponseRecorder.Header()
 }

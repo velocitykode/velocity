@@ -14,6 +14,7 @@ import (
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/internal/teardown"
 	"github.com/velocitykode/velocity/trace"
@@ -85,7 +86,7 @@ func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event interfac
 // cannot deadlock it.
 func (m *Manager) SetLogger(l contract.Logger) {
 	m.logger.Set(l)
-	if l == nil || !m.handing.CompareAndSwap(false, true) {
+	if nilval.Is(l) || !m.handing.CompareAndSwap(false, true) {
 		return
 	}
 	// A channel registered after this snapshot sees handing set and hands

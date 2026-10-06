@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1074,4 +1075,94 @@ func TestInstall_WithoutLoggerLogsThroughTheFallback(t *testing.T) {
 	if !strings.Contains(fallback.String(), "bridge boom") {
 		t.Errorf("fallback line = %q, want the error", fallback.String())
 	}
+}
+
+// A typed nil is absence at every place the bridge takes a collaborator:
+// Handle's handler, the resolver's answer, and the user and logger
+// options. Each case must answer as the same call with a plain nil does.
+func TestBridge_TypedNilIsAbsence(t *testing.T) {
+	var nilSpy *spyHandler
+	var nilUser *pointerUser
+	var nilLogger *pointerLogger
+
+	t.Run("Handle", func(t *testing.T) {
+		c, w := router.NewTestContext(http.MethodGet, "/x")
+		Handle(c, problem.Forbidden("not yours"), router.ErrorInfo{}, nilSpy)
+		if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "not yours") {
+			t.Errorf("response = %d %q, want the router default 403", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("resolver answer", func(t *testing.T) {
+		var lines []string
+		w := serve(t, func(*router.Context) error { return problem.NotFound("gone missing") },
+			WithHandler(func() contract.ErrorHandler { return nilSpy }),
+			WithLogger(levelLogger{onError: func(msg string, _ ...any) { lines = append(lines, msg) }}),
+		)
+		if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "gone missing") {
+			t.Errorf("response = %d %q, want the router default 404", w.Code, w.Body.String())
+		}
+		if len(lines) != 1 || lines[0] != router.UnhandledErrorMessage {
+			t.Errorf("logged %q, want the one unhandled-error line", lines)
+		}
+	})
+
+	t.Run("WithUserID", func(t *testing.T) {
+		spy := newSpy()
+		serve(t, func(*router.Context) error { return errors.New("boom") },
+			WithHandler(func() contract.ErrorHandler { return spy }),
+			WithUserID(nilUser),
+		)
+		if spy.calls != 1 {
+			t.Fatalf("handler calls = %d, want 1", spy.calls)
+		}
+		if spy.ctx.UserID != "" {
+			t.Errorf("UserID = %q, want empty", spy.ctx.UserID)
+		}
+		if pointerUserCalledOnNil.Load() {
+			t.Error("the typed-nil identifier was called")
+		}
+	})
+
+	t.Run("WithLogger", func(t *testing.T) {
+		fallback := fallbacklogtest.Capture(t)
+		w := serve(t, func(*router.Context) error { return problem.NotFound("gone missing") },
+			WithLogger(nilLogger),
+		)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404", w.Code)
+		}
+		if got := fallback.Count("ERROR", router.UnhandledErrorMessage); got != 1 {
+			t.Errorf("fallback lines = %d, want 1: %q", got, fallback.String())
+		}
+	})
+}
+
+// pointerUserCalledOnNil records a method call on a nil *pointerUser.
+var pointerUserCalledOnNil atomic.Bool
+
+// pointerUser is a RequestUserIdentifier with a pointer receiver, so a nil
+// *pointerUser is a typed nil.
+type pointerUser struct{}
+
+func (u *pointerUser) RequestUserID(*http.Request) string {
+	if u == nil {
+		pointerUserCalledOnNil.Store(true)
+		return "nil-user"
+	}
+	return "user"
+}
+
+// pointerLogger is a contract.Logger with pointer receivers that reads its
+// receiver, so a call on a nil *pointerLogger panics.
+type pointerLogger struct{ lines []string }
+
+func (l *pointerLogger) Debug(msg string, _ ...any) { l.lines = append(l.lines, msg) }
+func (l *pointerLogger) Info(msg string, _ ...any)  { l.lines = append(l.lines, msg) }
+func (l *pointerLogger) Warn(msg string, _ ...any)  { l.lines = append(l.lines, msg) }
+func (l *pointerLogger) Error(msg string, _ ...any) { l.lines = append(l.lines, msg) }
+func (l *pointerLogger) Fatal(msg string, _ ...any) { l.lines = append(l.lines, msg) }
+func (l *pointerLogger) With(kvs ...any) contract.Logger {
+	l.lines = append(l.lines, "with")
+	return contract.BindFields(l, kvs...)
 }

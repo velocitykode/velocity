@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/orm/drivers"
 )
 
 // Test model
@@ -33,6 +35,23 @@ func newTestManager(t testing.TB) *Manager {
 		t.Fatalf("Failed to initialize ORM: %v", err)
 	}
 	return m
+}
+
+// ownSQLiteDriver returns a connected in-memory SQLite driver no manager
+// holds, for a test that registers a connection of its own: a manager owns
+// every driver it holds and closes it at Shutdown, so a fixture must not
+// hand one manager a driver another manager holds. cfg's Driver and
+// Database are set here. The driver is also closed when the test ends, so
+// one never registered is released; a second Close is a no-op.
+func ownSQLiteDriver(t testing.TB, cfg drivers.ConnectionConfig) drivers.Driver {
+	t.Helper()
+	cfg.Driver, cfg.Database = "sqlite", ":memory:"
+	d := drivers.NewSQLiteDriver()
+	if err := d.Connect(cfg); err != nil {
+		t.Fatalf("connect own sqlite driver: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	return d
 }
 
 func TestNewManager(t *testing.T) {

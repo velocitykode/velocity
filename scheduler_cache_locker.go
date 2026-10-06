@@ -206,16 +206,21 @@ func installSchedulerLocker(sched *scheduler.Scheduler, cm cache.CacheManager, d
 	if driver == "" || driver == "memory" {
 		return
 	}
-	if l := sharedSchedulerLocker(cm, driver, log); l != nil {
+	if l := sharedSchedulerLocker(cm, log); l != nil {
 		sched.SetLocker(l)
 	}
 }
 
 // sharedSchedulerLocker returns a cache-backed Locker over cm when its
 // default store supports the distributed lock primitive, or nil (with a
-// warning naming driver) when it does not and the scheduler keeps its
-// in-process Locker.
-func sharedSchedulerLocker(cm cache.CacheManager, driver string, log contract.Logger) scheduler.Locker {
+// warning) when it does not and the scheduler keeps its in-process Locker.
+//
+// A warning about a store names it by its type, taken here from the store
+// probed, so New and rebind name the same thing for the same cache: neither
+// passes a name of its own. With no default store there is none to name,
+// and the store's build error, which names the store and its driver, is
+// the warning's detail.
+func sharedSchedulerLocker(cm cache.CacheManager, log contract.Logger) scheduler.Locker {
 	// The warnings below go through the app's logger: contain it so one
 	// that panics writes to the fallback logger instead of escaping into
 	// bootstrap and leaving the fallback Locker uninstalled.
@@ -227,19 +232,18 @@ func sharedSchedulerLocker(cm cache.CacheManager, driver string, log contract.Lo
 	// not been initialised (e.g. cm is a mock that returns an error),
 	// or the store does not implement the lock primitive, the
 	// distributed-Locker path is unsafe and we fall back to in-process
-	// semantics. The driver name is logged so the warning is
-	// actionable.
+	// semantics.
 	store, err := cm.DefaultStore()
 	if err != nil || store == nil {
 		if log != nil {
 			log.Warn(
 				"velocity/scheduler: cache default store unavailable; falling back to in-process Locker; multi-host OnOneServer / WithoutOverlapping will NOT work",
-				"driver", driver,
 				"error", err,
 			)
 		}
 		return nil
 	}
+	driver := errchain.Sprintf("%T", store)
 	lc, ok := store.(lockCapable)
 	if !ok {
 		if log != nil {
@@ -285,7 +289,7 @@ func rebindSchedulerLocker(a *App, _, cur ownedSet) (func(), error) {
 	}
 	next := a.inMemoryLocker
 	if cm, _ := cur[fieldCache].(cache.CacheManager); cm != nil && !processScopedCache(cm) {
-		if l := sharedSchedulerLocker(cm, errchain.Sprintf("%T", cm), a.Log); l != nil {
+		if l := sharedSchedulerLocker(cm, a.Log); l != nil {
 			next = l
 		}
 	}

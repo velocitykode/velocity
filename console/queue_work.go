@@ -10,6 +10,7 @@ import (
 
 	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/queue"
 )
 
@@ -34,7 +35,7 @@ type QueueWorkOptions struct {
 
 // QueueWork starts a queue worker that processes jobs from the given driver.
 func QueueWork(driver queue.Driver, opts QueueWorkOptions) error {
-	if driver == nil {
+	if nilval.Is(driver) {
 		prism.Warning("No queue configured")
 		return nil
 	}

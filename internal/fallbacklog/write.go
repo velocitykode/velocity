@@ -1,6 +1,9 @@
 package fallbacklog
 
-import "github.com/velocitykode/velocity/contract"
+import (
+	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/internal/nilval"
+)
 
 // Write writes one line through l, or through the fallback Logger when l
 // is nil, by calling write with it. It is for lines written where a
@@ -16,7 +19,7 @@ func Write(l contract.Logger, write func(contract.Logger), fallbackFields ...any
 	if write == nil {
 		return
 	}
-	if l != nil && written(l, write) {
+	if !nilval.Is(l) && written(l, write) {
 		return
 	}
 	var fb contract.Logger = Logger{}

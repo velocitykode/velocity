@@ -12,10 +12,12 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/velocitykode/velocity/auth/internal/identity"
+	"github.com/velocitykode/velocity/auth/internal/sessionref"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/clientip"
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 // DefaultAttemptFloor is the wall-clock floor applied to scheme.Attempt
@@ -516,7 +518,7 @@ const DefaultUserStoreName = "default"
 // order. Schemes registered afterwards pick it up at registration. Passing nil
 // is ignored.
 func (m *Manager) SetUserStore(userStore UserStore) {
-	if userStore == nil {
+	if nilval.Is(userStore) {
 		return
 	}
 
@@ -643,6 +645,11 @@ func (m *Manager) ID(r *http.Request) interface{} {
 }
 
 // Login logs in a user using the default scheme.
+//
+// With a session scheme, a request outside the session middleware must be
+// wrapped with schemes.WithSessionContext first (pass the request it
+// returns); otherwise the scheme returns ErrNoSessionContext before any
+// side effect.
 func (m *Manager) Login(w http.ResponseWriter, r *http.Request, user contract.Authenticatable, remember ...bool) error {
 	scheme, err := m.DefaultScheme()
 	if err != nil {
@@ -652,6 +659,11 @@ func (m *Manager) Login(w http.ResponseWriter, r *http.Request, user contract.Au
 }
 
 // Attempt attempts login with credentials using the default scheme.
+//
+// With a session scheme, a request outside the session middleware must be
+// wrapped with schemes.WithSessionContext first (pass the request it
+// returns); otherwise the scheme returns ErrNoSessionContext before any
+// side effect.
 func (m *Manager) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
 	scheme, err := m.DefaultScheme()
 	if err != nil {
@@ -661,6 +673,15 @@ func (m *Manager) Attempt(w http.ResponseWriter, r *http.Request, credentials ma
 }
 
 // Logout logs out the user using the default scheme.
+//
+// With a session scheme, a request outside the session middleware must be
+// wrapped with schemes.WithSessionContext first (pass the request it
+// returns); otherwise the scheme returns ErrNoSessionContext before any
+// side effect.
+//
+// A Logout the scheme refused (an error wrapping ErrNoSessionContext or
+// ErrOperationInProgress) ended nothing: the visitor is still signed in.
+// Check the error.
 func (m *Manager) Logout(w http.ResponseWriter, r *http.Request) error {
 	scheme, err := m.DefaultScheme()
 	if err != nil {
@@ -750,7 +771,7 @@ func (m *Manager) SetLogger(l contract.Logger) {
 
 	// A nil logger is not handed to the hasher: its construction-time
 	// warning stays pending until a logger is installed.
-	if bh, ok := hasher.(*BcryptHasher); ok && l != nil {
+	if bh, ok := hasher.(*BcryptHasher); ok && !nilval.Is(l) {
 		bh.SetLogger(&m.logger)
 	}
 	for _, r := range receivers {
@@ -1128,7 +1149,7 @@ func (m *Manager) RevokeSession(ctx context.Context, sessionID string) error {
 	case errchain.Is(err, ErrSessionNotFound), errchain.Is(err, ErrSessionExpired):
 		// No live record, so no owner whose credential this session holds.
 	default:
-		m.logWarn("velocity/auth: revoke session: record read failed; remember-me not cleared", "session_id", sessionID, "error", err)
+		m.logWarn("velocity/auth: revoke session: record read failed; remember-me not cleared", "session", sessionref.Of(sessionID), "error", err)
 		partialErrs = append(partialErrs, errchain.Errorf("session record read: %w", err))
 	}
 	if err := store.Delete(ctx, sessionID); err != nil { //store-rmw-ok: a revocation ends the id for good, whatever its record holds: update-if-present writes cannot bring it back, and the read above only names the owner

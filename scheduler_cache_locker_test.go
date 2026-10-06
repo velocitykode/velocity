@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/cache/drivers"
 	"github.com/velocitykode/velocity/contract"
@@ -585,4 +587,75 @@ func TestCacheLocker_FencingTokenDocumentedAsProcessLocal(t *testing.T) {
 	if a.FencingToken() > 1_000_000_000 {
 		t.Errorf("unexpectedly large fencing token %d; expected process-local counter, not external state", a.FencingToken())
 	}
+}
+
+// warnField returns the value logged under key in w, or nil.
+func warnField(w capturedWarn, key string) any {
+	for i := 0; i+1 < len(w.kvs); i += 2 {
+		if w.kvs[i] == key {
+			return w.kvs[i+1]
+		}
+	}
+	return nil
+}
+
+// newNilLockCache returns a cache manager whose default store has the lock
+// methods and returns no Lock from them, so the capability probe warns.
+func newNilLockCache(t *testing.T) *cache.Manager {
+	t.Helper()
+	const name = "test-nil-lock-store-named"
+	prev := cache.Drivers().Override(name, func(_ context.Context, cfg cache.StoreConfig) (cache.Store, error) {
+		return &nilLockingStore{Store: drivers.NewMemoryStore(cfg.Prefix)}, nil
+	})
+	t.Cleanup(func() { cache.Drivers().Override(name, prev) })
+	cm := cache.NewManager(&cache.Config{
+		Default: "default",
+		Stores:  map[string]cache.StoreConfig{"default": {Driver: name}},
+	})
+	t.Cleanup(func() { _ = cm.Shutdown(context.Background()) })
+	return cm
+}
+
+// The fallback warning names the default store it probed, by type, at
+// both sites that install a Locker: New (installSchedulerLocker) and a
+// boundary after a module replaced Services.Cache (rebindSchedulerLocker).
+// Neither names the configured driver string or the cache manager.
+func TestSchedulerLockerWarning_NamesTheProbedStoreAtBothSites(t *testing.T) {
+	const want = "*velocity.nilLockingStore"
+
+	t.Run("New", func(t *testing.T) {
+		logger := &captureLogger{}
+		installSchedulerLocker(scheduler.New(), newNilLockCache(t), "redis", logger)
+		warns := logger.Warns()
+		if len(warns) != 1 {
+			t.Fatalf("warnings = %d, want 1: %+v", len(warns), warns)
+		}
+		if got := warnField(warns[0], "driver"); got != want {
+			t.Errorf("driver = %v, want %s", got, want)
+		}
+	})
+
+	t.Run("rebind", func(t *testing.T) {
+		logger := &captureLogger{}
+		a, err := NewTestApp(WithModules(swapIn(func(s *app.Services) {
+			s.Log = logger
+			s.Cache = newNilLockCache(t)
+		})))
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		shutdownApp(t, a)
+		var probe []capturedWarn
+		for _, w := range logger.Warns() {
+			if strings.Contains(w.msg, "velocity/scheduler: cache driver returned nil Lock") {
+				probe = append(probe, w)
+			}
+		}
+		if len(probe) != 1 {
+			t.Fatalf("probe warnings = %d, want 1: %+v", len(probe), logger.Warns())
+		}
+		if got := warnField(probe[0], "driver"); got != want {
+			t.Errorf("driver = %v, want %s", got, want)
+		}
+	})
 }

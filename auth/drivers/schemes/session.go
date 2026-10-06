@@ -19,6 +19,7 @@ import (
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/session"
 	"github.com/velocitykode/velocity/auth/internal/identity"
+	"github.com/velocitykode/velocity/auth/internal/sessionref"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/internal/clientip"
@@ -384,8 +385,8 @@ func queueBehindSave(r *http.Request, write func(w http.ResponseWriter), session
 // operation and standalone true: the operation is its own save scope and
 // commits through the same seam body when it ends, so its write is
 // neither lost nor saved twice. anchor is then the holder
-// WithSessionContext attached to r, if any, which the operation reserves
-// too (see reserveOperation).
+// WithSessionContext attached to r, which the operation reserves too; a
+// standalone operation with no anchor is refused (see reserveOperation).
 func seamHolder(r *http.Request) (holder *sessionHolder, standalone bool, anchor *sessionHolder) {
 	holder, _ = r.Context().Value(sessionCtxKey{}).(*sessionHolder)
 	if holder != nil && holder.getResponseWriter() != nil {
@@ -496,9 +497,30 @@ func (h *sessionHolder) resetStoreCache() {
 	h.storeErr = nil
 }
 
-// WithSessionContext returns a new request with a session cache attached to its context.
-// Call this from middleware to enable per-request session caching that is automatically
-// cleaned up when the request completes.
+// WithSessionContext returns a new request with a session context attached
+// to its context: the per-request holder the scheme caches the session in
+// and reserves while an operation that may change the session runs. The
+// session middleware attaches one itself. A caller outside it (a plain
+// net/http handler, a script, a test) must wrap the request before calling
+// Login, LoginByID, Attempt or Logout, and must pass the request this
+// function returns: the context is on the returned request, not on r, and
+// an operation given a request without one returns
+// auth.ErrNoSessionContext before any side effect.
+//
+// Known limit: the authentication reads (Check, CheckWithError, User, ID,
+// ResolveSession) still answer on a request with no session context. They
+// commit nothing and write no cookie, and with nothing to reserve they run
+// outside the request's gate: a store that calls a read back for such a
+// request is not refused.
+//
+// A read is not free of side effects there. When such a request presents
+// a valid remember cookie, Check, CheckWithError, User and ID start the
+// recall, and the recall is refused only at its last step, where it finds
+// nowhere to deliver the rotated credential. By then it has rotated the
+// CSRF token (the rotator's RotateToken ran for a session id no client
+// receives) and, with a server session store, written a record for that
+// id, which stays until it expires. The read answers signed out and the
+// presented remember credential is left as it was.
 func WithSessionContext(r *http.Request) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), sessionCtxKey{}, &sessionHolder{}))
 }
@@ -561,10 +583,15 @@ func sessionContext(r *http.Request, session contract.Session) context.Context {
 	return context.WithValue(r.Context(), sessionCtxKey{}, &sessionHolder{session: session, saveScope: true})
 }
 
-// modifiedSession is the optional capability the save-at-end middleware uses
-// to skip writing a Set-Cookie header for sessions that no handler touched.
-// *auth.BaseSession (and therefore session.CookieSession via embedding)
-// satisfies it; mock sessions in tests can opt in by exposing IsModified().
+// modifiedSession is the optional capability the scheme reads a session's
+// state through: whether it was ended (IsDestroyed, set once and never
+// cleared) and whether it carries unsaved changes (IsModified).
+// *auth.BaseSession (and therefore the framework's sessions via embedding)
+// satisfies it; mock sessions in tests can opt in by exposing both.
+//
+// Whether a session is saved is never decided on IsModified: the save seam
+// always calls Save and the session decides inside its own save, since a
+// save in flight has cleared the mark and puts it back when it fails.
 type modifiedSession interface {
 	IsModified() bool
 	IsDestroyed() bool
@@ -672,6 +699,25 @@ type rememberMatch struct {
 	user  contract.Authenticatable
 	hash  string
 	store auth.RememberTokenCompareAndSwapper
+	// expiresAt is when the presented credential ends: its issue time plus
+	// SessionConfig.RememberTimeout.
+	expiresAt time.Time
+}
+
+// errRememberCredentialEnded reports a recall refused because the presented
+// remember credential's lifetime ran out while the recall was under way.
+var errRememberCredentialEnded = errors.New("velocity/auth: the remember credential's lifetime ended during the recall")
+
+// ended reports whether the presented credential's lifetime is over on the
+// session clock. A recall mints credentials (an authenticated session, a
+// replacement remember token), so its lifetime is not decided once when the
+// cookie is read: every step that mints asks again, after the slow calls of
+// user code before it (the user lookup, the CSRF rotation, the record
+// store), which can outlast what was left of the lifetime. Asked once, in
+// front of the lookup, a credential that expired during a slow lookup still
+// signed its holder in and was replaced by a fresh one.
+func (m rememberMatch) ended() bool {
+	return sessionclock.Now().After(m.expiresAt)
 }
 
 // loadUserStore returns the active auth.UserStore via atomic load.
@@ -717,7 +763,7 @@ func (g *SessionScheme) SetAttemptFloor(d time.Duration) {
 // have the dummy at cost 10 (5x faster) and the timing channel from
 // H-09 would reopen.
 func (g *SessionScheme) SetHasher(h auth.Hasher) {
-	if h == nil {
+	if nilval.Is(h) {
 		return
 	}
 	g.mu.Lock()
@@ -766,7 +812,7 @@ type SessionSchemeOption func(*SessionScheme)
 // session's data and its revocation index stay one record.
 func WithSessionStore(store auth.SessionStore) SessionSchemeOption {
 	return func(g *SessionScheme) {
-		if store == nil {
+		if nilval.Is(store) {
 			return
 		}
 		g.store = store
@@ -819,7 +865,7 @@ func (g *SessionScheme) SessionStore() auth.SessionStore {
 // Stored via atomic.Pointer so concurrent Attempt() readers cannot tear the
 // two-word interface fetch on the throttler field (H-10 fix).
 func (g *SessionScheme) SetLoginThrottler(t contract.LoginThrottler) {
-	if t == nil {
+	if nilval.Is(t) {
 		g.throttler.Store(&throttlerHolder{t: auth.NoopLoginThrottler{}})
 		return
 	}
@@ -1333,7 +1379,11 @@ func (g *SessionScheme) anchorRecalledUser(r *http.Request, session contract.Ses
 	if rotator := g.getCSRFTokenRotator(); rotator != nil {
 		rotateCtx := sessionContext(r, session)
 		if err := rotator.RotateToken(rotateCtx, oldSessionID, session.ID()); err != nil {
-			g.logWarn("velocity/auth: remember-cookie revival: csrf token rotate failed", "old_id", oldSessionID, "new_id", session.ID(), "error", err)
+			// `session` is the key every warning names the request's
+			// current session by; the two sides of the rotation keep
+			// their own keys beside it.
+			current := sessionref.Of(session.ID())
+			g.logWarn("velocity/auth: remember-cookie revival: csrf token rotate failed", "session", current, "old_session", sessionref.Of(oldSessionID), "new_session", current, "error", err)
 			return false
 		}
 		// Write the fresh XSRF-TOKEN cookie alongside the rotation, as
@@ -1353,6 +1403,12 @@ func (g *SessionScheme) anchorRecalledUser(r *http.Request, session contract.Ses
 		}
 	}
 
+	// The session is about to be given the user: the credential's lifetime
+	// is decided again here, after the CSRF rotation (user code) above.
+	if match.ended() {
+		g.logWarn("velocity/auth: remember-cookie revival refused", "error", errRememberCredentialEnded)
+		return false
+	}
 	session.Put(auth.UserIDSessionKey, userID)
 
 	// Write the new session to the server-side store on revival so
@@ -1425,6 +1481,7 @@ var errRememberTokenStale = errors.New("velocity/auth: remember token rotated co
 //     SessionMiddleware have nowhere to deliver the replacement cookie),
 //   - minting or encrypting the replacement failed,
 //   - persisting the new hash failed,
+//   - the presented credential's lifetime ended during the recall,
 //   - the user store does not implement auth.RememberTokenCompareAndSwapper
 //     (auth.ErrRememberTokenStoreUnsupported; matchRememberCookie honours
 //     no cookie on such a scheme, so a recall does not get here), or
@@ -1463,6 +1520,12 @@ func (g *SessionScheme) rotateRememberToken(r *http.Request, match rememberMatch
 
 	var newToken string
 	cookie, err := g.mintRememberCookie(user, func(hashed string) error {
+		// The replacement is minted by the swap below: the presented
+		// credential's lifetime is decided one last time in front of it,
+		// after the record store calls that came before.
+		if match.ended() {
+			return errRememberCredentialEnded
+		}
 		swapped, err := cas.CompareAndSwapRememberToken(r.Context(), user, oldToken, hashed)
 		if err != nil {
 			return err
@@ -1523,9 +1586,11 @@ func (g *SessionScheme) ID(r *http.Request) interface{} {
 // while Login runs saves nothing, so Login then returns the sign-in
 // refused error and the queued credential writes are dropped. The server
 // record Login wrote for the new id names an id no client received and
-// ends with its TTL. Outside the session middleware and WithSessionContext,
-// a store that calls back into the scheme for the same request is not
-// detected: the request carries nothing to reserve.
+// ends with its TTL. A request that carries no session context (neither the session
+// middleware nor WithSessionContext put one on it) is refused with
+// auth.ErrNoSessionContext before any side effect: a caller outside the
+// middleware wraps the request with WithSessionContext and passes the
+// request it returns.
 //
 // Remember-me needs a user store implementing
 // auth.RememberTokenCompareAndSwapper: with any other store a Login asking
@@ -1551,25 +1616,27 @@ func (g *SessionScheme) ID(r *http.Request) interface{} {
 //     unsafe request can be refused (419) until a safe request writes the
 //     cookie again.
 func (g *SessionScheme) Login(w http.ResponseWriter, r *http.Request, user contract.Authenticatable, remember ...bool) error {
-	// Guard the nil user before any session work. user is deref'd below
-	// (session.Put(auth.UserIDSessionKey, ...)), so a nil here would
-	// panic. UserStore.FindByID is contractually allowed to return
-	// (nil, nil) for a not-found id, so LoginByID and any external caller can
-	// reach this with a nil user. Return a normal error instead of panicking
-	// on a runtime condition.
-	if user == nil {
-		return auth.ErrUserNotFound
-	}
-
 	// The session middleware saves the session and then writes the
 	// cookies bound to it. Outside it, this login is its own save scope
 	// and commits the same way before returning.
+	//
+	// The request is reserved before the user is looked at, so a request
+	// the scheme refuses (no session context, an operation in flight) is
+	// refused the same way whatever user it was handed.
 	var op gateOp
 	holder, standalone, err := reserveOperation(r, &op)
 	if err != nil {
 		return errchain.Errorf("velocity/auth: login refused: %w", err)
 	}
 	defer op.abort()
+	// Guard the nil user before any session work. user is deref'd below
+	// (session.Put(auth.UserIDSessionKey, ...)), so a nil here would
+	// panic. Return a normal error instead of panicking on a runtime
+	// condition.
+	if nilval.Is(user) {
+		op.publish(false)
+		return auth.ErrUserNotFound
+	}
 	return g.signInReserved(w, r, holder, standalone, &op, user, nil, remember...)
 }
 
@@ -1771,6 +1838,12 @@ func (g *SessionScheme) loginReserved(r *http.Request, holder *sessionHolder, us
 // while another authentication operation of the request is in flight, or
 // from a store that operation calls, it returns
 // auth.ErrOperationInProgress without calling the store.
+//
+// A request that carries no session context (neither the session
+// middleware nor WithSessionContext put one on it) is refused with
+// auth.ErrNoSessionContext before any side effect: a caller outside the
+// middleware wraps the request with WithSessionContext and passes the
+// request it returns.
 func (g *SessionScheme) LoginByID(w http.ResponseWriter, r *http.Request, id interface{}, remember ...bool) error {
 	var op gateOp
 	holder, standalone, err := reserveOperation(r, &op)
@@ -1811,6 +1884,12 @@ func (g *SessionScheme) LoginByID(w http.ResponseWriter, r *http.Request, id int
 // returns false and auth.ErrOperationInProgress at once, with no throttle,
 // user store or password work. Reads of the signed-in user on the request
 // fail closed while the attempt runs, its timed floor included.
+//
+// A request that carries no session context (neither the session
+// middleware nor WithSessionContext put one on it) is refused with
+// auth.ErrNoSessionContext before any side effect: a caller outside the
+// middleware wraps the request with WithSessionContext and passes the
+// request it returns.
 func (g *SessionScheme) Attempt(w http.ResponseWriter, r *http.Request, credentials map[string]interface{}, remember ...bool) (bool, error) {
 	var op gateOp
 	holder, standalone, err := reserveOperation(r, &op)
@@ -1869,9 +1948,16 @@ type sessionRevoker interface {
 // store the Logout calls, the server-side teardown after the session is
 // invalidated included (the cookie store's revocation, the server record
 // deletes, a standalone Logout's save), gets the same answer when it asks
-// the scheme about the request. Outside the session middleware and
-// WithSessionContext, a store that calls back into the scheme for the same
-// request is not detected: the request carries nothing to reserve.
+// the scheme about the request. A request that carries no session context (neither the session
+// middleware nor WithSessionContext put one on it) is refused with
+// auth.ErrNoSessionContext before any side effect: a caller outside the
+// middleware wraps the request with WithSessionContext and passes the
+// request it returns.
+//
+// A Logout that returns an error wrapping auth.ErrNoSessionContext or
+// auth.ErrOperationInProgress was refused and ended nothing: the session,
+// its server record and the remember credential are as they were, and the
+// visitor is still signed in. Check the error.
 func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 	// The session middleware writes the delete cookie for the
 	// invalidated session. Outside it, this logout is its own save scope
@@ -1901,7 +1987,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 		// the save calling Logout): the server-side teardown below still
 		// ends the session and the remember credential, but no save
 		// follows to delete the session cookie on this response.
-		g.logWarn("velocity/auth: logout after the session was saved: the session is ended server-side, its cookie is not deleted by this response", "session_id", sessionID)
+		g.logWarn("velocity/auth: logout after the session was saved: the session is ended server-side, its cookie is not deleted by this response", "session", sessionref.Of(sessionID))
 		if committed := holder.committed(); committed != "" && committed != sessionID {
 			retired = append(retired, committed)
 		}
@@ -1918,7 +2004,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 		if sessionID != "" {
 			op.beginMutation()
 			if err := rotator.RevokeToken(sessionContext(r, session), sessionID); err != nil {
-				g.logWarn("velocity/auth: csrf token revoke (logout) failed", "session_id", sessionID, "error", err)
+				g.logWarn("velocity/auth: csrf token revoke (logout) failed", "session", sessionref.Of(sessionID), "error", err)
 			}
 		}
 		// Clear the client-side XSRF-TOKEN cookie too. Without this the
@@ -2007,7 +2093,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 		}
 		if store := g.getServerStore(); store != nil {
 			if err := store.Delete(r.Context(), id); err != nil { //store-rmw-ok: logout retires the id for good: no request writes a record under a retired id again, so nothing newer can be removed
-				g.logWarn("velocity/auth: server session store delete (logout) failed", "session_id", id, "error", err)
+				g.logWarn("velocity/auth: server session store delete (logout) failed", "session", sessionref.Of(id), "error", err)
 			}
 		}
 	}
@@ -2030,7 +2116,7 @@ func (g *SessionScheme) Logout(w http.ResponseWriter, r *http.Request) error {
 // installed user store in place; SessionScheme must always have a non-nil
 // user store so nil swaps are silently ignored.
 func (g *SessionScheme) SetUserStore(userStore auth.UserStore) {
-	if userStore == nil {
+	if nilval.Is(userStore) {
 		return
 	}
 	g.userStore.Store(&userStoreHolder{p: userStore})
@@ -2117,8 +2203,12 @@ func (g *SessionScheme) resolveSessionReserved(r *http.Request) (contract.Sessio
 		return nil, auth.ErrSessionNotFound
 	}
 	if holder, ok := r.Context().Value(sessionCtxKey{}).(*sessionHolder); !ok || holder == nil || !holder.inSaveScope() {
+		// No save scope: nothing of the framework saves this session, so
+		// the mark is not cleared by a save the request's commit makes,
+		// and it says what it said at the load (fresh) or after the last
+		// change. Without a holder the session is this call's own.
 		fresh, ok := sess.(interface{ IsModified() bool })
-		if !ok || fresh.IsModified() {
+		if !ok || fresh.IsModified() { //session-mark-ok: judges a session no save scope saves as fresh or changed; no framework save is in flight on it
 			return nil, auth.ErrSessionNotFound
 		}
 	}
@@ -2212,7 +2302,7 @@ func (g *SessionScheme) consultServerStore(r *http.Request, session contract.Ses
 		} else if errchain.Is(err, auth.ErrSessionNotFound) {
 			resolved = auth.ErrSessionRevoked
 		} else {
-			g.logWarn("velocity/auth: server session store get failed", "session_id", sessionID, "error", err)
+			g.logWarn("velocity/auth: server session store get failed", "session", sessionref.Of(sessionID), "error", err)
 			resolved = errchain.Errorf("velocity/auth: server session store get: %w", err)
 		}
 		if holder != nil {
@@ -2269,7 +2359,7 @@ func (g *SessionScheme) maybeRefreshLastSeen(ctx context.Context, store auth.Ser
 	if errchain.Is(err, auth.ErrSessionNotFound) {
 		return auth.ErrSessionRevoked
 	}
-	g.logWarn("velocity/auth: server session store touch (lastseen) failed", "session_id", rec.ID, "error", err)
+	g.logWarn("velocity/auth: server session store touch (lastseen) failed", "session", sessionref.Of(rec.ID), "error", err)
 	return nil
 }
 
@@ -2327,7 +2417,7 @@ func (g *SessionScheme) recordServerSession(r *http.Request, session contract.Se
 		UserAgent:  r.Header.Get("User-Agent"),
 	}
 	if err := store.Put(r.Context(), rec); err != nil {
-		g.logWarn("velocity/auth: server session store put (login) failed", "session_id", sessionID, "error", err)
+		g.logWarn("velocity/auth: server session store put (login) failed", "session", sessionref.Of(sessionID), "error", err)
 	}
 }
 
@@ -2465,13 +2555,19 @@ func (g *SessionScheme) matchRememberCookie(r *http.Request) (rememberMatch, boo
 	if !ok {
 		return rememberMatch{}, false
 	}
-	if sessionclock.Now().After(issuedAt.Add(g.config.RememberTimeout())) {
+	match := rememberMatch{store: cas, expiresAt: issuedAt.Add(g.config.RememberTimeout())}
+	if match.ended() {
 		return rememberMatch{}, false
 	}
 
 	// Look up user by ID
 	user, err := userStore.FindByIDCtx(r.Context(), userID)
 	if err != nil || user == nil {
+		return rememberMatch{}, false
+	}
+	// The lookup is user code and may have taken longer than the
+	// credential had left.
+	if match.ended() {
 		return rememberMatch{}, false
 	}
 
@@ -2485,7 +2581,8 @@ func (g *SessionScheme) matchRememberCookie(r *http.Request) (rememberMatch, boo
 		return rememberMatch{}, false
 	}
 	if crypto.EqualString(storedToken, hashRememberToken(token)) || crypto.EqualString(storedToken, token) {
-		return rememberMatch{user: user, hash: storedToken, store: cas}, true
+		match.user, match.hash = user, storedToken
+		return match, true
 	}
 	return rememberMatch{}, false
 }

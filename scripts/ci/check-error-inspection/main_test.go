@@ -71,8 +71,8 @@ func TestCheck(t *testing.T) {
 
 // TestHints names a fix for each kind reported, and the marker syntax.
 func TestHints(t *testing.T) {
-	out := hints([]string{"a.go:1: is: errors.Is", "b.go:2: text: err.Error", "c.go:3: format: fmt.Errorf"})
-	for _, want := range []string{"3 uncontained", "errchain.Is(", "errchain.Text(", "errchain.Errorf", "//error-inspection-ok: <rationale"} {
+	out := hints([]string{"a.go:1: is: errors.Is", "b.go:2: text: err.Error", "c.go:3: format: fmt.Errorf", "d.go:4: nil: s == nil"})
+	for _, want := range []string{"4 uncontained", "errchain.Is(", "errchain.Text(", "errchain.Errorf", "nilval.Is(v)", "//error-inspection-ok: <rationale"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("hints lack %q:\n%s", want, out)
 		}

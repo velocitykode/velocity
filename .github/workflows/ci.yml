@@ -236,7 +236,9 @@ jobs:
   # (errors.Is, errors.As, errors.Unwrap, or an Error, Unwrap, Is or As call
   # on an interface value), or formats an interface-typed value through
   # fmt (a nested panic in its Error, String or Format method re-panics
-  # out of fmt): those methods are user code and may panic or loop. A
+  # out of fmt): those methods are user code and may panic or loop. It also
+  # fails on a plain nil comparison of an exported function's parameter of
+  # a module interface type, which a typed nil passes (internal/nilval.Is). A
   # go/types walker, stdlib only; see the package comment of
   # scripts/ci/check-error-inspection for the rules and the
   # //error-inspection-ok: <rationale> marker.
@@ -255,7 +257,7 @@ jobs:
         run: |
           set -e
           if ! scripts/ci/check-error-inspection.sh; then
-            echo "::error::an error inspected or a value formatted outside internal/errchain; use errchain.Is, As, Unwrap, Text, Errorf, Sprintf or Sprint, or add //error-inspection-ok: <rationale>"
+            echo "::error::an error inspected or a value formatted outside internal/errchain, or a boundary parameter compared with nil; use errchain.Is, As, Unwrap, Text, Errorf, Sprintf or Sprint, or nilval.Is, or add //error-inspection-ok: <rationale>"
             exit 1
           fi
 

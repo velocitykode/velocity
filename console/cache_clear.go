@@ -5,11 +5,12 @@ import (
 
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 // CacheClear flushes all items from the default cache store.
 func CacheClear(c cache.CacheManager) error {
-	if c == nil {
+	if nilval.Is(c) {
 		prism.Warning("No cache configured")
 		return nil
 	}

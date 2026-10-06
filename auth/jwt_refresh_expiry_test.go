@@ -232,7 +232,7 @@ func TestInMemoryBlacklistStore_Add_RefusesPassedDeadline(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			if store.Add("absent", past) {
+			if yes(store.Add("absent", past)) {
 				mu.Lock()
 				consumed++
 				mu.Unlock()
@@ -247,25 +247,25 @@ func TestInMemoryBlacklistStore_Add_RefusesPassedDeadline(t *testing.T) {
 	if _, ok := entry("absent"); ok {
 		t.Fatal("an Add with a passed deadline wrote an entry")
 	}
-	if store.IsBlacklisted("absent") {
+	if yes(store.IsBlacklisted("absent")) {
 		t.Fatal("a JTI Added with a passed deadline reads as blacklisted")
 	}
-	if store.Add("zero", time.Time{}) {
+	if yes(store.Add("zero", time.Time{})) {
 		t.Fatal("Add with the zero time consumed")
 	}
 
 	// An expired entry: still refused, and the JTI stays consumable by a
 	// call with a live deadline.
 	seedExpiredEntry(store, "lapsed")
-	if store.Add("lapsed", past) {
+	if yes(store.Add("lapsed", past)) {
 		t.Fatal("Add with a passed deadline over an expired entry consumed")
 	}
-	if !store.Add("lapsed", future) {
+	if !yes(store.Add("lapsed", future)) {
 		t.Fatal("Add with a live deadline over an expired entry = false, want true")
 	}
 
 	// A live entry: refused, entry untouched.
-	if store.Add("lapsed", past) {
+	if yes(store.Add("lapsed", past)) {
 		t.Fatal("Add with a passed deadline over a live entry consumed")
 	}
 	if at, ok := entry("lapsed"); !ok || !at.Equal(future) {
@@ -278,14 +278,14 @@ func TestInMemoryBlacklistStore_Add_RefusesPassedDeadline(t *testing.T) {
 func TestJWT_RevokeToken_PassedExpiry_WritesNothing(t *testing.T) {
 	store := NewInMemoryBlacklistStore()
 	mgr := newConsumeManager(t, store, true)
-	mgr.RevokeToken("gone", time.Now().Add(-time.Second))
+	noErr(mgr.RevokeToken("gone", time.Now().Add(-time.Second)))
 	store.mu.RLock()
 	n := len(store.entries)
 	store.mu.RUnlock()
 	if n != 0 {
 		t.Fatalf("blacklist holds %d entries after revoking an expired token, want 0", n)
 	}
-	if mgr.IsBlacklisted("gone") {
+	if yes(mgr.IsBlacklisted("gone")) {
 		t.Fatal("an expired revocation reads as blacklisted")
 	}
 }

@@ -90,9 +90,10 @@ func TestEventEnvelopeHelperOutsideRouterGraph(t *testing.T) {
 // TestEventEmitterImportsOnlyItsLeaves pins that internal/eventemit, which
 // the router and every event-dispatching package link, imports only the
 // standard library, contract, internal/errchain, internal/fallbacklog,
-// internal/goroutine, internal/panicerr and trace (each stdlib-only or
-// built from those, all already in the router's graph), so it adds itself
-// to the router's dependency graph and nothing heavy.
+// internal/goroutine, internal/nilval (through fallbacklog, which refuses
+// a typed-nil logger with it), internal/panicerr and trace (each
+// stdlib-only or built from those, all already in the router's graph), so
+// it adds itself to the router's dependency graph and nothing heavy.
 func TestEventEmitterImportsOnlyItsLeaves(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go tool not on PATH")
@@ -108,13 +109,14 @@ func TestEventEmitterImportsOnlyItsLeaves(t *testing.T) {
 		module + "/internal/errchain":    true,
 		module + "/internal/fallbacklog": true,
 		module + "/internal/goroutine":   true,
+		module + "/internal/nilval":      true,
 		module + "/internal/panicerr":    true,
 		module + "/internal/tracekeys":   true,
 		module + "/trace":                true,
 	}
 	for _, dep := range strings.Fields(string(out)) {
 		if !allowed[dep] {
-			t.Errorf("internal/eventemit links %s; it may import only the standard library, contract, internal/errchain, internal/fallbacklog, internal/goroutine, internal/panicerr, internal/tracekeys and trace", dep)
+			t.Errorf("internal/eventemit links %s; it may import only the standard library, contract, internal/errchain, internal/fallbacklog, internal/goroutine, internal/nilval, internal/panicerr, internal/tracekeys and trace", dep)
 		}
 	}
 }

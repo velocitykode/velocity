@@ -10,6 +10,7 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/session"
+	"github.com/velocitykode/velocity/auth/internal/sessionref"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/sessionclock"
@@ -31,8 +32,9 @@ type preCommitHooker interface {
 // request save-at-end session semantics: the request is given a sessionHolder
 // (via WithSessionContext) so SessionScheme.getSession can cache the
 // resolved session for the lifetime of the request; BEFORE the response
-// headers are committed, the holder is consulted and, if a session was
-// touched and mutated, it is saved to the response writer.
+// headers are committed, the holder is consulted and its session is asked
+// to save to the response writer; a session nothing changed writes nothing
+// (the session decides that inside its own save).
 //
 // Where the save happens:
 //
@@ -61,7 +63,8 @@ type preCommitHooker interface {
 // bound to the saved session id (XSRF-TOKEN, then remember), so a client
 // never holds either for a session that was not persisted. Login and
 // Logout called outside this middleware (a plain net/http handler, a
-// script, a test) are their own save scope and commit through the same
+// script, a test), on a request wrapped with WithSessionContext, are
+// their own save scope and commit through the same
 // seam body before returning: one save per operation, since outside the
 // middleware the scheme sees no response boundary to wait for. Composing
 // several scheme operations on one response needs the middleware.
@@ -244,7 +247,8 @@ func (p *preCommitWriter) Unwrap() http.ResponseWriter {
 
 // commitSession is the save seam's body and the only framework code that
 // saves a session: it renews the session on activity (renewOnActivity),
-// saves holder's session to w when it changed, then runs the cookie writes
+// saves holder's session to w (a session nothing changed writes nothing,
+// which its own save decides), then runs the cookie writes
 // queued behind the save. A failed save drops the queued writes, which
 // are bound to the session id the save did not persist, runs the queued
 // undo steps instead, and is returned.
@@ -354,7 +358,7 @@ func commitStandalone(g *SessionScheme, r *http.Request, w http.ResponseWriter, 
 // write). It closes the holder's queue and drops what is left in it, so a
 // write queued afterwards is refused rather than accepted for a delivery
 // that never comes. When the commit succeeded (saved: the session was
-// saved, or found unchanged and left unsaved, before anything after the
+// saved, or its save found it unchanged and wrote nothing, before anything after the
 // save ran) it also ends the session the commit issued when the response
 // by then carries a deletion of the session cookie (see
 // endSessionDeletedAfterSave): the router answers a panic with its error
@@ -381,7 +385,7 @@ type sealableSession interface {
 // commitSessionHeld saves the session and returns the queued writes for
 // the caller to deliver once it freed the request's gate, which it holds
 // (a standalone commit's holder has none to take). It sets *saved once the commit succeeded:
-// the session was saved, or needed no save, and only the settlements and
+// the session's save returned without error, and only the settlements and
 // the delivery are left, so a panic in either still finishes a successful
 // commit (see finishCommit).
 func commitSessionHeld(g *SessionScheme, r *http.Request, w http.ResponseWriter, holder *sessionHolder, saved *bool) ([]func(http.ResponseWriter), error) {
@@ -406,21 +410,21 @@ func commitSessionHeld(g *SessionScheme, r *http.Request, w http.ResponseWriter,
 	if !ended {
 		holder.setCommittedID(session.ID())
 	}
-	// Skip the save when no mutation occurred. The modifiedSession
-	// capability covers *auth.BaseSession and the cookie store's
-	// wrapper; sessions that do not expose the capability fall through
-	// to an unconditional Save (cheaper than reflection, and
-	// CookieStore.Save itself short-circuits on !IsModified() too).
-	if ms, ok := session.(modifiedSession); !ok || ms.IsModified() || ms.IsDestroyed() {
-		if err := saveSessionFromMiddleware(g, w, session); err != nil {
-			if len(queued.writes) > 0 {
-				g.logWarn("velocity/auth: save-at-end middleware: cookies bound to the unsaved session dropped", "session_id", session.ID(), "count", len(queued.writes))
-			}
-			for _, fn := range queued.undo {
-				fn()
-			}
-			return nil, err
+	// Save is always called, and the session decides inside its own save
+	// whether there is anything to write (an unchanged session writes
+	// nothing and sends no cookie). The seam never asks the session first:
+	// a save in flight on another goroutine of the request has cleared the
+	// modified mark and puts it back when its write fails, so a look taken
+	// here would read "unchanged", skip the save and deliver the queued
+	// credentials for a session that was then never saved.
+	if err := saveSessionFromMiddleware(g, w, session); err != nil {
+		if len(queued.writes) > 0 {
+			g.logWarn("velocity/auth: save-at-end middleware: cookies bound to the unsaved session dropped", "session", sessionref.Of(session.ID()), "count", len(queued.writes))
 		}
+		for _, fn := range queued.undo {
+			fn()
+		}
+		return nil, err
 	}
 	*saved = true
 	for _, fn := range queued.settle {
@@ -533,7 +537,7 @@ func (g *SessionScheme) endSessionDeletedAfterSave(r *http.Request, w http.Respo
 		if ms, ok := session.(modifiedSession); !ok || !ms.IsDestroyed() {
 			op.beginMutation()
 			if err := session.Invalidate(); err != nil {
-				g.logWarn("velocity/auth: session invalidate (session cookie deleted) failed", "session_id", id, "error", err)
+				g.logWarn("velocity/auth: session invalidate (session cookie deleted) failed", "session", sessionref.Of(id), "error", err)
 			}
 		}
 	}
@@ -541,7 +545,7 @@ func (g *SessionScheme) endSessionDeletedAfterSave(r *http.Request, w http.Respo
 		rev.Revoke(id)
 	}
 	if err := g.retireServerRecord(r, id); err != nil {
-		g.logWarn("velocity/auth: server session store delete (session cookie deleted) failed", "session_id", id, "error", err)
+		g.logWarn("velocity/auth: server session store delete (session cookie deleted) failed", "session", sessionref.Of(id), "error", err)
 	}
 	op.publish(false)
 }
@@ -564,7 +568,7 @@ func (g *SessionScheme) endSessionDeletedBy(r *http.Request, w http.ResponseWrit
 	}
 	id := session.ID()
 	if err := session.Invalidate(); err != nil {
-		g.logWarn("velocity/auth: session invalidate (session cookie deleted) failed", "session_id", id, "error", err)
+		g.logWarn("velocity/auth: session invalidate (session cookie deleted) failed", "session", sessionref.Of(id), "error", err)
 	}
 	if rev, ok := g.store.(sessionRevoker); ok && id != "" {
 		rev.Revoke(id)
@@ -573,7 +577,7 @@ func (g *SessionScheme) endSessionDeletedBy(r *http.Request, w http.ResponseWrit
 		return true
 	}
 	if err := g.retireServerRecord(r, id); err != nil {
-		g.logWarn("velocity/auth: server session store delete (session cookie deleted) failed", "session_id", id, "error", err)
+		g.logWarn("velocity/auth: server session store delete (session cookie deleted) failed", "session", sessionref.Of(id), "error", err)
 	}
 	return true
 }
@@ -638,7 +642,13 @@ func (g *SessionScheme) renewOnActivity(r *http.Request, session contract.Sessio
 	}
 	issuedAt := rs.IssuedAt()
 	due := !issuedAt.IsZero() && sessionclock.Now().Sub(issuedAt) >= g.activityRefreshInterval()
-	if !due && !ms.IsModified() {
+	// The mark is read here only to skip the record's debounced refresh
+	// ahead of a save that will write nothing; it never decides the save
+	// (commitSessionHeld always calls Save). Read as clean while a save in
+	// flight has it cleared, the refresh is skipped and that is all: the
+	// server store's save slides and checks the record itself, and the
+	// cookie store never clears the mark ahead of a write that can fail.
+	if !due && !ms.IsModified() { //session-mark-ok: decides only whether the debounced record refresh runs ahead of the save, never whether the session is saved
 		return
 	}
 	if r != nil && session.Get(auth.UserIDSessionKey) != nil && g.getServerStore() != nil {
@@ -689,10 +699,10 @@ var ensureSession = func(g *SessionScheme, r *http.Request) {
 var saveSessionFromMiddleware = func(g *SessionScheme, w http.ResponseWriter, s contract.Session) error {
 	if err := s.Save(w); err != nil {
 		if errchain.Is(err, session.ErrCookieTooLarge) {
-			g.logWarn("velocity/auth: session not saved: the session cookie would exceed 4096 bytes, so none was sent; keep less in the session or set SESSION_STORE=server", "session_id", s.ID(), "error", err)
+			g.logWarn("velocity/auth: session not saved: the session cookie would exceed 4096 bytes, so none was sent; keep less in the session or set SESSION_STORE=server", "session", sessionref.Of(s.ID()), "error", err)
 			return err
 		}
-		g.logWarn("velocity/auth: save-at-end middleware: session save failed", "session_id", s.ID(), "error", err)
+		g.logWarn("velocity/auth: save-at-end middleware: session save failed", "session", sessionref.Of(s.ID()), "error", err)
 		return err
 	}
 	return nil

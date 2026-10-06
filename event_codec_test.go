@@ -163,7 +163,7 @@ func TestFrameworkEvents_SurviveTheQueueCodec(t *testing.T) {
 			scheme.SetHasher(codecHasher{})
 			scheme.SetAttemptFloor(-1)
 			scheme.SetEventDispatcher(c.dispatch)
-			r := httptest.NewRequest(http.MethodPost, "/login", nil)
+			r := schemes.WithSessionContext(httptest.NewRequest(http.MethodPost, "/login", nil))
 			if ok, err := scheme.Attempt(httptest.NewRecorder(), r, map[string]interface{}{"email": "a@example.com", "password": "correct"}); !ok || err != nil {
 				t.Fatalf("Attempt = %v, %v", ok, err)
 			}

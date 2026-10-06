@@ -14,6 +14,7 @@ import (
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/eventemit"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -178,7 +179,7 @@ func New() *Scheduler {
 func (s *Scheduler) SetLocker(l Locker) *Scheduler {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if l == nil {
+	if nilval.Is(l) {
 		s.locker = NewInMemoryLocker()
 		return s
 	}

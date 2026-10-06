@@ -101,14 +101,16 @@ func TestStaleMarkers(t *testing.T) {
 				stale = append(stale, h)
 			}
 		}
-		// Sorted: the //store-rmw-ok: ones in auth/blacklist.go, csrf/rmw.go
-		// and csrf/rmwdelete.go, then the //lock-held-ok: one in rules.go
-		// StaleMarker.
-		if len(stale) != 4 || !strings.HasPrefix(stale[0], "auth/blacklist.go:") || !strings.Contains(stale[0], "//store-rmw-ok:") ||
-			!strings.HasPrefix(stale[1], "csrf/rmw.go:") || !strings.Contains(stale[1], "//store-rmw-ok:") ||
-			!strings.HasPrefix(stale[2], "csrf/rmwdelete.go:") || !strings.Contains(stale[2], "//store-rmw-ok:") ||
-			!strings.HasPrefix(stale[3], "rules.go:") || !strings.Contains(stale[3], "//lock-held-ok:") {
-			t.Errorf("all=%v: stale markers = %q, want the rmw ones in auth/blacklist.go, csrf/rmw.go and csrf/rmwdelete.go and the one in rules.go StaleMarker", all, stale)
+		// Sorted: the //store-rmw-ok: one in auth/blacklist.go, the
+		// //session-mark-ok: one in auth/drivers/schemes/mark.go, the
+		// //store-rmw-ok: ones in csrf/rmw.go and csrf/rmwdelete.go, then
+		// the //lock-held-ok: one in rules.go StaleMarker.
+		if len(stale) != 5 || !strings.HasPrefix(stale[0], "auth/blacklist.go:") || !strings.Contains(stale[0], "//store-rmw-ok:") ||
+			!strings.HasPrefix(stale[1], "auth/drivers/schemes/mark.go:") || !strings.Contains(stale[1], "//session-mark-ok:") ||
+			!strings.HasPrefix(stale[2], "csrf/rmw.go:") || !strings.Contains(stale[2], "//store-rmw-ok:") ||
+			!strings.HasPrefix(stale[3], "csrf/rmwdelete.go:") || !strings.Contains(stale[3], "//store-rmw-ok:") ||
+			!strings.HasPrefix(stale[4], "rules.go:") || !strings.Contains(stale[4], "//lock-held-ok:") {
+			t.Errorf("all=%v: stale markers = %q, want the rmw ones in auth/blacklist.go, csrf/rmw.go and csrf/rmwdelete.go, the mark one in auth/drivers/schemes/mark.go and the one in rules.go StaleMarker", all, stale)
 		}
 	}
 }
@@ -141,6 +143,29 @@ func TestHintsRMW(t *testing.T) {
 		if strings.Contains(out, not) {
 			t.Errorf("hints name %q with only rmw reported:\n%s", not, out)
 		}
+	}
+}
+
+// TestHintsSession names the fix for a mark read and a logged session id,
+// the mark's marker, and leaves out the lock and rmw wording when only
+// those were reported.
+func TestHintsSession(t *testing.T) {
+	out := hints([]string{
+		"auth/drivers/schemes/a.go:3: mark: ms.IsModified read outside the session's own save",
+		"auth/drivers/schemes/a.go:9: session-id: g.logWarn is given the key \"session_id\"",
+	})
+	for _, want := range []string{"2 decision(s) about a session", "mark: ", "session-id: ", "sessionref.Of", "//session-mark-ok: <rationale"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("hints lack %q:\n%s", want, out)
+		}
+	}
+	for _, not := range []string{"call(s) to user code", "//lock-held-ok:", "//store-rmw-ok:"} {
+		if strings.Contains(out, not) {
+			t.Errorf("hints name %q with only session kinds reported:\n%s", not, out)
+		}
+	}
+	if out := hints([]string{"a.go:9: session-id: l.Warn is given the session id sid"}); strings.Contains(out, "//session-mark-ok:") {
+		t.Errorf("hints name the mark's marker with no mark read reported:\n%s", out)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/orm"
 )
 
@@ -216,7 +217,7 @@ func (p *Store[T]) first(ctx context.Context, column string, value any) (contrac
 // ValidateCredentials compares a candidate password against the stored
 // hash. Pure CPU work; no query is issued.
 func (p *Store[T]) ValidateCredentials(user contract.Authenticatable, credentials map[string]interface{}) bool {
-	if user == nil {
+	if nilval.Is(user) {
 		return false
 	}
 	password, ok := credentials["password"].(string)
@@ -229,22 +230,28 @@ func (p *Store[T]) ValidateCredentials(user contract.Authenticatable, credential
 // UpdateRememberTokenCtx persists a freshly minted remember token. Used
 // on the login path, where no prior token is being consumed; rotation of
 // an existing token goes through CompareAndSwapRememberToken.
+//
+// The row is written first and the in-memory user is set only once the
+// write returned without error, as CompareAndSwapRememberToken does: the
+// user value never names a token the store does not hold, so a caller that
+// reads it after a failed write (a retry, a later recall on a user value
+// the application shares) compares against what was persisted.
 func (p *Store[T]) UpdateRememberTokenCtx(ctx context.Context, user contract.Authenticatable, token string) error {
 	if p.err != nil {
 		return p.err
 	}
-	if user == nil {
+	if nilval.Is(user) {
 		return auth.ErrUserNotFound
 	}
-	// Mutate first, matching the previous user store: the in-memory user
-	// carries the token the caller is about to write to the cookie even
-	// if persistence fails.
-	user.SetRememberToken(token)
 
-	_, err := (orm.Model[T]{}).
+	if _, err := (orm.Model[T]{}).
 		Where(p.pk.Column+" = ?", user.GetAuthIdentifier()).
-		Update(ctx, map[string]any{p.opts.RememberTokenColumn: token})
-	return err
+		Update(ctx, map[string]any{p.opts.RememberTokenColumn: token}); err != nil {
+		return err
+	}
+
+	user.SetRememberToken(token)
+	return nil
 }
 
 // UpdateRememberToken persists a remember token.
@@ -264,7 +271,7 @@ func (p *Store[T]) CompareAndSwapRememberToken(ctx context.Context, user contrac
 	if p.err != nil {
 		return false, p.err
 	}
-	if user == nil {
+	if nilval.Is(user) {
 		return false, auth.ErrUserNotFound
 	}
 

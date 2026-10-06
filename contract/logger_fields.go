@@ -10,7 +10,7 @@ package contract
 // writes through l. A trailing key without a value is dropped, so every
 // line's own pairs keep their pairing. BindFields(nil) returns nil.
 func BindFields(l Logger, kvs ...any) Logger {
-	if l == nil {
+	if l == nil { //error-inspection-ok: contract imports no internal/nilval (leaf rule); With on a nil receiver reaches here with a typed nil
 		return nil
 	}
 	return &boundLogger{next: l, fields: appendPairs(nil, kvs)}

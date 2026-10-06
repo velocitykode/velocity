@@ -59,7 +59,7 @@ func TestSessionScheme_SetUserStore_RaceWithAttempt(t *testing.T) {
 	// torn read of user store / throttler under -race.
 	for i := 0; i < iterations; i++ {
 		w := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodPost, "/login", nil)
+		r := WithSessionContext(httptest.NewRequest(http.MethodPost, "/login", nil))
 		_, _ = scheme.Attempt(w, r, map[string]interface{}{
 			"email":    "ghost@example.com",
 			"password": "x",
@@ -112,7 +112,7 @@ func TestSessionScheme_SetThrottler_RaceWithAttempt(t *testing.T) {
 
 	for i := 0; i < iterations; i++ {
 		w := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodPost, "/login", nil)
+		r := WithSessionContext(httptest.NewRequest(http.MethodPost, "/login", nil))
 		_, _ = scheme.Attempt(w, r, map[string]interface{}{
 			"email":    "ghost@example.com",
 			"password": "x",

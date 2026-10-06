@@ -65,8 +65,8 @@ func TestJWTManager_SetBlacklistStore_ConcurrentWithValidation(t *testing.T) {
 					t.Errorf("ValidateAccessToken: %v", err)
 					return
 				}
-				m.RevokeToken(fmt.Sprintf("jti-%d-%d", n, j), time.Now().Add(time.Minute))
-				m.CleanupBlacklist()
+				noErr(m.RevokeToken(fmt.Sprintf("jti-%d-%d", n, j), time.Now().Add(time.Minute)))
+				noErr(m.CleanupBlacklist())
 			}
 		}(i)
 	}
@@ -79,8 +79,8 @@ func TestJWTManager_SetBlacklistStore_ConcurrentWithValidation(t *testing.T) {
 func TestJWTManager_SetBlacklistStore_NilRevertsToInMemory(t *testing.T) {
 	m := newBlacklistRaceManager(t)
 	m.SetBlacklistStore(nil)
-	m.RevokeToken("some-jti", time.Now().Add(time.Minute))
-	if !m.IsBlacklisted("some-jti") {
+	noErr(m.RevokeToken("some-jti", time.Now().Add(time.Minute)))
+	if !yes(m.IsBlacklisted("some-jti")) {
 		t.Error("revoked JTI not blacklisted after nil-store revert")
 	}
 }

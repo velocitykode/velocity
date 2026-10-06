@@ -7,6 +7,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 // upsert returns rules with rule added: a keyed rule replaces the earlier
@@ -450,7 +451,7 @@ func matchIs(target error) contract.ErrorMatcher {
 // rule too (T = contract.RecoveredPanic matches every one); a panic always
 // answers 500, so fn should write that status.
 func RenderFor[T error](h contract.ErrorHandler, fn func(rc RenderContext, err T, ctx *ErrorContext) bool) {
-	if h == nil || fn == nil {
+	if nilval.Is(h) || fn == nil {
 		return
 	}
 	h.AddRenderRule(contract.RenderRule{
@@ -484,7 +485,7 @@ func FrameworkRenderFor[T contract.StatusError](h *Handler, fn func(rc RenderCon
 // chain holds a T; the body is negotiated as usual. A recovered panic
 // answers 500 whatever status is registered.
 func RenderStatus[T error](h contract.ErrorHandler, status int) {
-	if h == nil {
+	if nilval.Is(h) {
 		return
 	}
 	h.AddRenderRule(contract.RenderRule{Key: typeKey[T](), Match: matchAs[T](), Status: status})
@@ -493,7 +494,7 @@ func RenderStatus[T error](h contract.ErrorHandler, status int) {
 // ReportFor registers fn to report errors whose chain holds a T. Returning
 // true stops the configured reporters from also seeing the error.
 func ReportFor[T error](h contract.ErrorHandler, fn func(err T, ctx *ErrorContext) bool) {
-	if h == nil || fn == nil {
+	if nilval.Is(h) || fn == nil {
 		return
 	}
 	h.AddReportRule(contract.ReportRule{
@@ -518,7 +519,7 @@ func ReportFor[T error](h contract.ErrorHandler, fn func(err T, ctx *ErrorContex
 // through a recovered panic (the panic value, or inside it) is still
 // replaced, but the result stays a reported 500 whatever fn returns.
 func MapFor[T error](h contract.ErrorHandler, fn func(err T) error) {
-	if h == nil || fn == nil {
+	if nilval.Is(h) || fn == nil {
 		return
 	}
 	h.AddMapRule(contract.MapRule{
@@ -544,7 +545,7 @@ func MapFor[T error](h contract.ErrorHandler, fn func(err T) error) {
 // recovered panic (the panic value, or inside it) is still replaced, but
 // the result stays a reported 500 whatever fn returns.
 func MapIs(h contract.ErrorHandler, target error, fn func(err error) error) {
-	if h == nil || target == nil || fn == nil {
+	if nilval.Is(h) || target == nil || fn == nil {
 		return
 	}
 	h.AddMapRule(contract.MapRule{Key: target, Match: matchIs(target), Map: fn})
@@ -552,7 +553,7 @@ func MapIs(h contract.ErrorHandler, target error, fn func(err error) error) {
 
 // Ignore stops errors whose chain holds a T from being reported.
 func Ignore[T error](h contract.ErrorHandler) {
-	if h == nil {
+	if nilval.Is(h) {
 		return
 	}
 	h.AddIgnoreRule(contract.IgnoreRule{Key: typeKey[T](), Match: matchAs[T]()})
@@ -560,7 +561,7 @@ func Ignore[T error](h contract.ErrorHandler) {
 
 // IgnoreIs stops errors whose chain holds target from being reported.
 func IgnoreIs(h contract.ErrorHandler, target error) {
-	if h == nil || target == nil {
+	if nilval.Is(h) || target == nil {
 		return
 	}
 	h.AddIgnoreRule(contract.IgnoreRule{Key: target, Match: matchIs(target)})
@@ -570,7 +571,7 @@ func IgnoreIs(h contract.ErrorHandler, target error) {
 // reported even when a framework ignore or the error's own ShouldReport
 // would drop them.
 func Unignore[T error](h contract.ErrorHandler) {
-	if h == nil {
+	if nilval.Is(h) {
 		return
 	}
 	h.AddIgnoreRule(contract.IgnoreRule{Key: typeKey[T](), Match: matchAs[T](), Unignore: true})
@@ -579,7 +580,7 @@ func Unignore[T error](h contract.ErrorHandler) {
 // UnignoreIs removes IgnoreIs(target) and forces errors whose chain holds
 // target to be reported.
 func UnignoreIs(h contract.ErrorHandler, target error) {
-	if h == nil || target == nil {
+	if nilval.Is(h) || target == nil {
 		return
 	}
 	h.AddIgnoreRule(contract.IgnoreRule{Key: target, Match: matchIs(target), Unignore: true})
@@ -587,7 +588,7 @@ func UnignoreIs(h contract.ErrorHandler, target error) {
 
 // LevelFor sets the log level for errors whose chain holds a T.
 func LevelFor[T error](h contract.ErrorHandler, level contract.LogLevel) {
-	if h == nil {
+	if nilval.Is(h) {
 		return
 	}
 	h.AddLevelRule(contract.LevelRule{Key: typeKey[T](), Match: matchAs[T](), Level: level})
@@ -595,7 +596,7 @@ func LevelFor[T error](h contract.ErrorHandler, level contract.LogLevel) {
 
 // LevelIs sets the log level for errors whose chain holds target.
 func LevelIs(h contract.ErrorHandler, target error, level contract.LogLevel) {
-	if h == nil || target == nil {
+	if nilval.Is(h) || target == nil {
 		return
 	}
 	h.AddLevelRule(contract.LevelRule{Key: target, Match: matchIs(target), Level: level})
@@ -603,7 +604,7 @@ func LevelIs(h contract.ErrorHandler, target error, level contract.LogLevel) {
 
 // ThrottleFor throttles reports of errors whose chain holds a T.
 func ThrottleFor[T error](h contract.ErrorHandler, throttle contract.Throttle) {
-	if h == nil {
+	if nilval.Is(h) {
 		return
 	}
 	h.AddThrottleRule(contract.ThrottleRule{Key: typeKey[T](), Match: matchAs[T](), Throttle: throttle})

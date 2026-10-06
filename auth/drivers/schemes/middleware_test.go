@@ -113,30 +113,37 @@ func TestSessionMiddleware_PersistsModifiedSessionAfterHandler(t *testing.T) {
 	}
 }
 
-func TestSessionMiddleware_NoopWhenSessionUnmodified(t *testing.T) {
+// The seam asks the session to save once per request whatever the session's
+// modified mark says: whether there is anything to write is the session's
+// decision, made inside its own save (the stores write nothing and send no
+// cookie for an unchanged session; see
+// TestSessionMiddleware_Integration_ReadOnlyHandlerNoCookie for the wire).
+func TestSessionMiddleware_AsksAnUnmodifiedSessionToSaveOnce(t *testing.T) {
 	store := &trackingStore{session: newTrackingSession()}
 	g := newSchemeForMiddleware(t, store)
 
-	sess, _ := runMiddleware(t, g, func(s contract.Session) {
-		// Read-only: Get returns nil, no Put, no Flash. The session
-		// should remain pristine; the middleware MUST NOT call Save.
+	sess, rec := runMiddleware(t, g, func(s contract.Session) {
+		// Read-only: Get returns nil, no Put, no Flash.
 		_ = s.Get("user_id")
 	})
 
-	if got := atomic.LoadInt32(&sess.saves); got != 0 {
-		t.Fatalf("expected no Save() call on a read-only request, got %d", got)
+	if got := atomic.LoadInt32(&sess.saves); got != 1 {
+		t.Fatalf("Save() calls on a read-only request = %d, want the one the commit makes", got)
+	}
+	if got := rec.Header().Values("Set-Cookie"); len(got) != 0 {
+		t.Fatalf("the seam itself wrote Set-Cookie %v for a session whose save wrote none", got)
 	}
 }
 
-func TestSessionMiddleware_NoopWhenSessionNeverAccessed(t *testing.T) {
+func TestSessionMiddleware_AsksASessionNeverAccessedToSaveOnce(t *testing.T) {
 	store := &trackingStore{session: newTrackingSession()}
 	g := newSchemeForMiddleware(t, store)
 
 	mw := g.SessionMiddleware()
 	handler := mw(func(c *router.Context) error {
 		// Handler never touches the session at all (the dominant
-		// request path on a typical site). The holder is attached
-		// but holder.session stays nil; Save MUST NOT fire.
+		// request path on a typical site). The middleware bound the
+		// session eagerly, and the commit asks it to save once.
 		return nil
 	})
 
@@ -147,8 +154,11 @@ func TestSessionMiddleware_NoopWhenSessionNeverAccessed(t *testing.T) {
 	if err := handler(c); err != nil {
 		t.Fatalf("handler returned error: %v", err)
 	}
-	if got := atomic.LoadInt32(&store.session.saves); got != 0 {
-		t.Fatalf("expected no Save() call when handler never resolved a session, got %d", got)
+	if got := atomic.LoadInt32(&store.session.saves); got != 1 {
+		t.Fatalf("Save() calls when the handler never resolved a session = %d, want the one the commit makes", got)
+	}
+	if got := rec.Header().Values("Set-Cookie"); len(got) != 0 {
+		t.Fatalf("the seam itself wrote Set-Cookie %v for a session whose save wrote none", got)
 	}
 }
 

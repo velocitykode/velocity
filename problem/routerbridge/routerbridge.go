@@ -16,6 +16,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -31,14 +32,15 @@ type config struct {
 // WithHandler sets the function that returns the error handler for a
 // failed request. It is called once per failed request, so a handler
 // swapped in after Install (for example by a module's Start) is honoured.
-// A nil resolver, or one returning nil, falls back to
-// router.DefaultErrorHandler.
+// A nil resolver, or one returning nil (a typed nil included), falls back
+// to router.DefaultErrorHandler.
 func WithHandler(resolve func() contract.ErrorHandler) Option {
 	return func(c *config) { c.resolve = resolve }
 }
 
 // WithUserID sets the facet that names the authenticated user of a failed
-// request for ErrorContext.UserID. Nil leaves UserID empty.
+// request for ErrorContext.UserID. Nil, or a typed nil, leaves UserID
+// empty.
 func WithUserID(id contract.RequestUserIdentifier) Option {
 	return func(c *config) { c.userID = id }
 }
@@ -49,8 +51,8 @@ func WithUserID(id contract.RequestUserIdentifier) Option {
 // error, the path as url and a recovered panic's stack, as the router's
 // default error path does, and then answers through
 // router.DefaultErrorHandler, which logs nothing itself. Without it, or
-// with nil, the line goes to the request's app logger (Services.Log), else
-// to the framework's standalone fallback logger.
+// with nil or a typed nil, the line goes to the request's app logger
+// (Services.Log), else to the framework's standalone fallback logger.
 func WithLogger(logger contract.Logger) Option {
 	return func(c *config) { c.logger = logger }
 }
@@ -70,12 +72,23 @@ func Install(r *router.VelocityRouterV2, opts ...Option) {
 			opt(cfg)
 		}
 	}
+	// A typed nil is absence, here as everywhere the bridge takes a
+	// collaborator: each value is made a plain nil once, where it enters
+	// (the options here, the resolver's answer per failed request, Handle's
+	// argument), so the code past this point compares with nil only.
+	if nilval.Is(cfg.userID) {
+		cfg.userID = nil
+	}
+	if nilval.Is(cfg.logger) {
+		cfg.logger = nil
+	}
 	r.SetErrorHandler(func(c *router.Context, err error, info router.ErrorInfo) {
 		var h contract.ErrorHandler
 		if cfg.resolve != nil {
 			h = cfg.resolve()
 		}
-		if h == nil {
+		if nilval.Is(h) {
+			h = nil
 			logUnhandled(cfg.logger, c, err, info)
 		}
 		handle(c, err, info, h, cfg.userID)
@@ -90,7 +103,7 @@ func logUnhandled(logger contract.Logger, c *router.Context, err error, info rou
 		return
 	}
 	if logger == nil {
-		if svc := c.ServicesIfSet(); svc != nil {
+		if svc := c.ServicesIfSet(); svc != nil && !nilval.Is(svc.Log) {
 			logger = svc.Log
 		}
 		logger = fallbacklog.Resolve(logger)
@@ -114,13 +127,18 @@ func logUnhandled(logger contract.Logger, c *router.Context, err error, info rou
 // IP, user agent, the recovered flag and both panic stacks) and calls
 // h.HandleRequest through c's RenderContext. When info.Committed is true
 // the response was already started, so h reports the error and renders
-// nothing. A nil h falls back to router.DefaultErrorHandler. Handle leaves
-// ErrorContext.UserID empty; Install with WithUserID fills it.
+// nothing. A nil h, or a typed nil, falls back to
+// router.DefaultErrorHandler. Handle leaves ErrorContext.UserID empty;
+// Install with WithUserID fills it.
 func Handle(c *router.Context, err error, info router.ErrorInfo, h contract.ErrorHandler) {
+	if nilval.Is(h) {
+		h = nil
+	}
 	handle(c, err, info, h, nil)
 }
 
-// handle is Handle with the optional user facet.
+// handle is Handle with the optional user facet. Its callers have made a
+// typed-nil h or uid a plain nil.
 func handle(c *router.Context, err error, info router.ErrorInfo, h contract.ErrorHandler, uid contract.RequestUserIdentifier) {
 	if c == nil || err == nil {
 		return

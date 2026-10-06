@@ -5,6 +5,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 // TokenMismatchError is the error Protect returns when an unsafe request
@@ -65,7 +66,7 @@ func (e *TokenMismatchError) reason() error {
 // RenderTokenMismatch returns true. Otherwise it writes nothing and returns
 // false, so the error pipeline renders the 419 through content negotiation.
 func RenderTokenMismatch(rc contract.RenderContext, err error, _ *contract.ErrorContext) bool {
-	if rc == nil {
+	if nilval.Is(rc) {
 		return false
 	}
 	tm, ok := errchain.As[*TokenMismatchError](err)

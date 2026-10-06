@@ -13,6 +13,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/internal/sessionclock"
 )
 
@@ -115,7 +116,7 @@ type CacheStore struct {
 //	sessions, err := session.NewCacheStore(store)
 //	authManager.SetServerSessionStore(sessions)
 func NewCacheStore(backend contract.Cache) (*CacheStore, error) {
-	if backend == nil {
+	if nilval.Is(backend) {
 		return nil, ErrCacheStoreNilBackend
 	}
 	full, ok := backend.(cacheBackend)
@@ -160,7 +161,7 @@ func (r *cacheRecord) toStored() *auth.StoredSession {
 func encodeRecord(r *cacheRecord) (string, error) {
 	buf, err := json.Marshal(r)
 	if err != nil {
-		return "", errchain.Errorf("velocity/auth/session: encode session %s: %w", r.ID, err)
+		return "", errchain.Errorf("velocity/auth/session: encode session: %w", err)
 	}
 	return string(buf), nil
 }
@@ -286,32 +287,53 @@ func (s *CacheStore) evict(ctx context.Context, raw string, rec *cacheRecord) {
 }
 
 // unlink takes ids out of userID's index after their records were removed
-// (or found gone), and then looks at each id again: when a record of the
-// user is there (one put under the id after the removal, whose own index
-// write may have landed before this removal of the membership), the
-// membership is added back. A Put writes the record first and the
-// membership second, so whichever order the two interleave in, a record
-// that exists once both are done is listed. The index is a listing aid
-// only: revocation never depends on it (DeleteAllForUser is authoritative
-// through the generation token).
+// (or found gone). The index is a listing aid only: revocation never depends
+// on it (DeleteAllForUser is authoritative through the generation token).
+// What a listing must not do is lose a live record, so a membership is
+// decided on the record as it is now, never on the caller's earlier read:
+//
+//   - An id whose record of the user is there when unlink looks (renewed on
+//     another instance after a listing read it as expired, or put under the
+//     id since the removal) keeps its membership and the index is not
+//     written for it at all. There is no instant at which a record that was
+//     live when unlink looked is unlisted, so a process that dies anywhere
+//     in unlink leaves it listed.
+//   - Every other id is removed from the index in one step, and then looked
+//     at once more: a record of the user put under the id between the look
+//     and the removal (a Put writes the record first and the membership
+//     second, so its membership may have landed before the removal) gets
+//     the membership back.
+//
+// The second case still removes and re-adds in two steps, and a process
+// that dies between them leaves that record unlisted until its next write
+// extends the index (slide). It needs a Put under an id whose record was
+// just removed, landing inside this call; the session scheme never reuses
+// an id (every sign-in and every moved record gets a fresh random one).
+// Closing it too takes a conditional removal the cache backends do not
+// offer (remove the member unless the record key exists, as one step).
 func (s *CacheStore) unlink(ctx context.Context, userID string, ids ...string) {
 	if userID == "" || len(ids) == 0 {
 		return
 	}
-	if err := s.backend.SetRemoveCtx(ctx, cacheUserKey(userID), ids...); err != nil {
+	gone := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if s.recordOf(ctx, userID, id) == nil {
+			gone = append(gone, id)
+		}
+	}
+	if len(gone) == 0 {
+		return
+	}
+	if err := s.backend.SetRemoveCtx(ctx, cacheUserKey(userID), gone...); err != nil {
 		// The records are gone (or were never there); only the listing
 		// still names them, and ListForUser drops a member with no record
 		// the next time it runs. Logged, not returned: the removal the
 		// caller asked for happened.
-		fallbacklog.Logger{}.Warn("velocity/auth/session: session records were removed, but their ids were not taken out of the user index", "user_id", userID, "sessions", len(ids), "error", err)
+		fallbacklog.Logger{}.Warn("velocity/auth/session: session records were removed, but their ids were not taken out of the user index", "user_id", userID, "sessions", len(gone), "error", err)
 	}
-	for _, id := range ids {
-		raw, ok := s.backend.GetStringCtx(ctx, cacheMetaKey(id))
-		if !ok {
-			continue
-		}
-		rec, err := decodeRecord(raw)
-		if err != nil || rec.UserID != userID {
+	for _, id := range gone {
+		rec := s.recordOf(ctx, userID, id)
+		if rec == nil {
 			continue
 		}
 		if err := s.extendIndex(ctx, rec, recordTTL(rec.ExpiresAt, s.clock())); err != nil {
@@ -320,6 +342,22 @@ func (s *CacheStore) unlink(ctx context.Context, userID string, ids ...string) {
 			fallbacklog.Logger{}.Warn("velocity/auth/session: a session record written during a removal was not put back into the user index", "user_id", userID, "error", err)
 		}
 	}
+}
+
+// recordOf returns the record the backend holds under id when it is one of
+// userID's, or nil: no record, one that does not decode, or another user's.
+// It does not apply the liveness rules: an expired or revoked record still
+// under its key keeps its membership until the read that evicts it.
+func (s *CacheStore) recordOf(ctx context.Context, userID, id string) *cacheRecord {
+	raw, ok := s.backend.GetStringCtx(ctx, cacheMetaKey(id))
+	if !ok {
+		return nil
+	}
+	rec, err := decodeRecord(raw)
+	if err != nil || rec.UserID != userID {
+		return nil
+	}
+	return rec
 }
 
 // Get implements auth.ServerSessionStore.
@@ -472,7 +510,7 @@ func (s *CacheStore) slide(ctx context.Context, id string, lastSeen, expiresAt t
 			return nil
 		}
 	}
-	return errchain.Errorf("velocity/auth/session: write session %s: %w", id, errRecordContended)
+	return errchain.Errorf("velocity/auth/session: write session: %w", errRecordContended)
 }
 
 // slideOnce reads the record, applies the change and swaps it in against
@@ -559,7 +597,7 @@ func (s *CacheStore) DeleteIf(ctx context.Context, id string, cond func(meta *au
 			return true, nil
 		}
 	}
-	return false, errchain.Errorf("velocity/auth/session: delete session %s: %w", id, errRecordContended)
+	return false, errchain.Errorf("velocity/auth/session: delete session: %w", errRecordContended)
 }
 
 // Delete implements auth.ServerSessionStore. Idempotent: a missing id is
@@ -638,7 +676,7 @@ func (s *CacheStore) DeleteAllForUser(ctx context.Context, userID string) error 
 		}
 		deleted, err := s.backend.CompareAndDeleteCtx(ctx, cacheMetaKey(id), raw)
 		if err != nil {
-			return errchain.Errorf("velocity/auth/session: delete session %s: %w", id, err)
+			return errchain.Errorf("velocity/auth/session: delete session: %w", err)
 		}
 		if deleted {
 			gone = append(gone, id)

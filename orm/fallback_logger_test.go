@@ -11,6 +11,7 @@ import (
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
+	"github.com/velocitykode/velocity/orm/drivers"
 )
 
 // levelLog records every entry with its level, Debug included.
@@ -158,15 +159,7 @@ func TestManagerSetLogger_ReachesTheQueryLogger(t *testing.T) {
 		t.Errorf("default connection query lines = %d, want 1: %v", got, logs.entries)
 	}
 
-	other, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:", LogQueries: true})
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
-	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
-	drv, err := other.liveDriver()
-	if err != nil {
-		t.Fatalf("liveDriver: %v", err)
-	}
+	drv := ownSQLiteDriver(t, drivers.ConnectionConfig{LogQueries: true})
 	m.AddConnection("reports", drv)
 	if _, err := drv.ExecContext(context.Background(), "CREATE TABLE reports (id INTEGER)"); err != nil {
 		t.Fatalf("ExecContext: %v", err)

@@ -6,7 +6,10 @@
 # runs inside a sync.Once. User code can call back into the component that
 # called it; under the component's lock that deadlocks for good. Also (rmw)
 # a session store read followed by a blind write of the same key in csrf
-# and auth, which two requests of one session race (last write wins).
+# and auth, which two requests of one session race (last write wins); (mark)
+# a read of a session's modified mark outside the session driver package,
+# which a save in flight makes wrong; and (session-id) a session id handed
+# to a log call or built into an error text.
 #
 # Delegates to the go/types walker in scripts/ci/check-lock-held-calls/,
 # whose package comment documents the held regions (lock-returning helpers
@@ -16,7 +19,8 @@
 # Suppression: a same-line `//lock-held-ok: <rationale>` comment, the
 # rationale at least 5 characters, saying why the held call is safe or that
 # its fix is filed; for rmw, `//store-rmw-ok: <rationale>` on the write
-# or the delete.
+# or the delete; for mark, `//session-mark-ok: <rationale>` on the read.
+# session-id has no marker.
 #
 # Prints "file:line: kind: call while holding lock" per offender, then on
 # stderr how to fix each kind reported, and exits non-zero when there is

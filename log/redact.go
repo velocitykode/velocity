@@ -9,6 +9,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 // Redactor mutates a single string immediately before it is handed to
@@ -424,7 +425,7 @@ type leveler interface {
 // wires it automatically via the LogConfig "redact": true option;
 // direct API users invoke it explicitly.
 func WithRedactors(logger Logger, redactors ...Redactor) Logger {
-	if logger == nil {
+	if nilval.Is(logger) {
 		return nil
 	}
 	if len(redactors) == 0 {

@@ -33,7 +33,9 @@ func TestJWTScheme_User_RejectsBlacklistedCachedToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidateAccessToken: %v", err)
 	}
-	scheme.jwtManager.RevokeToken(claims.ID, claims.ExpiresAt.Time)
+	if err := scheme.jwtManager.RevokeToken(claims.ID, claims.ExpiresAt.Time); err != nil {
+		t.Fatalf("RevokeToken: %v", err)
+	}
 
 	if _, ok := scheme.getCachedUser(token); !ok {
 		t.Fatal("test setup error: revocation should not remove the cached user")

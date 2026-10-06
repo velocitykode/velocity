@@ -74,6 +74,150 @@ func TestSerial_WaiterHonoursCtx(t *testing.T) {
 	}
 }
 
+// endsWhileParked is a context that ends when the test says so without
+// waking a waiter already parked on it: Done returns a channel that never
+// closes until end is called and a closed one after. It puts a waiter in
+// the state a real context puts it in when the context ends and the turn is
+// released before the waiter runs again: woken by the turn, context ended.
+type endsWhileParked struct {
+	context.Context
+	ended  atomic.Bool
+	open   chan struct{}
+	closed chan struct{}
+}
+
+func newEndsWhileParked() *endsWhileParked {
+	c := &endsWhileParked{Context: context.Background(), open: make(chan struct{}), closed: make(chan struct{})}
+	close(c.closed)
+	return c
+}
+
+func (c *endsWhileParked) end() { c.ended.Store(true) }
+
+func (c *endsWhileParked) Done() <-chan struct{} {
+	if c.ended.Load() {
+		return c.closed
+	}
+	return c.open
+}
+
+func (c *endsWhileParked) Err() error {
+	if c.ended.Load() {
+		return context.Canceled
+	}
+	return nil
+}
+
+// A waiter whose ctx ended while it was parked, and which the released turn
+// then wakes, leaves with ctx.Err() and does not run its function: the turn
+// stays free for the next caller.
+func TestSerial_WaiterWokenAfterItsCtxEndedDoesNotRun(t *testing.T) {
+	var s Serial
+	started, release := make(chan struct{}), make(chan struct{})
+	held := make(chan struct{})
+	go func() {
+		defer close(held)
+		_ = s.Do(context.Background(), func() {
+			close(started)
+			<-release
+		})
+	}()
+	<-started
+
+	ctx := newEndsWhileParked()
+	var ran atomic.Bool
+	waited := make(chan error, 1)
+	go func() {
+		waited <- s.Do(ctx, func() { ran.Store(true) })
+	}()
+	hostile.Eventually(t, hostile.Deadline, "the waiter parking", func() bool { return s.Waiting() == 1 })
+	ctx.end()
+	close(release)
+	var err error
+	hostile.Within(t, hostile.Deadline, func() { err = <-waited; <-held })
+	if ran.Load() {
+		t.Fatal("a waiter woken by the released turn ran its function after its ctx had ended")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("a waiter woken after its ctx ended returned %v, want context.Canceled", err)
+	}
+	if n := s.Waiting(); n != 0 {
+		t.Fatalf("%d waiters after the only one left", n)
+	}
+	next := false
+	hostile.Within(t, hostile.Deadline, func() {
+		if err := s.Do(context.Background(), func() { next = true }); err != nil {
+			t.Errorf("Do after the waiter left: %v", err)
+		}
+	})
+	if !next {
+		t.Fatal("the turn the waiter did not take was not free for the next caller")
+	}
+}
+
+// Many waiters behind one turn, half of them with a ctx that ends as the
+// turn is released: every Do either runs its function once and returns nil
+// or returns its ctx's error without running it, never two at once, and
+// nobody is left waiting.
+func TestSerial_Concurrent_WaitersLeavingAsTheTurnIsReleased(t *testing.T) {
+	const waiters = 32
+	for range 50 {
+		var s Serial
+		started, release := make(chan struct{}), make(chan struct{})
+		held := make(chan struct{})
+		go func() {
+			defer close(held)
+			_ = s.Do(context.Background(), func() {
+				close(started)
+				<-release
+			})
+		}()
+		<-started
+
+		ctx, cancel := context.WithCancel(context.Background())
+		var running, ran, left atomic.Int32
+		var wg sync.WaitGroup
+		for i := range waiters {
+			c := context.Background()
+			if i%2 == 0 {
+				c = ctx
+			}
+			wg.Go(func() {
+				did := false
+				err := s.Do(c, func() {
+					if n := running.Add(1); n != 1 {
+						t.Errorf("%d functions running at once", n)
+					}
+					did = true
+					ran.Add(1)
+					running.Add(-1)
+				})
+				switch {
+				case err == nil && !did:
+					t.Error("Do returned nil without running its function")
+				case err != nil && did:
+					t.Errorf("Do ran its function and returned %v", err)
+				case err != nil:
+					left.Add(1)
+				}
+			})
+		}
+		hostile.Eventually(t, hostile.Deadline, "every waiter parking", func() bool { return s.Waiting() == waiters })
+		go cancel()
+		close(release)
+		hostile.Within(t, hostile.Deadline, func() { wg.Wait(); <-held })
+		if got := ran.Load() + left.Load(); got != waiters {
+			t.Fatalf("%d ran and %d left, want %d callers accounted for", ran.Load(), left.Load(), waiters)
+		}
+		if ran.Load() < waiters/2 {
+			t.Fatalf("%d functions ran, want at least the %d whose ctx never ends", ran.Load(), waiters/2)
+		}
+		if n := s.Waiting(); n != 0 {
+			t.Fatalf("%d waiters left behind", n)
+		}
+	}
+}
+
 // A goroutine inside another flight (another Serial's turn, a Group's
 // build) waits for the turn like any other caller and then runs its own
 // function: a Serial refuses nobody.
@@ -203,4 +347,20 @@ func BenchmarkSerial_Uncontended(b *testing.B) {
 	for b.Loop() {
 		_ = s.Do(ctx, func() { n++ })
 	}
+}
+
+// BenchmarkSerial_Contended is Do with callers on every P asking for one
+// turn: the path a caller takes that finds the turn held, parks and is
+// woken by its release.
+func BenchmarkSerial_Contended(b *testing.B) {
+	var s Serial
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	n := 0
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_ = s.Do(ctx, func() { n++ })
+		}
+	})
 }

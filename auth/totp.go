@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/nilval"
 )
 
 // TOTP errors. These are intentionally generic so callers can decide how
@@ -267,7 +269,7 @@ func (g *TOTPGenerator) ConsumeRecoveryCode(stored []string, supplied string) (c
 // no new crypto dependency is introduced. Returns an error when h is
 // nil or when code is empty.
 func HashRecoveryCode(h Hasher, code string) (string, error) {
-	if h == nil {
+	if nilval.Is(h) {
 		return "", errors.New("auth: nil hasher")
 	}
 	if code == "" {
@@ -294,7 +296,7 @@ func HashRecoveryCode(h Hasher, code string) (string, error) {
 //     copied; do not mutate the returned slice).
 //   - err only when h is nil or supplied is empty.
 func (g *TOTPGenerator) ConsumeRecoveryCodeHashed(h Hasher, hashedStored []string, supplied string) (consumed bool, remaining []string, err error) {
-	if h == nil {
+	if nilval.Is(h) {
 		return false, hashedStored, errors.New("auth: nil hasher")
 	}
 	if supplied == "" {

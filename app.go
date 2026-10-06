@@ -150,12 +150,13 @@ type App struct {
 	// cryptoConsumers names the collaborators New built that need an
 	// encryptor, so a module replacing Services.Crypto with none is refused.
 	cryptoConsumers []string
-	// dbChannel is the notification database channel New gave the boot
-	// database, and dbChannelDB the *sql.DB the framework last gave it.
+	// dbChannel is the notification database channel New built, and
+	// dbChannelDB the *sql.DB the framework last gave it, nil for none.
 	dbChannel   notificationDBChannel
 	dbChannelDB *sql.DB
-	// loginThrottler is the login throttler New installed, nil when it
-	// installed none; rebind moves it with Services.Cache.
+	// loginThrottler is the login throttler New installed, with no store
+	// while the cache has no default store; rebind moves its store with
+	// Services.Cache. Nil only when New built no auth manager of its own.
 	loginThrottler *cacheLoginThrottler
 	// builtScheduler is the scheduler New built, and schedulerLocker the
 	// Locker the framework last gave it (the in-process default
@@ -716,14 +717,13 @@ func New(opts ...Option) (*App, error) {
 	a.mailCell.store(a.Mail)
 	notifier := initNotification(appMailer{cell: &a.mailCell}, sqlDB, a.config.DB.Connection)
 	a.Notification = notifier
-	if sqlDB != nil {
-		// The database channel holds the boot database's *sql.DB: rebind
-		// re-points it when a module replaces Services.DB, while the
-		// channel still holds the one installed here.
-		if ch, err := notifier.Channel("database"); err == nil {
-			if dc, ok := ch.(notificationDBChannel); ok {
-				a.dbChannel, a.dbChannelDB = dc, sqlDB
-			}
+	// The database channel holds the boot database's *sql.DB, or none
+	// without a boot database: rebind points it at the database
+	// Services.DB holds when a module replaces or installs one, while the
+	// channel still holds what the framework gave it here.
+	if ch, err := notifier.Channel("database"); err == nil {
+		if dc, ok := ch.(notificationDBChannel); ok {
+			a.dbChannel, a.dbChannelDB = dc, sqlDB
 		}
 	}
 	cleanups = append(cleanups, func() {

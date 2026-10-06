@@ -1,12 +1,15 @@
 package schemes
 
 import (
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/auth/internal/sessionref"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/router"
 )
@@ -150,8 +153,11 @@ func TestManagerLogger_SessionSeamWarningsReachTheManagerLogger(t *testing.T) {
 	if e.msg != "velocity/auth: session not saved: the session cookie would exceed 4096 bytes, so none was sent; keep less in the session or set SESSION_STORE=server" {
 		t.Errorf("oversize message = %q", e.msg)
 	}
-	if id, _ := e.kvs["session_id"].(string); id == "" {
-		t.Errorf("oversize warning session_id = %v, want the session id", e.kvs["session_id"])
+	if ref, _ := e.kvs["session"].(string); len(ref) != 12 {
+		t.Errorf("oversize warning session = %v, want the session's reference", e.kvs["session"])
+	}
+	if _, ok := e.kvs["session_id"]; ok {
+		t.Errorf("oversize warning carries the session id: %v", e.kvs)
 	}
 	if e.kvs["error"] == nil {
 		t.Error("oversize warning carries no error")
@@ -177,5 +183,74 @@ func TestManagerLogger_SessionSeamWarningsReachTheManagerLogger(t *testing.T) {
 	}
 	if e.kvs["status"] != http.StatusTeapot {
 		t.Errorf("status = %v, want %d", e.kvs["status"], http.StatusTeapot)
+	}
+}
+
+// The recall's CSRF-rotation warning names two sessions. It carries the
+// request's current session under `session`, the key every other warning
+// uses, so a reader correlating on that key finds this line too; the two
+// sides of the rotation keep their own keys.
+func TestSessionScheme_RecallRotationWarningCarriesTheSessionKey(t *testing.T) {
+	rotator := &fakeCSRFRotator{}
+	scheme, _ := newRevokeScheme(t, nil)
+	scheme.SetUserStore(&rememberRevivalStore{user: &revokeTestUser{id: "u1"}})
+	scheme.SetCSRFTokenRotator(rotator)
+	rememberCookie := mintRememberCookie(t, scheme)
+	before := len(rotator.rotated)
+	rotator.rotateErr = errors.New("store outage")
+	logs := &kvLog{}
+	scheme.SetLogger(logs)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(rememberCookie)
+	if u := scheme.User(WithSessionContext(req)); u != nil {
+		t.Fatalf("premise: the recall signed %v in although the rotation failed", u)
+	}
+	if len(rotator.rotated) != before+1 {
+		t.Fatalf("premise: the recall rotated %d times, want 1", len(rotator.rotated)-before)
+	}
+	call := rotator.rotated[before]
+
+	e, ok := logs.find("remember-cookie revival: csrf token rotate failed")
+	if !ok {
+		t.Fatalf("the failed rotation was not logged; got %v", logs.entries)
+	}
+	if got := e.kvs["session"]; got != sessionref.Of(call.newID) {
+		t.Errorf("session = %v, want the reference of the request's current session (%s)", got, sessionref.Of(call.newID))
+	}
+	if got := e.kvs["old_session"]; got != sessionref.Of(call.oldID) {
+		t.Errorf("old_session = %v, want %s", got, sessionref.Of(call.oldID))
+	}
+	if got := e.kvs["new_session"]; got != sessionref.Of(call.newID) {
+		t.Errorf("new_session = %v, want %s", got, sessionref.Of(call.newID))
+	}
+}
+
+// A warning that names a session carries its reference, never its id: the
+// id is the session's bearer credential, and whoever reads the log could
+// present it as the cookie.
+func TestSessionScheme_WarningsNameTheSessionByReference(t *testing.T) {
+	store := &trackingStore{session: newTrackingSession()}
+	store.session.saveError = errors.New("store offline")
+	g := newSchemeForMiddleware(t, store)
+	logs := &kvLog{}
+	g.SetLogger(logs)
+	id := store.session.ID()
+
+	runMiddleware(t, g, func(s contract.Session) { s.Put("k", "v") })
+
+	e, ok := logs.find("save-at-end middleware: session save failed")
+	if !ok {
+		t.Fatalf("premise: the failed save was not logged; got %v", logs.entries)
+	}
+	if got := e.kvs["session"]; got != sessionref.Of(id) {
+		t.Errorf("session = %v, want the reference of the session (%s)", got, sessionref.Of(id))
+	}
+	for _, entry := range logs.entries {
+		for k, v := range entry.kvs {
+			if text, _ := v.(string); strings.Contains(text, id) {
+				t.Errorf("log line %q carries the session id under %q", entry.msg, k)
+			}
+		}
 	}
 }

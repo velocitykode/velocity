@@ -340,6 +340,39 @@ func TestCacheStore_RevokeAllAuthoritativeWithIncompleteIndex(t *testing.T) {
 	}
 }
 
+// What an unindexed live record escapes, and until when. Sign-out
+// everywhere does not depend on the index (the test above); the listing
+// does: a record whose membership is missing is live and not listed, so it
+// cannot be picked from the listing to be revoked by id. Its next write
+// (the debounced activity refresh, a save) puts the membership back.
+func TestCacheStore_AnUnindexedRecordIsUnlistedUntilItsNextWrite(t *testing.T) {
+	for _, bf := range sharedBackends() {
+		t.Run(bf.name, func(t *testing.T) {
+			backend := bf.new(t)
+			s := newCacheStore(t, backend)
+			ctx := context.Background()
+			if err := s.Put(ctx, cacheSession("orphan", "u1")); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			if err := backend.(contract.CacheSetStore).SetRemoveCtx(ctx, cacheUserKey("u1"), "orphan"); err != nil {
+				t.Fatalf("SetRemoveCtx: %v", err)
+			}
+			if _, err := s.Get(ctx, "orphan"); err != nil {
+				t.Fatalf("the unindexed record is not live: %v", err)
+			}
+			if got := listedIDs(t, s, "u1"); len(got) != 0 {
+				t.Fatalf("the listing = %v; an unindexed record is not expected in it before its next write", got)
+			}
+			if err := s.Touch(ctx, "orphan", time.Now(), time.Now().Add(time.Hour)); err != nil {
+				t.Fatalf("Touch: %v", err)
+			}
+			if got := listedIDs(t, s, "u1"); !got["orphan"] {
+				t.Fatalf("the listing = %v; the record's write did not put its membership back", got)
+			}
+		})
+	}
+}
+
 // genReadFailBackend makes reads of a user's generation key fail (the
 // contract read surface reports a backend error the same way as an absent
 // key), modelling a Redis error on the generation lookup.

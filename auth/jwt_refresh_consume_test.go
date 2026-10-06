@@ -144,7 +144,7 @@ type gatedBlacklistStore struct {
 	release chan struct{}
 }
 
-func (s *gatedBlacklistStore) Add(jti string, expiresAt time.Time) bool {
+func (s *gatedBlacklistStore) Add(jti string, expiresAt time.Time) (bool, error) {
 	s.entered <- struct{}{}
 	<-s.release
 	return s.InMemoryBlacklistStore.Add(jti, expiresAt)
@@ -209,7 +209,7 @@ type panickingBlacklistStore struct {
 	adds  atomic.Int32
 }
 
-func (s *panickingBlacklistStore) Add(string, time.Time) bool {
+func (s *panickingBlacklistStore) Add(string, time.Time) (bool, error) {
 	s.adds.Add(1)
 	panic(s.value)
 }
@@ -268,7 +268,7 @@ func TestJWT_RefreshToken_UserStoreFailure_TokenStillUsable(t *testing.T) {
 	if _, err := mgr.RefreshToken(refresh, users); !errors.Is(err, down) {
 		t.Fatalf("RefreshToken with a failing user store = %v, want the store's error", err)
 	}
-	if store.IsBlacklisted(claims.ID) {
+	if yes(store.IsBlacklisted(claims.ID)) {
 		t.Fatal("refresh token consumed although the user lookup failed")
 	}
 
@@ -281,7 +281,7 @@ func TestJWT_RefreshToken_UserStoreFailure_TokenStillUsable(t *testing.T) {
 		if _, err := mgr.RefreshToken(refresh, users); !errors.Is(err, ErrUserNotFound) {
 			t.Fatalf("RefreshToken for a missing user (untyped nil %v) = %v, want ErrUserNotFound", untyped, err)
 		}
-		if store.IsBlacklisted(claims.ID) {
+		if yes(store.IsBlacklisted(claims.ID)) {
 			t.Fatalf("refresh token consumed although the user was not found (untyped nil %v)", untyped)
 		}
 	}
@@ -316,7 +316,7 @@ func TestJWT_RefreshToken_StaleGeneration_NotConsumed(t *testing.T) {
 	if _, err := mgr.RefreshToken(refresh, users); !errors.Is(err, ErrRefreshGenerationStale) {
 		t.Fatalf("RefreshToken after the bump = %v, want ErrRefreshGenerationStale", err)
 	}
-	if store.IsBlacklisted(claims.ID) {
+	if yes(store.IsBlacklisted(claims.ID)) {
 		t.Fatal("a stale refresh token was written to the blacklist")
 	}
 }
@@ -387,8 +387,8 @@ func TestJWT_RefreshToken_RevokedJTI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidateToken: %v", err)
 	}
-	mgr.RevokeToken(claims.ID, claims.ExpiresAt.Time)
-	mgr.RevokeToken(claims.ID, claims.ExpiresAt.Time) // idempotent
+	noErr(mgr.RevokeToken(claims.ID, claims.ExpiresAt.Time))
+	noErr(mgr.RevokeToken(claims.ID, claims.ExpiresAt.Time)) // idempotent
 	if _, err := mgr.RefreshToken(refresh, users); !errors.Is(err, ErrRefreshTokenUsed) {
 		t.Fatalf("RefreshToken of a revoked JTI = %v, want ErrRefreshTokenUsed", err)
 	}
@@ -415,10 +415,10 @@ func TestInMemoryBlacklistStore_Add_ReportsConsumed(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				if store.Add(jti, future) {
+				if yes(store.Add(jti, future)) {
 					consumed.Add(1)
 				}
-				_ = store.IsBlacklisted(jti)
+				_ = yes(store.IsBlacklisted(jti))
 			}()
 		}
 		close(start)
@@ -429,23 +429,23 @@ func TestInMemoryBlacklistStore_Add_ReportsConsumed(t *testing.T) {
 	}
 
 	// A losing Add never shortens the entry.
-	if !store.Add("keep", future) {
+	if !yes(store.Add("keep", future)) {
 		t.Fatal("first Add = false, want true")
 	}
-	if store.Add("keep", time.Now().Add(-time.Hour)) {
+	if yes(store.Add("keep", time.Now().Add(-time.Hour))) {
 		t.Fatal("second Add = true, want false")
 	}
-	if !store.IsBlacklisted("keep") {
+	if !yes(store.IsBlacklisted("keep")) {
 		t.Fatal("a losing Add with a past expiry removed the live entry")
 	}
 
 	// A losing Add with a later expiry extends it: a JTI revoked for a
 	// short while and then for longer stays revoked for the longer time.
 	soon := time.Now().Add(time.Minute)
-	if !store.Add("extend", soon) {
+	if !yes(store.Add("extend", soon)) {
 		t.Fatal("first Add = false, want true")
 	}
-	if store.Add("extend", future) {
+	if yes(store.Add("extend", future)) {
 		t.Fatal("second Add = true, want false")
 	}
 	store.mu.RLock()
@@ -454,7 +454,7 @@ func TestInMemoryBlacklistStore_Add_ReportsConsumed(t *testing.T) {
 	if !got.Equal(future) {
 		t.Fatalf("entry expiry after a longer revocation = %v, want %v", got, future)
 	}
-	if store.Add("extend", soon) {
+	if yes(store.Add("extend", soon)) {
 		t.Fatal("third Add = true, want false")
 	}
 	store.mu.RLock()
@@ -467,21 +467,21 @@ func TestInMemoryBlacklistStore_Add_ReportsConsumed(t *testing.T) {
 	// An expired entry is absent: Add consumes again, with or without an
 	// IsBlacklisted or Cleanup in between.
 	seedExpiredEntry(store, "old")
-	if store.IsBlacklisted("old") {
+	if yes(store.IsBlacklisted("old")) {
 		t.Fatal("an expired entry reads as blacklisted")
 	}
-	if !store.Add("old", future) {
+	if !yes(store.Add("old", future)) {
 		t.Fatal("Add over an expired entry = false, want true")
 	}
-	if !store.IsBlacklisted("old") {
+	if !yes(store.IsBlacklisted("old")) {
 		t.Fatal("entry re-added over an expired one is not blacklisted")
 	}
 	seedExpiredEntry(store, "old2")
-	if !store.Add("old2", future) {
+	if !yes(store.Add("old2", future)) {
 		t.Fatal("Add over an expired entry (no read between) did not consume")
 	}
-	store.Cleanup()
-	if !store.IsBlacklisted("old2") || !store.IsBlacklisted("keep") {
+	noErr(store.Cleanup())
+	if !yes(store.IsBlacklisted("old2")) || !yes(store.IsBlacklisted("keep")) {
 		t.Fatal("Cleanup removed a live entry")
 	}
 }
@@ -513,10 +513,10 @@ func TestInMemoryBlacklistStore_IsBlacklisted_KeepsConcurrentAdd(t *testing.T) {
 				defer wg.Done()
 				<-start
 				if i%2 == 0 {
-					_ = store.IsBlacklisted("jti")
+					_ = yes(store.IsBlacklisted("jti"))
 					return
 				}
-				if store.Add("jti", future) {
+				if yes(store.Add("jti", future)) {
 					consumed.Add(1)
 				}
 			}()
@@ -526,7 +526,7 @@ func TestInMemoryBlacklistStore_IsBlacklisted_KeepsConcurrentAdd(t *testing.T) {
 		if got := consumed.Load(); got != 1 {
 			t.Fatalf("round %d: %d Adds consumed the expired JTI, want exactly 1", round, got)
 		}
-		if !store.IsBlacklisted("jti") {
+		if !yes(store.IsBlacklisted("jti")) {
 			t.Fatalf("round %d: the live entry was deleted by a reader of the expired one", round)
 		}
 	}
@@ -588,7 +588,7 @@ func TestJWT_ValidateToken_RequiresExpiryAndID(t *testing.T) {
 	mgr := newConsumeManager(t, store, true)
 	tok := signClaims(t, mgr, Claims{RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: future, Subject: user.id}, UserID: user.id, TokenType: "refresh"})
 	_, _ = mgr.RefreshToken(tok, users)
-	if store.IsBlacklisted("") {
+	if yes(store.IsBlacklisted("")) {
 		t.Fatal("the empty JTI was written to the blacklist")
 	}
 

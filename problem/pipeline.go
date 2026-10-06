@@ -10,6 +10,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/internal/panicerr"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -50,6 +51,12 @@ func (h *Handler) HandleRequest(rc RenderContext, err error, ctx *ErrorContext) 
 	if err == nil {
 		return
 	}
+	// A typed-nil rc is no render context: made a plain nil here, before
+	// the request facts are read from it, the error is still reported and
+	// nothing is rendered.
+	if nilval.Is(rc) {
+		rc = nil
+	}
 	s := h.snap()
 	ctx = fillRequestContext(ctx, rc, s.trustedProxies)
 	if s.debug && ctx.StackTrace == nil {
@@ -75,7 +82,7 @@ func (h *Handler) HandleRequest(rc RenderContext, err error, ctx *ErrorContext) 
 			safeWarn(s.logger, "problem: request cut off by server shutdown", append(trace.LogFields(r.Context()), "error", errchain.Text(err), "method", r.Method, "url", requestPath(r))...)
 		}
 	}
-	if written || rc == nil {
+	if written || nilval.Is(rc) {
 		return
 	}
 	h.render(s, rc, err, ctx)
@@ -136,7 +143,7 @@ func (h *Handler) TryReport(err error, ctx *ErrorContext) bool {
 // recovered panic carries counts for nothing, so that panic still renders
 // its 500, whatever a map rule returns for it (see markRecovered).
 func (h *Handler) Render(rc RenderContext, err error, ctx *ErrorContext) {
-	if err == nil || rc == nil || outsidePanic(err, ctx, contract.IsResponseWritten) {
+	if err == nil || nilval.Is(rc) || outsidePanic(err, ctx, contract.IsResponseWritten) {
 		return
 	}
 	s := h.snap()
@@ -563,7 +570,7 @@ func (h *Handler) negotiate(s *snapshot, rc RenderContext, err error, ctx *Error
 // negotiation would answer otherwise; a render failure falls back to the
 // plain-text 500.
 func (h *Handler) RenderJSON(rc RenderContext, err error, ctx *ErrorContext) bool {
-	if err == nil || rc == nil || rc.Written() {
+	if err == nil || nilval.Is(rc) || rc.Written() {
 		return false
 	}
 	s := h.snap()

@@ -373,7 +373,9 @@ func TestJWTScheme_User(t *testing.T) {
 				token, _ := scheme.jwtManager.GenerateToken(user)
 				claims, _ := scheme.jwtManager.ValidateToken(token)
 				scheme.userCache[token] = cachedUser{user: &mockJWTUser{id: "cached-user"}, cachedAt: time.Now()}
-				scheme.jwtManager.RevokeToken(claims.ID, claims.ExpiresAt.Time)
+				if err := scheme.jwtManager.RevokeToken(claims.ID, claims.ExpiresAt.Time); err != nil {
+					panic("RevokeToken: " + err.Error())
+				}
 				return scheme
 			},
 			setupReq: func(scheme *JWTScheme) *http.Request {

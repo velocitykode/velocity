@@ -166,8 +166,18 @@ func (h *sessionHolder) reserve(op *gateOp) error {
 // attached reserves that holder first, as its anchor: the request's reads
 // and operations see the operation in flight. Refused, it returns
 // auth.ErrOperationInProgress before any work.
+//
+// A request with no holder at all (neither the session middleware nor
+// WithSessionContext put one on it) is refused with
+// auth.ErrNoSessionContext before any work: there is nothing on it to
+// reserve, so a store calling back into the scheme for the same request
+// would run as a first call, and both would commit. This is the one place
+// the four operations take the refusal from.
 func reserveOperation(r *http.Request, op *gateOp) (holder *sessionHolder, standalone bool, err error) {
 	holder, standalone, anchor := seamHolder(r)
+	if standalone && anchor == nil {
+		return nil, false, auth.ErrNoSessionContext
+	}
 	if anchor != nil {
 		if err := anchor.take(); err != nil {
 			return nil, false, err

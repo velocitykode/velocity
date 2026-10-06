@@ -8,12 +8,13 @@ import (
 
 	"github.com/velocitykode/prism"
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/scheduler"
 )
 
 // ScheduleWork starts the scheduler to run scheduled tasks.
 func ScheduleWork(s scheduler.TaskScheduler) error {
-	if s == nil {
+	if nilval.Is(s) {
 		prism.Warning("No scheduler configured")
 		return nil
 	}

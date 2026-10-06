@@ -1,3 +1,24 @@
+// Package contract declares the interfaces the framework's packages share,
+// so each can depend on a collaborator's surface without importing its
+// implementation. It imports the standard library only, plus the bounded
+// error walk.
+//
+// # Contexts the framework reads
+//
+// Many framework functions read a value from a context.Context the caller
+// supplies: the request and trace ids, route data, the current transaction,
+// the session, an event buffer. Each such reader calls the context's Value
+// method, and on a context type the application defines that method is
+// application code. The same holds for Done, Err and Deadline.
+//
+// The framework requires these four methods to return. A method that calls
+// a framework function on the same context value it was called on does not
+// return: the function calls the method again, which calls the function
+// again, until the goroutine's stack is exhausted, which ends the process
+// and cannot be recovered. This is unsupported, like any callback that
+// never returns, and the framework installs no guard against it. Calling a
+// framework function on the parent context a type wraps is supported and
+// ends, because each call moves one context up the chain.
 package contract
 
 import (
