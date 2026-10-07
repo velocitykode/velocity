@@ -12,7 +12,7 @@ import (
 	"github.com/velocitykode/velocity/router"
 )
 
-// TestInstall_FinalizeHookPanicIsReported asserts a BeforeFirstWrite hook
+// TestInstall_FinalizeHookPanicIsReported asserts a commit listener
 // that panics when the router fires it after the boundary (nothing wrote a
 // response: a handler returning nil, a client-gone cancel answered with
 // nothing, an unmatched request whose middleware answered nothing) reaches
@@ -82,9 +82,7 @@ func TestInstall_FinalizeHookPanicIsReported(t *testing.T) {
 			})
 			r.Use(func(next router.HandlerFunc) router.HandlerFunc {
 				return func(c *router.Context) error {
-					if hk, ok := c.Response.(interface{ BeforeFirstWrite(func()) }); ok {
-						hk.BeforeFirstWrite(func() { panic("hook exploded") })
-					}
+					c.BeforeCommit(func(int, http.ResponseWriter) { panic("listener exploded") })
 					if tt.handler == nil {
 						return nil
 					}

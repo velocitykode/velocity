@@ -133,9 +133,14 @@ type sessionHolder struct {
 	// fresh session, and publishing it clears the mark.
 	ended bool
 
-	// commitOnce makes the session middleware's commit run once per
-	// request, whichever write or return fires it.
-	commitOnce sync.Once
+	// commitClaimed is set by the one save of the request's session
+	// middleware before it runs (see serveWithSession): the commit
+	// listener and the direct call at handler return share it, so the
+	// commit runs once per request. A flag claimed first, never a
+	// sync.Once: the save runs user code (a session store, a custom
+	// Session.Save), which must not run under a lock or be waited on by
+	// a call it makes itself.
+	commitClaimed atomic.Bool
 }
 
 // afterSaveWrite is one write queued behind the session save.

@@ -124,23 +124,48 @@ func (tw *timeoutWriter) WriteHeader(code int) {
 // has decided the handler finished in time. Returns true if anything
 // was committed; false if the writer was already in the timed-out
 // state.
+//
+// tw.mu is held only while the buffered state is read (see take): the
+// real writer's Header is fetched before it and the status and body are
+// written after it, because every call into the real writer is a call into
+// code that may panic, block on the network or, for the writes, run the
+// response's commit listeners (see Context.BeforeCommit), and none of that
+// may happen under the lock a listener or a stray handler goroutine takes
+// by writing to this writer. A panic of the real writer leaves the lock
+// free.
 func (tw *timeoutWriter) flushBuffered() bool {
+	dst := tw.w.Header()
+	wroteHeader, code, body, ok := tw.take(dst)
+	if !ok {
+		return false
+	}
+	if wroteHeader {
+		tw.w.WriteHeader(code)
+	}
+	if len(body) > 0 {
+		_, _ = tw.w.Write(body)
+	}
+	return true
+}
+
+// take hands the buffered response over under tw.mu: the header entries
+// move into dst as they are (no copy of the values; setting map entries
+// calls nothing), and the status and body are returned for the caller to
+// write with the lock released. ok is false once the writer timed out. The
+// buffer is handed over, not copied: a late write starts a new one that
+// nothing reads.
+func (tw *timeoutWriter) take(dst http.Header) (wroteHeader bool, code int, body []byte, ok bool) {
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
 	if tw.timedOut {
-		return false
+		return false, 0, nil, false
 	}
-	dst := tw.w.Header()
 	for k, vv := range tw.h {
 		dst[k] = vv
 	}
-	if tw.wroteHeader {
-		tw.w.WriteHeader(tw.code)
-	}
-	if tw.wbuf.Len() > 0 {
-		_, _ = tw.w.Write(tw.wbuf.Bytes())
-	}
-	return true
+	body = tw.wbuf.Bytes()
+	tw.wbuf = bytes.Buffer{}
+	return tw.wroteHeader, tw.code, body, true
 }
 
 // markTimedOut switches the writer to the timed-out state and discards
@@ -243,6 +268,13 @@ func (tw *timeoutWriter) Push(target string, opts *http.PushOptions) error {
 // timeout context. After a timeout the caller's request is left as it
 // was: the handler may still own the clone.
 //
+// The clone has no commit owner: Context.BeforeCommit returns false for a
+// handler or middleware running under Timeout, since the response it would
+// act on is buffered and a late handler may outlive the request. A
+// middleware that registers a commit listener is mounted outside Timeout;
+// its listener then sees the status the buffered response, or the 503, is
+// committed with.
+//
 // Streaming (http.Flusher), Hijack, and Push are not supported under
 // this middleware. Handlers that need any of those should not be
 // wrapped by Timeout. This matches the stdlib net/http.TimeoutHandler
@@ -274,6 +306,9 @@ func Timeout(duration time.Duration) MiddlewareFunc {
 				Request:  c.Request.WithContext(ctx),
 				params:   append([]RouteParam(nil), c.params...),
 				values:   cloneValues(c.values),
+				// No commit owner, ever: BeforeCommit returns false on
+				// the clone (see the Timeout comment).
+				noCommit: true,
 			}
 			clone.applyWiring(c.snapshotWiring())
 
@@ -364,7 +399,7 @@ func reportLatePanic(c *Context, err error) {
 		return
 	}
 	defer func() {
-		if p := recover(); p != nil {
+		if p := recover(); p != nil { //recover-ok: wraps reporting a late panic only; writes no response, so no listener runs under it
 			panicText := errchain.Sprint(p)
 			writeRequestLine(c, func(l contract.Logger) {
 				l.Error("velocity/router: reporting a timeout handler panic after the timeout failed", "panic", panicText, "error", err)
@@ -469,7 +504,7 @@ func runTimed(next HandlerFunc, clone *Context, tw *timeoutWriter, done chan err
 		defer run.Release()
 	}
 	defer func() {
-		if r := recover(); r != nil {
+		if r := recover(); r != nil { //recover-ok: aborts are delivered as themselves; the timed handler writes to a buffer with no commit owner
 			if isAbortPanic(r) {
 				tw.deliver(done, &handlerAbort{value: r})
 				return

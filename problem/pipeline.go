@@ -172,7 +172,7 @@ func (h *Handler) ShouldReport(err error) bool {
 func (h *Handler) applyMap(s *snapshot, err error, source contract.ErrorSource) (out error) {
 	out = err
 	defer func() {
-		if p := recover(); p != nil {
+		if p := recover(); p != nil { //recover-ok: wraps user map rules; writes no response
 			safeLog(s.logger, "problem: map rule panicked", "panic", errchain.Sprint(p))
 			out = err
 		}
@@ -317,7 +317,7 @@ func sourceOf(ctx *ErrorContext) contract.ErrorSource {
 // report of a failure nobody reported.
 func (h *Handler) report(s *snapshot, err error, ctx *ErrorContext, r *http.Request) (handled bool) {
 	defer func() {
-		if p := recover(); p != nil {
+		if p := recover(); p != nil { //recover-ok: wraps reporting; writes no response
 			safeLog(s.logger, "problem: report failed", "panic", errchain.Sprint(p), "error", errchain.Text(err))
 		}
 	}()
@@ -381,7 +381,7 @@ func selectLevel(s *snapshot, err error, current contract.LogLevel, source contr
 // reporters still run.
 func callReporter(logger contract.Logger, reporter Reporter, err error, ctx *ErrorContext) {
 	defer func() {
-		if p := recover(); p != nil {
+		if p := recover(); p != nil { //recover-ok: wraps one reporter call; writes no response
 			safeLog(logger, "problem: reporter panicked", "panic", errchain.Sprint(p), "error", errchain.Text(err))
 		}
 	}()
@@ -398,8 +398,8 @@ func callReporter(logger contract.Logger, reporter Reporter, err error, ctx *Err
 // does: a compressing middleware that set it up front compresses the
 // rendered body too.
 //
-// A panic in write (a renderer, a rule, or a pre-commit hook the response
-// writer fires) is a bug of its own: it is reported through the reporter
+// A panic in write (a renderer, a rule, or a commit listener the response
+// writer runs) is a bug of its own: it is reported through the reporter
 // chain as a recovered panic (see reportRenderPanic) and answered with the
 // plain-text 500 when nothing was written yet. RequestFailed is the
 // router's event: the router decides it from the status written once the
@@ -409,7 +409,7 @@ func callReporter(logger contract.Logger, reporter Reporter, err error, ctx *Err
 // net/http aborts the response.
 func (h *Handler) stage(s *snapshot, rc RenderContext, ctx *ErrorContext, write func()) {
 	defer func() {
-		if p := recover(); p != nil {
+		if p := recover(); p != nil { //recover-ok: the render stage: aborts go on; a listener panic is reported and answered by lastResort, which passes the next one on
 			if pe, ok := p.(error); ok && errchain.Is(pe, http.ErrAbortHandler) {
 				panic(p)
 			}
@@ -904,10 +904,21 @@ func dropPageMarker(rc RenderContext) {
 
 // lastResort writes the plain-text 500 when nothing was written, never
 // marked as an Inertia page object (see dropPageMarker). It runs under its
-// own recover: a failure is logged and never re-panics.
+// own recover: a failure of the write is logged and not re-panicked. Two
+// values are passed on instead, because nothing here can deal with them
+// and the router can: a commit listener's panic (the router answers it and
+// runs the listeners still pending; swallowed here, the response would go
+// out as an empty 200), and http.ErrAbortHandler, which must reach
+// net/http.
 func lastResort(logger contract.Logger, rc RenderContext) {
 	defer func() {
-		if p := recover(); p != nil {
+		if p := recover(); p != nil { //recover-ok: the last resort: a listener panic and aborts go on to the router
+			if panicerr.IsListener(p) {
+				panic(p)
+			}
+			if pe, ok := p.(error); ok && errchain.Is(pe, http.ErrAbortHandler) {
+				panic(p)
+			}
 			safeLog(logger, "problem: last-resort response failed", "panic", errchain.Sprint(p))
 		}
 	}()
@@ -926,7 +937,7 @@ func safeLog(logger contract.Logger, msg string, kvs ...any) {
 	if logger == nil {
 		return
 	}
-	defer func() { _ = recover() }()
+	defer func() { _ = recover() }() //recover-ok: wraps one logger call; writes no response
 	logger.Error(msg, kvs...)
 }
 
@@ -935,7 +946,7 @@ func safeWarn(logger contract.Logger, msg string, kvs ...any) {
 	if logger == nil {
 		return
 	}
-	defer func() { _ = recover() }()
+	defer func() { _ = recover() }() //recover-ok: wraps one logger call; writes no response
 	logger.Warn(msg, kvs...)
 }
 

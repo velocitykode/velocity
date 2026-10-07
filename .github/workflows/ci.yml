@@ -135,6 +135,24 @@ jobs:
             exit 1
           fi
 
+  # Holds every recover() in the request's render and commit path to an
+  # in-place allowlist (a same-line //recover-ok: <reason>): a recover
+  # there that swallows a commit listener's panic or http.ErrAbortHandler
+  # keeps the router's boundary from answering it. A grep script; it does
+  # not check that a site does what its reason says. See the script header.
+  recover-sites-lint:
+    name: recover-site lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Grep for unlisted recover() in the render and commit path
+        run: |
+          set -e
+          if ! scripts/ci/check-recover-sites.sh; then
+            echo "::error::recover() in the render and commit path without //recover-ok: <reason> (say how the site passes a commit listener's panic and http.ErrAbortHandler on, or why neither reaches it), or a stale marker"
+            exit 1
+          fi
+
   # Rejects testing.AllocsPerRun outside a benchmark: it reads the
   # process-wide malloc count, so a test comparing it fails whenever
   # anything else allocates. Tests observe their contract directly; an
@@ -335,7 +353,7 @@ jobs:
     # Release only on direct push to main. PRs and the weekly cron
     # don't publish anything.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [vet, windows-build, staticcheck, race-tests, skip-lint, goroutine-lint, lock-held-lint, events-lint, released-ports-lint, error-inspection-lint, golangci-lint, coverage-floors]
+    needs: [vet, windows-build, staticcheck, race-tests, skip-lint, goroutine-lint, recover-sites-lint, lock-held-lint, events-lint, released-ports-lint, error-inspection-lint, golangci-lint, coverage-floors]
     runs-on: ubuntu-latest
     permissions:
       contents: write

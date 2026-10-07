@@ -1006,9 +1006,9 @@ func (w *panicOnceWriter) WriteHeader(code int) {
 // TestRenderContext_PanickingWriterLeavesUnwritten asserts the router's
 // render context records a write only after the writer took it: over a
 // plain writer that panics, and over the router's own writer whose
-// BeforeFirstWrite hook panics, a WriteHeader, implicit Write or Redirect
+// commit listener panics, a WriteHeader, implicit Write or Redirect
 // leaves Written false, and a fallback WriteHeader then writes its status
-// (the hook's once is consumed, so it does not panic again).
+// (the dispatch is over, so the listener does not run and panic again).
 func TestRenderContext_PanickingWriterLeavesUnwritten(t *testing.T) {
 	writers := []struct {
 		name string
@@ -1017,9 +1017,9 @@ func TestRenderContext_PanickingWriterLeavesUnwritten(t *testing.T) {
 		{name: "PlainWriter", make: func(rec *httptest.ResponseRecorder) http.ResponseWriter {
 			return &panicOnceWriter{ResponseRecorder: rec}
 		}},
-		{name: "RouterWriterHook", make: func(rec *httptest.ResponseRecorder) http.ResponseWriter {
+		{name: "RouterWriterListener", make: func(rec *httptest.ResponseRecorder) http.ResponseWriter {
 			rw := &responseWriter{ResponseWriter: rec, status: http.StatusOK}
-			rw.BeforeFirstWrite(func() { panic("hook exploded") })
+			rw.addListener(func(int, http.ResponseWriter) { panic("listener exploded") })
 			return rw
 		}},
 	}
@@ -1069,9 +1069,9 @@ func TestRenderContext_PanickingRedirectLeavesNoLocation(t *testing.T) {
 		{name: "PlainWriter", make: func(rec *httptest.ResponseRecorder) http.ResponseWriter {
 			return &panicOnceWriter{ResponseRecorder: rec}
 		}},
-		{name: "RouterWriterHook", make: func(rec *httptest.ResponseRecorder) http.ResponseWriter {
+		{name: "RouterWriterListener", make: func(rec *httptest.ResponseRecorder) http.ResponseWriter {
 			rw := &responseWriter{ResponseWriter: rec, status: http.StatusOK}
-			rw.BeforeFirstWrite(func() { panic("hook exploded") })
+			rw.addListener(func(int, http.ResponseWriter) { panic("listener exploded") })
 			return rw
 		}},
 	}

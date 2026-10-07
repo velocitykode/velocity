@@ -47,6 +47,26 @@ type CommitReporter interface {
 	Committed() bool
 }
 
+// IsCommitted is the one rule a layer over a response writer uses to say
+// whether the response is committed: the reporter's answer whenever there
+// is a reporter, a false one included, and fallback, the layer's own
+// record, only when there is none. A layer passes the writer it stands on
+// when that writer is a CommitReporter and nil otherwise:
+//
+//	reporter, _ := w.(contract.CommitReporter)
+//	committed := contract.IsCommitted(reporter, own)
+//
+// The reporter is asked even when the layer believes it wrote: a writer
+// that reports may have refused the write (the router's writer refuses one
+// made while its commit listeners run), and the call having returned says
+// nothing about that.
+func IsCommitted(reporter CommitReporter, fallback bool) bool {
+	if reporter != nil { //error-inspection-ok: contract imports no internal/nilval (leaf rule); the reporter is the writer the caller writes through, and a typed nil one fails at its first write, before this
+		return reporter.Committed()
+	}
+	return fallback
+}
+
 // NewRenderContext returns the net/http RenderContext for w and r.
 // WriteHeader writes the final status once (an informational 1xx other
 // than 101 passes through without counting), SetHeader drops CR/LF, and
@@ -77,14 +97,14 @@ func (c *httpRenderContext) Writer() http.ResponseWriter { return c.w }
 func (c *httpRenderContext) WantsJSON() bool             { return WantsJSON(c.r) }
 func (c *httpRenderContext) IsInertia() bool             { return IsInertia(c.r) }
 
-// Written reports whether this RenderContext wrote the status line, or
-// the writer reports its response committed (see CommitReporter).
+// Written reports whether the status line was written. A writer that
+// reports its own commitment (see CommitReporter) is the one asked: it
+// knows about writes made by anyone, and about a write it did not take.
+// This RenderContext's own record of having written serves only a writer
+// that cannot say.
 func (c *httpRenderContext) Written() bool {
-	if c.written {
-		return true
-	}
-	cr, ok := c.w.(CommitReporter)
-	return ok && cr.Committed()
+	reporter, _ := c.w.(CommitReporter)
+	return IsCommitted(reporter, c.written)
 }
 
 // WriteHeader writes status once, and never over a committed response. A
@@ -142,7 +162,7 @@ func (c *httpRenderContext) Redirect(status int, target string) error {
 	h := c.w.Header()
 	prior, hadPrior := h["Location"]
 	defer func() {
-		if !c.written {
+		if !c.Written() {
 			restoreLocation(h, prior, hadPrior)
 		}
 	}()

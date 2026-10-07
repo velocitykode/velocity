@@ -108,7 +108,7 @@ func logUnhandled(logger contract.Logger, c *router.Context, err error, info rou
 		}
 		logger = fallbacklog.Resolve(logger)
 	}
-	defer func() { _ = recover() }()
+	defer func() { _ = recover() }() //recover-ok: wraps one logger call; writes no response
 	kvs := []any{"error", errchain.Text(err)}
 	if r := c.Request; r != nil {
 		logger = logger.With(c.LogFields()...)
@@ -176,7 +176,7 @@ func userID(uid contract.RequestUserIdentifier, r *http.Request) (id string) {
 		return ""
 	}
 	defer func() {
-		if p := recover(); p != nil {
+		if p := recover(); p != nil { //recover-ok: wraps one call into the auth manager; writes no response
 			id = ""
 		}
 	}()

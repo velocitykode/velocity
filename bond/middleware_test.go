@@ -9,8 +9,8 @@ import (
 	"github.com/velocitykode/velocity/router"
 )
 
-// precommitWriter models the router responseWriter's BeforeFirstWrite
-// contract: a hook registered by an outer middleware (the session guard
+// precommitWriter models a writer that runs a hook as it commits, as the
+// router's own writer runs its commit listeners: a hook registered by an outer middleware (the session guard
 // writing its Set-Cookie is the real case) fires when the response is first
 // committed, and writes to whatever the Context's response currently is. The
 // bond buffered (Inertia) path must have c.Response pointing at this real

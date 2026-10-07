@@ -1,9 +1,7 @@
 package schemes
 
 import (
-	"bufio"
 	"errors"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -17,17 +15,6 @@ import (
 	"github.com/velocitykode/velocity/router"
 )
 
-// preCommitHooker is the optional capability the save-at-end middleware
-// uses to register a pre-commit hook on the response writer. The
-// router's response writer implements it, and the router fires a hook
-// nothing fired once its error boundary is done with the request; any
-// other writer (test recorders, custom wrappers) is wrapped in a
-// preCommitWriter for the handler's run, which fires the save the same
-// way.
-type preCommitHooker interface {
-	BeforeFirstWrite(fn func())
-}
-
 // SessionMiddleware returns a router.MiddlewareFunc that gives every
 // request save-at-end session semantics: the request is given a sessionHolder
 // (via WithSessionContext) so SessionScheme.getSession can cache the
@@ -38,23 +25,35 @@ type preCommitHooker interface {
 //
 // Where the save happens:
 //
-//   - Pre-commit hook, on the router's response writer, which exposes
-//     BeforeFirstWrite. The hook fires once before the first WriteHeader
-//     or Write call, so Set-Cookie lands in the same response the
-//     handler is about to flush (c.JSON / c.Text / c.Redirect / direct
-//     writes commit headers from inside the handler body). The hook stays
-//     armed after the handler returns: when the handler returned an
-//     error, the router's error boundary writes the error response later,
-//     and its first write fires the hook, so session changes the error
-//     path makes (a flash the error page drains, a render rule's Put, the
-//     intended-URL stash) are saved with it. When neither the handler nor
-//     the error path writes anything, the router fires the hook once the
-//     boundary is done, before net/http sends its implicit 200.
+//   - In a commit listener (router.Context.BeforeCommit), the one
+//     registration path on every kind of Context. It runs once, just
+//     before the response headers are committed, and writes through the
+//     router's own writer, so Set-Cookie lands in the response whoever
+//     writes it: the handler (c.JSON / c.Text / c.Redirect / direct
+//     writes commit headers from inside the handler body), or the
+//     router's error boundary answering a returned error after this
+//     middleware returned, so session changes the error path makes (a
+//     flash the error page drains, a render rule's Put, the intended-URL
+//     stash) are saved with it. When neither writes anything, the router
+//     (or router.Wrap) runs the listener once it is done with the
+//     request, before net/http sends its implicit 200.
 //
-//   - Any other response writer (httptest.ResponseRecorder, custom
-//     wrappers) is wrapped for the handler's run so its first committing
-//     write fires the same save; when the handler writes nothing, the
-//     save runs as the handler returns.
+//   - As the handler returns, by the same save behind the same once-only
+//     flag, in the three cases no listener will run. On a Context built
+//     by router.NewContext or router.NewTestContext nothing runs the
+//     listener for a response nothing committed, so the cookies are set
+//     then, on a response still uncommitted. Mounted inside
+//     router.Timeout no listener can register, and the cookies go into
+//     Timeout's buffered response. And a handler that took the connection
+//     over (a Hijack, a WebSocket upgrade) ran no listener: the save then
+//     persists a server-side session record and settles the queued
+//     credentials, but its cookies are not delivered, since the upgrade
+//     handshake does not carry the response's headers. That save happens
+//     when the handler returns: a handler that holds the connection for
+//     its whole life saves when the connection ends, and callbacks the
+//     upgrade starts (a WebSocket's connect callbacks) may run before the
+//     session is settled. Change the session in an ordinary request
+//     ahead of the upgrade when that matters.
 //
 // The save is the one place the framework persists a session: Login,
 // Logout, the intended-URL stash and resolver, and view flashes only
@@ -153,96 +152,54 @@ func (g *SessionScheme) serveWithSession(c *router.Context, next router.HandlerF
 	// even when the handler never touched the bag.
 	ensureSession(g, c.Request)
 
-	// The holder's commit runs at most once per request, so the
-	// session never writes two Set-Cookie headers whichever site
-	// fires it.
-	doSave := func() {
-		holder.commitOnce.Do(func() {
-			_ = commitSession(g, c.Request, w, holder) //lock-held-ok: the request's one commit; the save and its logger get no writer that fires the commit again
-		})
+	// The request's one save. The holder's flag is claimed before the
+	// commit runs, so the listener and the direct call below are
+	// exclusive: whichever reaches it first commits, the other finds it
+	// claimed, and the session never writes two Set-Cookie headers. No
+	// lock is held while the commit runs.
+	save := func(_ int, rw http.ResponseWriter) {
+		if holder.commitClaimed.CompareAndSwap(false, true) {
+			_ = commitSession(g, c.Request, rw, holder)
+		}
 	}
 
-	// Pre-commit hook: fires once just before the first
-	// WriteHeader/Write/Flush/Hijack commits the response, whether the
+	// The save is a commit listener: it runs just before the first final
+	// WriteHeader, Write or Flush commits the response, whether the
 	// handler or the router's error boundary writes it, and otherwise
-	// once the boundary is done with the request. A writer without the
-	// hook is wrapped for the handler's run so its first write fires the
-	// commit the same way.
-	if h, hooked := w.(preCommitHooker); hooked {
-		h.BeforeFirstWrite(doSave)
-		return next(c)
-	}
-	c.Response = &preCommitWriter{ResponseWriter: w, beforeCommit: doSave}
-	err := next(c)
-	c.Response = w
-	// Nothing was written: commit now, before anything outside this
-	// middleware writes the response.
-	doSave()
-	return err
-}
-
-// preCommitWriter gives a response writer without the router's pre-commit
-// hook one: beforeCommit runs once, just before the first write that
-// commits the response headers (a final WriteHeader, Write, Flush or
-// Hijack), so the session cookie lands in the response the handler
-// writes.
-type preCommitWriter struct {
-	http.ResponseWriter
-	beforeCommit func()
-	committed    bool
-}
-
-func (p *preCommitWriter) commit() {
-	if !p.committed {
-		p.committed = true
-		p.beforeCommit()
-	}
-}
-
-// WriteHeader commits the response, except for an informational status
-// (1xx other than 101), which goes out ahead of the final one.
-func (p *preCommitWriter) WriteHeader(statusCode int) {
-	if statusCode < 100 || statusCode > 199 || statusCode == http.StatusSwitchingProtocols {
-		p.commit()
-	}
-	p.ResponseWriter.WriteHeader(statusCode)
-}
-
-func (p *preCommitWriter) Write(b []byte) (int, error) {
-	p.commit()
-	return p.ResponseWriter.Write(b)
-}
-
-// Flush commits the response and flushes it when the writer can.
-func (p *preCommitWriter) Flush() {
-	p.commit()
-	if f, ok := p.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-}
-
-// Hijack commits the session before handing the connection over, when the
-// writer can hijack.
-func (p *preCommitWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	h, ok := p.ResponseWriter.(http.Hijacker)
-	if !ok {
-		return nil, nil, http.ErrNotSupported
-	}
-	p.commit()
-	return h.Hijack()
-}
-
-// Committed reports whether the response is committed.
-func (p *preCommitWriter) Committed() bool {
-	if cr, ok := p.ResponseWriter.(contract.CommitReporter); ok {
-		return cr.Committed()
-	}
-	return p.committed
-}
-
-// Unwrap returns the wrapped writer (for http.ResponseController).
-func (p *preCommitWriter) Unwrap() http.ResponseWriter {
-	return p.ResponseWriter
+	// once the router (or router.Wrap) is done with the request. It
+	// writes through the router's own writer, which the listener is
+	// handed, whatever c.Response points at by then.
+	registered := c.BeforeCommit(save)
+	// The writer the request is answered through as this middleware sees
+	// it: a middleware further in may leave another one in c.Response.
+	w = c.Response
+	// The save waits for its listener only while something will still
+	// run it: the response is uncommitted and the router or router.Wrap
+	// finalizes it (an uncommitted response at handler exit may still be
+	// answered by the error boundary, whose session changes must be saved
+	// too). In every other case it is saved here, by the same function
+	// behind the same claimed flag: no listener registered or no commit
+	// owner (under router.Timeout, whose buffered response still takes
+	// the cookies); a Context built by NewContext or NewTestContext,
+	// which nothing finalizes; a connection taken over, which ran no
+	// listener; and a response already committed, whose listener ran, so
+	// the flag makes this call a no-op. The Context answers from its
+	// commit owner, whatever writers sit in c.Response.
+	//
+	// It is deferred, so it holds on every way out of the handler, a
+	// panic included (a handler that takes the connection over and then
+	// panics has no listener left and no boundary answer to run one). It
+	// recovers nothing: the handler's panic, an http.ErrAbortHandler
+	// among them, goes on unchanged once the save returned. A save that
+	// itself panics while the handler's panic unwinds replaces it, as any
+	// panic in a deferred call does: the save's value is the one a
+	// recover further out gets.
+	defer func() {
+		if !registered || !c.CanDeferBeforeCommit() {
+			save(0, w)
+		}
+	}()
+	return next(c)
 }
 
 // commitSession is the save seam's body and the only framework code that

@@ -64,9 +64,12 @@ func (c *TestClient) ActingAsID(scheme *schemes.SessionScheme, id interface{}) *
 }
 
 // setCookie stores a cookie for all requests, replacing any existing cookie of
-// the same name in place rather than appending a duplicate. Replaying two
-// cookies with the same name would let the stale one (sent first in slice
-// order) shadow the new one for stores that read the first match.
+// the same name in place rather than appending a duplicate. A request's Cookie
+// header carries names and values only and the client sends every cookie it
+// holds, whatever its Path or Domain, so two cookies of one name would both be
+// sent and the stale one (first in slice order) would shadow the new one for a
+// server that reads the first match. It is the one place the client adds a
+// cookie (WithCookie and the cookies a login sets).
 func (c *TestClient) setCookie(cookie *http.Cookie) {
 	for i, existing := range c.cookies {
 		if existing.Name == cookie.Name {

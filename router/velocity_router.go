@@ -916,6 +916,7 @@ func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request,
 
 	ctx := r.ctxPool.Get().(*Context)
 	ctx.Response = rw
+	ctx.commit = rw
 	ctx.Request = req
 	ctx.applyWiring(r.currentWiring())
 
@@ -923,7 +924,7 @@ func (r *VelocityRouterV2) dispatchStatic(rw *responseWriter, req *http.Request,
 	var failure requestFailure
 	defer func() {
 		var abort any
-		if recovered := recover(); recovered != nil {
+		if recovered := recover(); recovered != nil { //recover-ok: the router boundary: aborts go on, every other value goes to onPanic
 			if isAbortPanic(recovered) {
 				abort = recovered
 			} else {
@@ -1012,6 +1013,7 @@ func (r *VelocityRouterV2) handleUnmatched(rw *responseWriter, req *http.Request
 
 	ctx := r.ctxPool.Get().(*Context)
 	ctx.Response = rw
+	ctx.commit = rw
 	ctx.Request = req
 	ctx.applyWiring(r.currentWiring())
 
@@ -1019,7 +1021,7 @@ func (r *VelocityRouterV2) handleUnmatched(rw *responseWriter, req *http.Request
 	var failure requestFailure
 	defer func() {
 		var abort any
-		if recovered := recover(); recovered != nil {
+		if recovered := recover(); recovered != nil { //recover-ok: the router boundary: aborts go on, every other value goes to onPanic
 			if isAbortPanic(recovered) {
 				abort = recovered
 			} else {
@@ -1141,6 +1143,7 @@ func (r *VelocityRouterV2) currentWiring() ctxWiring {
 func (r *VelocityRouterV2) acquireContext(rw *responseWriter, req *http.Request, result *MatchResult) *Context {
 	ctx := r.ctxPool.Get().(*Context)
 	ctx.Response = rw
+	ctx.commit = rw
 	ctx.Request = req
 	ctx.applyWiring(r.currentWiring())
 
@@ -1168,7 +1171,7 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 	var failure requestFailure
 	defer func() {
 		var abort any
-		if recovered := recover(); recovered != nil {
+		if recovered := recover(); recovered != nil { //recover-ok: the router boundary: aborts go on, every other value goes to onPanic
 			if isAbortPanic(recovered) {
 				abort = recovered
 			} else {
@@ -1196,30 +1199,32 @@ func (r *VelocityRouterV2) invokeHandler(ctx *Context, rw *responseWriter, req *
 	}
 }
 
-// finalize fires the BeforeFirstWrite hook when nothing fired it: the
-// router calls it once per request after the error boundary has answered
-// (or found nothing to answer) and before RequestHandled, so a request
-// whose handler and error path wrote nothing, which net/http then answers
-// with an implicit 200, still runs its pre-commit hook (the session
-// middleware's save, for one). No-op when the hook already fired or none
-// is registered.
+// finalize runs the commit listeners when nothing committed the response:
+// the router calls it once per request after the error boundary has
+// answered (or found nothing to answer) and before RequestHandled, so a
+// request whose handler and error path wrote nothing, which net/http then
+// answers with an implicit 200, still runs its listeners (the session
+// middleware's save, for one), with that 200. The router itself writes
+// nothing: the response stays uncommitted for the wrapper, as an empty
+// response always was. No-op when the listeners already ran, a Hijack
+// dropped them, or none is registered.
 //
-// A panic in the hook is a recovered panic like one in the handler: it is
-// recovered here and handed to onPanic from the recovering frame, so it
+// A panic in a listener is a recovered panic like one in the handler: it
+// is recovered here and handed to onPanic from the recovering frame, so it
 // becomes a *PanicError carrying the panicking stack, dispatches
 // RequestFailed with Recovered set, and reaches the boundary with
 // ErrorInfo{Recovered: true}, which answers a 500 (reported once by an
 // installed error handler, logged once on the default path) before
-// RequestHandled records it. The panic consumed the hook's once, so that
-// 500 does not fire the hook again. When the request already failed (a
-// client-gone cancel, say), RequestFailed fires twice, once for that error
-// and once, with Recovered set, for the hook's panic: two facts about one
-// request, and the panic is still reported once. A hook panicking with
+// RequestHandled records it. That 500 runs the listeners the panic left
+// unattempted, never the one that panicked. When the request already failed (a client-gone cancel,
+// say), RequestFailed fires twice, once for that error and once, with
+// Recovered set, for the listener's panic: two facts about one request,
+// and the panic is still reported once. A listener panicking with
 // http.ErrAbortHandler is not handed to onPanic: finalize returns the
 // value for the caller to re-panic once its bookkeeping is done, as it
 // does with the handler's own abort.
 func (r *VelocityRouterV2) finalize(ctx *Context, rw *responseWriter, req *http.Request, meta requestMeta) (abort any) {
-	if rw.beforeFirstWriteFn != nil {
+	if rw.listener != nil {
 		return r.finalizeGuarded(ctx, rw, req, meta)
 	}
 	return nil
@@ -1229,7 +1234,7 @@ func (r *VelocityRouterV2) finalize(ctx *Context, rw *responseWriter, req *http.
 // small enough to inline.
 func (r *VelocityRouterV2) finalizeGuarded(ctx *Context, rw *responseWriter, req *http.Request, meta requestMeta) (abort any) {
 	defer func() {
-		if recovered := recover(); recovered != nil {
+		if recovered := recover(); recovered != nil { //recover-ok: the router boundary: aborts go on, every other value goes to onPanic
 			if isAbortPanic(recovered) {
 				abort = recovered
 				return
@@ -1237,7 +1242,7 @@ func (r *VelocityRouterV2) finalizeGuarded(ctx *Context, rw *responseWriter, req
 			abort = r.onPanic(ctx, rw, req, meta, recovered)
 		}
 	}()
-	rw.fireBeforeFirstWrite()
+	rw.dispatch(http.StatusOK)
 	return nil
 }
 
@@ -1246,30 +1251,91 @@ func (r *VelocityRouterV2) finalizeGuarded(ctx *Context, rw *responseWriter, req
 // the deferred function that recovered, so the raw and structured stacks
 // captured here still include the panicking frames. It is never called
 // for http.ErrAbortHandler (see isAbortPanic): the recovering function
-// skips the boundary and pending pre-commit hooks for that value, still
+// skips the boundary and pending commit listeners for that value, still
 // dispatches RequestHandled and returns the Context to the pool, then
 // re-panics it so net/http aborts the connection.
 //
-// The boundary's own response can panic too: a pre-commit hook the 500
-// fires panics with http.ErrAbortHandler, or the error handler, a logger
-// or an event listener panics while it answers this panic. onPanic runs
-// inside the caller's deferred function, where a panic would skip the
-// rest of the request's bookkeeping (RequestHandled, the Context's return
-// to the pool), so it recovers any such panic and returns it for the
-// caller to re-panic last, once that bookkeeping is done: net/http then
-// aborts the connection as it would have.
+// This is the one place a commit listener's panic is contained, whichever
+// write ran the listeners: one inside the handler chain or the router's
+// finalize (the panic arrives here as recovered), or the boundary's own
+// answer to a panic (the panic comes out of answerPanic). Each such panic
+// is answered in turn: the listener that panicked is spent, the listeners
+// not yet attempted run with the next answer's commit, and a panic from
+// one of those is answered the same way.
+//
+// One measure of progress decides a retry: the count of listener
+// invocation attempts on this request's commit owner (responseWriter.
+// attempts). An answer is attempted again only when its panic is that of a
+// listener of rw and that count went up during the answer, so every retry
+// has spent at least one listener, wherever it was registered (a listener
+// the error handler itself registers during its first answer counts like
+// any other). One bound follows from it: a listener can register only
+// until the first dispatch, so once a dispatch has run the set is closed,
+// and the passes left are one per listener still pending plus one with
+// none left. That budget is taken at that moment and counted down, so
+// nothing a writer or handler does can turn the loop into an endless one.
+//
+// Anything else the boundary's answer raises is not retried: an
+// http.ErrAbortHandler from a listener, a panic of the error handler, a
+// logger or an event listener (also when that code had recovered a
+// listener's panic first), and the panic of a listener of another commit
+// owner, such as one an error handler registered on a Context of its own
+// (router.Wrap): it spent nothing here, so answering again would only
+// raise it again. onPanic runs inside the caller's deferred function,
+// where a panic would skip the rest of the request's bookkeeping
+// (RequestHandled, the Context's return to the pool), so such a value is
+// returned for the caller to re-panic last, once that bookkeeping is done:
+// net/http then aborts the connection as it would have.
 func (r *VelocityRouterV2) onPanic(ctx *Context, rw *responseWriter, req *http.Request, meta requestMeta, recovered interface{}) (abort any) {
 	// Skip onPanic and the deferred function so the trace starts at the
 	// panic site.
 	pe := newPanicError(panicerr.FromRecovered(recovered), 2)
-	defer func() {
-		if p := recover(); p != nil {
-			abort = p
+	budget := -1
+	for {
+		pe, abort = r.answerPanic(ctx, rw, req, meta, pe)
+		if pe == nil {
+			return abort
 		}
+		// A listener of rw panicked during the answer, so a dispatch
+		// has run and the listener set is closed: take the budget once.
+		if budget < 0 {
+			budget = rw.pending() + 1
+		}
+		if budget == 0 {
+			return pe
+		}
+		budget--
+	}
+}
+
+// answerPanic dispatches RequestFailed for pe and has the boundary answer
+// it. A panic out of that answer is recovered here, in the frame that can
+// still see its stack. It is returned as the next panic for onPanic to
+// answer when a listener of rw raised it during this answer: the value is
+// a *panicerr.Listener naming rw (the mark the writer gives a listener's
+// panic), rw attempted at least one listener since the answer began, and
+// the response is still uncommitted. Any other value is returned as abort.
+// The value itself says where it came from: an error handler that recovers
+// a listener's panic and then panics on its own account raises another
+// value, and a listener of another owner names that owner.
+func (r *VelocityRouterV2) answerPanic(ctx *Context, rw *responseWriter, req *http.Request, meta requestMeta, pe *PanicError) (next *PanicError, abort any) {
+	attempted := rw.attempts
+	defer func() {
+		p := recover() //recover-ok: the boundary retry loop: reads the listener mark, returns any other value for net/http
+		if p == nil {
+			return
+		}
+		if panicerr.IsListenerOf(p, rw) && rw.attempts != attempted && !rw.Committed() {
+			// Skip the deferred function so the trace starts at the
+			// panic site.
+			next = newPanicError(panicerr.FromRecovered(p), 1)
+			return
+		}
+		abort = p
 	}()
 	r.dispatchRequestFailed(req, meta, requestFailure{err: pe, stack: pe.Stack, recovered: true, fire: true})
 	r.handleError(ctx, rw, pe, ErrorInfo{Recovered: true, Stack: pe.Stack, StackTrace: pe.Trace})
-	return nil
+	return nil, nil
 }
 
 // reportLate reports err, an error carrying a panic recovered after the

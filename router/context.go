@@ -160,6 +160,142 @@ type Context struct {
 	// logger is Services.Log bound to LogFields, built by the first Log
 	// call of the request.
 	logger contract.Logger
+	// commit is the commit owner of the request: the router's own writer
+	// type, which holds and runs the BeforeCommit listeners. The router
+	// binds it where it populates a pooled Context, Wrap binds its own, and
+	// BeforeCommit binds one on demand for a Context built by NewContext or
+	// NewTestContext (see bindCommit). reset clears it, so a pooled Context
+	// never points at another request's writer.
+	commit *responseWriter
+	// noCommit marks a Context that never gets a commit owner: the clone
+	// Timeout runs the handler on.
+	noCommit bool
+}
+
+// BeforeCommit registers fn to run once, just before the response headers
+// are committed, with the status the response will carry and the router's
+// own writer. The last registered listener runs first, the way middleware
+// unwinds: a listener an outer middleware registered runs after the ones
+// inner middleware registered and sees every header they set. It returns
+// false when
+// fn is nil, when the response is committed or its listeners are running
+// or have run, and inside Timeout.
+//
+// A middleware uses it to act on the response whoever writes it: the
+// handler, the router's error boundary answering a returned error after
+// every middleware returned (through the default path or the handler
+// installed with SetErrorHandler), or net/http's implicit 200 for a
+// request nothing answered. The status is the one the client gets: an
+// explicit WriteHeader's, 200 for a first Write or Flush and for an empty
+// response, and never an informational 1xx other than 101, which commits
+// nothing.
+//
+// fn changes headers only, through w, which is the router's writer
+// whatever c.Response points at by then. While listeners run, WriteHeader
+// and Flush on w do nothing, Write and Hijack return an error and
+// BeforeCommit returns false: a listener cannot replace the status, write
+// a body or commit ahead of the listeners after it. fn must return: it
+// runs on the request's goroutine, with no lock held, and a listener that
+// blocks holds its request.
+//
+// The status fn gets is the status of the commit being attempted. Each
+// listener is attempted once per response, ever. A panic in fn is
+// contained as a panic of the request: the router's boundary answers a 500
+// and reports the panic once, fn does not run again, and the listeners not
+// yet attempted (those registered before fn, by outer middleware, the
+// session middleware's save among them) run with that answer's commit, so
+// they see the status the client gets. The listeners that ran before the
+// panic saw the earlier status, and the headers they set are not rolled
+// back. A panic from one of the remaining listeners is contained the same
+// way. A panic with http.ErrAbortHandler keeps its net/http
+// meaning and aborts the connection. Under Wrap, which has no boundary, a
+// panic in fn propagates like any panic of the handler.
+//
+// A raw Hijack has no HTTP status, so listeners do not run for a
+// connection that was taken over; they stay registered when the takeover
+// failed or is not supported, and run with the response that follows. A
+// middleware that must act on a takeover does so when the handler returns
+// (the session middleware saves there). That is later than a listener
+// would run: a handler that blocks for the life of the connection gets
+// there when the connection ends, and work the takeover started (a
+// WebSocket's connect callbacks) may run first.
+//
+// Below the commit owner. Listeners see what goes through the router's
+// writer. Unwrap and http.ResponseController reach the writer underneath
+// it: a write made there, and anything an adapter wrapped around the router
+// from outside does to the response (an http.Handler middleware that
+// rewrites a status), is not seen by listeners. An adapter that changes
+// the status belongs inside the router's chain.
+//
+// Between router writers. A request can pass through more than one of the
+// router's writers: a handler that serves a mounted router or a Wrap
+// handler with c.Response hands its writer to another one. The one
+// underneath records the commitment and the one above asks it. A writer
+// placed between them must implement contract.CommitReporter and forward
+// the answer of the writer underneath, a false answer included. Without
+// it the router writer above cannot learn that a write was refused (one
+// made while the listeners of the writer underneath run): it takes the
+// write as sent, and an error render over it skips its fallback.
+//
+// Where it works. A Context the router populated and the one Wrap runs its
+// handler with have a commit owner from the start, and a response nothing
+// commits still runs its listeners, with 200, before the request ends. On a
+// Context built by NewContext or NewTestContext the first registration
+// binds one: c.Response is wrapped in the router's writer (it is left as
+// passed in until then), so register before handing c.Response to anything,
+// since a write through a copy taken earlier goes past the listeners. A
+// registration made there under a middleware that buffers the response
+// sees the status written to the buffer. Nothing finalizes such a Context:
+// a response nothing commits runs no listener. The one place BeforeCommit
+// always returns false is inside Timeout, which runs the handler on a
+// clone whose response is buffered and may be abandoned: register outside
+// Timeout (a middleware mounted ahead of it).
+func (c *Context) BeforeCommit(fn func(status int, w http.ResponseWriter)) bool {
+	if c.commit == nil && !c.bindCommit(fn != nil) {
+		return false
+	}
+	return c.commit.addListener(fn)
+}
+
+// CanDeferBeforeCommit reports whether the bound commit owner is
+// uncommitted and has a finalizer responsible for running pending
+// BeforeCommit listeners on normal request completion.
+//
+// It reads the owner independently of Response wrappers. It returns false
+// when no owner is bound, including inside Timeout, when the owner has no
+// finalizer, or after commitment, including a successful hijack.
+//
+// It does not bind an owner, invoke listeners, or commit the response.
+// The result is a snapshot, not a guarantee against later takeover or
+// abort. Call it on the request goroutine; concurrent use is unsupported.
+func (c *Context) CanDeferBeforeCommit() bool {
+	rw := c.commit
+	return rw != nil && rw.finalized && !rw.Committed()
+}
+
+// bindCommit gives a Context the router did not populate its commit owner,
+// when wanted and when it may have one, and reports whether it has one now.
+// A Response that already is the router's writer becomes the owner as it
+// is; any other is wrapped in one, which replaces c.Response so every later
+// write goes through the listeners. The wrapper is not pooled: nothing
+// outside the router returns it, and it goes with its Context. A Context
+// marked noCommit, one with no Response, and one whose Response says it is
+// committed get none.
+func (c *Context) bindCommit(wanted bool) bool {
+	if !wanted || c.noCommit || c.Response == nil {
+		return false
+	}
+	rw, ok := c.Response.(*responseWriter)
+	if !ok {
+		if cr, reports := c.Response.(contract.CommitReporter); reports && cr.Committed() {
+			return false
+		}
+		rw = &responseWriter{status: http.StatusOK}
+		rw.bind(c.Response)
+		c.Response = rw
+	}
+	c.commit = rw
+	return true
 }
 
 // NewContext creates a new Context from http.Request and http.ResponseWriter.
@@ -732,6 +868,8 @@ func (c *Context) reset() {
 	c.intendedFn = nil
 	c.requests = nil
 	c.logger = nil
+	c.commit = nil
+	c.noCommit = false
 }
 
 // IsAjax reports whether the request is an XMLHttpRequest
@@ -763,17 +901,31 @@ func (c *Context) IsInertia() bool {
 // Wrap converts a HandlerFunc to http.HandlerFunc. A returned error is
 // answered by DefaultErrorHandler through a fresh Context over w, with
 // ErrorInfo.Committed set when the handler already wrote to w (so a
-// partial response never gets a second one). A BeforeFirstWrite hook that
-// neither the handler nor the error response fired runs before Wrap
-// returns, as it does for the router. Wrap does not recover panics, a
-// panicking hook included.
+// partial response never gets a second one). The handler's Context has a
+// commit owner (see Context.BeforeCommit): listeners that neither the
+// handler nor the error response ran run before Wrap returns, with 200, as
+// they do for the router. Wrap does not recover panics, a panicking
+// listener included.
+//
+// When w is, or leads to, the writer of a request the router is already
+// serving (a handler calling a Wrap handler with c.Response), that writer
+// records the commitment and Wrap's own asks it. A writer placed between
+// the two must implement contract.CommitReporter and forward the answer of
+// the writer underneath, a false answer included; without it Wrap's writer
+// cannot learn that a write was refused (see Context.BeforeCommit).
 func Wrap(h HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
-		if err := h(NewContext(rw, r)); err != nil {
+		// Wrap finalizes its own writer, below.
+		rw := &responseWriter{status: http.StatusOK, finalized: true}
+		rw.bind(w)
+		c := NewContext(rw, r)
+		c.commit = rw
+		if err := h(c); err != nil {
 			DefaultErrorHandler(NewContext(rw, r), err, ErrorInfo{Committed: rw.Committed()})
 		}
-		rw.firePending()
+		if rw.listener != nil {
+			rw.dispatch(http.StatusOK)
+		}
 	}
 }
 
@@ -793,8 +945,8 @@ func (c *Context) RenderContext() contract.RenderContext {
 // writers that do not report their own state (anything that is not a
 // contract.CommitReporter). It is set only after the writer took a final
 // status (a 1xx other than 101 does not count), so a
-// write whose writer panics before committing (a panicking pre-commit
-// hook) leaves the response unwritten for a fallback.
+// write whose writer panics before committing (a panicking commit
+// listener) leaves the response unwritten for a fallback.
 type ctxRenderContext struct {
 	c       *Context
 	written bool
@@ -805,16 +957,15 @@ func (rc *ctxRenderContext) Writer() http.ResponseWriter { return rc.c.Response 
 func (rc *ctxRenderContext) WantsJSON() bool             { return contract.WantsJSON(rc.c.Request) }
 func (rc *ctxRenderContext) IsInertia() bool             { return rc.c.IsInertia() }
 
-// Written reports whether the final status line has been written, through
-// this adapter or, for a writer reporting its own commitment
-// (contract.CommitReporter, the router's response writer among them), by
-// anyone.
+// Written reports whether the final status line has been written. A writer
+// that reports its own commitment (contract.CommitReporter, the router's
+// response writer among them) is the one asked: it knows about writes made
+// by anyone, and about a write it did not take (the router's writer
+// refuses one made while its commit listeners run). The adapter's own
+// record of having written serves only a writer that cannot say.
 func (rc *ctxRenderContext) Written() bool {
-	if rc.written {
-		return true
-	}
-	cr, ok := rc.c.Response.(contract.CommitReporter)
-	return ok && cr.Committed()
+	reporter, _ := rc.c.Response.(contract.CommitReporter)
+	return contract.IsCommitted(reporter, rc.written)
 }
 
 // WriteHeader writes status once; a status outside 100-999 is written as
@@ -868,7 +1019,7 @@ func (rc *ctxRenderContext) Redirect(status int, target string) error {
 	h := rc.c.Response.Header()
 	prior, hadPrior := h["Location"]
 	defer func() {
-		if rc.written {
+		if rc.Written() {
 			return
 		}
 		if hadPrior {
@@ -935,7 +1086,7 @@ func requestUserID(auth contract.AuthManager, r *http.Request) (id string) {
 		return ""
 	}
 	defer func() {
-		if recover() != nil {
+		if recover() != nil { //recover-ok: wraps one call into the auth manager; writes no response
 			id = ""
 		}
 	}()

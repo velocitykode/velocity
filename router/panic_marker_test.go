@@ -240,8 +240,8 @@ func TestMarkedWritten_OutsidePanicParity(t *testing.T) {
 	}
 }
 
-// TestFinalize_PanickingHookIsARecoveredPanic asserts a BeforeFirstWrite
-// hook that panics when the router fires it after the boundary (nothing
+// TestFinalize_PanickingListenerIsARecoveredPanic asserts a commit
+// listener that panics when the router runs it after the boundary (nothing
 // wrote a response) is a recovered panic like one in the handler, on the
 // matched, unmatched and static paths: the client gets a 500, one
 // RequestFailed fires with Recovered set and a *PanicError whose stack
@@ -249,7 +249,7 @@ func TestMarkedWritten_OutsidePanicParity(t *testing.T) {
 // failure reaches the boundary once: one default-path log line on a
 // standalone router, one installed-handler call flagged recovered (and no
 // router log line) otherwise.
-func TestFinalize_PanickingHookIsARecoveredPanic(t *testing.T) {
+func TestFinalize_PanickingListenerIsARecoveredPanic(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "asset.txt"), []byte("asset"), 0o644); err != nil {
 		t.Fatal(err)
@@ -304,12 +304,10 @@ func TestFinalize_PanickingHookIsARecoveredPanic(t *testing.T) {
 			r.Static(dir)
 			r.Use(func(next HandlerFunc) HandlerFunc {
 				return func(c *Context) error {
-					if h, ok := c.Response.(interface{ BeforeFirstWrite(func()) }); ok {
-						h.BeforeFirstWrite(func() { panic("hook exploded") })
-					}
+					c.BeforeCommit(func(int, http.ResponseWriter) { panic("listener exploded") })
 					if c.Request.URL.Path != "/quiet" {
 						// Answer nothing on the unmatched and static paths
-						// either, so only the router fires the hook.
+						// either, so only the router runs the listener.
 						return nil
 					}
 					return next(c)
@@ -321,7 +319,7 @@ func TestFinalize_PanickingHookIsARecoveredPanic(t *testing.T) {
 			defer srv.Close()
 			resp, err := srv.Client().Get(srv.URL + tt.path)
 			if err != nil {
-				t.Fatalf("GET: %v (the hook panic escaped the router)", err)
+				t.Fatalf("GET: %v (the listener panic escaped the router)", err)
 			}
 			_ = resp.Body.Close()
 
@@ -355,8 +353,8 @@ func TestFinalize_PanickingHookIsARecoveredPanic(t *testing.T) {
 			if errLog.count() != 1 {
 				t.Fatalf("error log entries = %d, want 1 (the boundary's)", errLog.count())
 			}
-			if v, _ := errLog.kv(0, "error"); !strings.Contains(fmt.Sprint(v), "hook exploded") {
-				t.Errorf("logged error = %v, want the hook panic", v)
+			if v, _ := errLog.kv(0, "error"); !strings.Contains(fmt.Sprint(v), "listener exploded") {
+				t.Errorf("logged error = %v, want the listener panic", v)
 			}
 			if v, _ := errLog.kv(0, "stack"); v == nil || v == "" {
 				t.Error("logged no stack")
@@ -557,7 +555,7 @@ func TestBoundary_ConsumerRecoveredPanic(t *testing.T) {
 
 // TestServeHTTP_AbortPanicSkipsBoundaryAndHooks asserts a
 // panic(http.ErrAbortHandler) leaves ServeHTTP as the same panic, with
-// nothing written, no pending pre-commit hook run (nothing will be
+// nothing written, no pending commit listener run (nothing will be
 // committed), no RequestFailed and no error handler call, while
 // RequestHandled still fires once. Under Timeout the handler's buffered
 // response is dropped rather than flushed.
@@ -597,9 +595,7 @@ func TestServeHTTP_AbortPanicSkipsBoundaryAndHooks(t *testing.T) {
 			})
 			r.Use(func(next HandlerFunc) HandlerFunc {
 				return func(c *Context) error {
-					if h, ok := c.Response.(interface{ BeforeFirstWrite(func()) }); ok {
-						h.BeforeFirstWrite(func() { mu.Lock(); hooks++; mu.Unlock() })
-					}
+					c.BeforeCommit(func(int, http.ResponseWriter) { mu.Lock(); hooks++; mu.Unlock() })
 					return next(c)
 				}
 			})
@@ -634,7 +630,7 @@ func TestServeHTTP_AbortPanicSkipsBoundaryAndHooks(t *testing.T) {
 
 // TestServeHTTP_AbortRaisedByTheBoundaryResponse asserts that when the
 // boundary's answer to a recovered panic raises http.ErrAbortHandler (a
-// pre-commit hook the 500 fires aborts), on the default path and under an
+// commit listener the 500 runs aborts), on the default path and under an
 // installed error handler, the request's bookkeeping still runs before the
 // abort goes on to net/http: RequestHandled fires once, the Context is
 // reset for the pool, the client sees the connection cut, and the server
@@ -666,9 +662,7 @@ func TestServeHTTP_AbortRaisedByTheBoundaryResponse(t *testing.T) {
 				return nil
 			})
 			r.Get("/boom", func(c *Context) error {
-				if h, ok := c.Response.(interface{ BeforeFirstWrite(func()) }); ok {
-					h.BeforeFirstWrite(func() { panic(http.ErrAbortHandler) })
-				}
+				c.BeforeCommit(func(int, http.ResponseWriter) { panic(http.ErrAbortHandler) })
 				c.Set("request", "boom")
 				mu.Lock()
 				held = c

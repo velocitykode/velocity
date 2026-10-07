@@ -957,15 +957,12 @@ func TestInstall_PanickingPreCommitHookFallsBackTo500(t *testing.T) {
 			})
 			r.Use(func(next router.HandlerFunc) router.HandlerFunc {
 				return func(c *router.Context) error {
-					if hk, ok := c.Response.(interface{ BeforeFirstWrite(func()) }); ok {
-						fired := false
-						hk.BeforeFirstWrite(func() {
-							if !fired {
-								fired = true
-								panic("hook exploded")
-							}
-						})
-					}
+					c.BeforeCommit(func(_ int, w http.ResponseWriter) {
+						// A length the fallback's body does not have: the
+						// 500 must still go out whole.
+						w.Header().Set("Content-Length", "1")
+						panic("listener exploded")
+					})
 					return next(c)
 				}
 			})
@@ -1017,7 +1014,7 @@ func TestInstall_PanickingPreCommitHookFallsBackTo500(t *testing.T) {
 }
 
 // TestInstall_PanickingRedirectFallbackHasNoLocation asserts a render rule
-// whose redirect trips a pre-commit hook that panics falls back to the
+// whose redirect trips a commit listener that panics falls back to the
 // plain-text 500 on the wire without the redirect's Location header.
 func TestInstall_PanickingRedirectFallbackHasNoLocation(t *testing.T) {
 	h := problem.NewHandler(problem.WithHandlerLogger(&errLineLogger{}))
@@ -1028,15 +1025,7 @@ func TestInstall_PanickingRedirectFallbackHasNoLocation(t *testing.T) {
 	Install(r, WithHandler(func() contract.ErrorHandler { return h }))
 	r.Use(func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
-			if hk, ok := c.Response.(interface{ BeforeFirstWrite(func()) }); ok {
-				fired := false
-				hk.BeforeFirstWrite(func() {
-					if !fired {
-						fired = true
-						panic("hook exploded")
-					}
-				})
-			}
+			c.BeforeCommit(func(int, http.ResponseWriter) { panic("listener exploded") })
 			return next(c)
 		}
 	})

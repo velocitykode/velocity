@@ -58,9 +58,11 @@ func (c *TestClient) WithHeader(key, value string) *TestClient {
 	return c
 }
 
-// WithCookie sets a cookie for all requests.
+// WithCookie sets a cookie for all requests. A cookie the client already
+// holds under the same name is replaced, in place (see setCookie), so
+// setting a name twice sends the second value only.
 func (c *TestClient) WithCookie(cookie *http.Cookie) *TestClient {
-	c.cookies = append(c.cookies, cookie)
+	c.setCookie(cookie)
 	return c
 }
 

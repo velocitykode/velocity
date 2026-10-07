@@ -132,15 +132,17 @@ func (b *Bond) MiddlewareFunc() router.MiddlewareFunc {
 				handlerErr = next(c)
 				// Re-point the Context at the real writer before
 				// serveBuffered flushes. flush calls orig.WriteHeader,
-				// which fires the real writer's BeforeFirstWrite
-				// precommit hooks (e.g. the session scheme's deferred
-				// Set-Cookie save). Those hooks write to c.Response live;
-				// if it still pointed at the now-drained buffer, a late
-				// Set-Cookie would land in the buffer's header map after
-				// flush already copied headers out, and never reach the
-				// wire. Restoring here makes precommit writes hit the real
-				// connection, identical to the unbuffered path. The defer
-				// above still covers the panic-in-next case.
+				// which runs whatever the real writer runs as it commits
+				// (the router's commit listeners, a wrapping writer's own
+				// hook). A router listener is handed the router's writer,
+				// but code that writes to c.Response live at that moment
+				// must find the real writer too: if it still pointed at the
+				// now-drained buffer, a late Set-Cookie would land in the
+				// buffer's header map after flush already copied headers
+				// out, and never reach the wire. Restoring here makes
+				// commit-time writes hit the real connection, identical to
+				// the unbuffered path. The defer above still covers the
+				// panic-in-next case.
 				c.Response = orig
 			})
 

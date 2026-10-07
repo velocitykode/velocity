@@ -492,7 +492,7 @@ func (op *gateOp) abort() {
 
 // runContained runs fn, dropping a panic from it.
 func runContained(fn func()) {
-	defer func() { _ = recover() }()
+	defer func() { _ = recover() }() //recover-ok: wraps one queued undo step of the session save; writes no response
 	fn()
 }
 

@@ -249,7 +249,7 @@ func TestSessionMiddleware_Integration_DestroyedSessionEmitsDelete(t *testing.T)
 
 // hijackingResponseWriter mimics a net/http connection that supports
 // Hijacker. Used to assert the responseWriter forwards Hijack through
-// the wrapper layer even with the BeforeFirstWrite hook installed.
+// the wrapper layer even with a commit listener registered.
 type hijackingResponseWriter struct {
 	http.ResponseWriter
 	hijacked atomic.Bool
@@ -264,7 +264,7 @@ func (h *hijackingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) 
 }
 
 // TestSessionMiddleware_Integration_HijackerForwardsThroughWrapper
-// confirms the BeforeFirstWrite hook does not break WebSocket-style
+// confirms a registered commit listener does not break WebSocket-style
 // upgrades. A handler that type-asserts c.Response.(http.Hijacker)
 // MUST still get a working Hijack call.
 func TestSessionMiddleware_Integration_HijackerForwardsThroughWrapper(t *testing.T) {

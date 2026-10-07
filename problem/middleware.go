@@ -54,7 +54,7 @@ func trackCommit(w http.ResponseWriter) http.ResponseWriter {
 // recoverInto recovers a panic and hands it to h. It must be called
 // directly by a deferred statement.
 func recoverInto(h contract.ErrorHandler, w http.ResponseWriter, r *http.Request) {
-	p := recover()
+	p := recover() //recover-ok: outside the router: aborts go on, a listener panic no router contained is rendered as the panic it carries
 	if p == nil {
 		return
 	}
@@ -103,9 +103,14 @@ func NewTrackedWriter(w http.ResponseWriter) *TrackedWriter {
 	return &TrackedWriter{ResponseWriter: w}
 }
 
-// Committed reports whether the response was committed.
+// Committed reports whether the response was committed. A wrapped writer
+// that reports its own commitment (contract.CommitReporter) is the one
+// asked: it knows about a write it did not take, where this writer only
+// knows that the call returned. Its own record serves a wrapped writer
+// that cannot say.
 func (t *TrackedWriter) Committed() bool {
-	return t.committed
+	reporter, _ := t.ResponseWriter.(contract.CommitReporter)
+	return contract.IsCommitted(reporter, t.committed)
 }
 
 // WriteHeader writes code through and records a final status as

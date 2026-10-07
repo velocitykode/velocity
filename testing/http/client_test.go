@@ -356,6 +356,32 @@ func TestWithCookie(t *testing.T) {
 	resp.AssertOk().AssertJSON("token", "xyz789")
 }
 
+// Setting a cookie name twice replaces the first value: one pair is sent,
+// carrying the second value, and a cookie of another name is kept. The
+// client sends every cookie it holds without scope filtering, so the name
+// alone decides, whatever Path or Domain the cookies state.
+func TestWithCookie_SameNameReplaces(t *testing.T) {
+	var sent string
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { sent = r.Header.Get("Cookie") })
+
+	client := velhttp.NewTestClient(t, h).
+		WithCookie(&http.Cookie{Name: "token", Value: "stale"}).
+		WithCookie(&http.Cookie{Name: "other", Value: "kept"}).
+		WithCookie(&http.Cookie{Name: "token", Value: "fresh"})
+	client.Get("/")
+	if sent != "token=fresh; other=kept" {
+		t.Fatalf("Cookie header = %q, want %q", sent, "token=fresh; other=kept")
+	}
+
+	scoped := velhttp.NewTestClient(t, h).
+		WithCookie(&http.Cookie{Name: "token", Value: "a", Path: "/a"}).
+		WithCookie(&http.Cookie{Name: "token", Value: "b", Path: "/b", Domain: "example.test"})
+	scoped.Get("/")
+	if sent != "token=b" {
+		t.Fatalf("Cookie header = %q, want %q", sent, "token=b")
+	}
+}
+
 func TestWithHeader_Chaining(t *testing.T) {
 	client := velhttp.NewTestClient(t, newTestRouter()).
 		WithHeader("X-Custom", "chained").

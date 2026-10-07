@@ -70,7 +70,7 @@ func onPath(path string, fn func(c *router.Context)) router.MiddlewareFunc {
 
 // TestRouter_AbortHandlerPanicAbortsTheConnection asserts a
 // panic(http.ErrAbortHandler) on a matched route, on the unmatched and
-// static paths, under Timeout, and from a pre-commit hook the router fires
+// static paths, under Timeout, and from a commit listener the router runs
 // at finalize, is net/http's abort and not a bug: on a real server the
 // client sees the connection cut (no response, or a body ending in an
 // unexpected EOF), nothing is reported or logged, no RequestFailed fires,
@@ -134,13 +134,11 @@ func TestRouter_AbortHandlerPanicAbortsTheConnection(t *testing.T) {
 			},
 		},
 		{
-			name: "pre-commit hook at finalize",
+			name: "commit listener at finalize",
 			path: "/x",
 			setup: func(r *router.VelocityRouterV2) {
 				r.Use(onPath("/x", func(c *router.Context) {
-					if hk, ok := c.Response.(interface{ BeforeFirstWrite(func()) }); ok {
-						hk.BeforeFirstWrite(func() { panic(http.ErrAbortHandler) })
-					}
+					c.BeforeCommit(func(int, http.ResponseWriter) { panic(http.ErrAbortHandler) })
 				}))
 				r.Get("/x", func(*router.Context) error { return nil })
 			},

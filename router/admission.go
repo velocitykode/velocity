@@ -35,12 +35,13 @@ func (r *VelocityRouterV2) refuse(w http.ResponseWriter, req *http.Request) {
 	req = r.servedRequest(req)
 	ctx := r.ctxPool.Get().(*Context)
 	ctx.Response = rw
+	ctx.commit = rw
 	ctx.Request = req
 	ctx.applyWiring(r.currentWiring())
 	ctx.requests = nil // refused: it holds no unit of the run
 	defer func() {
 		var abort any
-		if recovered := recover(); recovered != nil {
+		if recovered := recover(); recovered != nil { //recover-ok: a router boundary: aborts go on, every other value goes to onPanic
 			if isAbortPanic(recovered) {
 				abort = recovered
 			} else {
