@@ -242,6 +242,10 @@ func (q *orderRecordingQueue) Shutdown(_ context.Context) error {
 	return nil
 }
 
+// PreservesJobInstance reports false: this fake drops every push and never
+// delivers a job.
+func (q *orderRecordingQueue) PreservesJobInstance() bool { return false }
+
 // orderRecordingModule records its Shutdown into the shared order slice.
 type orderRecordingModule struct {
 	order *[]string

@@ -55,4 +55,11 @@ type QueueDriver interface {
 
 	// Shutdown gracefully shuts down the driver, honoring the context deadline.
 	Shutdown(ctx context.Context) error
+
+	// PreservesJobInstance reports whether every delivery, including delayed
+	// delivery and retries, uses the pushed Go value itself, preserving pointer
+	// identity and live state. Serialization may occur, but execution must not
+	// depend on reconstructing the job. False provides no such guarantee.
+	// The result is stable for the driver's lifetime.
+	PreservesJobInstance() bool
 }

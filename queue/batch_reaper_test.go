@@ -60,6 +60,10 @@ func (d *flakyDriver) Size(string) (int64, error)                          { ret
 func (d *flakyDriver) Clear(string) error                                  { return nil }
 func (d *flakyDriver) Shutdown(context.Context) error                      { return nil }
 
+// PreservesJobInstance reports true: an accepted push is kept as the value
+// itself, a delayed push is an immediate one, and pop returns that value.
+func (d *flakyDriver) PreservesJobInstance() bool { return true }
+
 func (d *flakyDriver) successCount() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()

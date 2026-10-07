@@ -992,6 +992,12 @@ func (d *DatabaseDriver) ProcessDelayedJobs(queueName string) error {
 	return nil
 }
 
+// PreservesJobInstance reports false: a job is stored as its marshalled
+// payload and every pop rebuilds it through the registered factory, so the
+// worker runs a new value. State json.Marshal does not carry (unexported
+// fields, closures, channels) is not delivered.
+func (d *DatabaseDriver) PreservesJobInstance() bool { return false }
+
 // Shutdown is a no-op for the database driver; the underlying DB connection
 // is owned by the ORM and closed separately.
 func (d *DatabaseDriver) Shutdown(ctx context.Context) error {

@@ -60,6 +60,11 @@ func (noMarshalDriver) Clear(string) error                                  { re
 func (noMarshalDriver) FailedCtx(context.Context, Job, error, string) error { return nil }
 func (noMarshalDriver) Shutdown(context.Context) error                      { return nil }
 
+// PreservesJobInstance reports false: this driver drops every push, so it
+// has no delivery to make a promise about. The drivers embedding it pop a
+// job they were built with, never one that was pushed.
+func (noMarshalDriver) PreservesJobInstance() bool { return false }
+
 // newFailureWorker builds a worker over the no-op driver with a zero
 // reservation token, so handleJobFailure exercises the in-memory attempt
 // cache path (incrementAttempts then, on terminal failure, removeAttempts)

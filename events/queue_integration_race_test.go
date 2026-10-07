@@ -31,6 +31,10 @@ func (nopMemQueueDriver) FailedCtx(_ context.Context, job queue.Job, err error, 
 }
 func (nopMemQueueDriver) Shutdown(ctx context.Context) error { return nil }
 
+// PreservesJobInstance reports false: this driver drops every push and never
+// delivers a job.
+func (nopMemQueueDriver) PreservesJobInstance() bool { return false }
+
 // raceQueuedListener implements QueuedListener so QueueIntegratedDispatcher.Dispatch
 // takes the queued branch (pushToQueue).
 type raceQueuedListener struct{}

@@ -269,6 +269,8 @@ func RunDriverContractTests(t *testing.T, factory DriverFactory) {
 		})
 	})
 
+	runInstanceContract(t, factory)
+
 	t.Run("Shutdown_Idempotent", func(t *testing.T) {
 		d := factory(t)
 		// First Shutdown.

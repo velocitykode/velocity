@@ -136,6 +136,12 @@ func (f *FakeQueue) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// PreservesJobInstance reports true: the fake records the pushed value and
+// pops that same value, immediately or once its delay has elapsed. It has no
+// reservation path, so a retry is a second push of the value the worker
+// already holds.
+func (f *FakeQueue) PreservesJobInstance() bool { return true }
+
 // AssertPushed fails the test if no recorded job satisfies match.
 func (f *FakeQueue) AssertPushed(t testing.TB, match func(contract.QueueJob) bool) {
 	t.Helper()

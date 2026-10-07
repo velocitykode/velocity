@@ -175,3 +175,11 @@ func TestFakeQueue_NilJobRefused(t *testing.T) {
 		}
 	}
 }
+
+// TestFakeQueue_Contract runs the driver contract against the fake, so its
+// PreservesJobInstance answer is held to the same check as a real driver's.
+func TestFakeQueue_Contract(t *testing.T) {
+	RunDriverContractTests(t, func(t *testing.T) queue.Driver {
+		return NewFakeQueue()
+	})
+}

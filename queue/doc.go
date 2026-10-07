@@ -27,6 +27,29 @@
 //	                    batch-callback reaper so crash-restart cycles do
 //	                    not duplicate completion callbacks.
 //
+// # Job instance
+//
+// Every driver states through PreservesJobInstance whether the worker runs
+// the pushed Go value itself. The memory driver and queuetest.FakeQueue
+// answer true: an immediate delivery, a delayed delivery and a retry all hand
+// back the value that was pushed, with its pointer identity and any state
+// json.Marshal does not carry (unexported fields, closures, channels, live
+// clients). The redis and database drivers answer false: they store the
+// marshalled payload and rebuild the job through its registered factory on
+// every pop, so only marshalled state arrives. A true answer is not a promise
+// that a push is accepted: the memory driver still marshals the job on push
+// and refuses one json.Marshal rejects, such as a job with a closure or a
+// channel in an exported field. A driver that wraps another forwards the
+// answer when it delivers what the wrapped driver delivers, and answers for
+// itself when it changes the delivered value.
+//
+// The answer is about the value handed to the driver's push. The framework's
+// own wrappers push a job value of their own: the command bus pushes an
+// envelope that keeps the command, and a queued event listener is pushed as
+// an envelope that keeps the event and creates the listener again through its
+// registered factory when the job runs. A true answer says nothing about an
+// object the framework rebuilt before pushing or rebuilds when the job runs.
+//
 // # Optional job capabilities
 //
 // Jobs MAY implement any of these to control execution:

@@ -112,6 +112,10 @@ func (d *memoryDriver) Clear(queue string) error {
 
 func (d *memoryDriver) Shutdown(ctx context.Context) error { return nil }
 
+// PreservesJobInstance reports true: a push keeps the value itself, a
+// delayed push is an immediate one, and pop returns that value.
+func (d *memoryDriver) PreservesJobInstance() bool { return true }
+
 func TestBatch_SuccessfulCompletion(t *testing.T) {
 	resetBatchStoreForTest(t)
 	driver := newMemoryDriver()
@@ -741,6 +745,10 @@ func (d *failingDriver) Clear(string) error                                  { r
 func (d *failingDriver) FailedCtx(context.Context, Job, error, string) error { return nil }
 func (d *failingDriver) Shutdown(context.Context) error                      { return nil }
 func (d *failingDriver) Close() error                                        { return nil }
+
+// PreservesJobInstance reports false: this driver keeps no job and never
+// delivers one.
+func (d *failingDriver) PreservesJobInstance() bool { return false }
 
 // testOnQueuerJob implements both Batchable and OnQueuer
 type testOnQueuerJob struct {

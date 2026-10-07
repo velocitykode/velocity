@@ -704,6 +704,12 @@ func (r *RedisDriver) moveDelayedJobs(ctx context.Context, queueName string) err
 	}
 }
 
+// PreservesJobInstance reports false: a job is stored as its marshalled
+// payload and every pop rebuilds it through the registered factory, so the
+// worker runs a new value. State json.Marshal does not carry (unexported
+// fields, closures, channels) is not delivered.
+func (r *RedisDriver) PreservesJobInstance() bool { return false }
+
 // Shutdown closes the Redis connection, honoring the context deadline.
 //
 // Idempotent per the contract.ShutdownAware contract: a second call after

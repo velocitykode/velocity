@@ -737,6 +737,14 @@ func (m *MemoryDriver) GetFailed(queueName string) ([]*failedJob, error) {
 	return []*failedJob{}, nil
 }
 
+// PreservesJobInstance reports true: the pushed value is retained beside its
+// payload and every delivery hands that value back. An immediate pop, the
+// promotion of a delayed job and a release back onto the delayed heap all
+// move the same wrapper, so the worker always runs the value the producer
+// pushed. Push still marshals the job (see createJobWrapper), so a job
+// json.Marshal refuses is rejected before it is retained.
+func (m *MemoryDriver) PreservesJobInstance() bool { return true }
+
 // Shutdown gracefully shuts down the driver, waiting for the background
 // goroutine to finish. Honors the context deadline: if ctx expires before
 // the goroutine exits, ctx.Err() is returned. Idempotent, safe to call
