@@ -142,6 +142,8 @@ func TestGoroutineImportsOnlyTheStandardLibrary(t *testing.T) {
 // and resource import the standard library and, of the module, only
 // internal/errchain (the bounded, contained error walk contract's
 // predicates run on); errchain itself imports the standard library alone.
+// internal/ipclass, the one list of internal address ranges, is held to
+// the standard library too so the validation rules can link it light.
 // Every package below router stays free of the framework's own graph.
 func TestLeafPackagesImportOnlyStdlibAndErrchain(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
@@ -156,6 +158,7 @@ func TestLeafPackagesImportOnlyStdlibAndErrchain(t *testing.T) {
 		"./resource":          {module + "/resource", errchain},
 		"./internal/errchain": {errchain},
 		"./internal/nilval":   {module + "/internal/nilval"},
+		"./internal/ipclass":  {module + "/internal/ipclass"},
 	}
 	for pkg, allow := range allowed {
 		out, err := exec.Command("go", "list", "-deps", pkg).Output()

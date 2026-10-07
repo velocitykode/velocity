@@ -1,18 +1,13 @@
-// Package neturl provides host and IP classification helpers used by the
+// Package neturl provides the host and URL helpers used by the
 // framework's SSRF defenses. It is internal by design: SSRF policy lives
-// behind explicit options on packages like httpclient and notification —
+// behind explicit options on packages like httpclient and notification;
 // do not add transitive consumers.
 //
-// The classifications here cover the usual SSRF vectors:
-//   - loopback (127.0.0.0/8, ::1)
-//   - unspecified (0.0.0.0, ::)
-//   - link-local unicast (169.254.0.0/16, fe80::/10)
-//   - link-local multicast
-//   - RFC1918 private IPv4 (10/8, 172.16/12, 192.168/16)
-//   - IPv6 unique-local (fc00::/7)
-//   - carrier-grade NAT / shared address space (100.64.0.0/10)
-//   - cloud metadata IP (169.254.169.254 — already link-local, called out
-//     explicitly so callers can log/report it distinctly)
+// The decision whether an IP address is internal is made in one place,
+// internal/ipclass, which lists the ranges and the IPv6 forms that carry
+// an IPv4 address. This package resolves hosts and parses URLs and asks
+// ipclass about each address; IsPrivateOrInternal and IsMetadataIP are
+// kept here as pass-throughs for the callers of this package.
 package neturl
 
 import (
@@ -26,6 +21,7 @@ import (
 	"golang.org/x/net/publicsuffix"
 
 	"github.com/velocitykode/velocity/internal/errchain"
+	"github.com/velocitykode/velocity/internal/ipclass"
 )
 
 // ErrPrivateHost is the sentinel returned when a host resolves to a
@@ -33,70 +29,22 @@ import (
 // should wrap it with their package prefix before surfacing to callers.
 var ErrPrivateHost = errors.New("neturl: host resolves to private or internal address")
 
-// MetadataIPv4 is the well-known cloud instance metadata IPv4 address
-// (AWS, GCP, Azure, DigitalOcean, etc.).
-const MetadataIPv4 = "169.254.169.254"
+// MetadataIPv4 is the well-known cloud instance metadata IPv4 address.
+const MetadataIPv4 = ipclass.MetadataIPv4
 
-// MetadataIPv6 is the IPv6 counterpart used by GCP for its metadata
-// endpoint.
-const MetadataIPv6 = "fd00:ec2::254"
-
-// cgnatNet is 100.64.0.0/10 — RFC 6598 carrier-grade NAT space, also
-// frequently reachable from inside cloud VPCs.
-var cgnatNet = mustCIDR("100.64.0.0/10")
-
-// teredoNet is 2001::/32 — RFC 4380 Teredo tunneling. Rarely seen on the
-// modern internet, but an attacker-supplied Teredo target encodes an
-// arbitrary IPv4 (including private ranges) inside an IPv6 address. Treat
-// any Teredo destination as internal to avoid that escape hatch.
-var teredoNet = mustCIDR("2001::/32")
-
-func mustCIDR(s string) *net.IPNet {
-	_, n, err := net.ParseCIDR(s)
-	if err != nil {
-		panic(errchain.Errorf("neturl: bad CIDR %q: %w", s, err))
-	}
-	return n
-}
+// MetadataIPv6 is the IPv6 metadata endpoint address.
+const MetadataIPv6 = ipclass.MetadataIPv6
 
 // IsMetadataIP reports whether ip matches a well-known cloud metadata
-// endpoint. These are technically link-local but are called out separately
-// because exfiltrating IAM credentials via SSRF is the canonical attack.
-func IsMetadataIP(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	if v4 := ip.To4(); v4 != nil {
-		return v4.Equal(net.ParseIP(MetadataIPv4).To4())
-	}
-	return ip.Equal(net.ParseIP(MetadataIPv6))
-}
+// endpoint, as written or carried inside an IPv6 address. See
+// [ipclass.IsMetadataIP].
+func IsMetadataIP(ip net.IP) bool { return ipclass.IsMetadataIP(ip) }
 
 // IsPrivateOrInternal reports whether ip falls in any range that should
-// never be reachable from an outbound request in normal operation:
-// loopback, unspecified, link-local, RFC1918, fc00::/7, CGNAT, or a
-// known metadata IP.
-func IsPrivateOrInternal(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsInterfaceLocalMulticast() {
-		return true
-	}
-	if ip.IsPrivate() {
-		return true
-	}
-	if v4 := ip.To4(); v4 != nil && cgnatNet.Contains(v4) {
-		return true
-	}
-	if teredoNet.Contains(ip) {
-		return true
-	}
-	if IsMetadataIP(ip) {
-		return true
-	}
-	return false
-}
+// never be reachable from an outbound request in normal operation, as
+// written or carried inside an IPv6 address. See
+// [ipclass.IsPrivateOrInternal] for the list.
+func IsPrivateOrInternal(ip net.IP) bool { return ipclass.IsPrivateOrInternal(ip) }
 
 // IsPrivateHost reports whether host (an IP literal or DNS name) refers
 // to a disallowed address range. Hostnames are resolved via resolver —

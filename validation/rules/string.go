@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/velocitykode/velocity/internal/ipclass"
 )
 
 // Pre-compiled regexes to avoid recompilation on every call.
@@ -34,28 +36,6 @@ const urlResolveTimeout = 5 * time.Second
 var urlAllowedSchemes = map[string]struct{}{
 	"http":  {},
 	"https": {},
-}
-
-// privateNetworks contains CIDR ranges considered private/internal
-var privateNetworks []*net.IPNet
-
-func init() {
-	cidrs := []string{
-		"0.0.0.0/8",      // "this host" / unspecified, routes to localhost on Linux
-		"127.0.0.0/8",    // IPv4 loopback
-		"10.0.0.0/8",     // RFC1918
-		"172.16.0.0/12",  // RFC1918
-		"192.168.0.0/16", // RFC1918
-		"169.254.0.0/16", // Link-local
-		"100.64.0.0/10",  // CGNAT / cloud shared address space
-		"::1/128",        // IPv6 loopback
-		"fc00::/7",       // IPv6 unique local
-		"fe80::/10",      // IPv6 link-local
-	}
-	for _, cidr := range cidrs {
-		_, network, _ := net.ParseCIDR(cidr)
-		privateNetworks = append(privateNetworks, network)
-	}
 }
 
 // StringRule validates that a value is a string
@@ -145,9 +125,10 @@ func URLRule(field string, value interface{}, params []string, data map[string]i
 }
 
 // URLPublicRule validates that a value is a valid URL pointing to a public
-// (non-internal) host. Rejects private/internal IPs: 0.0.0.0/8, 127.0.0.0/8,
-// 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16,
-// 100.64.0.0/10, ::1, fc00::/7, fe80::/10.
+// (non-internal) host. A host is internal when any address it resolves to
+// is: the range list is the one the outbound dial guard uses
+// (internal/ipclass), including IPv6 addresses that carry an internal
+// IPv4 address.
 // This rule is validation-time only: it resolves DNS once at validation and
 // does not defend against DNS rebinding at fetch time; a fetching client must
 // re-check at dial time (the httpclient denyPrivateIPs path does this).
@@ -183,14 +164,8 @@ func URLPublicRule(field string, value interface{}, params []string, data map[st
 	}
 
 	for _, ip := range ips {
-		if ip.IP.IsUnspecified() || ip.IP.IsLoopback() || ip.IP.IsPrivate() ||
-			ip.IP.IsLinkLocalUnicast() || ip.IP.IsLinkLocalMulticast() {
+		if ipclass.IsPrivateOrInternal(ip.IP) {
 			return fmt.Errorf("The %s field must not point to a private or internal address.", field)
-		}
-		for _, network := range privateNetworks {
-			if network.Contains(ip.IP) {
-				return fmt.Errorf("The %s field must not point to a private or internal address.", field)
-			}
 		}
 	}
 

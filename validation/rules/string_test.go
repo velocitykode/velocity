@@ -304,6 +304,81 @@ func TestURLPublicRule_LiteralIPHosts(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "rejects IPv4 link-local metadata address",
+			value:   "http://169.254.169.254/latest/meta-data/",
+			wantErr: true,
+		},
+		{
+			name:    "rejects IPv6 unique-local address",
+			value:   "http://[fd00::1]/",
+			wantErr: true,
+		},
+		{
+			name:    "rejects IPv6 link-local address",
+			value:   "http://[fe80::1]/",
+			wantErr: true,
+		},
+		{
+			name:    "rejects IPv4-mapped loopback",
+			value:   "http://[::ffff:127.0.0.1]/",
+			wantErr: true,
+		},
+		{
+			name:    "rejects NAT64 address carrying loopback",
+			value:   "http://[64:ff9b::7f00:1]/",
+			wantErr: true,
+		},
+		{
+			name:    "rejects NAT64 address carrying the metadata address",
+			value:   "http://[64:ff9b::a9fe:a9fe]/",
+			wantErr: true,
+		},
+		{
+			name:    "rejects 6to4 address carrying a private address",
+			value:   "http://[2002:a00:1::1]/",
+			wantErr: true,
+		},
+		{
+			name:    "rejects IPv4-compatible loopback",
+			value:   "http://[::127.0.0.1]/",
+			wantErr: true,
+		},
+		{
+			name:    "rejects ISATAP address carrying a private address",
+			value:   "http://[2606:4700::5efe:192.168.1.1]/",
+			wantErr: true,
+		},
+		{
+			name:    "rejects the NAT64 local-use pool",
+			value:   "http://[64:ff9b:1::808:808]/",
+			wantErr: true,
+		},
+		{
+			name:    "rejects Teredo",
+			value:   "http://[2001::1]/",
+			wantErr: true,
+		},
+		{
+			name:    "rejects IPv4 multicast",
+			value:   "http://239.1.2.3/",
+			wantErr: true,
+		},
+		{
+			name:    "allows NAT64 address carrying a public address",
+			value:   "http://[64:ff9b::808:808]/",
+			wantErr: false,
+		},
+		{
+			name:    "allows 6to4 address carrying a public address",
+			value:   "http://[2002:808:808::1]/",
+			wantErr: false,
+		},
+		{
+			name:    "allows public IPv6 address",
+			value:   "http://[2606:4700:4700::1111]/",
+			wantErr: false,
+		},
+		{
 			name:    "allows public Cloudflare resolver address",
 			value:   "http://1.1.1.1/",
 			wantErr: false,
@@ -320,6 +395,9 @@ func TestURLPublicRule_LiteralIPHosts(t *testing.T) {
 			err := URLPublicRule("website", tt.value, nil, nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("URLPublicRule() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && err != nil && err.Error() != "The website field must not point to a private or internal address." {
+				t.Errorf("URLPublicRule() message = %q", err.Error())
 			}
 		})
 	}

@@ -5,7 +5,8 @@
 // Defaults are secure: TLS 1.2 minimum, capped redirect chain (sensitive
 // headers stripped on cross-origin hops), an SSRF dial guard that
 // refuses connections to loopback, RFC1918, link-local, CGNAT, and
-// cloud-metadata IPs (IPv4 and IPv6), the standard library's HTTP_PROXY
+// cloud-metadata IPs (IPv4 and IPv6, including IPv6 addresses that carry
+// such an IPv4 address: NAT64, 6to4, ISATAP), the standard library's HTTP_PROXY
 // environment hook is cleared so a hostile env value cannot route
 // outbound traffic through an attacker-controlled CONNECT proxy, and
 // per-stage transport timeouts are pinned (TLS handshake 10s, response
