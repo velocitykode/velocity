@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// QueueConfig's String, and %v / %+v / %s through it, never carry the
+// QueueConfig's String, and %v / %+v / Sprint through it, never carry the
 // signing key or the Redis password.
 func TestQueueConfigString_RedactsSecrets(t *testing.T) {
 	const signingKey, password = "signing-key-secret", "redis-password-secret"
@@ -19,7 +19,7 @@ func TestQueueConfigString_RedactsSecrets(t *testing.T) {
 		"String": cfg.String(),
 		"%v":     fmt.Sprintf("%v", cfg),
 		"%+v":    fmt.Sprintf("%+v", cfg),
-		"%s":     fmt.Sprintf("%s", cfg),
+		"Sprint": fmt.Sprint(cfg),
 		"%v ptr": fmt.Sprintf("%v", &cfg),
 	} {
 		if strings.Contains(out, signingKey) || strings.Contains(out, password) {
