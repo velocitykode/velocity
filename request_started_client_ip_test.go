@@ -9,9 +9,11 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -32,9 +34,9 @@ func TestRequestStarted_CarriesTheReportedClientIP(t *testing.T) {
 	a, err := New(WithConfig(Config{
 		Env:   "testing",
 		Port:  "0",
-		Cache: CacheConfig{Driver: "memory", Prefix: "test_cache"},
+		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
 		Log:   log.LogConfig{Driver: "null", Config: make(map[string]any)},
-		Queue: QueueConfig{Driver: "memory"},
+		Queue: queue.QueueConfig{Driver: "memory"},
 		Mail:  mail.MailConfig{Driver: "log"},
 		Auth:  auth.Config{TrustedProxies: []string{"10.0.0.0/8"}},
 	}))

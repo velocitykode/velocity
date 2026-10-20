@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
 	"sync"
 	"time"
 
@@ -61,9 +60,14 @@ type Server struct {
 
 	// tlsOpted tracks whether the caller supplied transport credentials via
 	// WithCreds. Build uses this together with the environment and the
-	// GRPC_INSECURE escape hatch to decide whether to refuse a cleartext
+	// insecureOptOut escape hatch to decide whether to refuse a cleartext
 	// production start.
 	tlsOpted bool
+
+	// insecureOptOut is Config.Insecure (the GRPC_INSECURE surface): the
+	// production TLS opt-out for a known-internal mTLS mesh or a
+	// sidecar-terminated mesh.
+	insecureOptOut bool
 
 	// Interceptors
 	unaryInterceptors  []grpc.UnaryServerInterceptor
@@ -101,17 +105,20 @@ type Server struct {
 // ServerOption configures the Server
 type ServerOption func(*Server)
 
-// NewServer creates a new gRPC server with the given options. Defaults are
-// sourced from environment variables (via LoadConfig) so behaviour matches
-// the rest of the framework: GRPC_PORT / GRPC_REFLECTION /
-// GRPC_MAX_RECV_SIZE / GRPC_MAX_SEND_SIZE are honoured if set. Explicit
-// ServerOption arguments still override the env-derived defaults.
-func NewServer(opts ...ServerOption) *Server {
-	cfg := LoadConfig()
+// NewServer creates a new gRPC server from cfg and the given options. cfg
+// supplies the defaults (port, reflection, message sizes, deployment
+// environment, the Insecure production TLS opt-out); a zero field means the
+// built-in default (see contract.GRPCConfig). NewServer never reads the
+// environment: velocity.ConfigFromEnv fills cfg from GRPC_PORT /
+// GRPC_REFLECTION / GRPC_MAX_RECV_SIZE / GRPC_MAX_SEND_SIZE / GRPC_INSECURE /
+// APP_ENV. Explicit ServerOption arguments override cfg.
+func NewServer(cfg Config, opts ...ServerOption) *Server {
+	cfg = normalizeConfig(cfg)
 	s := &Server{
 		port:               cfg.ServerPort,
 		enableReflection:   cfg.EnableReflection,
-		environment:        contract.GetEnv(),
+		environment:        cfg.Environment,
+		insecureOptOut:     cfg.Insecure,
 		unaryInterceptors:  make([]grpc.UnaryServerInterceptor, 0),
 		streamInterceptors: make([]grpc.StreamServerInterceptor, 0),
 		registrations:      make([]RegistrationFunc, 0),
@@ -130,9 +137,9 @@ func NewServer(opts ...ServerOption) *Server {
 	s.logger = fallbacklog.Resolve(s.logger)
 	s.events.UseLogger(func() contract.Logger { return s.logger })
 
-	// Surface any env-parsing diagnostics now that a logger exists, so a
-	// non-positive / unparseable / oversize GRPC_MAX_*_SIZE is never silently
-	// clamped without the operator knowing.
+	// Surface any config diagnostics now that a logger exists, so a negative
+	// or oversize message size is never silently corrected without the
+	// operator knowing.
 	for _, w := range cfg.Warnings {
 		s.logLine(func(l contract.Logger) { l.Warn(w) })
 	}
@@ -354,9 +361,10 @@ func (s *Server) RegisterService(regFunc RegistrationFunc) *Server {
 // interceptor) so we fail fast.
 //
 // Build also enforces the production TLS guard: when the environment is
-// "production" (APP_ENV=production or WithEnvironment("production")) and no
-// transport credentials were attached via WithCreds, Build returns an
-// error unless GRPC_INSECURE=true opts the deployment out for a
+// production-class (Config.Environment or WithEnvironment, classified by
+// contract.IsProductionEnv) and no transport credentials were attached via
+// WithCreds, Build returns an error unless Config.Insecure
+// (GRPC_INSECURE=true) opts the deployment out for a
 // known-internal mTLS mesh or a sidecar-terminated mesh. Outside
 // production, a missing creds configuration only emits a one-shot warning.
 //
@@ -583,17 +591,16 @@ func (s *Server) beginBuild() (*life, *buildPlan, error) {
 	// error is unambiguous when an operator forgets to wire credentials.
 	warnTLS := false
 	if !s.tlsOpted {
-		// final: do not rename. GRPC_INSECURE is the 1.0 surface name for
-		// the production TLS opt-out; downstream operators may already key
-		// off it.
+		// final: do not rename. GRPC_INSECURE (Config.Insecure) is the 1.0
+		// surface name for the production TLS opt-out; downstream operators
+		// may already key off it.
 		//
 		// "production", "prod", and "staging" all fold into the locked-down
 		// branch via contract.IsProductionEnv so a typo'd APP_ENV cannot
 		// silently bypass the TLS requirement.
-		insecureOptOut := os.Getenv("GRPC_INSECURE") == "true"
 		isProd := contract.IsProductionEnv(s.environment)
-		if isProd && !insecureOptOut {
-			return nil, nil, fmt.Errorf("velocity/grpc: TLS credentials are required in production. Use WithCreds, or set GRPC_INSECURE=true to opt out for a known-internal mTLS mesh")
+		if isProd && !s.insecureOptOut {
+			return nil, nil, fmt.Errorf("velocity/grpc: TLS credentials are required in production. Use WithCreds, or set Insecure (GRPC_INSECURE=true) to opt out for a known-internal mTLS mesh")
 		}
 		warnTLS = !isProd
 	}

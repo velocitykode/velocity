@@ -12,10 +12,12 @@ import (
 
 	"modernc.org/sqlite"
 
+	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/orm"
+	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/trace"
 )
 
@@ -46,14 +48,14 @@ func newQueryLoggingApp(t *testing.T, dir string, opts ...Option) *App {
 	t.Helper()
 	registerRootSleep()
 	env := ConfigFromEnv()
-	db := DBConfig{Connection: "sqlite", Database: ":memory:", MaxOpenConns: 1, LogQueries: env.DB.LogQueries, SlowThreshold: env.DB.SlowThreshold}
+	db := orm.ManagerConfig{Driver: "sqlite", Database: ":memory:", MaxOpenConns: 1, LogQueries: env.DB.LogQueries, SlowThreshold: env.DB.SlowThreshold}
 	a, err := New(append([]Option{WithConfig(Config{
 		Env:   "testing",
 		Port:  "0",
 		Log:   log.LogConfig{Driver: "file", Config: map[string]any{"path": dir, "level": "debug"}},
 		DB:    db,
-		Cache: CacheConfig{Driver: "memory"},
-		Queue: QueueConfig{Driver: "memory"},
+		Cache: cache.SingleStoreConfig("", cache.StoreConfig{Driver: "memory"}),
+		Queue: queue.QueueConfig{Driver: "memory"},
 		Mail:  mail.MailConfig{Driver: "log"},
 	})}, opts...)...)
 	if err != nil {

@@ -141,40 +141,47 @@ func TestCacheLoginThrottler_FixedWindowExpiry(t *testing.T) {
 	}
 }
 
-func TestConfiguredPerDimensionLimits(t *testing.T) {
+func TestConfigFromEnv_PerDimensionLimits(t *testing.T) {
 	t.Setenv("AUTH_LOGIN_MAX_ATTEMPTS_PER_IDENTIFIER", "7")
 	t.Setenv("AUTH_LOGIN_MAX_ATTEMPTS_PER_IP", "11")
-	if got := configuredLoginThrottleIdentifierMaxAttempts(); got != 7 {
-		t.Fatalf("configuredLoginThrottleIdentifierMaxAttempts = %d, want 7", got)
+	lt := ConfigFromEnv().Auth.LoginThrottle
+	if lt.MaxAttemptsPerIdentifier != 7 {
+		t.Fatalf("MaxAttemptsPerIdentifier = %d, want 7", lt.MaxAttemptsPerIdentifier)
 	}
-	if got := configuredLoginThrottleIPMaxAttempts(); got != 11 {
-		t.Fatalf("configuredLoginThrottleIPMaxAttempts = %d, want 11", got)
+	if lt.MaxAttemptsPerIP != 11 {
+		t.Fatalf("MaxAttemptsPerIP = %d, want 11", lt.MaxAttemptsPerIP)
 	}
 
-	// Invalid and unset values fall back to the defaults.
+	// Invalid and unset values are zero, which the throttler reads as
+	// its defaults.
 	t.Setenv("AUTH_LOGIN_MAX_ATTEMPTS_PER_IDENTIFIER", "-3")
 	t.Setenv("AUTH_LOGIN_MAX_ATTEMPTS_PER_IP", "")
-	if got := configuredLoginThrottleIdentifierMaxAttempts(); got != defaultLoginThrottleIdentifierMaxAttempts {
-		t.Fatalf("identifier fallback = %d, want %d", got, defaultLoginThrottleIdentifierMaxAttempts)
+	lt = ConfigFromEnv().Auth.LoginThrottle
+	if lt.MaxAttemptsPerIdentifier != 0 || lt.MaxAttemptsPerIP != 0 {
+		t.Fatalf("invalid/unset = %d/%d, want 0/0", lt.MaxAttemptsPerIdentifier, lt.MaxAttemptsPerIP)
 	}
-	if got := configuredLoginThrottleIPMaxAttempts(); got != defaultLoginThrottleIPMaxAttempts {
-		t.Fatalf("IP fallback = %d, want %d", got, defaultLoginThrottleIPMaxAttempts)
+	th := newCacheLoginThrottler(nil, lt.MaxAttempts, lt.MaxAttemptsPerIdentifier, lt.MaxAttemptsPerIP, lt.Decay)
+	if th.identifierMaxAttempts != defaultLoginThrottleIdentifierMaxAttempts {
+		t.Fatalf("identifier fallback = %d, want %d", th.identifierMaxAttempts, defaultLoginThrottleIdentifierMaxAttempts)
+	}
+	if th.ipMaxAttempts != defaultLoginThrottleIPMaxAttempts {
+		t.Fatalf("IP fallback = %d, want %d", th.ipMaxAttempts, defaultLoginThrottleIPMaxAttempts)
 	}
 }
 
-// TestInstallLoginThrottler_PerDimensionEnvWiring proves the env-surfaced
-// caps reach the installed throttler: with AUTH_LOGIN_MAX_ATTEMPTS_PER_IP=2
+// TestInstallLoginThrottler_PerDimensionConfigWiring proves the configured
+// caps reach the installed throttler: with MaxAttemptsPerIP=2
 // a spray (distinct identifiers, one IP) is denied on the third attempt
 // even though the pair cap is far away.
-func TestInstallLoginThrottler_PerDimensionEnvWiring(t *testing.T) {
-	t.Setenv("AUTH_LOGIN_MAX_ATTEMPTS", "5")
-	t.Setenv("AUTH_LOGIN_MAX_ATTEMPTS_PER_IP", "2")
-	t.Setenv("AUTH_LOGIN_DECAY", "60s")
-
+func TestInstallLoginThrottler_PerDimensionConfigWiring(t *testing.T) {
 	manager := auth.NewManager()
 	scheme := &fakeLoginThrottlerScheme{}
 	manager.RegisterScheme("web", scheme)
-	installLoginThrottler(manager, newMemoryCacheManager(), nil)
+	installLoginThrottler(manager, newMemoryCacheManager(), auth.LoginThrottleConfig{
+		MaxAttempts:      5,
+		MaxAttemptsPerIP: 2,
+		Decay:            60 * time.Second,
+	}, nil)
 
 	th, ok := scheme.throttler.(*cacheLoginThrottler)
 	if !ok {

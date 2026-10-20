@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -27,12 +29,12 @@ func baseSignedURLBootConfig() Config {
 	return Config{
 		Debug: false, // production must not set Debug=true
 		Port:  "0",
-		Cache: CacheConfig{Driver: "memory", Prefix: "test_cache"},
+		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
 		Log: log.LogConfig{
 			Driver: "console",
 			Config: make(map[string]any),
 		},
-		Queue: QueueConfig{Driver: "memory"},
+		Queue: queue.QueueConfig{Driver: "memory"},
 		Mail:  mail.MailConfig{Driver: "log"},
 		Session: auth.SessionConfig{
 			Name:         "velocity_session",
@@ -58,8 +60,8 @@ func TestNew_ProductionRefusesBootWithoutAppKey(t *testing.T) {
 	// Opt out of the queue-signing prod gate so the signed-URL guard
 	// (the subject of this test) is the one that fires, not the
 	// upstream queue check.
-	t.Setenv("QUEUE_ACCEPT_UNSIGNED", "true")
 	cfg := baseSignedURLBootConfig()
+	cfg.Queue.AcceptUnsigned = true
 	cfg.Env = "production"
 	cfg.Key = "" // M-16 trigger: no APP_KEY
 	// Mimic the operator-only-set-CRYPTO_KEY misconfiguration: the
@@ -82,8 +84,8 @@ func TestNew_ProductionRefusesBootWithoutAppKey(t *testing.T) {
 // silently downgraded signed routes to unsigned routes would be a
 // classic "tests pass in CI, prod cuts auth" trap.
 func TestNew_StagingRefusesBootWithoutAppKey(t *testing.T) {
-	t.Setenv("QUEUE_ACCEPT_UNSIGNED", "true")
 	cfg := baseSignedURLBootConfig()
+	cfg.Queue.AcceptUnsigned = true
 	cfg.Env = "staging"
 	cfg.Key = ""
 	cfg.Crypto.Key = "0123456789abcdef0123456789abcdef"

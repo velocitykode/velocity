@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 	"github.com/velocitykode/velocity/router"
 )
@@ -25,7 +26,7 @@ func TestWithMaintenanceLogger_ReceivesMarkerPathWarning(t *testing.T) {
 	root := useTempMaintRoot(t)
 	logs := &levelLogger{}
 
-	runMaintenanceOnce(t, PreventRequestsDuringMaintenance(WithMaintenanceLogger(logs)))
+	runMaintenanceOnce(t, PreventRequestsDuringMaintenance(contract.MaintenanceConfig{}, WithMaintenanceLogger(logs)))
 
 	if got := entriesWith(logs, "warn", "maintenance marker path resolved"); got != 1 {
 		t.Fatalf("warn entries = %d, want 1 (%+v)", got, logs.entries)
@@ -51,7 +52,7 @@ func TestPreventRequestsDuringMaintenance_WithoutLoggerWarnsThroughTheFallback(t
 			fallback := fallbacklogtest.Capture(t)
 			stdlib := fallbacklogtest.CaptureStdlib(t)
 
-			runMaintenanceOnce(t, PreventRequestsDuringMaintenance(tc.opts...))
+			runMaintenanceOnce(t, PreventRequestsDuringMaintenance(contract.MaintenanceConfig{}, tc.opts...))
 
 			if got := fallback.Count("WARN", "maintenance marker path resolved"); got != 1 {
 				t.Errorf("fallback lines = %d, want 1: %q", got, fallback.String())
@@ -82,7 +83,7 @@ func TestPreventRequestsDuringMaintenance_InAppWarnsThroughTheAppLogger(t *testi
 	useTempMaintRoot(t)
 	fallback := fallbacklogtest.Capture(t)
 	a, capture := newLoggerWiringApp(t, nil)
-	a.Router.Use(PreventRequestsDuringMaintenance())
+	a.Router.Use(PreventRequestsDuringMaintenance(contract.MaintenanceConfig{}))
 	a.Router.Get("/", func(c *router.Context) error { return c.String(http.StatusOK, "ok") })
 
 	rec := httptest.NewRecorder()

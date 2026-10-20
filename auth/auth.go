@@ -850,6 +850,33 @@ type Config struct {
 	// Negative values are clamped to zero (no floor) which is for
 	// tests only.
 	AttemptFloor time.Duration
+
+	// LoginThrottle tunes the framework's login throttler.
+	LoginThrottle LoginThrottleConfig
+}
+
+// LoginThrottleConfig tunes the login throttler velocity.New installs.
+// Every zero field takes the framework default, so a zero value is the
+// default throttler.
+type LoginThrottleConfig struct {
+	// MaxAttempts caps failures per (identifier, IP) pair, and per key
+	// with no recognised dimension prefix. Zero or negative: 5.
+	MaxAttempts int
+	// MaxAttemptsPerIdentifier caps failures per identifier across all
+	// IPs (verify-first, see ThrottleKeys). Zero or negative: 20.
+	MaxAttemptsPerIdentifier int
+	// MaxAttemptsPerIP caps failures per source IP across all
+	// identifiers. Zero or negative: 50.
+	MaxAttemptsPerIP int
+	// Decay is how long a failure counts. Zero or negative: 60s.
+	Decay time.Duration
+	// IdentifierDelay is the delay paid by the first attempt past the
+	// identifier cap, doubling per further failure. Zero:
+	// DefaultIdentifierDelay; negative disables the delay.
+	IdentifierDelay time.Duration
+	// IdentifierDelayMax caps the progressive delay. Zero or negative:
+	// DefaultIdentifierDelayMax.
+	IdentifierDelayMax time.Duration
 }
 
 // SchemeConfig holds scheme configuration

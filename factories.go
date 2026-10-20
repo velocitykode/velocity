@@ -2,8 +2,6 @@ package velocity
 
 import (
 	"database/sql"
-	"os"
-	"strings"
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
@@ -21,69 +19,26 @@ import (
 	"github.com/velocitykode/velocity/storage"
 )
 
-// initCache translates the flat CacheConfig (single driver) into the multi-store
-// cache.Config the cache package expects. Defaults to memory when driver is unrecognized.
+// initCache builds the cache manager from config. A zero config (no
+// stores) gets one memory store named "default", so an app built with
+// WithConfig and no cache settings still has a working cache.
 // The manager takes logger at once, so a store built during New (the
 // server session store's) writes its startup warnings through it.
-func initCache(config CacheConfig, logger contract.Logger) *cache.Manager {
-	cacheConfig := &cache.Config{
-		Default: "default",
-		Prefix:  config.Prefix,
-		Stores:  make(map[string]cache.StoreConfig),
+func initCache(config cache.Config, logger contract.Logger) *cache.Manager {
+	if len(config.Stores) == 0 {
+		config = cache.SingleStoreConfig(config.Prefix, cache.StoreConfig{Driver: cache.DriverMemory})
 	}
-
-	switch config.Driver {
-	case "file":
-		cacheConfig.Stores["default"] = cache.StoreConfig{
-			Driver:        "file",
-			Path:          config.Path,
-			MaxValueBytes: config.MaxValueBytes,
-		}
-	case "redis":
-		cacheConfig.Stores["default"] = cache.StoreConfig{
-			Driver:   "redis",
-			Host:     config.RedisHost,
-			Port:     config.RedisPort,
-			Password: config.RedisPassword,
-			Database: config.RedisDatabase,
-			TLS:      config.RedisTLS,
-		}
-	default:
-		cacheConfig.Stores["default"] = cache.StoreConfig{
-			Driver:        "memory",
-			MaxEntries:    config.MemoryMaxEntries,
-			MaxValueBytes: config.MaxValueBytes,
-		}
-	}
-
-	m := cache.NewManager(cacheConfig)
+	m := cache.NewManager(&config)
 	m.SetLogger(logger)
 	return m
 }
 
-// initStorage maps each DiskConfig entry into the storage package's format and
-// configures drivers. Disk configuration failures are logged as warnings rather
-// than failing startup, since storage may not be required by every app.
-func initStorage(config StorageConfig, logger contract.Logger) *storage.Manager {
-	storageCfg := storage.Config{
-		Default: config.Default,
-		Disks:   make(map[string]storage.DiskConfig),
-	}
-	for name, disk := range config.Disks {
-		storageCfg.Disks[name] = storage.DiskConfig{
-			Driver:     disk.Driver,
-			Root:       disk.Root,
-			URL:        disk.URL,
-			Visibility: disk.Visibility,
-			Key:        disk.Key,
-			Secret:     disk.Secret,
-			Region:     disk.Region,
-			Bucket:     disk.Bucket,
-			MaxSize:    disk.MaxSize,
-		}
-	}
-	mgr := storage.NewManager(storageCfg)
-	if err := mgr.Configure(storageCfg); err != nil {
+// initStorage builds the storage manager and configures its disks. Disk
+// configuration failures are logged as warnings rather than failing
+// startup, since storage may not be required by every app.
+func initStorage(config storage.Config, logger contract.Logger) *storage.Manager {
+	mgr := storage.NewManager(config)
+	if err := mgr.Configure(config); err != nil {
 		if logger != nil {
 			logger.Warn("Failed to configure storage disks", "error", err)
 		}
@@ -213,28 +168,12 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger contract.L
 // initDB creates the ORM manager from config, writing through logger from
 // the first statement its driver runs. Returns nil if no connection is
 // configured.
-func initDB(config DBConfig, logger contract.Logger) (*orm.Manager, error) {
-	if config.Connection == "" {
+func initDB(config orm.ManagerConfig, logger contract.Logger) (*orm.Manager, error) {
+	if config.Driver == "" {
 		return nil, nil
 	}
-	return orm.NewManager(orm.ManagerConfig{
-		Driver:          config.Connection,
-		Host:            config.Host,
-		Port:            config.Port,
-		Database:        config.Database,
-		Username:        config.Username,
-		Password:        config.Password,
-		Charset:         config.Charset,
-		SSLMode:         config.SSLMode,
-		TLS:             config.TLS,
-		TimeZone:        config.TimeZone,
-		MaxIdleConns:    config.MaxIdleConns,
-		MaxOpenConns:    config.MaxOpenConns,
-		ConnMaxLifetime: config.ConnMaxLifetime,
-		LogQueries:      config.LogQueries,
-		SlowThreshold:   config.SlowThreshold,
-		Logger:          logger,
-	})
+	config.Logger = logger
+	return orm.NewManager(config)
 }
 
 // initQueue selects the queue driver based on config, delegating to the
@@ -245,7 +184,7 @@ func initDB(config DBConfig, logger contract.Logger) (*orm.Manager, error) {
 // DB for the database driver prevents the requested driver from starting,
 // so boot fails loudly rather than silently downgrading to the in-memory
 // driver.
-func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey string, appKey string, appEnv string, encryptor contract.Encryptor, logger contract.Logger) (_ queue.Driver, err error) {
+func initQueue(config queue.QueueConfig, db *sql.DB, dbDriver string, appKey string, appEnv string, encryptor contract.Encryptor, logger contract.Logger) (_ queue.Driver, err error) {
 	// Route queue-signing diagnostics through the framework logger before
 	// configuring so missing/APP_KEY fallbacks are surfaced consistently.
 	queue.SetSigningLogger(logger)
@@ -274,8 +213,8 @@ func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey strin
 	// Operators who explicitly want to run unsigned (migration window,
 	// local dev queue) opt in via QUEUE_ACCEPT_UNSIGNED=true; the warning
 	// log path stays so the choice is visible in startup logs.
-	if err := queue.ConfigureSigningWith(signingKey, appKey, queue.SigningOptions{
-		AcceptUnsigned:     queueAcceptUnsigned(),
+	if err := queue.ConfigureSigningWith(config.SigningKey, appKey, queue.SigningOptions{
+		AcceptUnsigned:     config.AcceptUnsigned,
 		AllowUnsignedInDev: app.IsDevOrTestEnv(appEnv),
 	}); err != nil {
 		return nil, err
@@ -297,22 +236,13 @@ func initQueue(config QueueConfig, db *sql.DB, dbDriver string, signingKey strin
 		queue.SetPayloadEncryptor(nil)
 	}
 
-	d, err := queue.NewQueue(queue.QueueConfig{
-		Driver: config.Driver,
-		Redis: queue.RedisConfig{
-			Host:     config.RedisHost,
-			Port:     config.RedisPort,
-			Password: config.RedisPassword,
-			DB:       config.RedisDB,
-			TLS:      config.RedisTLS,
-		},
-		DB:       db,
-		DBDriver: dbDriver,
-		// The driver logs through the framework logger from construction
-		// on (the redis driver's startup warnings included); NewQueue
-		// installs it on a driver implementing contract.LoggerAware.
-		Logger: logger,
-	})
+	config.DB = db
+	config.DBDriver = dbDriver
+	// The driver logs through the framework logger from construction
+	// on (the redis driver's startup warnings included); NewQueue
+	// installs it on a driver implementing contract.LoggerAware.
+	config.Logger = logger
+	d, err := queue.NewQueue(config)
 	if err != nil {
 		return nil, err
 	}
@@ -380,18 +310,4 @@ func initNotification(mailer mail.Mailer, db *sql.DB, dbDriver string) *notifica
 	}
 
 	return mgr
-}
-
-// queueAcceptUnsigned reports whether the operator has explicitly opted
-// into running the queue without payload signing. Recognises the common
-// truthy spellings so a typo does not silently disable the guard.
-//
-// final: do not rename. QUEUE_ACCEPT_UNSIGNED is the 1.0 surface name for
-// the queue payload-signing opt-out.
-func queueAcceptUnsigned() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("QUEUE_ACCEPT_UNSIGNED"))) {
-	case "1", "true", "yes", "on":
-		return true
-	}
-	return false
 }

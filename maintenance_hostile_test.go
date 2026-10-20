@@ -17,11 +17,11 @@ func TestMaintenanceMarkerPath_WarningWithHostileLogger(t *testing.T) {
 			useTempMaintRoot(t)
 			var logger *hostile.Logger
 			resolve := func() {
-				if _, err := maintenanceMarkerPath(logger); err != nil {
+				if _, err := maintenanceMarkerPath("", logger); err != nil {
 					t.Errorf("maintenanceMarkerPath: %v", err)
 				}
 			}
-			code := hostile.New(t, mode, func() { _ = isDownForMaintenance() })
+			code := hostile.New(t, mode, func() { _ = isDownForMaintenance("") })
 			logger = hostile.NewLogger(code, hostile.Warn)
 
 			if mode == hostile.Block {

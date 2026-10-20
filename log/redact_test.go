@@ -394,37 +394,35 @@ func TestEmailRedactor_IgnoresNonAddresses(t *testing.T) {
 }
 
 // TestEmailRedactor_OffByDefault verifies BuildDefaultRedactors does
-// NOT include EmailRedactor when LOG_REDACT_EMAILS is unset. Email
+// NOT include EmailRedactor unless asked. Email
 // addresses are often the only useful debug breadcrumb, so the
 // framework defaults to keeping them.
 func TestEmailRedactor_OffByDefault(t *testing.T) {
-	t.Setenv("LOG_REDACT_EMAILS", "")
 	resetDefaultRedactorCache(t)
 
-	chain := BuildDefaultRedactors()
+	chain := BuildDefaultRedactors(false)
 	in := "login from alice@example.com ok"
 	got := chain.Redact(in)
 	if !strings.Contains(got, "alice@example.com") {
-		t.Errorf("default chain redacted email when LOG_REDACT_EMAILS unset:\n%s", got)
+		t.Errorf("default chain redacted email without the email rule:\n%s", got)
 	}
 }
 
-// TestEmailRedactor_OptInViaEnv flips LOG_REDACT_EMAILS=true and
-// confirms BuildDefaultRedactors picks the email rule up. This is
+// TestEmailRedactor_OptIn asks for the email rule and confirms
+// BuildDefaultRedactors includes it. This is
 // the documented escape hatch for compliance regimes that require
 // pseudonymisation by default.
-func TestEmailRedactor_OptInViaEnv(t *testing.T) {
-	t.Setenv("LOG_REDACT_EMAILS", "true")
+func TestEmailRedactor_OptIn(t *testing.T) {
 	resetDefaultRedactorCache(t)
 
-	chain := BuildDefaultRedactors()
+	chain := BuildDefaultRedactors(true)
 	in := "login from alice@example.com ok"
 	got := chain.Redact(in)
 	if strings.Contains(got, "alice@example.com") {
-		t.Errorf("env opt-in did not redact email:\n%s", got)
+		t.Errorf("opt-in did not redact email:\n%s", got)
 	}
 	if !strings.Contains(got, "[EMAIL]") {
-		t.Errorf("env opt-in did not insert [EMAIL] marker:\n%s", got)
+		t.Errorf("opt-in did not insert [EMAIL] marker:\n%s", got)
 	}
 }
 
@@ -608,8 +606,8 @@ func TestRedactorFunc_SatisfiesInterface(t *testing.T) {
 // composition on every log line.
 func TestDefaultRedactors_CachedAcrossCalls(t *testing.T) {
 	resetDefaultRedactorCache(t)
-	a := BuildDefaultRedactors()
-	b := BuildDefaultRedactors()
+	a := BuildDefaultRedactors(false)
+	b := BuildDefaultRedactors(false)
 	// Compare by Redact behaviour rather than by pointer (RedactorFunc
 	// is not comparable across closure captures).
 	if a.Redact("x") != b.Redact("x") {
@@ -621,7 +619,6 @@ func TestDefaultRedactors_CachedAcrossCalls(t *testing.T) {
 // with "redact": true returns a wrapped logger, so a stack channel
 // can flip redaction on per-target without rebuilding the factory.
 func TestFactoryWiring_RedactOptInViaConfig(t *testing.T) {
-	t.Setenv("LOG_REDACT", "")
 	resetDefaultRedactorCache(t)
 
 	tempDir := t.TempDir()
@@ -661,22 +658,20 @@ func TestFactoryWiring_RedactOptInViaConfig(t *testing.T) {
 	}
 }
 
-// TestFactoryWiring_RedactOptInViaEnv exercises the LOG_REDACT=true
-// env hook: a stock file driver config without any explicit redact
-// flag must still redact when the env flag is set.
-func TestFactoryWiring_RedactOptInViaEnv(t *testing.T) {
-	t.Setenv("LOG_REDACT", "true")
+// TestFactoryWiring_RedactEmailsViaConfig confirms "redact_emails": true
+// beside "redact": true adds the email rule to a driver built from config.
+func TestFactoryWiring_RedactEmailsViaConfig(t *testing.T) {
 	resetDefaultRedactorCache(t)
 
 	tempDir := t.TempDir()
 	logger, err := NewLogger(LogConfig{
 		Driver: "file",
-		Config: map[string]any{"path": tempDir},
+		Config: map[string]any{"path": tempDir, "redact": true, "redact_emails": true},
 	})
 	if err != nil {
 		t.Fatalf("NewLogger: %v", err)
 	}
-	logger.Info("Authorization: Bearer envtoken")
+	logger.Info("login from alice@example.com")
 	if s, ok := logger.(Shutdowner); ok {
 		_ = s.Shutdown(context.Background())
 	}
@@ -689,17 +684,15 @@ func TestFactoryWiring_RedactOptInViaEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read log file: %v", err)
 	}
-	if strings.Contains(string(content), "envtoken") {
-		t.Errorf("env opt-in did not redact:\n%s", content)
+	if strings.Contains(string(content), "alice@example.com") {
+		t.Errorf("redact_emails did not redact:\n%s", content)
 	}
 }
 
 // TestFactoryWiring_DefaultIsNoRedaction confirms the framework
-// defaults to NO redaction. Operators opt in explicitly via config or
-// env; we do not silently strip data that might be needed for debug.
+// defaults to NO redaction. Operators opt in explicitly via config;
+// we do not silently strip data that might be needed for debug.
 func TestFactoryWiring_DefaultIsNoRedaction(t *testing.T) {
-	t.Setenv("LOG_REDACT", "")
-	t.Setenv("LOG_REDACT_EMAILS", "")
 	resetDefaultRedactorCache(t)
 
 	tempDir := t.TempDir()
@@ -733,8 +726,10 @@ func TestFactoryWiring_DefaultIsNoRedaction(t *testing.T) {
 // Direct package access is fine - tests live in the same package.
 func resetDefaultRedactorCache(t *testing.T) {
 	t.Helper()
-	defaultRedactorOnce = sync.Once{}
-	defaultRedactorCache = nil
+	for i := range defaultRedactors {
+		defaultRedactors[i].once = sync.Once{}
+		defaultRedactors[i].chain = nil
+	}
 }
 
 // capturingLogger records the most recent call to any level so tests
@@ -874,7 +869,7 @@ func TestRedactingLogger_NoLevelGatingDisabled(t *testing.T) {
 // should perform no redaction (no regex passes, no per-kv Sprintf).
 func BenchmarkRedactingLogger_BelowLevel(b *testing.B) {
 	inner := &leveledCapturingLogger{lvl: contract.LogLevelInfo}
-	wrapped := WithRedactors(inner, BuildDefaultRedactors())
+	wrapped := WithRedactors(inner, BuildDefaultRedactors(false))
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -955,7 +950,7 @@ func BenchmarkRedactingLogger_StackBelowLevel(b *testing.B) {
 		&leveledCapturingLogger{lvl: contract.LogLevelInfo},
 		&leveledCapturingLogger{lvl: contract.LogLevelInfo},
 	)
-	wrapped := WithRedactors(stack, BuildDefaultRedactors())
+	wrapped := WithRedactors(stack, BuildDefaultRedactors(false))
 
 	b.ReportAllocs()
 	b.ResetTimer()

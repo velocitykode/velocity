@@ -1,8 +1,10 @@
 package velocity
 
 import (
+	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/queue"
 )
 
 // NewTestApp is the internal test-only constructor used by root-package
@@ -21,15 +23,12 @@ func testAppConfig() Config {
 		Env:   "testing",
 		Debug: true,
 		Port:  "0",
-		Cache: CacheConfig{
-			Driver: "memory",
-			Prefix: "test_cache",
-		},
+		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
 		Log: log.LogConfig{
 			Driver: "console",
 			Config: make(map[string]any),
 		},
-		Queue: QueueConfig{
+		Queue: queue.QueueConfig{
 			Driver: "memory",
 		},
 		Mail: mail.MailConfig{

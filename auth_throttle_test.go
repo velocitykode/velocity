@@ -78,26 +78,23 @@ func TestCacheLoginThrottler_RecordSuccessResetsCounter(t *testing.T) {
 func TestInstallLoginThrottler_NilAndStorelessInputsAreNoop(t *testing.T) {
 	logger := &captureLogger{}
 
-	installLoginThrottler(nil, nil, logger)
-	installLoginThrottler(nil, newMemoryCacheManager(), logger)
+	installLoginThrottler(nil, nil, auth.LoginThrottleConfig{}, logger)
+	installLoginThrottler(nil, newMemoryCacheManager(), auth.LoginThrottleConfig{}, logger)
 
 	storeless := cache.NewManager(&cache.Config{
 		Default: "missing",
 		Stores:  map[string]cache.StoreConfig{},
 	})
 	manager := auth.NewManager()
-	installLoginThrottler(manager, storeless, logger)
+	installLoginThrottler(manager, storeless, auth.LoginThrottleConfig{}, logger)
 }
 
 func TestInstallLoginThrottler_InstallsCacheBackedDefault(t *testing.T) {
-	t.Setenv("AUTH_LOGIN_MAX_ATTEMPTS", "2")
-	t.Setenv("AUTH_LOGIN_DECAY", "60s")
-
 	manager := auth.NewManager()
 	scheme := &fakeLoginThrottlerScheme{}
 	manager.RegisterScheme("web", scheme)
 
-	installLoginThrottler(manager, newMemoryCacheManager(), nil)
+	installLoginThrottler(manager, newMemoryCacheManager(), auth.LoginThrottleConfig{MaxAttempts: 2, Decay: 60 * time.Second}, nil)
 	if scheme.throttler == nil {
 		t.Fatal("installLoginThrottler did not propagate a throttler")
 	}

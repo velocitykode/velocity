@@ -30,7 +30,7 @@ type GRPCModule struct {
 }
 
 func (p *GRPCModule) Init(s *velocity.Services) error {
-	p.server = velgrpc.NewServer(velgrpc.WithLogger(s.Log))
+	p.server = velgrpc.NewServer(velgrpc.Config{}, velgrpc.WithLogger(s.Log))
 
 	foo := services.NewFooService()
 	p.server.RegisterService(func(srv interface{}) {

@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -33,9 +35,9 @@ func servingApp(t *testing.T) (a *App, srv *httptest.Server, logs *levelLogger, 
 	a, err := New(WithConfig(Config{
 		Env:   "testing",
 		Port:  "0",
-		Cache: CacheConfig{Driver: "memory", Prefix: "test_cache"},
+		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
 		Log:   log.LogConfig{Driver: driverName, Config: make(map[string]any)},
-		Queue: QueueConfig{Driver: "memory"},
+		Queue: queue.QueueConfig{Driver: "memory"},
 		Mail:  mail.MailConfig{Driver: "log"},
 	}))
 	if err != nil {

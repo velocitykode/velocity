@@ -7,10 +7,12 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/queue"
 )
 
 // packageTestConfig is a minimal in-memory app config logging through the
@@ -19,9 +21,9 @@ func packageTestConfig(driver string) Config {
 	return Config{
 		Env:   "testing",
 		Port:  "0",
-		Cache: CacheConfig{Driver: "memory", Prefix: "package_state"},
+		Cache: cache.SingleStoreConfig("package_state", cache.StoreConfig{Driver: "memory"}),
 		Log:   log.LogConfig{Driver: driver, Config: make(map[string]any)},
-		Queue: QueueConfig{Driver: "memory"},
+		Queue: queue.QueueConfig{Driver: "memory"},
 		Mail:  mail.MailConfig{Driver: "log"},
 	}
 }

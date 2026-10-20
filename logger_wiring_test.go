@@ -14,6 +14,7 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
@@ -40,9 +41,9 @@ func newLoggerWiringApp(t *testing.T, adjust func(*Config), opts ...Option) (*Ap
 	cfg := Config{
 		Env:   "testing",
 		Port:  "0",
-		Cache: CacheConfig{Driver: "memory", Prefix: "logger_wiring"},
+		Cache: cache.SingleStoreConfig("logger_wiring", cache.StoreConfig{Driver: "memory"}),
 		Log:   log.LogConfig{Driver: driverName, Config: make(map[string]any)},
-		Queue: QueueConfig{Driver: "memory"},
+		Queue: queue.QueueConfig{Driver: "memory"},
 		Mail:  mail.MailConfig{Driver: "log"},
 	}
 	if adjust != nil {
@@ -74,7 +75,7 @@ func entriesStartingWith(l *levelLogger, level, prefix string) int {
 // transaction is one error line through the app logger.
 func TestNew_ORMRollbackFailureAfterPanicLogsThroughTheAppLogger(t *testing.T) {
 	a, capture := newLoggerWiringApp(t, func(c *Config) {
-		c.DB = DBConfig{Connection: "sqlite", Database: ":memory:"}
+		c.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}
 	})
 	mgr, ok := a.DB.(*orm.Manager)
 	if !ok {
@@ -149,7 +150,7 @@ func TestNew_RedisQueueAdvisoryLogsThroughTheAppLogger(t *testing.T) {
 	}
 	t.Cleanup(mr.Close)
 	a, capture := newLoggerWiringApp(t, func(c *Config) {
-		c.Queue = QueueConfig{Driver: "redis", RedisHost: mr.Host(), RedisPort: mr.Port(), RedisDB: "0"}
+		c.Queue = queue.QueueConfig{Driver: "redis", Redis: queue.RedisConfig{Host: mr.Host(), Port: mr.Port(), DB: "0"}}
 	})
 
 	ctx := context.Background()
@@ -232,7 +233,7 @@ func sameServiceValue(a, b any) bool {
 // implement the logger facet, so the sweep reaches them.
 func TestNew_FrameworkBuiltServicesAreLoggerAware(t *testing.T) {
 	a, _ := newLoggerWiringApp(t, func(c *Config) {
-		c.DB = DBConfig{Connection: "sqlite", Database: ":memory:"}
+		c.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}
 		c.View = view.Config{ErrorPage: "Error"}
 		c.Crypto = crypto.Config{Key: "0123456789abcdef0123456789abcdef", Cipher: "AES-256-GCM"}
 	})

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/chain"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/router"
 )
@@ -48,7 +49,7 @@ func TestRouting_Web(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := chain.NewMiddlewareStack(a.Services)
+	mwStack := chain.NewMiddlewareStack(a.Services, contract.MaintenanceConfig{})
 	mwStack.Web(trackingMiddleware("X-Web", "true"))
 
 	routing := chain.NewRouting(a.Router, mwStack)
@@ -74,7 +75,7 @@ func TestRouting_Web_MultipleRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := chain.NewMiddlewareStack(a.Services)
+	mwStack := chain.NewMiddlewareStack(a.Services, contract.MaintenanceConfig{})
 	mwStack.Web(trackingMiddleware("X-Web", "multi"))
 
 	routing := chain.NewRouting(a.Router, mwStack)
@@ -103,7 +104,7 @@ func TestRouting_API(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := chain.NewMiddlewareStack(a.Services)
+	mwStack := chain.NewMiddlewareStack(a.Services, contract.MaintenanceConfig{})
 	mwStack.API(trackingMiddleware("X-API", "true"))
 
 	routing := chain.NewRouting(a.Router, mwStack)
@@ -129,7 +130,7 @@ func TestRouting_API_CustomPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := chain.NewMiddlewareStack(a.Services)
+	mwStack := chain.NewMiddlewareStack(a.Services, contract.MaintenanceConfig{})
 	mwStack.API(trackingMiddleware("X-V2", "true"))
 
 	routing := chain.NewRouting(a.Router, mwStack)
@@ -155,7 +156,7 @@ func TestRouting_Health(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := chain.NewMiddlewareStack(a.Services)
+	mwStack := chain.NewMiddlewareStack(a.Services, contract.MaintenanceConfig{})
 	routing := chain.NewRouting(a.Router, mwStack)
 	routing.Health("/health")
 
@@ -177,7 +178,7 @@ func TestRouting_Services(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := chain.NewMiddlewareStack(a.Services)
+	mwStack := chain.NewMiddlewareStack(a.Services, contract.MaintenanceConfig{})
 	routing := chain.NewRouting(a.Router, mwStack)
 
 	if got := routing.Services(); got != a.Services {
@@ -191,7 +192,7 @@ func TestRouting_Router(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := chain.NewMiddlewareStack(a.Services)
+	mwStack := chain.NewMiddlewareStack(a.Services, contract.MaintenanceConfig{})
 	routing := chain.NewRouting(a.Router, mwStack)
 
 	if got := routing.Router(); got != a.Router {
@@ -205,7 +206,7 @@ func TestRouting_EmptyMiddleware(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := chain.NewMiddlewareStack(a.Services)
+	mwStack := chain.NewMiddlewareStack(a.Services, contract.MaintenanceConfig{})
 	// No middleware added — empty web and api stacks.
 	routing := chain.NewRouting(a.Router, mwStack)
 
@@ -233,7 +234,7 @@ func TestRouting_MultipleWebCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := chain.NewMiddlewareStack(a.Services)
+	mwStack := chain.NewMiddlewareStack(a.Services, contract.MaintenanceConfig{})
 	mwStack.Web(trackingMiddleware("X-Web", "yes"))
 
 	routing := chain.NewRouting(a.Router, mwStack)
@@ -265,7 +266,7 @@ func TestRouting_MultipleAPICalls(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := chain.NewMiddlewareStack(a.Services)
+	mwStack := chain.NewMiddlewareStack(a.Services, contract.MaintenanceConfig{})
 	mwStack.API(trackingMiddleware("X-API", "multi"))
 
 	routing := chain.NewRouting(a.Router, mwStack)
@@ -297,7 +298,7 @@ func TestRouting_MiddlewareExecutionOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mwStack := chain.NewMiddlewareStack(a.Services)
+	mwStack := chain.NewMiddlewareStack(a.Services, contract.MaintenanceConfig{})
 	mwStack.Web(
 		orderTrackingMiddleware("X-Order", "first"),
 		orderTrackingMiddleware("X-Order", "second"),

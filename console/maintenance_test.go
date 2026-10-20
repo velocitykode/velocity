@@ -11,13 +11,16 @@ import (
 )
 
 // useTempMaintRoot points the resolver at a fresh tmp dir and returns its
-// absolute path. The cache is reset so the next Root() call re-reads the env.
+// absolute path. The cache is reset and primed with root, so Down and Up
+// resolve to it.
 func useTempMaintRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	t.Setenv(maintpath.EnvVar, root)
 	maintpath.Reset()
 	t.Cleanup(maintpath.Reset)
+	if _, err := maintpath.Root(root); err != nil {
+		t.Fatalf("resolve maint root: %v", err)
+	}
 	return root
 }
 
@@ -99,7 +102,7 @@ func TestUp_RemovesMarkerFile(t *testing.T) {
 		t.Fatalf("Down() error = %v", err)
 	}
 
-	if err := Up(); err != nil {
+	if err := Up(""); err != nil {
 		t.Fatalf("Up() error = %v", err)
 	}
 
@@ -112,7 +115,7 @@ func TestUp_RemovesMarkerFile(t *testing.T) {
 func TestUp_NoErrorWhenFileDoesNotExist(t *testing.T) {
 	useTempMaintRoot(t)
 
-	err := Up()
+	err := Up("")
 	if err != nil {
 		t.Fatalf("Up() returned error when file does not exist: %v", err)
 	}

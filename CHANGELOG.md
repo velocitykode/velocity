@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed - `ConfigFromEnv` is the only environment reader
+
+- **Packages no longer read the environment; `ConfigFromEnv()` reads every
+  key into the typed `velocity.Config`, and each package takes its part as a
+  struct.** The keys and their parsing are unchanged for an app that boots
+  from the environment. The env reads that lived in packages moved:
+  `QUEUE_ACCEPT_UNSIGNED` to `Config.Queue.AcceptUnsigned`; `AUTH_LOGIN_*`
+  to `Config.Auth.LoginThrottle` (new `auth.LoginThrottleConfig`; a negative
+  `IdentifierDelay` disables the delay, as `AUTH_LOGIN_IDENTIFIER_DELAY=0`
+  does); `CRYPTO_DISABLE_V0` / `CRYPTO_DEBUG` to `Config.Crypto.DisableV0` /
+  `.Debug` (applied through the new `drivers.WithV0Disabled` /
+  `WithDecryptDebug` options of `NewAESDriver`); `LOG_REDACT` /
+  `LOG_REDACT_EMAILS` to the `"redact"` / `"redact_emails"` keys of
+  `Config.Log.Config`; `VELOCITY_MAINTENANCE_ROOT` /
+  `VELOCITY_MAINTENANCE_EXCLUDE_PATHS` to `Config.Maintenance` (new
+  `contract.MaintenanceConfig`, with the bypass salt in `AppKey`);
+  `GRPC_*`, `GATEWAY_PORT`, `GRPC_ENDPOINT`, `GRPC_INSECURE` and the gRPC
+  view of `APP_ENV` to `Config.GRPC` (new `contract.GRPCConfig`).
+- **Breaking: the root twin config types are removed.** `velocity.DBConfig`,
+  `CacheConfig`, `QueueConfig`, `StorageConfig` and `DiskConfig` are gone;
+  `Config.DB` is `orm.ManagerConfig` (`DB.Connection` is now `DB.Driver`),
+  `Config.Cache` is `cache.Config` (build one store with the new
+  `cache.SingleStoreConfig`), `Config.Queue` is `queue.QueueConfig` (Redis
+  fields under `Queue.Redis`; new `SigningKey`, `AcceptUnsigned`, `Encrypt`)
+  and `Config.Storage` is `storage.Config`. Their checks moved to
+  `orm.ManagerConfig.Validate`, `cache.Config.Validate` (a configured store
+  set must name its `Default`) and `contract.StorageConfig.Validate`;
+  messages name the Go field, not the env key. `New` still sets
+  `DB.Logger`, `Queue.DB`, `Queue.DBDriver` and `Queue.Logger` itself.
+- **Breaking: constructors that apps call outside `New` take their config.**
+  `grpc.NewServer(cfg, opts...)` and `grpc.NewGateway(cfg, opts...)` take a
+  `grpc.Config`; `grpc.LoadConfig` is removed. Pass
+  `velocity.ConfigFromEnv().GRPC` to keep the env behaviour: a zero config
+  has an empty environment, which is non-production, so the production TLS
+  and reflection checks only fire when `Environment` (or `WithEnvironment`)
+  names a production environment. `PreventRequestsDuringMaintenance(settings,
+  opts...)` takes a `contract.MaintenanceConfig`; inside `App.Middleware`
+  pass `m.Maintenance()` (new on the middleware stack, with `AppKey`
+  defaulted to `Config.Key`). `console.Down` takes the root in
+  `DownOptions.Root` and `console.Up(root)` takes it as a parameter.
+  `log.BuildDefaultRedactors(emails bool)` takes the email switch.
+- **A config built by hand no longer picks up these env keys.** A
+  `WithConfig(Config{...})` literal, a direct `crypto.NewEncryptor`, or a
+  logger built from its own `log.LogConfig` sees only the fields it sets;
+  start from `ConfigFromEnv()` to keep them.
+
 ### Changed - Router answers 405 when only the method is wrong
 
 - **A request for a path that has a route, under a method that route does

@@ -2,7 +2,6 @@ package log
 
 import (
 	"context"
-	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -337,8 +336,9 @@ var emailRegex = regexp.MustCompile(`[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]{1,25
 
 // EmailRedactor returns a Redactor that replaces every email address
 // with [EMAIL]. Off by default; opt in either by registering it
-// explicitly via WithRedactors(...) or by setting LOG_REDACT_EMAILS=true
-// in the environment (BuildDefaultRedactors picks it up).
+// explicitly via WithRedactors(...), by passing true to
+// BuildDefaultRedactors, or with "redact_emails": true in a LogConfig
+// (LOG_REDACT_EMAILS=true through velocity.ConfigFromEnv).
 //
 // Email redaction is opt-in because email addresses are often the
 // primary debug breadcrumb in a request log; replacing them with
@@ -353,36 +353,41 @@ func EmailRedactor() Redactor {
 
 // ---- Default redactor chain ----------------------------------------------
 
-// defaultRedactorChain caches the result of BuildDefaultRedactors so
-// the env lookup and chain composition only happens once per process.
-// Protected by sync.Once because every NewFileLogger / NewConsoleLogger
-// call reads it. Loaded eagerly on first New call.
-var (
-	defaultRedactorOnce  sync.Once
-	defaultRedactorCache Redactor
-)
+// defaultRedactors caches the two chains BuildDefaultRedactors returns,
+// without (index 0) and with (index 1) the email rule, so chain
+// composition happens once per variant per process. Every
+// NewFileLogger / NewConsoleLogger call with redaction on reads it.
+var defaultRedactors [2]struct {
+	once  sync.Once
+	chain Redactor
+}
 
 // BuildDefaultRedactors returns the framework's recommended redactor
-// chain. Always includes HeaderRedactor, JWTRedactor, and PANRedactor.
-// Includes EmailRedactor when LOG_REDACT_EMAILS=true.
+// chain. Always includes HeaderRedactor, JWTRedactor, and PANRedactor;
+// includes EmailRedactor when emails is true.
 //
-// The result is cached after the first call so subsequent calls return
-// the same chain instance (allocation-free fast path). Operators who
-// want a custom set should call the individual redactor constructors
-// and pass them through WithRedactors directly.
-func BuildDefaultRedactors() Redactor {
-	defaultRedactorOnce.Do(func() {
+// Each variant is built once and the same chain instance is returned on
+// every later call (allocation-free fast path). Operators who want a
+// custom set should call the individual redactor constructors and pass
+// them through WithRedactors directly.
+func BuildDefaultRedactors(emails bool) Redactor {
+	i := 0
+	if emails {
+		i = 1
+	}
+	d := &defaultRedactors[i]
+	d.once.Do(func() {
 		rs := []Redactor{
 			HeaderRedactor(),
 			JWTRedactor(),
 			PANRedactor(),
 		}
-		if strings.EqualFold(os.Getenv("LOG_REDACT_EMAILS"), "true") {
+		if emails {
 			rs = append(rs, EmailRedactor())
 		}
-		defaultRedactorCache = Chain(rs...)
+		d.chain = Chain(rs...)
 	})
-	return defaultRedactorCache
+	return d.chain
 }
 
 // redactingLogger wraps any Logger and applies a Redactor chain to

@@ -68,7 +68,7 @@ func TestServerStop_DuringBuildReleasesItsListener(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	sock := filepath.Join(dir, "s.sock")
-	s := grpc.NewServer(grpc.WithBindAddress("unix", sock), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s := grpc.NewServer(grpc.Config{}, grpc.WithBindAddress("unix", sock), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	stopOnCleanup(t, s)
 	_ = buildBlockedStop(t, s)
 	if c, err := net.Dial("unix", sock); err == nil {
@@ -84,7 +84,7 @@ func TestServerStop_DuringBuildReleasesItsListener(t *testing.T) {
 // Stop closes it on a built server.
 func TestServerStop_DuringBuildClosesASuppliedListener(t *testing.T) {
 	lis := &closeTracker{Listener: testnet.Loopback(t)}
-	s := grpc.NewServer(grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s := grpc.NewServer(grpc.Config{}, grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	stopOnCleanup(t, s)
 	_ = buildBlockedStop(t, s)
 	if !lis.closed.Load() {
@@ -98,7 +98,7 @@ func TestServerStop_DuringBuildClosesASuppliedListener(t *testing.T) {
 // The Build a Stop interrupted returns grpc-go's ErrServerStopped, and a
 // later Build on the same server constructs it afresh.
 func TestServerBuild_StoppedBuildReturnsErrServerStopped(t *testing.T) {
-	s := grpc.NewServer(grpc.WithBindAddress("tcp", "127.0.0.1:0"), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s := grpc.NewServer(grpc.Config{}, grpc.WithBindAddress("tcp", "127.0.0.1:0"), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	stopOnCleanup(t, s)
 	if err := buildBlockedStop(t, s); !errors.Is(err, grpcgo.ErrServerStopped) {
 		t.Fatalf("Build = %v, want ErrServerStopped", err)
@@ -114,7 +114,7 @@ func TestServerBuild_StoppedBuildReturnsErrServerStopped(t *testing.T) {
 func TestServerStop_RacingBuildsLeaveNoListenerOpen(t *testing.T) {
 	for range 50 {
 		lis := &closeTracker{Listener: testnet.Loopback(t)}
-		s := grpc.NewServer(grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+		s := grpc.NewServer(grpc.Config{}, grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 		s.RegisterService(func(any) {})
 		done := make(chan struct{})
 		for i := range 8 {

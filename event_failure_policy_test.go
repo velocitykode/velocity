@@ -87,7 +87,7 @@ func TestEventListenerFailures_OneWarnPerEventName(t *testing.T) {
 	mailer := mail.NewManager()
 	mailer.SetChannel("default", acceptingMailer{})
 	a, capture := newLoggerWiringApp(t, func(c *Config) {
-		c.DB = DBConfig{Connection: "sqlite", Database: ":memory:"}
+		c.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}
 	}, WithModules(mailManagerModule{m: mailer}))
 	a.Router.Get("/ping", func(c *router.Context) error { return c.String(http.StatusOK, "ok") })
 	mgr, ok := a.DB.(*orm.Manager)

@@ -4,8 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
 )
 
@@ -34,15 +36,15 @@ func TestQueueBatch_AutoInstallsDatabaseRepository(t *testing.T) {
 		Env:   "testing",
 		Debug: true,
 		Port:  "0",
-		Cache: CacheConfig{Driver: "memory", Prefix: "test_cache"},
+		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
 		Log: log.LogConfig{
 			Driver: "console",
 			Config: make(map[string]any),
 		},
-		Queue: QueueConfig{Driver: "database"},
-		DB: DBConfig{
-			Connection: "sqlite",
-			Database:   ":memory:",
+		Queue: queue.QueueConfig{Driver: "database"},
+		DB: orm.ManagerConfig{
+			Driver:   "sqlite",
+			Database: ":memory:",
 		},
 		Mail: mail.MailConfig{Driver: "log"},
 	}
@@ -81,15 +83,15 @@ func TestQueueBatch_AutoInstall_PreservesCustomRepo(t *testing.T) {
 		Env:   "testing",
 		Debug: true,
 		Port:  "0",
-		Cache: CacheConfig{Driver: "memory", Prefix: "test_cache"},
+		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
 		Log: log.LogConfig{
 			Driver: "console",
 			Config: make(map[string]any),
 		},
-		Queue: QueueConfig{Driver: "database"},
-		DB: DBConfig{
-			Connection: "sqlite",
-			Database:   ":memory:",
+		Queue: queue.QueueConfig{Driver: "database"},
+		DB: orm.ManagerConfig{
+			Driver:   "sqlite",
+			Database: ":memory:",
 		},
 		Mail: mail.MailConfig{Driver: "log"},
 	}
@@ -120,12 +122,12 @@ func TestQueueBatch_AutoInstall_MemoryDriverLeavesDefault(t *testing.T) {
 		Env:   "testing",
 		Debug: true,
 		Port:  "0",
-		Cache: CacheConfig{Driver: "memory", Prefix: "test_cache"},
+		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
 		Log: log.LogConfig{
 			Driver: "console",
 			Config: make(map[string]any),
 		},
-		Queue: QueueConfig{Driver: "memory"},
+		Queue: queue.QueueConfig{Driver: "memory"},
 		Mail:  mail.MailConfig{Driver: "log"},
 	}
 
@@ -167,15 +169,15 @@ func TestQueueBatch_AutoInstall_TwoCycle(t *testing.T) {
 			Env:   "testing",
 			Debug: true,
 			Port:  "0",
-			Cache: CacheConfig{Driver: "memory", Prefix: "test_cache"},
+			Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
 			Log: log.LogConfig{
 				Driver: "console",
 				Config: make(map[string]any),
 			},
-			Queue: QueueConfig{Driver: "database"},
-			DB: DBConfig{
-				Connection: "sqlite",
-				Database:   ":memory:",
+			Queue: queue.QueueConfig{Driver: "database"},
+			DB: orm.ManagerConfig{
+				Driver:   "sqlite",
+				Database: ":memory:",
 			},
 			Mail: mail.MailConfig{Driver: "log"},
 		}

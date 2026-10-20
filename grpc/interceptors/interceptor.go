@@ -11,7 +11,7 @@
 // observed under one span and request id, and a panic anywhere in the
 // chain ends the call as an error:
 //
-//	server := grpc.NewServer(grpc.WithPort("50051"), grpc.WithReporter(reporter))
+//	server := grpc.NewServer(grpc.Config{}, grpc.WithPort("50051"), grpc.WithReporter(reporter))
 //	server.UseAll(interceptors.Auth(validator))
 //
 // A chain built on a bare grpc-go server installs the same CallLifecycle pair

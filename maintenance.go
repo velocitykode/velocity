@@ -70,8 +70,8 @@ var maintenancePathLogOnce fallbacklog.Once
 // Returns ("", err) when VELOCITY_MAINTENANCE_ROOT is set but fails
 // validation. Callers treat that as "no marker file present" so an
 // operator typo cannot accidentally pin the app into maintenance.
-func maintenanceMarkerPath(logger contract.Logger) (string, error) {
-	p, err := maintpath.MarkerPath()
+func maintenanceMarkerPath(root string, logger contract.Logger) (string, error) {
+	p, err := maintpath.MarkerPath(root)
 	maintenancePathLogOnce.Write(logger, func(l contract.Logger) {
 		source := maintpath.Source()
 		msg, kvs := "maintenance marker path resolved", []any{"path", p, "source", source}
@@ -141,9 +141,10 @@ type maintenanceConfig struct {
 	// request; on the order of a handful of entries so prefix-trie not
 	// warranted.
 	excludePaths []string
-	// salt is the HKDF salt for the bypass MAC, captured once at middleware
-	// construction (see maintenanceSalt) so the per-request bypass paths
-	// perform no environment reads.
+	// root is the configured maintenance root (MaintenanceConfig.Root).
+	root string
+	// salt is the HKDF salt for the bypass MAC, derived once at middleware
+	// construction from MaintenanceConfig.AppKey (see maintenanceSalt).
 	salt []byte
 	// logger receives the one-time marker-path resolution warning: the
 	// logger WithMaintenanceLogger set, otherwise nil, which writes through
@@ -152,7 +153,8 @@ type maintenanceConfig struct {
 }
 
 // WithMaintenanceExcludePaths appends path prefixes to the bypass list.
-// Each call adds to whatever the defaults + env already produced; pass
+// Each call adds to whatever the defaults + MaintenanceConfig.ExcludePaths
+// already produced; pass
 // the empty string nowhere because that would match every request and
 // silently disable the middleware.
 func WithMaintenanceExcludePaths(paths ...string) MaintenanceOption {
@@ -185,20 +187,19 @@ func WithMaintenanceLogger(logger contract.Logger) MaintenanceOption {
 }
 
 // resolveMaintenanceConfig builds the per-instance config. Order:
-// defaults -> env -> caller options. Caller options always win.
-func resolveMaintenanceConfig(opts ...MaintenanceOption) *maintenanceConfig {
+// defaults -> settings -> caller options. Caller options always win.
+func resolveMaintenanceConfig(settings contract.MaintenanceConfig, opts ...MaintenanceOption) *maintenanceConfig {
 	cfg := &maintenanceConfig{
 		excludePaths: append([]string{}, defaultMaintenanceExcludePaths...),
-		salt:         maintenanceSalt(),
+		root:         settings.Root,
+		salt:         maintenanceSalt(settings.AppKey),
 	}
-	if raw, ok := os.LookupEnv("VELOCITY_MAINTENANCE_EXCLUDE_PATHS"); ok {
-		for _, p := range strings.Split(raw, ",") {
-			p = strings.TrimSpace(p)
-			if p == "" {
-				continue
-			}
-			cfg.excludePaths = appendUniquePath(cfg.excludePaths, p)
+	for _, p := range settings.ExcludePaths {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
 		}
+		cfg.excludePaths = appendUniquePath(cfg.excludePaths, p)
 	}
 	for _, o := range opts {
 		o(cfg)
@@ -248,9 +249,14 @@ func matchesExcludePath(reqPath string, excludes []string) bool {
 // Paths in the configured exclude list pass through to the next handler
 // even while in maintenance. The defaults ("/healthz", "/livez", "/readyz")
 // keep load-balancer probes happy; operators add webhook prefixes through
-// WithMaintenanceExcludePaths or VELOCITY_MAINTENANCE_EXCLUDE_PATHS env.
-func PreventRequestsDuringMaintenance(opts ...MaintenanceOption) router.MiddlewareFunc {
-	cfg := resolveMaintenanceConfig(opts...)
+// MaintenanceConfig.ExcludePaths (VELOCITY_MAINTENANCE_EXCLUDE_PATHS) or
+// WithMaintenanceExcludePaths.
+//
+// settings is the app's maintenance config; inside App.Middleware pass
+// m.Maintenance(), which carries the root and the app key the down/up
+// commands use.
+func PreventRequestsDuringMaintenance(settings contract.MaintenanceConfig, opts ...MaintenanceOption) router.MiddlewareFunc {
+	cfg := resolveMaintenanceConfig(settings, opts...)
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
 			logger := cfg.logger
@@ -259,7 +265,7 @@ func PreventRequestsDuringMaintenance(opts ...MaintenanceOption) router.Middlewa
 					logger = svc.Log
 				}
 			}
-			path, err := maintenanceMarkerPath(logger)
+			path, err := maintenanceMarkerPath(cfg.root, logger)
 			if err != nil {
 				// Misconfigured root: treat as "not in maintenance" so a
 				// bad env var cannot lock everyone out. The error is
@@ -319,8 +325,8 @@ func PreventRequestsDuringMaintenance(opts ...MaintenanceOption) router.Middlewa
 // isDownForMaintenance checks whether the .vel/down marker file exists.
 // Retained for backwards compatibility with callers that only need a
 // boolean status check.
-func isDownForMaintenance() bool {
-	path, err := maintenanceMarkerPath(nil)
+func isDownForMaintenance(root string) bool {
+	path, err := maintenanceMarkerPath(root, nil)
 	if err != nil {
 		return false
 	}
@@ -328,12 +334,12 @@ func isDownForMaintenance() bool {
 	return statErr == nil
 }
 
-// maintenanceSalt returns the HKDF salt for the bypass MAC: APP_KEY when set,
-// otherwise a fixed default. It is read once at middleware construction (see
-// resolveMaintenanceConfig) and threaded down as a parameter so the per-request
-// bypass paths perform no environment reads.
-func maintenanceSalt() []byte {
-	salt := []byte(os.Getenv("APP_KEY"))
+// maintenanceSalt returns the HKDF salt for the bypass MAC: the app key when
+// set, otherwise a fixed default. It is derived once at middleware
+// construction (see resolveMaintenanceConfig) and threaded down as a
+// parameter.
+func maintenanceSalt(appKey string) []byte {
+	salt := []byte(appKey)
 	if len(salt) == 0 {
 		salt = []byte("velocity-maintenance-bypass-default-salt")
 	}
@@ -357,11 +363,10 @@ func deriveMaintenanceMACKeyWithSalt(secret string, salt []byte) ([]byte, error)
 	return out, nil
 }
 
-// deriveMaintenanceMACKey derives the bypass MAC key using the process-wide
-// salt (maintenanceSalt). Retained for callers outside the request path that
-// have no captured salt to thread through.
-func deriveMaintenanceMACKey(secret string) ([]byte, error) {
-	return deriveMaintenanceMACKeyWithSalt(secret, maintenanceSalt())
+// deriveMaintenanceMACKey derives the bypass MAC key with the salt for
+// appKey (maintenanceSalt).
+func deriveMaintenanceMACKey(secret, appKey string) ([]byte, error) {
+	return deriveMaintenanceMACKeyWithSalt(secret, maintenanceSalt(appKey))
 }
 
 // computeMaintenanceMAC returns HMAC-SHA256(macKey, context || expires) as
@@ -376,8 +381,8 @@ func computeMaintenanceMAC(macKey []byte, expiresUnix int64) []byte {
 // mintMaintenanceBypassCookie returns a signed bypass cookie built by the
 // secure zero-value cookie policy. The cookie value is
 // base64(expires_unix : hex(mac)) and the cookie is HttpOnly.
-func mintMaintenanceBypassCookie(secret string, ttl time.Duration) *http.Cookie {
-	return mintMaintenanceBypassCookieWithSalt(secret, ttl, maintenanceSalt(), contract.CookiePolicy{})
+func mintMaintenanceBypassCookie(secret string, ttl time.Duration, appKey string) *http.Cookie {
+	return mintMaintenanceBypassCookieWithSalt(secret, ttl, maintenanceSalt(appKey), contract.CookiePolicy{})
 }
 
 // mintMaintenanceBypassCookieWithSalt is the salt-parameterized core of

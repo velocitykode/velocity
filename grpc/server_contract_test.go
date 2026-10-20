@@ -26,7 +26,7 @@ func TestServer_ImplementsEventDispatcherAware(t *testing.T) {
 // repeated SetEventDispatcher calls from multiple goroutines, interleaved
 // with Emit calls, must not race. Run under `-race` to confirm.
 func TestServer_SetEventDispatcher_SafeToRecall(t *testing.T) {
-	s := NewServer()
+	s := NewServer(Config{})
 
 	// Calling twice on a fresh server must not panic.
 	s.SetEventDispatcher(func(_ context.Context, event any) error { return nil })
@@ -83,7 +83,7 @@ func TestServer_SetEventDispatcher_SafeToRecall(t *testing.T) {
 // path (Shutdown, which delegates to GracefulStop) emits nothing further.
 // Run under -race: emission interleaves with the serve goroutine.
 func TestServer_LifecycleEvents(t *testing.T) {
-	s := NewServer(WithPort("0"))
+	s := NewServer(Config{}, WithPort("0"))
 
 	var mu sync.Mutex
 	var events []any

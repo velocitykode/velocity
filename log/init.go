@@ -3,7 +3,6 @@ package log
 import (
 	"context"
 	"os"
-	"strings"
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/driverregistry"
@@ -94,18 +93,21 @@ func ExtractLevel(config map[string]any) contract.LogLevel {
 }
 
 // WrapWithRedactors layers the default redactor chain on top of a
-// freshly constructed driver Logger when the config opts in. Three
-// equivalent opt-ins exist so operators can choose the surface that
-// best matches their bootstrap:
+// freshly constructed driver Logger when the config opts in:
 //
 //   - cfg.Config["redact"] == true: per-channel JSON-friendly toggle.
 //   - cfg.Config["redactors"] []Redactor: caller-supplied chain that
 //     bypasses BuildDefaultRedactors entirely. Lets framework
 //     extensions register custom rules (e.g. SSN, phone) without
 //     forking the log package.
-//   - LOG_REDACT=true env: process-wide default-on. Honoured even
-//     when cfg.Config has no "redact" key so a single env flip in a
-//     stricter compliance environment covers every channel.
+//   - cfg.Config["redact_emails"] == true: adds EmailRedactor to the
+//     default chain.
+//
+// velocity.ConfigFromEnv sets "redact" from LOG_REDACT=true and
+// "redact_emails" from LOG_REDACT_EMAILS=true. The registered "stack"
+// driver passes its Config to every child, so one flag covers every
+// channel of that stack; a log.Manager channel redacts only when its own
+// Options carry the flags.
 //
 // Returns inner unchanged when no opt-in is in effect so the common
 // path stays allocation-free, and nil for a nil inner, typed or not.
@@ -117,10 +119,8 @@ func WrapWithRedactors(inner Logger, cfg LogConfig) Logger {
 		return WithRedactors(inner, rs...)
 	}
 	if enabled, ok := cfg.Config["redact"].(bool); ok && enabled {
-		return WithRedactors(inner, BuildDefaultRedactors())
-	}
-	if strings.EqualFold(os.Getenv("LOG_REDACT"), "true") {
-		return WithRedactors(inner, BuildDefaultRedactors())
+		emails, _ := cfg.Config["redact_emails"].(bool)
+		return WithRedactors(inner, BuildDefaultRedactors(emails))
 	}
 	return inner
 }

@@ -21,10 +21,9 @@ func resetForTest(t *testing.T) {
 func TestRoot_EnvOverrideWins(t *testing.T) {
 	resetForTest(t)
 	want := t.TempDir()
-	t.Setenv(maintpath.EnvVar, want)
 	maintpath.Reset()
 
-	got, err := maintpath.Root()
+	got, err := maintpath.Root(want)
 	if err != nil {
 		t.Fatalf("Root: %v", err)
 	}
@@ -39,13 +38,12 @@ func TestRoot_EnvOverrideWins(t *testing.T) {
 func TestRoot_DoesNotDriftWithCWD(t *testing.T) {
 	resetForTest(t)
 	target := t.TempDir()
-	t.Setenv(maintpath.EnvVar, target)
 	maintpath.Reset()
 
 	// Move cwd far away. The resolved path must still point at target.
 	t.Chdir("/tmp")
 
-	got, err := maintpath.Root()
+	got, err := maintpath.Root(target)
 	if err != nil {
 		t.Fatalf("Root: %v", err)
 	}
@@ -56,10 +54,9 @@ func TestRoot_DoesNotDriftWithCWD(t *testing.T) {
 
 func TestRoot_RejectsRelative(t *testing.T) {
 	resetForTest(t)
-	t.Setenv(maintpath.EnvVar, "relative/path")
 	maintpath.Reset()
 
-	_, err := maintpath.Root()
+	_, err := maintpath.Root("relative/path")
 	if !errors.Is(err, maintpath.ErrInvalidRoot) {
 		t.Fatalf("Root err: got %v, want ErrInvalidRoot", err)
 	}
@@ -67,10 +64,9 @@ func TestRoot_RejectsRelative(t *testing.T) {
 
 func TestRoot_RejectsDotDot(t *testing.T) {
 	resetForTest(t)
-	t.Setenv(maintpath.EnvVar, "/var/../etc")
 	maintpath.Reset()
 
-	_, err := maintpath.Root()
+	_, err := maintpath.Root("/var/../etc")
 	if !errors.Is(err, maintpath.ErrInvalidRoot) {
 		t.Fatalf("Root err: got %v, want ErrInvalidRoot", err)
 	}
@@ -87,10 +83,9 @@ func TestRoot_RejectsDotDot(t *testing.T) {
 
 func TestRoot_DefaultIsCwd(t *testing.T) {
 	resetForTest(t)
-	os.Unsetenv(maintpath.EnvVar)
 	maintpath.Reset()
 
-	got, err := maintpath.Root()
+	got, err := maintpath.Root("")
 	if err != nil {
 		t.Fatalf("Root: %v", err)
 	}
@@ -111,19 +106,17 @@ func TestRoot_DefaultIsCwd(t *testing.T) {
 func TestRoot_CachesFirstResolution(t *testing.T) {
 	resetForTest(t)
 	first := t.TempDir()
-	t.Setenv(maintpath.EnvVar, first)
 	maintpath.Reset()
 
-	got1, err := maintpath.Root()
+	got1, err := maintpath.Root(first)
 	if err != nil {
 		t.Fatalf("Root 1: %v", err)
 	}
 
-	// Change env. The cached value must not move.
+	// Pass a different root. The cached value must not move.
 	second := t.TempDir()
-	t.Setenv(maintpath.EnvVar, second)
 
-	got2, err := maintpath.Root()
+	got2, err := maintpath.Root(second)
 	if err != nil {
 		t.Fatalf("Root 2: %v", err)
 	}
@@ -138,10 +131,9 @@ func TestRoot_CachesFirstResolution(t *testing.T) {
 func TestMarkerPath_AppendsKnownSegments(t *testing.T) {
 	resetForTest(t)
 	root := t.TempDir()
-	t.Setenv(maintpath.EnvVar, root)
 	maintpath.Reset()
 
-	got, err := maintpath.MarkerPath()
+	got, err := maintpath.MarkerPath(root)
 	if err != nil {
 		t.Fatalf("MarkerPath: %v", err)
 	}
@@ -154,10 +146,9 @@ func TestMarkerPath_AppendsKnownSegments(t *testing.T) {
 func TestMarkerDirPath_AppendsMarkerDir(t *testing.T) {
 	resetForTest(t)
 	root := t.TempDir()
-	t.Setenv(maintpath.EnvVar, root)
 	maintpath.Reset()
 
-	got, err := maintpath.MarkerDirPath()
+	got, err := maintpath.MarkerDirPath(root)
 	if err != nil {
 		t.Fatalf("MarkerDirPath: %v", err)
 	}

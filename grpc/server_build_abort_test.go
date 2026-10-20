@@ -22,7 +22,7 @@ type valueListener struct {
 func TestServerBuild_NonComparableListenerLeavesNoBuildInProgress(t *testing.T) {
 	var fail atomic.Bool
 	fail.Store(true)
-	s := grpc.NewServer(grpc.WithListener(valueListener{Listener: testnet.Loopback(t), tags: []string{"a"}}),
+	s := grpc.NewServer(grpc.Config{}, grpc.WithListener(valueListener{Listener: testnet.Loopback(t), tags: []string{"a"}}),
 		grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	s.RegisterService(func(any) {
 		if fail.Load() {

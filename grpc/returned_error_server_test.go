@@ -34,7 +34,7 @@ func TestServer_ReturnedErrorWithPanickingMethodsDoesNotCrash(t *testing.T) {
 			t.Fatalf("listen: %v", err)
 		}
 		quiet, _ := log.NewLogger(log.LogConfig{Driver: "null"})
-		s := NewServer(WithListener(lis), WithLogger(quiet), WithEnvironment("testing"))
+		s := NewServer(Config{}, WithListener(lis), WithLogger(quiet), WithEnvironment("testing"))
 		s.MarkAuthConfigured()
 		s.RegisterService(func(g interface{}) {
 			g.(*grpcgo.Server).RegisterService(&chainDesc, &chainServer{outcome: "poisoned error"})

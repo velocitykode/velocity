@@ -17,6 +17,10 @@ import (
 type DownOptions struct {
 	Secret     string
 	RetryAfter int
+	// Root is the maintenance root (contract.MaintenanceConfig.Root); empty
+	// means the working directory. It must match the root the running app
+	// resolves, or the gate never sees the marker.
+	Root string
 }
 
 // downPayload is the JSON structure written to the .vel/down marker file.
@@ -39,7 +43,7 @@ type downPayload struct {
 // the runtime middleware and this writer agree on a single absolute path.
 // Process cwd at the time of `vel down` no longer matters.
 func Down(opts DownOptions) error {
-	dir, err := maintpath.MarkerDirPath()
+	dir, err := maintpath.MarkerDirPath(opts.Root)
 	if err != nil {
 		return errchain.Errorf("resolve maintenance root: %w", err)
 	}
@@ -85,8 +89,8 @@ func Down(opts DownOptions) error {
 // marker file under the resolved maintenance root. Resolves the same path
 // Down() writes to so a misconfigured root does not silently leave a marker
 // behind.
-func Up() error {
-	path, err := maintpath.MarkerPath()
+func Up(root string) error {
+	path, err := maintpath.MarkerPath(root)
 	if err != nil {
 		return errchain.Errorf("resolve maintenance root: %w", err)
 	}

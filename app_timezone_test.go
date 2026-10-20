@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/scheduler"
 )
 
@@ -19,15 +21,12 @@ func testConfigWithTimezone(tz string) Config {
 		Debug:    true,
 		Port:     "0",
 		Timezone: tz,
-		Cache: CacheConfig{
-			Driver: "memory",
-			Prefix: "test_cache",
-		},
+		Cache:    cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
 		Log: log.LogConfig{
 			Driver: "console",
 			Config: make(map[string]any),
 		},
-		Queue: QueueConfig{
+		Queue: queue.QueueConfig{
 			Driver: "memory",
 		},
 		Mail: mail.MailConfig{

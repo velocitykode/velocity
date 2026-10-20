@@ -3,7 +3,6 @@ package velocity
 import (
 	"context"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -37,10 +36,11 @@ const (
 
 // Over-cap identifier attempts pay a bounded progressive delay (see
 // contract.LoginDelayer): delayBase for the first attempt past the cap,
-// doubling per further failure, never above delayMax. Both are env
-// tunable (AUTH_LOGIN_IDENTIFIER_DELAY / _MAX); a base of 0 disables
-// the delay entirely, which leaves the identifier dimension with no
-// bound once the pair and IP buckets rotate.
+// doubling per further failure, never above delayMax. Both come from
+// auth.LoginThrottleConfig; a disabled base (negative in the config,
+// AUTH_LOGIN_IDENTIFIER_DELAY=0 in the env) turns the delay off
+// entirely, which leaves the identifier dimension with no bound once
+// the pair and IP buckets rotate.
 
 type cacheLoginThrottler struct {
 	// store is the cache store the counters live in: the default store
@@ -300,72 +300,6 @@ func numericCacheValue(v interface{}) int64 {
 	}
 }
 
-func configuredLoginThrottleLimit(envVar string, fallback int) int {
-	raw := os.Getenv(envVar)
-	if raw == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n <= 0 {
-		return fallback
-	}
-	return n
-}
-
-func configuredLoginThrottleMaxAttempts() int {
-	return configuredLoginThrottleLimit("AUTH_LOGIN_MAX_ATTEMPTS", defaultLoginThrottleMaxAttempts)
-}
-
-func configuredLoginThrottleIdentifierMaxAttempts() int {
-	return configuredLoginThrottleLimit("AUTH_LOGIN_MAX_ATTEMPTS_PER_IDENTIFIER", defaultLoginThrottleIdentifierMaxAttempts)
-}
-
-func configuredLoginThrottleIPMaxAttempts() int {
-	return configuredLoginThrottleLimit("AUTH_LOGIN_MAX_ATTEMPTS_PER_IP", defaultLoginThrottleIPMaxAttempts)
-}
-
-// configuredLoginThrottleDuration parses a duration env var ("2s",
-// "500ms", or bare seconds). Unset returns fallback; "0" returns 0 so
-// operators can disable a delay explicitly; malformed or negative
-// input returns fallback.
-func configuredLoginThrottleDuration(envVar string, fallback time.Duration) time.Duration {
-	raw := strings.TrimSpace(os.Getenv(envVar))
-	if raw == "" {
-		return fallback
-	}
-	if d, err := time.ParseDuration(raw); err == nil && d >= 0 {
-		return d
-	}
-	if seconds, err := strconv.Atoi(raw); err == nil && seconds >= 0 {
-		return time.Duration(seconds) * time.Second
-	}
-	return fallback
-}
-
-func configuredLoginThrottleIdentifierDelay() time.Duration {
-	return configuredLoginThrottleDuration("AUTH_LOGIN_IDENTIFIER_DELAY", auth.DefaultIdentifierDelay)
-}
-
-func configuredLoginThrottleIdentifierDelayMax() time.Duration {
-	return configuredLoginThrottleDuration("AUTH_LOGIN_IDENTIFIER_DELAY_MAX", auth.DefaultIdentifierDelayMax)
-}
-
-func configuredLoginThrottleDecay() time.Duration {
-	raw := os.Getenv("AUTH_LOGIN_DECAY")
-	if raw == "" {
-		return defaultLoginThrottleDecay
-	}
-	d, err := time.ParseDuration(raw)
-	if err == nil && d > 0 {
-		return d
-	}
-	seconds, err := strconv.Atoi(raw)
-	if err == nil && seconds > 0 {
-		return time.Duration(seconds) * time.Second
-	}
-	return defaultLoginThrottleDecay
-}
-
 // installLoginThrottler gives manager the framework's login throttler,
 // counting in cm's default store, and returns it; with no manager it
 // installs none and returns nil. New calls it once. It always installs:
@@ -375,7 +309,7 @@ func configuredLoginThrottleDecay() time.Duration {
 // manager again: a cache that arrives or changes later is given to this
 // same throttler by rebindLoginThrottler, so a throttler a module set on
 // the manager in the meantime is never replaced.
-func installLoginThrottler(manager *auth.Manager, cm cache.CacheManager, log contract.Logger) *cacheLoginThrottler {
+func installLoginThrottler(manager *auth.Manager, cm cache.CacheManager, cfg auth.LoginThrottleConfig, log contract.Logger) *cacheLoginThrottler {
 	if manager == nil {
 		return nil
 	}
@@ -393,16 +327,19 @@ func installLoginThrottler(manager *auth.Manager, cm cache.CacheManager, log con
 			)
 		})
 	}
+	// A zero delay takes the default, a negative one disables it
+	// (withDelay treats base <= 0 as disabled).
+	delay := cfg.IdentifierDelay
+	if delay == 0 {
+		delay = auth.DefaultIdentifierDelay
+	}
 	t := newCacheLoginThrottler(
 		store,
-		configuredLoginThrottleMaxAttempts(),
-		configuredLoginThrottleIdentifierMaxAttempts(),
-		configuredLoginThrottleIPMaxAttempts(),
-		configuredLoginThrottleDecay(),
-	).withDelay(
-		configuredLoginThrottleIdentifierDelay(),
-		configuredLoginThrottleIdentifierDelayMax(),
-	)
+		cfg.MaxAttempts,
+		cfg.MaxAttemptsPerIdentifier,
+		cfg.MaxAttemptsPerIP,
+		cfg.Decay,
+	).withDelay(delay, cfg.IdentifierDelayMax)
 	manager.SetLoginThrottler(t)
 	return t
 }

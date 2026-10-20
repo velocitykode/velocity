@@ -57,8 +57,32 @@ type ManagerConfig struct {
 	// had installed it before the driver connected: the statements the
 	// driver runs while it connects write their query log lines to it.
 	// Nil means the framework's standalone fallback logger until SetLogger
-	// installs one.
+	// installs one. velocity.New sets it to the app logger, replacing any
+	// value in velocity.Config.
 	Logger contract.Logger
+}
+
+// Validate checks the ManagerConfig for STRUCTURAL problems only. A zero
+// ManagerConfig (no Driver) is valid: velocity.New treats it as "no
+// database configured" and builds no manager.
+//
+// Validate deliberately does NOT check the driver name against an allowlist.
+// Whether a named driver is wired is the driver registry's concern: NewManager
+// resolves it, and an unknown or unwired name surfaces there as a typed
+// driverregistry.NotFoundError that also lists the drivers that ARE
+// registered. Consulting the registry here would couple config loading to
+// import order and produce a worse error than the registry's own.
+func (c ManagerConfig) Validate() error {
+	if c.Driver == "" {
+		return nil
+	}
+	if c.MaxIdleConns < 0 || c.MaxOpenConns < 0 {
+		return fmt.Errorf("velocity/orm: MaxIdleConns and MaxOpenConns must be non-negative")
+	}
+	if c.ConnMaxLifetime < 0 || c.SlowThreshold < 0 {
+		return fmt.Errorf("velocity/orm: ConnMaxLifetime and SlowThreshold must be non-negative")
+	}
+	return nil
 }
 
 // Database is the interface satisfied by *Manager. It covers the methods used

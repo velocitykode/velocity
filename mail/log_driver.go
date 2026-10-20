@@ -28,7 +28,7 @@ const logDriverMaxEntries = 100
 // an app built by velocity.New) naming the sender, the recipients, the
 // subject, the body sizes and the attachment names, never the body. The
 // recipient addresses are key-value values, so the logger's redactors
-// (LOG_REDACT, LOG_REDACT_EMAILS) apply to them. Without a logger the line
+// (log "redact", "redact_emails") apply to them. Without a logger the line
 // goes to the framework's standalone fallback logger, which drops info
 // lines. The retained log is a bounded ring of the last logDriverMaxEntries
 // entries for dev/test inspection.

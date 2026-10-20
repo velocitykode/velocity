@@ -21,9 +21,10 @@ func (l warnPanicLogger) With(...any) contract.Logger { return l }
 // A logger that panics while NewServer writes a configuration warning
 // does not escape NewServer: the line falls back and the server is built.
 func TestNewServer_PanickingLoggerOnAConfigWarning(t *testing.T) {
-	t.Setenv("GRPC_MAX_RECV_SIZE", "not-a-number")
 	var s *grpc.Server
-	noPanic(t, "NewServer", func() { s = grpc.NewServer(grpc.WithLogger(warnPanicLogger{}), grpc.WithListener(testnet.Loopback(t))) })
+	noPanic(t, "NewServer", func() {
+		s = grpc.NewServer(grpc.Config{MaxRecvMsgSize: -5}, grpc.WithLogger(warnPanicLogger{}), grpc.WithListener(testnet.Loopback(t)))
+	})
 	if s == nil {
 		t.Fatal("no server")
 	}

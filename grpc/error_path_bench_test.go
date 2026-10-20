@@ -40,7 +40,7 @@ func BenchmarkDefaultChain_UnaryError(b *testing.B) {
 
 func benchErrorChain(b *testing.B, handlerErr error, dispatcher bool) {
 	quiet, _ := log.NewLogger(log.LogConfig{Driver: "null"})
-	s := NewServer(WithLogger(quiet))
+	s := NewServer(Config{}, WithLogger(quiet))
 	if dispatcher {
 		s.SetEventDispatcher(func(context.Context, any) error { return nil })
 	}

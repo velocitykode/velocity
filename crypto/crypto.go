@@ -31,15 +31,16 @@ var (
 	// failure (wrong key, wrong MAC, bad padding, malformed IV bytes).
 	// Callers MUST NOT include the error message in user-visible output;
 	// branch on errors.Is(err, crypto.ErrDecrypt) and log the real cause
-	// server-side. Operators can enable CRYPTO_DEBUG=true to surface the
-	// underlying stage as a debug line through the driver's logger.
+	// server-side. Operators can enable Config.Debug (CRYPTO_DEBUG=true) to
+	// surface the underlying stage as a debug line through the driver's
+	// logger.
 	ErrDecrypt          = drivers.ErrDecrypt
 	ErrDecryptionFailed = drivers.ErrDecryptionFailed
 	ErrAADMismatch      = drivers.ErrAADMismatch
 	ErrInvalidKeyLength = drivers.ErrInvalidKeyLength
 	// ErrLegacyPayloadDisabled is returned when a v0 (pre-domain-separated
 	// MAC) payload is decrypted by a driver constructed with
-	// CRYPTO_DISABLE_V0=true. Operators flip this flag once their
+	// Config.DisableV0 (CRYPTO_DISABLE_V0=true). Operators flip this flag once their
 	// rotation window completes; the sentinel lets cookie / signed-URL
 	// pipelines force re-encrypt rather than treat the rejection as
 	// tamper.
@@ -114,6 +115,11 @@ type Config struct {
 	Key          string   // Primary encryption key
 	PreviousKeys []string // Previous keys for rotation
 	Cipher       string   // Cipher algorithm
+	// DisableV0 rejects legacy v0 payloads at decrypt time.
+	DisableV0 bool
+	// Debug writes the stage and cause of every decrypt failure at debug
+	// level.
+	Debug bool
 }
 
 // Validate checks that the Config is structurally usable. Allowed ciphers
@@ -238,7 +244,9 @@ func newDriver(config Config) (Encryptor, error) {
 		return nil, err
 	}
 
-	return drivers.NewAESDriver(key, previousKeys, cipher)
+	return drivers.NewAESDriver(key, previousKeys, cipher,
+		drivers.WithV0Disabled(config.DisableV0),
+		drivers.WithDecryptDebug(config.Debug))
 }
 
 // parseKey parses a key string which may be base64 encoded. The returned

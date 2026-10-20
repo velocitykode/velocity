@@ -26,7 +26,7 @@ func TestServer_FailedServeStopsTheServer(t *testing.T) {
 		t.Run(start, func(t *testing.T) {
 			lis := testnet.Loopback(t)
 			_ = lis.Close()
-			s := grpc.NewServer(grpc.WithListener(lis))
+			s := grpc.NewServer(grpc.Config{}, grpc.WithListener(lis))
 			var stopped atomic.Int32
 			s.SetEventDispatcher(func(_ context.Context, ev any) error {
 				if _, ok := ev.(*grpcevents.ServerStopped); ok {

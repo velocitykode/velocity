@@ -30,7 +30,37 @@ type QueueConfig struct {
 	// installs it on a driver implementing contract.LoggerAware. Nil leaves
 	// the driver on the framework's standalone fallback logger.
 	Logger contract.Logger
+
+	// SigningKey is the HMAC key for payload signing (SENSITIVE: do not
+	// log). Empty falls back to the app key. AcceptUnsigned opts into
+	// running without any signing key outside development and testing.
+	// Encrypt seals job payload data at rest with the app encryptor.
+	//
+	// These three are process-wide settings: velocity.New applies them
+	// through ConfigureSigningWith and SetPayloadEncryptor before it calls
+	// NewQueue, which does not read them. A standalone caller applies them
+	// the same way. DB, DBDriver and Logger are set by velocity.New from
+	// the app's database and logger; values in velocity.Config are
+	// replaced.
+	SigningKey     string
+	AcceptUnsigned bool
+	Encrypt        bool
 }
+
+// String returns a safe representation with the signing key and the Redis
+// password redacted, so a driver factory that logs its config with %v does
+// not leak them.
+func (c QueueConfig) String() string {
+	key := ""
+	if c.SigningKey != "" {
+		key = "[REDACTED]"
+	}
+	return fmt.Sprintf("QueueConfig{Driver:%s, Redis:%s, DBDriver:%s, SigningKey:%s, AcceptUnsigned:%t, Encrypt:%t}",
+		c.Driver, c.Redis, c.DBDriver, key, c.AcceptUnsigned, c.Encrypt)
+}
+
+// GoString keeps %#v redacted too.
+func (c QueueConfig) GoString() string { return c.String() }
 
 // Validate checks the QueueConfig for structural problems before NewQueue
 // resolves a driver factory. The database driver requires DB and DBDriver

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestV0Disabled_RejectsLegacyPayload asserts that CRYPTO_DISABLE_V0=true
+// TestV0Disabled_RejectsLegacyPayload asserts that WithV0Disabled(true)
 // at driver-construction time causes every v0-shaped payload to be
 // rejected with ErrLegacyPayloadDisabled, without touching the
 // MAC-over-base64 verification path. Operators flip this on once their
@@ -15,7 +15,6 @@ import (
 func TestV0Disabled_RejectsLegacyPayload(t *testing.T) {
 	// Construct a driver WITHOUT the disable flag so we can produce a
 	// legitimate v0 payload using the test-only helper.
-	t.Setenv("CRYPTO_DISABLE_V0", "")
 	dEnabled, err := NewAESDriver([]byte("0123456789abcdef"), nil, "AES-128-CBC")
 	if err != nil {
 		t.Fatalf("NewAESDriver (enabled): %v", err)
@@ -29,8 +28,7 @@ func TestV0Disabled_RejectsLegacyPayload(t *testing.T) {
 
 	// Now construct a second driver with the same key but with v0
 	// decoding disabled. The same payload must be rejected up-front.
-	t.Setenv("CRYPTO_DISABLE_V0", "true")
-	dDisabled, err := NewAESDriver([]byte("0123456789abcdef"), nil, "AES-128-CBC")
+	dDisabled, err := NewAESDriver([]byte("0123456789abcdef"), nil, "AES-128-CBC", WithV0Disabled(true))
 	if err != nil {
 		t.Fatalf("NewAESDriver (disabled): %v", err)
 	}
@@ -47,8 +45,7 @@ func TestV0Disabled_RejectsLegacyPayload(t *testing.T) {
 // v0 only. v1 payloads (the format encryptCBC / encryptGCM emit today)
 // must continue to round-trip unchanged.
 func TestV0Disabled_StillAcceptsV1(t *testing.T) {
-	t.Setenv("CRYPTO_DISABLE_V0", "true")
-	d, err := NewAESDriver([]byte("0123456789abcdef"), nil, "AES-128-CBC")
+	d, err := NewAESDriver([]byte("0123456789abcdef"), nil, "AES-128-CBC", WithV0Disabled(true))
 	if err != nil {
 		t.Fatalf("NewAESDriver: %v", err)
 	}
@@ -68,42 +65,11 @@ func TestV0Disabled_StillAcceptsV1(t *testing.T) {
 	}
 }
 
-// TestV0Disabled_TrueExactMatch pins that the trigger string is exact.
-// Truthy variants ("1", "yes", "TRUE") must NOT enable the disable
-// path; this prevents an operator's nearly-correct env value from
-// silently failing open or shut.
-func TestV0Disabled_TrueExactMatch(t *testing.T) {
-	for _, v := range []string{"1", "yes", "TRUE", "True"} {
-		v := v
-		t.Run(v, func(t *testing.T) {
-			t.Setenv("CRYPTO_DISABLE_V0", v)
-			dProducer, err := NewAESDriver([]byte("0123456789abcdef"), nil, "AES-128-CBC")
-			if err != nil {
-				t.Fatalf("NewAESDriver producer: %v", err)
-			}
-			// Producer is also "disabled" with the non-exact value,
-			// but only "true" trips the disable, so this driver
-			// remains v0-enabled. We need a v0-enabled driver to
-			// produce the v0 payload, then construct another driver
-			// to test the disable.
-			payload := handCraftLegacyCBC(t, dProducer, []byte("x"))
-			got, err := dProducer.Decrypt(payload)
-			if err != nil {
-				t.Fatalf("env=%q must not disable v0; got err=%v", v, err)
-			}
-			if got != "x" {
-				t.Fatalf("env=%q round trip mismatch: got %q", v, got)
-			}
-		})
-	}
-}
-
 // TestV0Disabled_DefaultIsEnabled is the backward-compat guard:
 // existing deployments without the env var set continue to accept v0
 // payloads (the rotation window must remain operator-controlled, not
 // flipped by the framework upgrade).
 func TestV0Disabled_DefaultIsEnabled(t *testing.T) {
-	t.Setenv("CRYPTO_DISABLE_V0", "")
 	d, err := NewAESDriver([]byte("0123456789abcdef"), nil, "AES-128-CBC")
 	if err != nil {
 		t.Fatalf("NewAESDriver: %v", err)

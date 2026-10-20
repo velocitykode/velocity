@@ -23,7 +23,7 @@ import (
 func newTestGateway(t *testing.T, logger contract.Logger, reg grpc.GatewayRegistrationFunc) (*grpc.Gateway, *acceptTracker) {
 	t.Helper()
 	lis := &acceptTracker{Listener: testnet.Loopback(t)}
-	g := grpc.NewGateway(grpc.GatewayWithListener(lis), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
+	g := grpc.NewGateway(grpc.Config{}, grpc.GatewayWithListener(lis), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
 		grpc.GatewayWithEnvironment("development"), grpc.GatewayWithLogger(logger))
 	if reg == nil {
 		reg = func(context.Context, *runtime.ServeMux, string, []grpcgo.DialOption) error { return nil }
@@ -171,7 +171,7 @@ func TestGatewayStartAsync_ReturnsTheBindError(t *testing.T) {
 	}
 	defer func() { _ = taken.Close() }()
 	_, port, _ := net.SplitHostPort(taken.Addr().String())
-	g := grpc.NewGateway(grpc.GatewayWithPort(port), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
+	g := grpc.NewGateway(grpc.Config{}, grpc.GatewayWithPort(port), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
 		grpc.GatewayWithEnvironment("development"), grpc.GatewayWithLogger(&gatewayLogger{gateway: &atomic.Pointer[grpc.Gateway]{}}))
 	g.RegisterHandler(func(context.Context, *runtime.ServeMux, string, []grpcgo.DialOption) error { return nil })
 	t.Cleanup(g.Stop)

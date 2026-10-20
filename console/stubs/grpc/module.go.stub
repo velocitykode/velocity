@@ -2,7 +2,6 @@ package modules
 
 import (
 	"context"
-	"os"
 
 	// vel:grpc:imports
 	{{ .Alias }} "{{ .ModulePath }}/api/gen/go/{{ .Leaf }}/{{ .Version }}"
@@ -18,13 +17,10 @@ type GRPCModule struct {
 }
 
 func (p *GRPCModule) Init(s *velocity.Services) error {
-	port := os.Getenv("GRPC_PORT")
-	if port == "" {
-		port = "50051"
-	}
-
+	// ConfigFromEnv is the one reader of GRPC_* and APP_ENV: port,
+	// reflection, message sizes, environment and the GRPC_INSECURE opt-out.
 	p.server = velgrpc.NewServer(
-		velgrpc.WithPort(port),
+		velocity.ConfigFromEnv().GRPC,
 		velgrpc.WithLogger(s.Log),
 		velgrpc.WithReporter(s.Errors),
 	)

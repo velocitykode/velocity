@@ -143,3 +143,27 @@ type StorageConfig struct {
 	Default string                       // Default disk name
 	Disks   map[string]StorageDiskConfig // Configured disks
 }
+
+// Validate checks the StorageConfig for STRUCTURAL problems only. Each disk
+// must name a non-empty driver and satisfy that driver's required fields (s3
+// needs a bucket), and the default disk (if set) must exist in Disks.
+//
+// The driver name is not checked against an allowlist: an unknown or unwired
+// disk driver surfaces as a typed NotFoundError when the storage driver
+// registry resolves it.
+func (c StorageConfig) Validate() error {
+	for name, disk := range c.Disks {
+		if disk.Driver == "" {
+			return fmt.Errorf("velocity/storage: disk %q has empty driver", name)
+		}
+		if disk.Driver == "s3" && disk.Bucket == "" {
+			return fmt.Errorf("velocity/storage: disk %q uses the s3 driver but Bucket is empty", name)
+		}
+	}
+	if c.Default != "" && len(c.Disks) > 0 {
+		if _, ok := c.Disks[c.Default]; !ok {
+			return fmt.Errorf("velocity/storage: default disk %q is not configured", c.Default)
+		}
+	}
+	return nil
+}

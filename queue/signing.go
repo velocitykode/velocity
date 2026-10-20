@@ -47,8 +47,9 @@ type SigningOptions struct {
 	// AcceptUnsigned, when true, lets the queue boot with payload signing
 	// disabled even when AllowUnsignedInDev is false. This is the loud
 	// opt-in for operators migrating an existing fleet onto a signing key
-	// or running a local dev queue without one. Set via the
-	// QUEUE_ACCEPT_UNSIGNED=true env var; the warning log path stays so
+	// or running a local dev queue without one. velocity.New sets it from
+	// QueueConfig.AcceptUnsigned (QUEUE_ACCEPT_UNSIGNED=true); the warning
+	// log path stays so
 	// the operator's intent is visible in startup logs.
 	AcceptUnsigned bool
 

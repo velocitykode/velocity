@@ -432,7 +432,7 @@ func New(opts ...Option) (*App, error) {
 		if sessionRecords != nil {
 			authManager.SetServerSessionStore(sessionRecords)
 		}
-		a.loginThrottler = installLoginThrottler(authManager, a.Cache, a.Log)
+		a.loginThrottler = installLoginThrottler(authManager, a.Cache, a.config.Auth.LoginThrottle, a.Log)
 	}
 
 	// 8. Initialize CSRF
@@ -567,7 +567,7 @@ func New(opts ...Option) (*App, error) {
 		// already resets SetBatchCallbackQueue(nil, "") on teardown.
 		queue.SetBatchCallbackQueue(queueDriver, "default")
 	} else {
-		queueDriver, err = initQueue(a.config.Queue, sqlDB, a.config.DB.Connection, a.config.Queue.SigningKey, a.config.Key, a.config.Env, boundCrypto, a.Log)
+		queueDriver, err = initQueue(a.config.Queue, sqlDB, a.config.DB.Driver, a.config.Key, a.config.Env, boundCrypto, a.Log)
 		if err != nil {
 			return nil, errchain.Errorf("velocity: failed to initialize queue: %w", err)
 		}
@@ -641,7 +641,7 @@ func New(opts ...Option) (*App, error) {
 	// deployments retain InMemoryLocker (single-process scope matches
 	// the cache's scope).
 	a.inMemoryLocker = sched.Locker()
-	installSchedulerLocker(sched, a.Cache, a.config.Cache.Driver, a.Log)
+	installSchedulerLocker(sched, a.Cache, a.config.Cache.DefaultDriver(), a.Log)
 	a.builtScheduler = sched
 	a.schedulerLocker = sched.Locker()
 	// Sweep 3 (configuration lock-in): warn loudly when running in
@@ -658,7 +658,7 @@ func New(opts ...Option) (*App, error) {
 			a.Log.Warn(
 				"Scheduler using in-memory Locker in production; OnOneServer / WithoutOverlapping will NOT enforce cross-host guarantees. Wire a shared-backend Locker via scheduler.SetLocker, or run only one scheduler worker process.",
 				"app_env", a.config.Env,
-				"cache_driver", a.config.Cache.Driver,
+				"cache_driver", a.config.Cache.DefaultDriver(),
 			)
 		}
 	}
@@ -715,7 +715,7 @@ func New(opts ...Option) (*App, error) {
 	// holds at the last boundary (see rebindMailer), so a mailer a module
 	// installs reaches it, one New built included.
 	a.mailCell.store(a.Mail)
-	notifier := initNotification(appMailer{cell: &a.mailCell}, sqlDB, a.config.DB.Connection)
+	notifier := initNotification(appMailer{cell: &a.mailCell}, sqlDB, a.config.DB.Driver)
 	a.Notification = notifier
 	// The database channel holds the boot database's *sql.DB, or none
 	// without a boot database: rebind points it at the database

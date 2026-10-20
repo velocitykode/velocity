@@ -26,9 +26,8 @@ func resetQueueEncryptionState(t *testing.T) {
 func TestInitQueue_EncryptRequiresEncryptor(t *testing.T) {
 	resetQueueSigningState(t)
 	resetQueueEncryptionState(t)
-	t.Setenv("QUEUE_ACCEPT_UNSIGNED", "")
 
-	_, err := initQueue(QueueConfig{Driver: "memory", Encrypt: true}, nil, "", "", "", "local", nil, log.NewNullLogger())
+	_, err := initQueue(queue.QueueConfig{Driver: "memory", Encrypt: true}, nil, "", "", "local", nil, log.NewNullLogger())
 	if !errors.Is(err, queue.ErrEncryptorRequired) {
 		t.Fatalf("expected ErrEncryptorRequired, got %v", err)
 	}
@@ -43,7 +42,6 @@ func TestInitQueue_EncryptRequiresEncryptor(t *testing.T) {
 func TestInitQueue_EncryptWiresEncryptor(t *testing.T) {
 	resetQueueSigningState(t)
 	resetQueueEncryptionState(t)
-	t.Setenv("QUEUE_ACCEPT_UNSIGNED", "")
 
 	enc, err := crypto.NewEncryptor(crypto.Config{
 		Key:    "base64:MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
@@ -53,7 +51,7 @@ func TestInitQueue_EncryptWiresEncryptor(t *testing.T) {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
 
-	d, err := initQueue(QueueConfig{Driver: "memory", Encrypt: true}, nil, "", "", "", "local", enc, log.NewNullLogger())
+	d, err := initQueue(queue.QueueConfig{Driver: "memory", Encrypt: true}, nil, "", "", "local", enc, log.NewNullLogger())
 	if err != nil {
 		t.Fatalf("initQueue: %v", err)
 	}
@@ -71,7 +69,6 @@ func TestInitQueue_EncryptWiresEncryptor(t *testing.T) {
 func TestInitQueue_EncryptOffClearsEncryptor(t *testing.T) {
 	resetQueueSigningState(t)
 	resetQueueEncryptionState(t)
-	t.Setenv("QUEUE_ACCEPT_UNSIGNED", "")
 
 	enc, err := crypto.NewEncryptor(crypto.Config{
 		Key:    "base64:MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
@@ -82,7 +79,7 @@ func TestInitQueue_EncryptOffClearsEncryptor(t *testing.T) {
 	}
 	queue.SetPayloadEncryptor(enc)
 
-	if _, err := initQueue(QueueConfig{Driver: "memory"}, nil, "", "", "", "local", nil, log.NewNullLogger()); err != nil {
+	if _, err := initQueue(queue.QueueConfig{Driver: "memory"}, nil, "", "", "local", nil, log.NewNullLogger()); err != nil {
 		t.Fatalf("initQueue: %v", err)
 	}
 	if queue.IsEncryptionEnabled() {

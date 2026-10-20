@@ -60,7 +60,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -77,7 +76,7 @@ import (
 // operator-side debugging, at debug level through the driver's logger. The
 // public API only ever returns ErrDecrypt to callers (so error messages
 // cannot form a padding-oracle), but operators who build the driver with
-// CRYPTO_DEBUG=true can see why a given payload was rejected. Off by
+// WithDecryptDebug(true) can see why a given payload was rejected. Off by
 // default to avoid noise. Keep the log line free of secret material (no
 // key bytes, no plaintext).
 func (d *AESDriver) debugDecryptFailure(stage string, err error) {
@@ -103,16 +102,16 @@ type AESDriver struct {
 	previousKeys [][]byte // Previous keys for rotation
 	cipher       string   // Cipher mode (AES-128-CBC, AES-256-CBC, AES-128-GCM, AES-256-GCM)
 	keySize      int      // Key size in bytes
-	// v0Disabled rejects legacy v0 payloads at decrypt time. Set via env
-	// (CRYPTO_DISABLE_V0=true) at driver construction; immutable after
+	// v0Disabled rejects legacy v0 payloads at decrypt time. Set by
+	// WithV0Disabled at driver construction; immutable after
 	// NewAESDriver returns. Operators flip this on once they have
 	// confirmed no in-flight v0 ciphertexts remain (cookies, signed
 	// URLs, encrypted DB columns) and want to retire the weaker
 	// MAC-over-base64 surface.
 	v0Disabled bool
 	// debugDecrypt writes the stage and cause of every decrypt failure at
-	// debug level (see debugDecryptFailure). Set via env (CRYPTO_DEBUG=true)
-	// at driver construction; immutable after NewAESDriver returns.
+	// debug level (see debugDecryptFailure). Set by WithDecryptDebug at
+	// driver construction; immutable after NewAESDriver returns.
 	debugDecrypt bool
 
 	// events holds the event dispatcher (the cache/queue/mail pattern) and
@@ -162,6 +161,23 @@ func (d *AESDriver) gcmForKey(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
+// AESOption configures an AESDriver at construction.
+type AESOption func(*AESDriver)
+
+// WithV0Disabled rejects legacy v0 payloads at decrypt time with
+// ErrLegacyPayloadDisabled. Turn it on once no v0 ciphertexts remain in
+// flight (cookies, signed URLs, encrypted columns).
+func WithV0Disabled(disabled bool) AESOption {
+	return func(d *AESDriver) { d.v0Disabled = disabled }
+}
+
+// WithDecryptDebug writes the stage and cause of every decrypt failure at
+// debug level through the driver's logger. Key bytes and plaintext are
+// never written.
+func WithDecryptDebug(enabled bool) AESOption {
+	return func(d *AESDriver) { d.debugDecrypt = enabled }
+}
+
 // NewAESDriver creates a new AES driver. The supplied master key MUST have
 // exactly the cipher's required raw byte length (AES-128 = 16, AES-192 = 24,
 // AES-256 = 32). Shorter inputs are rejected with ErrInvalidKeyLength rather
@@ -172,12 +188,13 @@ func (d *AESDriver) gcmForKey(key []byte) (cipher.AEAD, error) {
 // HKDF is still used internally as a domain separator, deriving distinct
 // encryption and HMAC subkeys from the validated full-length master via
 // distinct info strings.
-func NewAESDriver(key []byte, previousKeys [][]byte, cipher string) (*AESDriver, error) {
+func NewAESDriver(key []byte, previousKeys [][]byte, cipher string, opts ...AESOption) (*AESDriver, error) {
 	d := &AESDriver{
 		previousKeys: previousKeys,
 		cipher:       strings.ToUpper(cipher),
-		v0Disabled:   os.Getenv("CRYPTO_DISABLE_V0") == "true",
-		debugDecrypt: os.Getenv("CRYPTO_DEBUG") == "true",
+	}
+	for _, o := range opts {
+		o(d)
 	}
 
 	// Determine required key size. Only AES-128/192/256 are permitted.
@@ -275,7 +292,7 @@ func (d *AESDriver) SetEventDispatcher(fn func(ctx context.Context, event interf
 }
 
 // SetLogger installs the logger the driver writes its warnings (the first
-// legacy v0 decrypt) and, with CRYPTO_DEBUG=true, its decrypt-failure
+// legacy v0 decrypt) and, with WithDecryptDebug(true), its decrypt-failure
 // debug lines to. Unset or nil, they go through the framework's standalone
 // fallback logger, which writes warnings to standard error and drops debug
 // lines. Safe to call while the driver encrypts and decrypts.
@@ -334,7 +351,7 @@ func (d *AESDriver) DecryptBytes(payload string) ([]byte, error) {
 	version, envelope := splitVersion(payload)
 
 	// Operator-driven v0 cutoff. Once the rotation window is complete,
-	// CRYPTO_DISABLE_V0=true rejects every v0-shaped payload up-front so
+	// WithV0Disabled(true) rejects every v0-shaped payload up-front so
 	// the weaker MAC-over-base64 surface is no longer reachable.
 	// Returns a distinct sentinel (ErrLegacyPayloadDisabled) so cookie /
 	// signed-URL pipelines can force re-encrypt rather than treat it as

@@ -3,6 +3,13 @@
 Every environment variable read by the framework. Names below are the 1.0
 surface and will not change without a deprecation cycle.
 
+`ConfigFromEnv()` in `config.go` reads every key below into the typed
+`velocity.Config`; packages take their part of it as a struct and never read
+the environment themselves. The "Package" column names the reader and, after
+it, the field the value lands in. Two readers remain outside `config.go`:
+`contract.GetEnv` / `app.Env()` (the `APP_ENV` helpers) and the `orm/testing`
+guards, which run in test processes that build no `Config`.
+
 Read sites are inventoried via:
 
 ```sh
@@ -26,10 +33,10 @@ that cannot import `app`).
 
 | Name | Package | Default | Required in prod? | Security impact | Notes |
 |------|---------|---------|-------------------|-----------------|-------|
-| `APP_ENV` | `app/env.go`, `config.go`, `maintenance.go`, `grpc/server.go`, `grpc/gateway.go`, `orm/testing/*` | `development` | recommended | drives every "is prod?" gate (cookies Secure, queue signing, gRPC TLS) | Canonical: route reads through `app.Env()` / `app.IsProduction()` |
+| `APP_ENV` | `config.go` (`Env`, `GRPC.Environment`), `app/env.go`, `orm/testing/*` | empty (non-production for `IsProductionEnv`, but not a dev/test profile, so `APP_KEY` is still required) | recommended | drives every "is prod?" gate (cookies Secure, queue signing, gRPC TLS) | Canonical: route reads through `app.Env()` / `app.IsProduction()` |
 | `APP_DEBUG` | `config.go` | `false` | no (force-disabled in prod by `exceptions.Handler`) | leaks stack traces and source if enabled in prod | |
-| `APP_PORT` | `config.go`, `cmd_ops.go` | `4000` | no | none | |
-| `APP_KEY` | `config.go`, `maintenance.go` | empty | YES (errors out unless `APP_ENV` is one of `development`, `dev`, `test`, `testing`, `local` per `contract.NonProdEnvNames()`) | crypto/session/CSRF/queue-signing all key off this; weak key compromises every secret | Generate via `vel key generate` |
+| `APP_PORT` | `config.go` | `4000` | no | none | |
+| `APP_KEY` | `config.go` (`Key`, `Maintenance.AppKey`) | empty | YES (errors out unless `APP_ENV` is one of `development`, `dev`, `test`, `testing`, `local` per `contract.NonProdEnvNames()`) | crypto/session/CSRF/queue-signing all key off this; weak key compromises every secret | Generate via `vel key generate` |
 | `APP_TIMEZONE` | `config.go`, `app.go` | `UTC` | no | none | IANA name. PRESENTATION only: applied to `time.Local` and scheduler cron evaluation at bootstrap. Persistence never reads it (see "Timestamp storage contract" below). Invalid value fails `New()`. Programmatic `WithConfig` with an empty `Timezone` leaves the process timezone untouched. |
 
 ## Database
@@ -89,6 +96,12 @@ that cannot import `app`).
 | `AUTH_SCHEME` | `config.go` | empty | optional | none | enables `web`/`api` schemes |
 | `AUTH_TRUSTED_PROXIES` | `config.go` | empty | YES if behind proxy | XFF spoofing -> throttle bypass + bogus audit IPs | comma-separated IP/CIDR; empty = trust nothing (secure default) |
 | `AUTH_ATTEMPT_FLOOR` | `config.go` | `200ms` | no | login timing side-channel | raise when `HASH_BCRYPT_COST` >= 12 |
+| `AUTH_LOGIN_MAX_ATTEMPTS` | `config.go` (`Auth.LoginThrottle.MaxAttempts`) | `5` | no | brute force per (identifier, IP) | positive integer; anything else is the default |
+| `AUTH_LOGIN_MAX_ATTEMPTS_PER_IDENTIFIER` | `config.go` (`Auth.LoginThrottle.MaxAttemptsPerIdentifier`) | `20` | no | password spraying across IPs | positive integer; anything else is the default |
+| `AUTH_LOGIN_MAX_ATTEMPTS_PER_IP` | `config.go` (`Auth.LoginThrottle.MaxAttemptsPerIP`) | `50` | no | spraying from one IP | positive integer; anything else is the default |
+| `AUTH_LOGIN_DECAY` | `config.go` (`Auth.LoginThrottle.Decay`) | `60s` | no | how long a failure counts | Go duration or bare seconds, untrimmed; zero, negative or malformed is the default |
+| `AUTH_LOGIN_IDENTIFIER_DELAY` | `config.go` (`Auth.LoginThrottle.IdentifierDelay`) | `1s` | no | the only bound on the identifier dimension once pair and IP buckets rotate | Go duration or bare seconds; `0` disables the delay; negative or malformed is the default |
+| `AUTH_LOGIN_IDENTIFIER_DELAY_MAX` | `config.go` (`Auth.LoginThrottle.IdentifierDelayMax`) | `30s` | no | none | ceiling of the doubling delay; zero, negative or malformed is the default |
 | `HASH_BCRYPT_COST` | `config.go` | `10` | recommended >=12 | weak password hashes | |
 | `AUTH_JWT_ALGO` | `config.go` | `HS256` | only if JWT used | weak signature alg | |
 | `AUTH_JWT_SECRET` | `config.go` | empty | YES (JWT) | forge JWTs | SENSITIVE |
@@ -139,7 +152,7 @@ and `SESSION_SAME_SITE` (the app's `contract.CookiePolicy`).
 
 | Name | Package | Default | Required in prod? | Security impact | Notes |
 |------|---------|---------|-------------------|-----------------|-------|
-| `CACHE_DRIVER` | `config.go` | `memory` | recommended (redis on HA) | per-process state on multi-host | one of `memory`, `file`, `redis`. `database` is reserved but not implemented; setting it is rejected at boot |
+| `CACHE_DRIVER` | `config.go` | `memory` | recommended (redis on HA) | per-process state on multi-host | exactly `file` or `redis` select that driver; any other value (`database`, a typo, other casing) silently means `memory` |
 | `CACHE_PREFIX` | `config.go` | `velocity_cache` | no | none | |
 | `CACHE_PATH` | `config.go` | empty | only if file driver | path traversal if attacker-controlled | |
 | `CACHE_MEMORY_MAX_ENTRIES` | `config.go` | `0` (= 1,000,000) | no | unbounded cache map is OOM-able via attacker-influenceable keys | memory driver entry cap with LRU eviction. `0` = default cap, negative = unlimited (escape hatch) |
@@ -159,7 +172,7 @@ and `SESSION_SAME_SITE` (the app's `contract.CookiePolicy`).
 | `QUEUE_REDIS_PASSWORD` | `config.go` | empty | YES (redis in prod) | unauthenticated redis | SENSITIVE |
 | `QUEUE_REDIS_DB` | `config.go` | `0` | no | none | |
 | `QUEUE_SIGNING_KEY` | `config.go` | empty (falls back to APP_KEY) | YES | attacker who writes to queue can run arbitrary jobs in worker | SENSITIVE; HMAC key for payload signing |
-| `QUEUE_ACCEPT_UNSIGNED` | `factories.go` | `false` | NO (loud opt-in only) | disables signing fail-closed; warned in logs | final: do not rename |
+| `QUEUE_ACCEPT_UNSIGNED` | `config.go` (`Queue.AcceptUnsigned`) | `false` | NO (loud opt-in only) | disables signing fail-closed; warned in logs | `1`, `true`, `yes`, `on` (any case); final: do not rename |
 
 ## Storage
 
@@ -202,8 +215,8 @@ and `SESSION_SAME_SITE` (the app's `contract.CookiePolicy`).
 | `LOG_DAYS` | `config.go` | `14` | no | none | |
 | `LOG_LEVEL` | `config.go` | `debug` | recommended `info`/`warn` in prod | debug logs may leak request bodies | |
 | `LOG_STACK` | `config.go` | empty | no | none | comma-separated channels |
-| `LOG_REDACT` | `log/init.go` | `false` | recommended | PII in logs | process-wide default-on toggle |
-| `LOG_REDACT_EMAILS` | `log/redact.go` | `false` | recommended | emails in logs | |
+| `LOG_REDACT` | `config.go` (`Log.Config["redact"]`) | `false` | recommended | PII in logs | covers every channel of the app logger (the stack passes its config to its children); a logger built from another `log.LogConfig` redacts only when that config sets `"redact": true` |
+| `LOG_REDACT_EMAILS` | `config.go` (`Log.Config["redact_emails"]`) | `false` | recommended | emails in logs | needs `LOG_REDACT` |
 
 The async package's panic hook (a panic recovered in a background goroutine is reported to the app's error handler) and the async and trace package loggers are process-wide. With several apps in one process, the newest live app owns them. An app's `Shutdown`, or the cleanup of its failed `New`, hands them back to the previous live app (or to the defaults: no hook, the standalone fallback logger) and never clears or replaces another app's installation. An app's hook and both loggers change owner together, in one step. Replacing them never waits on a line or report already being written: that line may still reach the replaced logger after its app shut it down. The built-in file logger never reopens its file after `Shutdown`; a late warning or error goes to the standalone fallback logger (standard error) with its bound fields, and a late Debug or Info line is dropped. A custom logger's behaviour after it is closed is its own. Known limits: a panic in a goroutine an older app started is reported to the newest app's error handler while that app lives, and an app that is never shut down stays live and stays reachable.
 
@@ -214,8 +227,8 @@ The async package's panic hook (a panic recovered in a background goroutine is r
 | `CRYPTO_KEY` | `config.go` | falls back to `APP_KEY` | YES | encryption broken; cookies forgeable | rotate every 6 months |
 | `CRYPTO_CIPHER` | `config.go` | `AES-256-GCM` | no | weaker cipher if changed | |
 | `CRYPTO_OLD_KEYS` | `config.go` | empty | only during rotation | none | comma-separated previous keys |
-| `CRYPTO_DEBUG` | `crypto/drivers/aes.go` | `false` | NO | decrypt-failure causes in the log (never key bytes or plaintext) | read when the driver is built; each decrypt failure is a debug line (stage, cause) through the app logger, so it shows only at `LOG_LEVEL=debug`; tests and debugging only |
-| `CRYPTO_DISABLE_V0` | `crypto/drivers/aes.go` | `false` | no | rejects v0 ciphertexts on read | |
+| `CRYPTO_DEBUG` | `config.go` (`Crypto.Debug`) | `false` | NO | decrypt-failure causes in the log (never key bytes or plaintext) | exactly `true`; applied when the driver is built; each decrypt failure is a debug line (stage, cause) through the app logger, so it shows only at `LOG_LEVEL=debug`; tests and debugging only |
+| `CRYPTO_DISABLE_V0` | `config.go` (`Crypto.DisableV0`) | `false` | no | rejects v0 ciphertexts on read | exactly `true` |
 
 ## View / Bond
 
@@ -237,21 +250,25 @@ The async package's panic hook (a panic recovered in a background goroutine is r
 
 ## gRPC
 
+The grpc package reads no environment: pass `velocity.ConfigFromEnv().GRPC`
+(or a literal `grpc.Config`) to `grpc.NewServer` and `grpc.NewGateway`.
+
 | Name | Package | Default | Required in prod? | Security impact | Notes |
 |------|---------|---------|-------------------|-----------------|-------|
-| `GRPC_PORT` | `grpc/init.go` | `50051` | no | none | |
-| `GRPC_REFLECTION` | `grpc/init.go` | `false` | NO (refused in prod) | reflection exposes service surface | |
-| `GRPC_MAX_RECV_SIZE` | `grpc/init.go` | 4 MiB | no | none | |
-| `GRPC_MAX_SEND_SIZE` | `grpc/init.go` | 4 MiB | no | none | |
-| `GATEWAY_PORT` | `grpc/init.go` | `8080` | no | none | |
-| `GRPC_ENDPOINT` | `grpc/init.go` | `localhost:50051` | no | none | |
-| `GRPC_INSECURE` | `grpc/server.go` | `false` | NO (loud opt-in only) | disables prod TLS guard | final: do not rename |
+| `GRPC_PORT` | `config.go` (`GRPC.ServerPort`) | `50051` | no | none | |
+| `GRPC_REFLECTION` | `config.go` (`GRPC.EnableReflection`) | `false` | NO (refused in prod) | reflection exposes service surface | |
+| `GRPC_MAX_RECV_SIZE` | `config.go` (`GRPC.MaxRecvMsgSize`) | 4 MiB | no | none | |
+| `GRPC_MAX_SEND_SIZE` | `config.go` (`GRPC.MaxSendMsgSize`) | 4 MiB | no | none | |
+| `GATEWAY_PORT` | `config.go` (`GRPC.GatewayPort`) | `8080` | no | none | |
+| `GRPC_ENDPOINT` | `config.go` (`GRPC.GRPCEndpoint`) | `localhost:50051` | no | none | |
+| `GRPC_INSECURE` | `config.go` (`GRPC.Insecure`) | `false` | NO (loud opt-in only) | disables prod TLS guard | final: do not rename |
 
 ## Maintenance
 
 | Name | Package | Default | Required in prod? | Security impact | Notes |
 |------|---------|---------|-------------------|-----------------|-------|
-| `VELOCITY_MAINTENANCE_EXCLUDE_PATHS` | `maintenance.go`, `internal/maintpath/maintpath.go` | empty | no | none | comma-separated path prefixes |
+| `VELOCITY_MAINTENANCE_ROOT` | `config.go` (`Maintenance.Root`) | working directory | no | marker path traversal (absolute, no `..`, else the gate stays open) | must match between the server and `down` / `up` |
+| `VELOCITY_MAINTENANCE_EXCLUDE_PATHS` | `config.go` (`Maintenance.ExcludePaths`) | empty | no | none | comma-separated path prefixes; pass `m.Maintenance()` to `PreventRequestsDuringMaintenance` |
 
 ## Hard-required surface in production
 
@@ -284,21 +301,21 @@ A boot in production (`APP_ENV` set to anything other than `dev`, `development`,
 ## Read-site map
 
 ```text
-APP_*              config.go, cmd_ops.go, maintenance.go
+APP_*              config.go, app/env.go (APP_ENV helpers), orm/testing (APP_ENV)
 DB_*               config.go
 SESSION_*          config.go
 AUTH_*             config.go
 HASH_*             config.go
 CSRF_*             config.go
 CACHE_*, REDIS_*   config.go
-QUEUE_*            config.go, factories.go
+QUEUE_*            config.go
 STORAGE_*, AWS_*   config.go
 FILE_ROOT          config.go
 MAIL_*             config.go
-LOG_*              config.go, log/init.go, log/redact.go
-CRYPTO_*           config.go, crypto/crypto.go, crypto/drivers/aes.go
+LOG_*              config.go
+CRYPTO_*           config.go
 VIEW_SSR_*         config.go
 SERVER_*           config.go
-GRPC_*, GATEWAY_*  grpc/init.go, grpc/server.go, grpc/gateway.go
-VELOCITY_*         maintenance.go, internal/maintpath/maintpath.go
+GRPC_*, GATEWAY_*  config.go
+VELOCITY_*         config.go
 ```

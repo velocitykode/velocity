@@ -19,7 +19,7 @@ import (
 // closes it when it stops.
 func TestGatewayWithListener_ServesOnTheCallersListener(t *testing.T) {
 	lis := &closeTracker{Listener: testnet.Loopback(t)}
-	g := grpc.NewGateway(grpc.GatewayWithListener(lis), grpc.GatewayWithPort("1"),
+	g := grpc.NewGateway(grpc.Config{}, grpc.GatewayWithListener(lis), grpc.GatewayWithPort("1"),
 		grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"), grpc.GatewayWithEnvironment("development"))
 	g.RegisterHandler(func(context.Context, *runtime.ServeMux, string, []grpcgo.DialOption) error { return nil })
 	g.Use(func(http.Handler) http.Handler {
@@ -53,7 +53,7 @@ func TestGatewayWithListener_ServesOnTheCallersListener(t *testing.T) {
 // open for the caller.
 func TestGatewayWithListener_StopBeforeStartLeavesItOpen(t *testing.T) {
 	lis := &closeTracker{Listener: testnet.Loopback(t)}
-	g := grpc.NewGateway(grpc.GatewayWithListener(lis),
+	g := grpc.NewGateway(grpc.Config{}, grpc.GatewayWithListener(lis),
 		grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"), grpc.GatewayWithEnvironment("development"))
 	g.RegisterHandler(func(context.Context, *runtime.ServeMux, string, []grpcgo.DialOption) error { return nil })
 	if err := g.Build(context.Background()); err != nil {
@@ -75,7 +75,7 @@ func TestGatewayWithListener_StopBeforeStartLeavesItOpen(t *testing.T) {
 // took the listener: it is left open for the caller.
 func TestGatewayWithListener_FailedStartLeavesItOpen(t *testing.T) {
 	lis := &closeTracker{Listener: testnet.Loopback(t)}
-	g := grpc.NewGateway(grpc.GatewayWithListener(lis),
+	g := grpc.NewGateway(grpc.Config{}, grpc.GatewayWithListener(lis),
 		grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"), grpc.GatewayWithEnvironment("production"))
 	g.RegisterHandler(func(context.Context, *runtime.ServeMux, string, []grpcgo.DialOption) error { return nil })
 	if err := g.StartAsync(); err == nil {

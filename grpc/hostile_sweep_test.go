@@ -216,7 +216,7 @@ func TestServer_HostileUserCodeSweep(t *testing.T) {
 				if site == siteLogger {
 					opts = append(opts, grpc.WithLogger(armedLogger{armed: &armed, h: hostile.NewLogger(code)}))
 				}
-				s = grpc.NewServer(opts...)
+				s = grpc.NewServer(grpc.Config{}, opts...)
 				if site == siteDispatcher {
 					d := hostile.NewDispatcher(code)
 					s.SetEventDispatcher(func(ctx context.Context, ev any) error {
@@ -375,7 +375,7 @@ func gatewaySweepCase(t *testing.T, e gatewayEntry, mode hostile.Mode) {
 	})
 	lis := testnet.Loopback(t)
 	addr := lis.Addr().String()
-	g = grpc.NewGateway(grpc.GatewayWithListener(lis), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
+	g = grpc.NewGateway(grpc.Config{}, grpc.GatewayWithListener(lis), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
 		grpc.GatewayWithEnvironment("development"),
 		grpc.GatewayWithLogger(armedLogger{armed: &armed, h: hostile.NewLogger(code)}))
 	g.RegisterHandler(func(context.Context, *runtime.ServeMux, string, []grpcgo.DialOption) error { return nil })

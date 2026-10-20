@@ -14,6 +14,8 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/cache"
+	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/events"
@@ -21,7 +23,9 @@ import (
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
+	"github.com/velocitykode/velocity/storage"
 	"github.com/velocitykode/velocity/view"
 )
 
@@ -46,23 +50,23 @@ type Config struct {
 	// reads it - ORM/queue storage is unconditionally UTC.
 	Timezone string // APP_TIMEZONE, default "UTC"
 
-	// Database
-	DB DBConfig
+	// Database. A zero Driver means no database.
+	DB orm.ManagerConfig
 
 	// Auth
 	Auth auth.Config
 
 	// Cache
-	Cache CacheConfig
+	Cache cache.Config
 
 	// Log
 	Log log.LogConfig
 
 	// Queue
-	Queue QueueConfig
+	Queue queue.QueueConfig
 
 	// Storage
-	Storage StorageConfig
+	Storage storage.Config
 
 	// CSRF
 	CSRF csrf.Config
@@ -85,6 +89,15 @@ type Config struct {
 	// Mail
 	Mail mail.MailConfig
 
+	// Maintenance configures the maintenance gate and the down/up
+	// commands. New passes it to App.Middleware as m.Maintenance(), with
+	// AppKey defaulted to Key.
+	Maintenance contract.MaintenanceConfig
+
+	// GRPC is the configuration for grpc.NewServer and grpc.NewGateway.
+	// New does not build a gRPC server; an app passes this to them.
+	GRPC contract.GRPCConfig
+
 	// Server timeouts
 	ReadTimeout       time.Duration // SERVER_READ_TIMEOUT, default 30s
 	WriteTimeout      time.Duration // SERVER_WRITE_TIMEOUT, default 30s
@@ -99,84 +112,6 @@ type Config struct {
 	FileRoot string
 
 	// Scheduler (no config needed, created fresh)
-}
-
-// DBConfig holds database configuration. Maps the DB_* env vars onto the
-// fields forwarded into orm.ManagerConfig via initDB.
-type DBConfig struct {
-	Connection      string        // DB_CONNECTION: sqlite, postgres, mysql
-	Host            string        // DB_HOST, default "127.0.0.1"
-	Port            string        // DB_PORT, default per driver
-	Database        string        // DB_DATABASE
-	Username        string        // DB_USERNAME
-	Password        string        // DB_PASSWORD
-	Charset         string        // DB_CHARSET
-	SSLMode         string        // DB_SSL_MODE (postgres)
-	TLS             string        // DB_MYSQL_TLS (mysql: true/false/skip-verify/preferred)
-	TimeZone        string        // DB_TIMEZONE: database SESSION timezone only (postgres TimeZone=, mysql time_zone='...'); never affects storage encoding, which is unconditionally UTC
-	MaxIdleConns    int           // DB_MAX_IDLE_CONNS, default 10
-	MaxOpenConns    int           // DB_MAX_OPEN_CONNS, default 100
-	ConnMaxLifetime time.Duration // DB_CONN_MAX_LIFETIME, default 3600s
-	LogQueries      bool          // DB_LOG_QUERIES
-	SlowThreshold   time.Duration // DB_SLOW_QUERY_THRESHOLD
-}
-
-// CacheConfig holds cache configuration.
-// Kept as a root type because it uses a flat structure (single driver)
-// while cache.Config uses a multi-store map pattern.
-type CacheConfig struct {
-	Driver string // CACHE_DRIVER: memory, file, redis, database
-	Prefix string // CACHE_PREFIX, default "velocity_cache"
-	Path   string // CACHE_PATH (for file driver)
-	// MemoryMaxEntries caps the memory driver's entry count.
-	// CACHE_MEMORY_MAX_ENTRIES: 0 = default (1,000,000), negative = unlimited.
-	MemoryMaxEntries int
-	// MaxValueBytes caps the serialized size of a single cached value for
-	// the memory and file drivers.
-	// CACHE_MAX_VALUE_BYTES: 0 (default) = unlimited.
-	MaxValueBytes int64
-	RedisHost     string // REDIS_HOST, default "127.0.0.1"
-	RedisPort     int    // REDIS_PORT, default 6379
-	RedisPassword string // REDIS_PASSWORD
-	RedisDatabase int    // REDIS_DATABASE, default 0
-	RedisTLS      bool   // REDIS_TLS: enable TLS for Redis connections
-}
-
-// QueueConfig holds queue configuration.
-// Kept as a root type because it uses a flat structure while
-// queue.QueueConfig nests Redis fields in a sub-struct.
-type QueueConfig struct {
-	Driver        string // QUEUE_DRIVER: memory, redis, database
-	RedisHost     string // QUEUE_REDIS_HOST, default "localhost"
-	RedisPort     string // QUEUE_REDIS_PORT, default "6379"
-	RedisPassword string // QUEUE_REDIS_PASSWORD
-	RedisDB       string // QUEUE_REDIS_DB, default "0"
-	RedisTLS      bool   // REDIS_TLS: enable TLS for Redis connections
-	SigningKey    string // QUEUE_SIGNING_KEY: HMAC key for payload signing (SENSITIVE)
-	Encrypt       bool   // QUEUE_ENCRYPT: encrypt job-state payload data at rest with the app encryptor
-}
-
-// StorageConfig holds storage configuration.
-// Kept as a root type because the DiskConfig fields mirror the env-var
-// layout rather than the storage package's internal driver config.
-type StorageConfig struct {
-	Default string                // STORAGE_DRIVER, default "local"
-	Disks   map[string]DiskConfig // Disk configurations
-}
-
-// DiskConfig holds configuration for a single storage disk.
-type DiskConfig struct {
-	Driver     string // "local", "s3", "memory"
-	Root       string // Root path for local driver
-	URL        string // Base URL for file access
-	Visibility string // Default visibility (public/private)
-	// S3 fields
-	Bucket string
-	Region string
-	Key    string
-	Secret string
-	// Memory driver
-	MaxSize int64 // Maximum memory usage in bytes
 }
 
 // Option is a function that configures the App.
@@ -370,8 +305,8 @@ func ConfigFromEnv() Config {
 
 	// Database
 	dbConnection := os.Getenv("DB_CONNECTION")
-	config.DB = DBConfig{
-		Connection:      dbConnection,
+	config.DB = orm.ManagerConfig{
+		Driver:          dbConnection,
 		Host:            envOrDefault("DB_HOST", "127.0.0.1"),
 		Port:            envOrDefault("DB_PORT", defaultPortForDriver(dbConnection)),
 		Database:        os.Getenv("DB_DATABASE"),
@@ -430,6 +365,16 @@ func ConfigFromEnv() Config {
 		// bcrypt for 500ms+. Accepts time.ParseDuration syntax
 		// (e.g. "500ms", "1s"). See F2.
 		AttemptFloor: envDurationOrDefault("AUTH_ATTEMPT_FLOOR", 0),
+		// Login throttler. An unset or invalid value is zero, which the
+		// throttler reads as its default (see auth.LoginThrottleConfig).
+		LoginThrottle: auth.LoginThrottleConfig{
+			MaxAttempts:              envPositiveInt("AUTH_LOGIN_MAX_ATTEMPTS"),
+			MaxAttemptsPerIdentifier: envPositiveInt("AUTH_LOGIN_MAX_ATTEMPTS_PER_IDENTIFIER"),
+			MaxAttemptsPerIP:         envPositiveInt("AUTH_LOGIN_MAX_ATTEMPTS_PER_IP"),
+			Decay:                    envLoginDecay("AUTH_LOGIN_DECAY"),
+			IdentifierDelay:          envLoginDuration("AUTH_LOGIN_IDENTIFIER_DELAY", true),
+			IdentifierDelayMax:       envLoginDuration("AUTH_LOGIN_IDENTIFIER_DELAY_MAX", false),
+		},
 	}
 
 	// Configure schemes if AUTH_SCHEME is set
@@ -481,18 +426,20 @@ func ConfigFromEnv() Config {
 
 	// Cache
 	redisTLS := os.Getenv("REDIS_TLS") == "true"
-	config.Cache = CacheConfig{
-		Driver:           envOrDefault("CACHE_DRIVER", "memory"),
-		Prefix:           envOrDefault("CACHE_PREFIX", "velocity_cache"),
-		Path:             os.Getenv("CACHE_PATH"),
-		MemoryMaxEntries: envIntOrDefault("CACHE_MEMORY_MAX_ENTRIES", 0),
-		MaxValueBytes:    envInt64OrDefault("CACHE_MAX_VALUE_BYTES", 0),
-		RedisHost:        envOrDefault("REDIS_HOST", "127.0.0.1"),
-		RedisPort:        envIntOrDefault("REDIS_PORT", 6379),
-		RedisPassword:    os.Getenv("REDIS_PASSWORD"),
-		RedisDatabase:    envIntOrDefault("REDIS_DATABASE", 0),
-		RedisTLS:         redisTLS,
-	}
+	// One store, "default", on CACHE_DRIVER. Each driver reads only its
+	// own fields (memory: MaxEntries; file: Path; redis: the connection;
+	// memory and file: MaxValueBytes) and ignores the rest.
+	config.Cache = cache.SingleStoreConfig(envOrDefault("CACHE_PREFIX", "velocity_cache"), cache.StoreConfig{
+		Driver:        cacheDriverFromEnv(os.Getenv("CACHE_DRIVER")),
+		Path:          os.Getenv("CACHE_PATH"),
+		MaxEntries:    envIntOrDefault("CACHE_MEMORY_MAX_ENTRIES", 0),
+		MaxValueBytes: envInt64OrDefault("CACHE_MAX_VALUE_BYTES", 0),
+		Host:          envOrDefault("REDIS_HOST", "127.0.0.1"),
+		Port:          envIntOrDefault("REDIS_PORT", 6379),
+		Password:      os.Getenv("REDIS_PASSWORD"),
+		Database:      envIntOrDefault("REDIS_DATABASE", 0),
+		TLS:           redisTLS,
+	})
 
 	// Log
 	config.Log = log.LogConfig{
@@ -504,6 +451,15 @@ func ConfigFromEnv() Config {
 	}
 	config.Log.Config["days"] = envIntOrDefault("LOG_DAYS", 14)
 	config.Log.Config["level"] = envOrDefault("LOG_LEVEL", "debug")
+	// Redaction (see log.WrapWithRedactors): the "stack" driver passes
+	// this map to every child, so the flags cover every channel of the
+	// app logger.
+	if strings.EqualFold(os.Getenv("LOG_REDACT"), "true") {
+		config.Log.Config["redact"] = true
+	}
+	if strings.EqualFold(os.Getenv("LOG_REDACT_EMAILS"), "true") {
+		config.Log.Config["redact_emails"] = true
+	}
 	if stackStr := os.Getenv("LOG_STACK"); stackStr != "" {
 		var stack []string
 		for _, ch := range strings.Split(stackStr, ",") {
@@ -520,39 +476,48 @@ func ConfigFromEnv() Config {
 		cryptoKey = config.Key // Fall back to APP_KEY
 	}
 	config.Crypto = crypto.Config{
-		Key:    cryptoKey,
-		Cipher: envOrDefault("CRYPTO_CIPHER", "AES-256-GCM"),
+		Key:       cryptoKey,
+		Cipher:    envOrDefault("CRYPTO_CIPHER", "AES-256-GCM"),
+		DisableV0: os.Getenv("CRYPTO_DISABLE_V0") == "true",
+		Debug:     os.Getenv("CRYPTO_DEBUG") == "true",
 	}
 	if oldKeys := os.Getenv("CRYPTO_OLD_KEYS"); oldKeys != "" {
 		config.Crypto.PreviousKeys = strings.Split(oldKeys, ",")
 	}
 
 	// Queue
-	config.Queue = QueueConfig{
-		Driver:        envOrDefault("QUEUE_DRIVER", "memory"),
-		RedisHost:     envOrDefault("QUEUE_REDIS_HOST", "localhost"),
-		RedisPort:     envOrDefault("QUEUE_REDIS_PORT", "6379"),
-		RedisPassword: os.Getenv("QUEUE_REDIS_PASSWORD"),
-		RedisDB:       envOrDefault("QUEUE_REDIS_DB", "0"),
-		RedisTLS:      redisTLS,
-		SigningKey:    os.Getenv("QUEUE_SIGNING_KEY"),
-		Encrypt:       os.Getenv("QUEUE_ENCRYPT") == "true",
+	config.Queue = queue.QueueConfig{
+		Driver: envOrDefault("QUEUE_DRIVER", "memory"),
+		Redis: queue.RedisConfig{
+			Host:     envOrDefault("QUEUE_REDIS_HOST", "localhost"),
+			Port:     envOrDefault("QUEUE_REDIS_PORT", "6379"),
+			Password: os.Getenv("QUEUE_REDIS_PASSWORD"),
+			DB:       envOrDefault("QUEUE_REDIS_DB", "0"),
+			TLS:      redisTLS,
+		},
+		SigningKey: os.Getenv("QUEUE_SIGNING_KEY"),
+		// final: do not rename. QUEUE_ACCEPT_UNSIGNED is the 1.0 surface
+		// name for the queue payload-signing opt-out. Common truthy
+		// spellings are accepted so a typo does not silently keep the
+		// guard on when the operator meant to opt out.
+		AcceptUnsigned: envTruthy("QUEUE_ACCEPT_UNSIGNED"),
+		Encrypt:        os.Getenv("QUEUE_ENCRYPT") == "true",
 	}
 
 	// Storage
 	storageDefault := envOrDefault("STORAGE_DRIVER", "local")
-	config.Storage = StorageConfig{
+	config.Storage = storage.Config{
 		Default: storageDefault,
-		Disks:   make(map[string]DiskConfig),
+		Disks:   make(map[string]storage.DiskConfig),
 	}
 	// Always configure a local disk
-	config.Storage.Disks["local"] = DiskConfig{
+	config.Storage.Disks["local"] = storage.DiskConfig{
 		Driver: "local",
 		Root:   envOrDefault("FILESYSTEM_LOCAL_ROOT", "./storage/app"),
 	}
 	// Configure S3 disk if credentials are present
 	if s3Bucket := os.Getenv("AWS_BUCKET"); s3Bucket != "" {
-		config.Storage.Disks["s3"] = DiskConfig{
+		config.Storage.Disks["s3"] = storage.DiskConfig{
 			Driver: "s3",
 			Bucket: s3Bucket,
 			Region: os.Getenv("AWS_DEFAULT_REGION"),
@@ -605,6 +570,30 @@ func ConfigFromEnv() Config {
 		}
 	}
 
+	// Maintenance. An unset VELOCITY_MAINTENANCE_EXCLUDE_PATHS adds no
+	// paths; entries are trimmed and empty ones skipped by the gate.
+	config.Maintenance = contract.MaintenanceConfig{
+		Root:   os.Getenv("VELOCITY_MAINTENANCE_ROOT"),
+		AppKey: config.Key,
+	}
+	if raw := os.Getenv("VELOCITY_MAINTENANCE_EXCLUDE_PATHS"); raw != "" {
+		config.Maintenance.ExcludePaths = strings.Split(raw, ",")
+	}
+
+	// gRPC. Environment is the same normalised APP_ENV as Config.Env.
+	config.GRPC = contract.GRPCConfig{
+		ServerPort:       os.Getenv("GRPC_PORT"),
+		EnableReflection: os.Getenv("GRPC_REFLECTION") == "true",
+		GatewayPort:      os.Getenv("GATEWAY_PORT"),
+		GRPCEndpoint:     os.Getenv("GRPC_ENDPOINT"),
+		Environment:      config.Env,
+		// final: do not rename. GRPC_INSECURE is the 1.0 surface name for
+		// the production TLS opt-out.
+		Insecure: os.Getenv("GRPC_INSECURE") == "true",
+	}
+	config.GRPC.MaxRecvMsgSize = envGRPCMsgSize("GRPC_MAX_RECV_SIZE", &config.GRPC.Warnings)
+	config.GRPC.MaxSendMsgSize = envGRPCMsgSize("GRPC_MAX_SEND_SIZE", &config.GRPC.Warnings)
+
 	// Server timeouts
 	config.ReadTimeout = envDurationOrDefault("SERVER_READ_TIMEOUT", 30*time.Second)
 	config.WriteTimeout = envDurationOrDefault("SERVER_WRITE_TIMEOUT", 30*time.Second)
@@ -615,6 +604,100 @@ func ConfigFromEnv() Config {
 }
 
 // Helper functions
+
+// envTruthy reports whether key holds 1, true, yes or on (any case,
+// surrounding space ignored).
+func envTruthy(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// envPositiveInt reads a positive integer; unset, malformed, zero or
+// negative is 0.
+func envPositiveInt(key string) int {
+	n, err := strconv.Atoi(os.Getenv(key))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+// grpcDefaultMaxMsgSize is the gRPC message-size default the grpc package
+// applies to a zero size; quoted in the warnings below.
+const grpcDefaultMaxMsgSize = 4 * 1024 * 1024
+
+// envGRPCMsgSize reads a gRPC message-size limit in bytes. Unset is 0 (the
+// default). A non-integer or zero value is 0 with a warning naming the key;
+// any other integer is passed on for the grpc package to range-check
+// (negative falls back, above 1 GiB clamps, each with its own warning).
+func envGRPCMsgSize(key string, warnings *[]string) int {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	switch {
+	case err != nil:
+		*warnings = append(*warnings, fmt.Sprintf("velocity/grpc: %s=%q is not an integer; using the %d default", key, raw, grpcDefaultMaxMsgSize))
+		return 0
+	case n == 0:
+		*warnings = append(*warnings, fmt.Sprintf("velocity/grpc: %s=0 is not positive; using the %d default", key, grpcDefaultMaxMsgSize))
+	}
+	return n
+}
+
+// cacheDriverFromEnv maps CACHE_DRIVER onto the store driver: exactly
+// "file" or "redis" select that driver; anything else, unset or unknown,
+// is the memory driver.
+func cacheDriverFromEnv(raw string) string {
+	switch raw {
+	case cache.DriverFile, cache.DriverRedis:
+		return raw
+	}
+	return cache.DriverMemory
+}
+
+// envLoginDecay reads AUTH_LOGIN_DECAY as a Go duration or bare seconds,
+// untrimmed. Unset, malformed, zero or negative is 0 (the default).
+func envLoginDecay(key string) time.Duration {
+	raw := os.Getenv(key)
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return d
+	}
+	if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return 0
+}
+
+// envLoginDuration reads a login-throttle duration as a Go duration
+// ("2s", "500ms") or bare seconds. Unset, malformed or negative is 0 (the
+// default). An explicit zero is 0 too, unless zeroDisables: then it is -1,
+// the value auth.LoginThrottleConfig reads as "disabled".
+func envLoginDuration(key string, zeroDisables bool) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		seconds, aerr := strconv.Atoi(raw)
+		if aerr != nil {
+			return 0
+		}
+		d = time.Duration(seconds) * time.Second
+	}
+	switch {
+	case d < 0:
+		return 0
+	case d == 0 && zeroDisables:
+		return -1
+	}
+	return d
+}
 
 func envOrDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
@@ -757,99 +840,17 @@ func (c Config) Validate() error {
 	if err := c.Cache.Validate(); err != nil {
 		return errchain.Errorf("%w: %v", ErrInvalidConfig, err)
 	}
-	if err := c.Queue.Validate(); err != nil {
-		return errchain.Errorf("%w: %v", ErrInvalidConfig, err)
-	}
 	if err := c.Storage.Validate(); err != nil {
 		return errchain.Errorf("%w: %v", ErrInvalidConfig, err)
 	}
+	// Queue is not validated here: queue.QueueConfig.Validate checks the
+	// *sql.DB that New wires in later, and NewQueue runs it then.
 	// View validation runs at the root level so a bad view config fails
 	// here whether or not New builds the engine (see buildsViewEngine):
 	// VIEW_SSR_ENABLED=true with VIEW_SSR_TIMEOUT=0 is rejected before
 	// anything is constructed.
 	if err := c.View.Validate(); err != nil {
 		return errchain.Errorf("%w: %v", ErrInvalidConfig, err)
-	}
-	return nil
-}
-
-// Validate checks the DBConfig for STRUCTURAL problems only. A zero-value
-// DBConfig (no Connection) is valid: the framework treats it as "no database
-// configured" and skips initDB.
-//
-// Validate deliberately does NOT check the driver name against an allowlist.
-// Whether a named driver is actually wired is the orm driver registry's
-// concern: initDB resolves the driver via orm.NewManager, and an unknown or
-// unwired name surfaces as a typed driverregistry.NotFoundError at that point
-// (which also lists the drivers that ARE registered). Consulting the registry
-// here would couple config loading to import order and produce a worse error
-// than the registry's own.
-func (c DBConfig) Validate() error {
-	if c.Connection == "" {
-		return nil
-	}
-	if c.MaxIdleConns < 0 || c.MaxOpenConns < 0 {
-		return fmt.Errorf("DB_MAX_IDLE_CONNS / DB_MAX_OPEN_CONNS must be non-negative")
-	}
-	if c.ConnMaxLifetime < 0 || c.SlowThreshold < 0 {
-		return fmt.Errorf("DB_CONN_MAX_LIFETIME / DB_SLOW_QUERY_THRESHOLD must be non-negative")
-	}
-	return nil
-}
-
-// Validate checks the CacheConfig for STRUCTURAL problems only. An empty
-// Driver is treated as "memory" by initCache; Validate accepts that.
-//
-// The driver name is not checked against an allowlist: an unknown or unwired
-// driver is the cache driver registry's concern and surfaces as a typed
-// NotFoundError at resolution time. Validate only enforces the per-driver
-// structural requirements (file needs a path) and numeric sanity.
-func (c CacheConfig) Validate() error {
-	if c.Driver == "" {
-		return nil
-	}
-	if c.Driver == "file" && c.Path == "" {
-		// File driver requires CACHE_PATH so the store has a directory to
-		// write into; an empty path resolves to the process CWD which
-		// silently pollutes the deployment.
-		return fmt.Errorf("CACHE_PATH is required when CACHE_DRIVER=file")
-	}
-	if c.RedisPort < 0 || c.RedisDatabase < 0 {
-		return fmt.Errorf("REDIS_PORT / REDIS_DATABASE must be non-negative")
-	}
-	return nil
-}
-
-// Validate checks the QueueConfig for STRUCTURAL problems only. An empty
-// Driver is accepted (initQueue defaults to memory). The driver name is not
-// checked against an allowlist: an unknown or unwired driver surfaces as a
-// typed NotFoundError when the queue driver registry resolves it. The config
-// carries no other structurally-constrained queue fields, so a well-formed
-// QueueConfig is always valid here.
-func (c QueueConfig) Validate() error {
-	return nil
-}
-
-// Validate checks the StorageConfig for STRUCTURAL problems only. Each disk
-// must name a non-empty driver and satisfy that driver's required fields (s3
-// needs a bucket), and the default disk (if set) must exist in the Disks map.
-//
-// The driver name is not checked against an allowlist: an unknown or unwired
-// disk driver surfaces as a typed NotFoundError when the storage driver
-// registry resolves it.
-func (c StorageConfig) Validate() error {
-	for name, disk := range c.Disks {
-		if disk.Driver == "" {
-			return fmt.Errorf("storage disk %q has empty driver", name)
-		}
-		if disk.Driver == "s3" && disk.Bucket == "" {
-			return fmt.Errorf("storage disk %q uses s3 driver but Bucket is empty", name)
-		}
-	}
-	if c.Default != "" {
-		if _, ok := c.Disks[c.Default]; !ok && len(c.Disks) > 0 {
-			return fmt.Errorf("STORAGE_DRIVER=%q does not match any configured disk", c.Default)
-		}
 	}
 	return nil
 }

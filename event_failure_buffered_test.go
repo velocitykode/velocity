@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/events"
+	"github.com/velocitykode/velocity/orm"
 )
 
 // bufferedEvent is an app event recorded in a transaction's buffer.
@@ -29,7 +30,7 @@ func TestBufferedTransactionEventFailures_ReachTheFailurePolicyOnce(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			var rec hookRecorder
 			a, _ := newLoggerWiringApp(t, func(c *Config) {
-				c.DB = DBConfig{Connection: "sqlite", Database: ":memory:"}
+				c.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}
 			}, WithFailedEventHook(rec.hook))
 			a.Services.Events.Listen("app.buffered", failingListener{name: "app.buffered"})
 			a.Services.Events.Listen("app.buffered", failingListener{name: "app.buffered"})

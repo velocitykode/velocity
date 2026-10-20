@@ -54,7 +54,7 @@ func TestGateway_FailedServeWithHostileErrorStops(t *testing.T) {
 				t.Fatalf("listen: %v", err)
 			}
 			t.Cleanup(func() { _ = raw.Close() })
-			g := NewGateway()
+			g := NewGateway(Config{})
 			c := &gatewayLife{
 				run:       g.own.NewRun(),
 				srv:       &http.Server{Handler: http.NotFoundHandler()},

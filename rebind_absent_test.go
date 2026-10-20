@@ -27,7 +27,7 @@ func storelessCacheConfig(t *testing.T) Config {
 	})
 	t.Cleanup(func() { cache.Drivers().Override("redis", prev) })
 	cfg := testAppConfig()
-	cfg.Cache.Driver = "redis"
+	cfg.Cache = cache.SingleStoreConfig(cfg.Cache.Prefix, cache.StoreConfig{Driver: "redis"})
 	return cfg
 }
 
@@ -36,7 +36,7 @@ func TestRebind_LoginThrottlerInstalledWhenACacheArrivesLate(t *testing.T) {
 	scheme := &fakeLoginThrottlerScheme{}
 	a, err := New(WithConfig(storelessCacheConfig(t)), WithModules(swapIn(func(s *app.Services) {
 		s.Auth.(*auth.Manager).RegisterScheme("late", scheme)
-		next = initCache(CacheConfig{Driver: "memory", Prefix: "late"}, s.Log)
+		next = initCache(cache.SingleStoreConfig("late", cache.StoreConfig{Driver: "memory"}), s.Log)
 		s.Cache = next
 	})))
 	if err != nil {
@@ -68,7 +68,7 @@ func TestRebind_LoginThrottlerAModuleSetIsKeptWhenACacheArrivesLate(t *testing.T
 		manager := s.Auth.(*auth.Manager)
 		manager.RegisterScheme("late", scheme)
 		manager.SetLoginThrottler(own)
-		s.Cache = initCache(CacheConfig{Driver: "memory", Prefix: "late"}, s.Log)
+		s.Cache = initCache(cache.SingleStoreConfig("late", cache.StoreConfig{Driver: "memory"}), s.Log)
 	})))
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -112,7 +112,7 @@ func TestRebind_NotificationDatabaseChannelAModuleSetIsKeptWhenADatabaseArrivesL
 			t.Fatalf("Channel: %v", err)
 		}
 		ch.(notificationDBChannel).SetDB(own, "sqlite")
-		m, err := initDB(DBConfig{Connection: "sqlite", Database: ":memory:"}, s.Log)
+		m, err := initDB(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}, s.Log)
 		if err != nil {
 			t.Fatalf("initDB: %v", err)
 		}
@@ -133,7 +133,7 @@ func TestRebind_ORMDefaultInstalledWhenADatabaseArrivesLate(t *testing.T) {
 	}
 	var next *orm.Manager
 	a, err := NewTestApp(WithModules(swapIn(func(s *app.Services) {
-		m, err := initDB(DBConfig{Connection: "sqlite", Database: ":memory:"}, s.Log)
+		m, err := initDB(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}, s.Log)
 		if err != nil {
 			t.Fatalf("initDB: %v", err)
 		}
@@ -152,7 +152,7 @@ func TestRebind_ORMDefaultInstalledWhenADatabaseArrivesLate(t *testing.T) {
 // A default the module installed itself is kept when its database arrives
 // late.
 func TestRebind_ORMDefaultAModuleSetIsKeptWhenADatabaseArrivesLate(t *testing.T) {
-	own, err := initDB(DBConfig{Connection: "sqlite", Database: ":memory:"}, nil)
+	own, err := initDB(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}, nil)
 	if err != nil {
 		t.Fatalf("initDB: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestRebind_ORMDefaultAModuleSetIsKeptWhenADatabaseArrivesLate(t *testing.T)
 		orm.ResetDefault()
 	})
 	a, err := NewTestApp(WithModules(swapIn(func(s *app.Services) {
-		m, err := initDB(DBConfig{Connection: "sqlite", Database: ":memory:"}, s.Log)
+		m, err := initDB(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}, s.Log)
 		if err != nil {
 			t.Fatalf("initDB: %v", err)
 		}
@@ -182,7 +182,7 @@ func TestRebind_ORMDefaultAModuleSetIsKeptWhenADatabaseArrivesLate(t *testing.T)
 func TestRebind_NotificationDatabaseChannelBoundWhenADatabaseArrivesLate(t *testing.T) {
 	var next *orm.Manager
 	a, err := NewTestApp(WithModules(swapIn(func(s *app.Services) {
-		m, err := initDB(DBConfig{Connection: "sqlite", Database: ":memory:"}, s.Log)
+		m, err := initDB(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}, s.Log)
 		if err != nil {
 			t.Fatalf("initDB: %v", err)
 		}

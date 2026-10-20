@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/app"
+	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/events"
@@ -139,7 +140,6 @@ func TestShutdown_ClearsEventQueueFailureReporter(t *testing.T) {
 func TestShutdown_ClearsQueuePayloadEncryptor(t *testing.T) {
 	resetQueueSigningState(t)
 	resetQueueEncryptionState(t)
-	t.Setenv("QUEUE_ACCEPT_UNSIGNED", "")
 
 	a, err := New(WithConfig(Config{
 		Env:   "testing",
@@ -149,15 +149,12 @@ func TestShutdown_ClearsQueuePayloadEncryptor(t *testing.T) {
 		Crypto: crypto.Config{
 			Key: "base64:MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
 		},
-		Cache: CacheConfig{
-			Driver: "memory",
-			Prefix: "test_cache",
-		},
+		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
 		Log: log.LogConfig{
 			Driver: "console",
 			Config: make(map[string]any),
 		},
-		Queue: QueueConfig{
+		Queue: queue.QueueConfig{
 			Driver:  "memory",
 			Encrypt: true,
 		},

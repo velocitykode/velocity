@@ -41,7 +41,7 @@ func TestServerStart_StoppedAfterBuildReturnsErrServerStopped(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			var ref atomic.Pointer[grpc.Server]
-			s := grpc.NewServer(grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&warningStopLogger{server: &ref}))
+			s := grpc.NewServer(grpc.Config{}, grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&warningStopLogger{server: &ref}))
 			ref.Store(s)
 			s.RegisterService(regNoopExternal)
 			stopOnCleanup(t, s)
@@ -73,7 +73,7 @@ func regNoopExternal(any) {}
 func TestServerStart_RacingBuildStartStop(t *testing.T) {
 	for range 30 {
 		lis := &closeTracker{Listener: testnet.Loopback(t)}
-		s := grpc.NewServer(grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+		s := grpc.NewServer(grpc.Config{}, grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 		var wg sync.WaitGroup
 		for i := range 9 {
 			wg.Add(1)

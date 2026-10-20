@@ -11,11 +11,13 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/async"
+	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/events"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 	"github.com/velocitykode/velocity/log"
+	"github.com/velocitykode/velocity/queue"
 	testsync "github.com/velocitykode/velocity/testing"
 	"github.com/velocitykode/velocity/trace"
 )
@@ -160,7 +162,7 @@ func TestPackageState_FailedNewRestoresTheLiveOwner(t *testing.T) {
 	before := len(packageStack)
 	packageStateMu.Unlock()
 
-	cfg := Config{Env: "testing", Port: "0", Cache: CacheConfig{Driver: "memory"}, Queue: QueueConfig{Driver: "memory"}}
+	cfg := Config{Env: "testing", Port: "0", Cache: cache.SingleStoreConfig("", cache.StoreConfig{Driver: "memory"}), Queue: queue.QueueConfig{Driver: "memory"}}
 	if _, err := New(WithConfig(cfg), WithModules(failingInitModule{})); !errors.Is(err, errOwnerInitFailed) {
 		t.Fatalf("New = %v, want the module's Init error", err)
 	}
@@ -280,8 +282,8 @@ func TestShutdown_LateWriteThroughTheOldPackageLoggerDoesNotReopenTheLogFile(t *
 	cfg := Config{
 		Env:   "testing",
 		Port:  "0",
-		Cache: CacheConfig{Driver: "memory"},
-		Queue: QueueConfig{Driver: "memory"},
+		Cache: cache.SingleStoreConfig("", cache.StoreConfig{Driver: "memory"}),
+		Queue: queue.QueueConfig{Driver: "memory"},
 		Log:   log.LogConfig{Driver: "file", Config: map[string]any{"path": dir, "days": 0}},
 	}
 	a, err := New(WithConfig(cfg))

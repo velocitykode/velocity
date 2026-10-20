@@ -69,7 +69,7 @@ type Gateway struct {
 
 	// environment is the deployment environment (e.g., "production", "staging").
 	// When set to "production", Build() refuses to start without explicitly
-	// configured transport credentials. Defaults to APP_ENV at construction.
+	// configured transport credentials. Defaults to Config.Environment.
 	environment string
 
 	// credsOpted tracks whether the caller supplied transport credentials via
@@ -98,17 +98,18 @@ type GatewayRegistrationFunc func(ctx context.Context, mux *runtime.ServeMux, en
 // GatewayOption configures the Gateway
 type GatewayOption func(*Gateway)
 
-// NewGateway creates a new HTTP gateway with the given options. Defaults
-// are sourced from environment variables (via LoadConfig) so behaviour
-// matches the rest of the framework: GATEWAY_PORT and GRPC_ENDPOINT are
-// honoured if set. Explicit GatewayOption arguments still override the
-// env-derived defaults.
-func NewGateway(opts ...GatewayOption) *Gateway {
-	cfg := LoadConfig()
+// NewGateway creates a new HTTP gateway from cfg and the given options. cfg
+// supplies the defaults (GatewayPort, GRPCEndpoint, Environment); a zero
+// field means the built-in default (see contract.GRPCConfig). NewGateway
+// never reads the environment: velocity.ConfigFromEnv fills cfg from
+// GATEWAY_PORT / GRPC_ENDPOINT / APP_ENV. Explicit GatewayOption arguments
+// override cfg.
+func NewGateway(cfg Config, opts ...GatewayOption) *Gateway {
+	cfg = normalizeConfig(cfg)
 	g := &Gateway{
 		port:           cfg.GatewayPort,
 		grpcEndpoint:   cfg.GRPCEndpoint,
-		environment:    contract.GetEnv(),
+		environment:    cfg.Environment,
 		readTimeout:    defaultGatewayReadTimeout,
 		writeTimeout:   defaultGatewayWriteTimeout,
 		idleTimeout:    defaultGatewayIdleTimeout,
@@ -380,7 +381,7 @@ func (g *Gateway) RegisterHandler(handler GatewayRegistrationFunc) *Gateway {
 // Build constructs the HTTP gateway with all configured handlers.
 // This is called automatically by Start() if not called explicitly.
 //
-// Build refuses to start in production (APP_ENV=production or
+// Build refuses to start in production (Config.Environment or
 // GatewayWithEnvironment("production")) when no transport credentials have
 // been configured. Outside production, an unconfigured gateway defaults to
 // insecure credentials and emits a one-shot warning. Operators that

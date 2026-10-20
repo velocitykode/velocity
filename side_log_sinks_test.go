@@ -13,12 +13,15 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 
+	"github.com/velocitykode/velocity/cache"
 	_ "github.com/velocitykode/velocity/cache/redis"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 	"github.com/velocitykode/velocity/log"
 	_ "github.com/velocitykode/velocity/log/file"
 	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/orm"
+	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/validation"
 )
@@ -36,25 +39,24 @@ var sideSinkLines = map[string]string{
 // driveSideSinkLines builds a bootstrapped app logging through logCfg and
 // makes it write each of sideSinkLines once: a CORS middleware allowing
 // every origin with credentials serves a request, the encryptor fails to
-// authenticate a payload (CRYPTO_DEBUG=true), a Unique rule queries a missing table, a
+// authenticate a payload (crypto Debug on), a Unique rule queries a missing table, a
 // route is registered after the router started serving, and the Redis
 // cache store connects without TLS to a host it cannot tell is loopback.
 func driveSideSinkLines(t *testing.T, logCfg log.LogConfig) {
 	t.Helper()
-	t.Setenv("CRYPTO_DEBUG", "true")
 	mr := miniredis.RunT(t)
 
 	a, err := New(WithConfig(Config{
 		Env:  "testing",
 		Port: "0",
 		Log:  logCfg,
-		DB:   DBConfig{Connection: "sqlite", Database: ":memory:"},
+		DB:   orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"},
 		// "localhost." reaches the loopback miniredis, but the store does
 		// not resolve names, so it warns as for a remote host.
-		Cache:  CacheConfig{Driver: "redis", Prefix: "sinks", RedisHost: "localhost.", RedisPort: mr.Server().Addr().Port},
-		Queue:  QueueConfig{Driver: "memory"},
+		Cache:  cache.SingleStoreConfig("sinks", cache.StoreConfig{Driver: "redis", Host: "localhost.", Port: mr.Server().Addr().Port}),
+		Queue:  queue.QueueConfig{Driver: "memory"},
 		Mail:   mail.MailConfig{Driver: "log"},
-		Crypto: crypto.Config{Key: "0123456789abcdef0123456789abcdef", Cipher: "AES-256-GCM"},
+		Crypto: crypto.Config{Key: "0123456789abcdef0123456789abcdef", Cipher: "AES-256-GCM", Debug: true},
 	}))
 	if err != nil {
 		t.Fatalf("New: %v", err)

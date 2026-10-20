@@ -62,7 +62,7 @@ func TestLogDriver_SummaryIsOneInfoLineThroughItsLogger(t *testing.T) {
 }
 
 // The recipient addresses are key-value values, so a redacting logger
-// (LOG_REDACT_EMAILS) masks them.
+// with the email rule masks them.
 func TestLogDriver_RecipientsPassThroughTheRedactor(t *testing.T) {
 	out := &fallbacklogtest.Output{}
 	d := NewLogDriver()

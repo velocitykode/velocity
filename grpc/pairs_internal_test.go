@@ -10,7 +10,7 @@ import (
 // by the interceptors package directly (InterceptorPair is an alias) and that
 // both the unary and stream interceptor slices grow by one per pair.
 func TestUseAllAcceptsInterceptorPairs(t *testing.T) {
-	s := NewServer(WithPort("0"))
+	s := NewServer(Config{}, WithPort("0"))
 
 	beforeUnary := len(s.unaryInterceptors)
 	beforeStream := len(s.streamInterceptors)

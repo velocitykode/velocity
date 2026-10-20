@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
+	"github.com/velocitykode/velocity/orm"
 )
 
 // The statements the ORM runs while it is built (SQLite's connection
@@ -14,7 +15,7 @@ import (
 func TestNew_DBInitStatementsLogThroughTheAppLogger(t *testing.T) {
 	fallback := fallbacklogtest.Capture(t)
 	_, capture := newLoggerWiringApp(t, func(c *Config) {
-		c.DB = DBConfig{Connection: "sqlite", Database: ":memory:", LogQueries: true, SlowThreshold: time.Nanosecond}
+		c.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:", LogQueries: true, SlowThreshold: time.Nanosecond}
 	})
 
 	for _, pragma := range []string{"PRAGMA foreign_keys = ON", "PRAGMA journal_mode = WAL"} {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
+	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/csrf"
@@ -22,6 +23,7 @@ import (
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/problem"
+	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -85,9 +87,9 @@ func newPipelineApp(t *testing.T, opts ...Option) (*App, *levelLogger, *recordin
 		Env:   "testing",
 		Debug: true,
 		Port:  "0",
-		Cache: CacheConfig{Driver: "memory", Prefix: "test_cache"},
+		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
 		Log:   log.LogConfig{Driver: driverName, Config: make(map[string]any)},
-		Queue: QueueConfig{Driver: "memory"},
+		Queue: queue.QueueConfig{Driver: "memory"},
 		Mail:  mail.MailConfig{Driver: "log"},
 	})}, opts...)...)
 	if err != nil {

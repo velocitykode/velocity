@@ -13,6 +13,7 @@ import (
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/chain"
 	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/orm"
 )
 
 // newCacheProbe decorates the cache s holds now with a counting probe.
@@ -335,7 +336,7 @@ func TestRebind_ADisplacedDatabaseClosesAfterTheQueue(t *testing.T) {
 	var order []string
 	var db *dbProbe
 	cfg := testAppConfig()
-	cfg.DB = DBConfig{Connection: "sqlite", Database: ":memory:"}
+	cfg.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}
 	a, err := New(WithConfig(cfg), WithModules(swapIn(func(s *app.Services) {
 		db = &dbProbe{Database: s.DB, rp: &retireProbe{inner: s.DB}}
 		s.DB = db

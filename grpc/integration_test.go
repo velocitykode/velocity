@@ -91,7 +91,7 @@ func startRig(t *testing.T, configure func(s *grpc.Server, p *panickingHealth)) 
 
 	logger, _ := log.NewLogger(log.LogConfig{Driver: "null"})
 	panicSvc := &panickingHealth{}
-	s := grpc.NewServer(
+	s := grpc.NewServer(grpc.Config{},
 		grpc.WithListener(lis),
 		grpc.WithLogger(logger),
 	)

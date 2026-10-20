@@ -12,11 +12,13 @@ import (
 
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
+	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
 	"github.com/velocitykode/velocity/problem"
+	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/router"
 	"github.com/velocitykode/velocity/view"
 )
@@ -46,9 +48,9 @@ func TestInertiaErrorPage_FlashDrainedByErrorPageStaysDrained(t *testing.T) {
 	a, err := New(WithConfig(Config{
 		Env:   "testing",
 		Port:  "0",
-		Cache: CacheConfig{Driver: "memory", Prefix: "test_cache"},
+		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
 		Log:   log.LogConfig{Driver: "null", Config: make(map[string]any)},
-		Queue: QueueConfig{Driver: "memory"},
+		Queue: queue.QueueConfig{Driver: "memory"},
 		Mail:  mail.MailConfig{Driver: "log"},
 		View:  view.Config{RootTemplate: inertiaTestTemplate, Version: "v1", ErrorPage: "Error"},
 	}))
@@ -186,9 +188,9 @@ func TestInertiaErrorPage_FlashDrainStaysDrainedWhereverBondIsRegistered(t *test
 			a, err := New(WithConfig(Config{
 				Env:   "testing",
 				Port:  "0",
-				Cache: CacheConfig{Driver: "memory", Prefix: "test_cache"},
+				Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
 				Log:   log.LogConfig{Driver: "null", Config: make(map[string]any)},
-				Queue: QueueConfig{Driver: "memory"},
+				Queue: queue.QueueConfig{Driver: "memory"},
 				Mail:  mail.MailConfig{Driver: "log"},
 				View:  view.Config{RootTemplate: inertiaTestTemplate, Version: "v1", ErrorPage: "Error"},
 			}))

@@ -1,6 +1,7 @@
 package velocity
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -108,39 +109,62 @@ func TestCacheLoginThrottler_WithDelay_Clamps(t *testing.T) {
 	}
 }
 
-func TestConfiguredLoginThrottleDuration(t *testing.T) {
+func TestEnvLoginDuration(t *testing.T) {
 	const envVar = "VELOCITY_TEST_THROTTLE_DURATION"
-	fallback := 7 * time.Second
 	cases := []struct {
-		raw  string
-		want time.Duration
+		raw          string
+		zeroDisables bool
+		want         time.Duration
 	}{
-		{"", fallback},
-		{"2s", 2 * time.Second},
-		{"500ms", 500 * time.Millisecond},
-		{"3", 3 * time.Second},
-		{"0", 0},
-		{"-1", fallback},
-		{"-2s", fallback},
-		{"garbage", fallback},
+		{"", false, 0},
+		{"2s", false, 2 * time.Second},
+		{"500ms", false, 500 * time.Millisecond},
+		{"3", false, 3 * time.Second},
+		{"0", false, 0},
+		{"0", true, -1},
+		{"0s", true, -1},
+		{"-1", true, 0},
+		{"-2s", false, 0},
+		{"garbage", true, 0},
 	}
 	for _, tc := range cases {
-		t.Run(tc.raw, func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s/%v", tc.raw, tc.zeroDisables), func(t *testing.T) {
 			t.Setenv(envVar, tc.raw)
-			if got := configuredLoginThrottleDuration(envVar, fallback); got != tc.want {
-				t.Fatalf("configuredLoginThrottleDuration(%q) = %v, want %v", tc.raw, got, tc.want)
+			if got := envLoginDuration(envVar, tc.zeroDisables); got != tc.want {
+				t.Fatalf("envLoginDuration(%q, %v) = %v, want %v", tc.raw, tc.zeroDisables, got, tc.want)
 			}
 		})
 	}
 }
 
-func TestInstallLoginThrottler_HonoursDelayEnv(t *testing.T) {
-	t.Setenv("AUTH_LOGIN_IDENTIFIER_DELAY", "250ms")
-	t.Setenv("AUTH_LOGIN_IDENTIFIER_DELAY_MAX", "2s")
+// TestInstallLoginThrottler_DelayEnvZeroDisables pins the operator path end
+// to end: AUTH_LOGIN_IDENTIFIER_DELAY=0 turns the delay off, unset keeps
+// the default.
+func TestInstallLoginThrottler_DelayEnvZeroDisables(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{"0", 0},
+		{"", auth.DefaultIdentifierDelay},
+	} {
+		t.Setenv("AUTH_LOGIN_IDENTIFIER_DELAY", tc.raw)
+		manager := auth.NewManager()
+		th := installLoginThrottler(manager, newMemoryCacheManager(), ConfigFromEnv().Auth.LoginThrottle, nil)
+		if th.delayBase != tc.want {
+			t.Fatalf("AUTH_LOGIN_IDENTIFIER_DELAY=%q: delayBase = %v, want %v", tc.raw, th.delayBase, tc.want)
+		}
+	}
+}
+
+func TestInstallLoginThrottler_HonoursDelayConfig(t *testing.T) {
 	manager := auth.NewManager()
 	scheme := &fakeLoginThrottlerScheme{}
 	manager.RegisterScheme("web", scheme)
-	installLoginThrottler(manager, newMemoryCacheManager(), nil)
+	installLoginThrottler(manager, newMemoryCacheManager(), auth.LoginThrottleConfig{
+		IdentifierDelay:    250 * time.Millisecond,
+		IdentifierDelayMax: 2 * time.Second,
+	}, nil)
 	th, ok := scheme.throttler.(*cacheLoginThrottler)
 	if !ok {
 		t.Fatalf("installed throttler is %T, want *cacheLoginThrottler", scheme.throttler)

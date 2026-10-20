@@ -144,9 +144,9 @@ func shutdownApp(t *testing.T, a *App) {
 func TestRebind_ORMDefaultFollowsDB(t *testing.T) {
 	var next *orm.Manager
 	cfg := testAppConfig()
-	cfg.DB = DBConfig{Connection: "sqlite", Database: ":memory:"}
+	cfg.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}
 	a, err := New(WithConfig(cfg), WithModules(swapIn(func(s *app.Services) {
-		m, err := initDB(DBConfig{Connection: "sqlite", Database: ":memory:"}, s.Log)
+		m, err := initDB(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}, s.Log)
 		if err != nil {
 			t.Fatalf("initDB: %v", err)
 		}
@@ -165,7 +165,7 @@ func TestRebind_ORMDefaultFollowsDB(t *testing.T) {
 func TestRebind_LoginThrottlerFollowsCache(t *testing.T) {
 	var next *cache.Manager
 	a, err := NewTestApp(WithModules(swapIn(func(s *app.Services) {
-		next = initCache(CacheConfig{Driver: "memory", Prefix: "swapped"}, s.Log)
+		next = initCache(cache.SingleStoreConfig("swapped", cache.StoreConfig{Driver: "memory"}), s.Log)
 		s.Cache = next
 	})))
 	if err != nil {
@@ -188,7 +188,7 @@ func TestRebind_SchedulerLockerFollowsCache(t *testing.T) {
 	dir := t.TempDir()
 	var next *cache.Manager
 	a, err := NewTestApp(WithModules(swapIn(func(s *app.Services) {
-		next = initCache(CacheConfig{Driver: "file", Path: dir, Prefix: "swapped"}, s.Log)
+		next = initCache(cache.SingleStoreConfig("swapped", cache.StoreConfig{Driver: "file", Path: dir}), s.Log)
 		s.Cache = next
 	})))
 	if err != nil {
@@ -209,7 +209,7 @@ func TestRebind_SchedulerLockerAModuleSetIsKept(t *testing.T) {
 	own := scheduler.NewInMemoryLocker()
 	a, err := NewTestApp(WithModules(swapIn(func(s *app.Services) {
 		s.Scheduler.(*scheduler.Scheduler).SetLocker(own)
-		s.Cache = initCache(CacheConfig{Driver: "file", Path: dir, Prefix: "swapped"}, s.Log)
+		s.Cache = initCache(cache.SingleStoreConfig("swapped", cache.StoreConfig{Driver: "file", Path: dir}), s.Log)
 	})))
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -238,7 +238,7 @@ func TestRebind_AModuleSetLoginThrottlerSurvives(t *testing.T) {
 	own := &noopThrottler{}
 	a, err := NewTestApp(WithModules(swapIn(func(s *app.Services) {
 		s.Auth.(*auth.Manager).SetLoginThrottler(own)
-		s.Cache = initCache(CacheConfig{Driver: "memory", Prefix: "swapped"}, s.Log)
+		s.Cache = initCache(cache.SingleStoreConfig("swapped", cache.StoreConfig{Driver: "memory"}), s.Log)
 	})))
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -275,7 +275,7 @@ func TestRebind_ACSRFReplacementWithoutARotatorClearsIt(t *testing.T) {
 func TestLoginThrottler_StoreSwapWhileCounting(t *testing.T) {
 	stores := make([]contract.CacheStore, 2)
 	for i := range stores {
-		s, err := initCache(CacheConfig{Driver: "memory"}, nil).DefaultStore()
+		s, err := initCache(cache.SingleStoreConfig("", cache.StoreConfig{Driver: "memory"}), nil).DefaultStore()
 		if err != nil {
 			t.Fatalf("DefaultStore: %v", err)
 		}
@@ -305,14 +305,14 @@ func TestLoginThrottler_StoreSwapWhileCounting(t *testing.T) {
 func dbChannelApp(t *testing.T, fn func(s *app.Services)) (*App, error) {
 	t.Helper()
 	cfg := testAppConfig()
-	cfg.DB = DBConfig{Connection: "sqlite", Database: ":memory:"}
+	cfg.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}
 	return New(WithConfig(cfg), WithModules(swapIn(fn)))
 }
 
 func TestRebind_NotificationDatabaseChannelFollowsDB(t *testing.T) {
 	var next *orm.Manager
 	a, err := dbChannelApp(t, func(s *app.Services) {
-		m, err := initDB(DBConfig{Connection: "sqlite", Database: ":memory:"}, s.Log)
+		m, err := initDB(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}, s.Log)
 		if err != nil {
 			t.Fatalf("initDB: %v", err)
 		}
@@ -344,7 +344,7 @@ func TestRebind_NotificationDatabaseChannelAModuleSetIsKept(t *testing.T) {
 			t.Fatalf("Channel: %v", err)
 		}
 		ch.(notificationDBChannel).SetDB(own, "sqlite")
-		m, err := initDB(DBConfig{Connection: "sqlite", Database: ":memory:"}, s.Log)
+		m, err := initDB(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}, s.Log)
 		if err != nil {
 			t.Fatalf("initDB: %v", err)
 		}

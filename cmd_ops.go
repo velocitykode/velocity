@@ -140,6 +140,7 @@ func (downCmd) run(a *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	opts.Root = a.config.Maintenance.Root
 	return console.Down(opts)
 }
 
@@ -151,7 +152,7 @@ func (upCmd) run(a *App, args []string) error {
 	if err := rejectNoArgs(args); err != nil {
 		return err
 	}
-	return console.Up()
+	return console.Up(a.config.Maintenance.Root)
 }
 
 // --- Keys ---

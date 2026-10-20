@@ -12,9 +12,11 @@ import (
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth/drivers/schemes"
 	"github.com/velocitykode/velocity/auth/drivers/session"
+	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/notification"
+
 	// The database and mail channel drivers, as an app blank-imports them.
 	_ "github.com/velocitykode/velocity/notification/database"
 	_ "github.com/velocitykode/velocity/notification/mail"
@@ -135,7 +137,7 @@ func TestRebind_ServerSessionStoreFollowsCache(t *testing.T) {
 	sessionAppEnv(t, map[string]string{"SESSION_STORE": "server"})
 	var next contract.CacheStore
 	a, err := New(WithConfig(ConfigFromEnv()), WithModules(swapIn(func(s *app.Services) {
-		cm := initCache(CacheConfig{Driver: "memory", Prefix: "swapped"}, s.Log)
+		cm := initCache(cache.SingleStoreConfig("swapped", cache.StoreConfig{Driver: "memory"}), s.Log)
 		next, _ = cm.DefaultStore()
 		s.Cache = cm
 	})))

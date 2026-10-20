@@ -2,12 +2,13 @@ package velocity
 
 import (
 	"context"
-	"github.com/velocitykode/velocity/contract"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/velocitykode/velocity/contract"
 
 	"github.com/velocitykode/velocity/auth"
 )

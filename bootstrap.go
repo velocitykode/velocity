@@ -102,7 +102,13 @@ func (a *App) runBootstrap() error {
 	}
 
 	// 2. Build middleware stack
-	mwStack := chain.NewMiddlewareStack(a.Services)
+	// The bypass salt is the app key unless the maintenance settings
+	// name their own.
+	maint := a.config.Maintenance
+	if maint.AppKey == "" {
+		maint.AppKey = a.config.Key
+	}
+	mwStack := chain.NewMiddlewareStack(a.Services, maint)
 
 	dispatchModuleCallback(a.chainModules, func(mp chain.MiddlewareModule) {
 		mp.Middleware(mwStack)

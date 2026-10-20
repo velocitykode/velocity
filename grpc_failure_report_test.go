@@ -51,7 +51,7 @@ type grpcOrdersModule struct {
 }
 
 func (m *grpcOrdersModule) Init(s *app.Services) error {
-	m.server = velgrpc.NewServer(
+	m.server = velgrpc.NewServer(velgrpc.Config{},
 		velgrpc.WithListener(m.lis),
 		velgrpc.WithEnvironment("testing"),
 		velgrpc.WithLogger(s.Log),

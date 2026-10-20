@@ -29,7 +29,7 @@ func BenchmarkDefaultChain_Unary(b *testing.B) {
 
 func benchUserChain(b *testing.B, dispatcher bool) {
 	quiet, _ := log.NewLogger(log.LogConfig{Driver: "null"})
-	s := NewServer(WithLogger(quiet))
+	s := NewServer(Config{}, WithLogger(quiet))
 	if dispatcher {
 		s.SetEventDispatcher(func(context.Context, any) error { return nil })
 	}
@@ -59,7 +59,7 @@ func benchUserChain(b *testing.B, dispatcher bool) {
 
 func benchDefaultChain(b *testing.B, dispatcher bool) {
 	quiet, _ := log.NewLogger(log.LogConfig{Driver: "null"})
-	s := NewServer(WithLogger(quiet))
+	s := NewServer(Config{}, WithLogger(quiet))
 	if dispatcher {
 		// A dispatcher with nothing listening: the events are built and
 		// handed over, and dropped.
@@ -102,7 +102,7 @@ func (s benchStream) Context() context.Context { return s.ctx }
 // composes a stream chain, without an event dispatcher.
 func BenchmarkDefaultChain_Stream(b *testing.B) {
 	quiet, _ := log.NewLogger(log.LogConfig{Driver: "null"})
-	s := NewServer(WithLogger(quiet))
+	s := NewServer(Config{}, WithLogger(quiet))
 	pass := func(srv any, ss grpcgo.ServerStream, _ *grpcgo.StreamServerInfo, h grpcgo.StreamHandler) error {
 		return h(srv, ss)
 	}

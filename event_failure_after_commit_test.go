@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/velocitykode/velocity/cache"
+	"github.com/velocitykode/velocity/orm"
 )
 
 // afterCommitFailingListener waits for the surrounding transaction to
@@ -28,7 +29,7 @@ func hookCalls(h *hookRecorder) int {
 func TestAfterCommitListenerFailures_ReachTheFailurePolicyOnce(t *testing.T) {
 	var rec hookRecorder
 	a, capture := newLoggerWiringApp(t, func(c *Config) {
-		c.DB = DBConfig{Connection: "sqlite", Database: ":memory:"}
+		c.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}
 	}, WithFailedEventHook(rec.hook))
 	a.Services.Events.Listen("cache.hit", afterCommitFailingListener{failingListener{name: "cache.hit"}})
 	a.Services.Events.Listen("cache.hit", afterCommitFailingListener{failingListener{name: "cache.hit"}})

@@ -66,7 +66,7 @@ func TestAESDriver_LegacyDecryptWarnsThroughItsLogger(t *testing.T) {
 	})
 }
 
-// With CRYPTO_DEBUG=true when the driver is built, a decrypt failure writes
+// With WithDecryptDebug(true) when the driver is built, a decrypt failure writes
 // debug lines naming the failing stage (the key attempt's own stage, then
 // the all-keys summary) through the driver's logger; without it, none. Key
 // bytes and plaintext never appear.
@@ -74,17 +74,16 @@ func TestAESDriver_DecryptFailureDebugLine(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
 	for _, tc := range []struct {
 		name  string
-		debug string
+		debug bool
 		want  int
 	}{
-		{"CRYPTO_DEBUG=true", "true", 2},
-		{"CRYPTO_DEBUG unset", "", 0},
+		{"debug on", true, 2},
+		{"debug off", false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stdlib := fallbacklogtest.CaptureStdlib(t)
-			t.Setenv("CRYPTO_DEBUG", tc.debug)
 			out := &fallbacklogtest.Output{}
-			d, err := NewAESDriver(key, nil, "AES-256-GCM")
+			d, err := NewAESDriver(key, nil, "AES-256-GCM", WithDecryptDebug(tc.debug))
 			if err != nil {
 				t.Fatalf("NewAESDriver: %v", err)
 			}
@@ -93,7 +92,7 @@ func TestAESDriver_DecryptFailureDebugLine(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Encrypt: %v", err)
 			}
-			other, err := NewAESDriver([]byte("fedcba9876543210fedcba9876543210"), nil, "AES-256-GCM")
+			other, err := NewAESDriver([]byte("fedcba9876543210fedcba9876543210"), nil, "AES-256-GCM", WithDecryptDebug(tc.debug))
 			if err != nil {
 				t.Fatalf("NewAESDriver: %v", err)
 			}
@@ -120,8 +119,7 @@ func TestAESDriver_DecryptFailureDebugLine(t *testing.T) {
 // SetLogger may run while decrypts that write through the logger are in
 // flight: the logger is held under the driver's mutex.
 func TestAESDriver_SetLoggerWhileDecryptingIsSafe(t *testing.T) {
-	t.Setenv("CRYPTO_DEBUG", "true")
-	d, err := NewAESDriver([]byte("0123456789abcdef"), nil, "AES-128-CBC")
+	d, err := NewAESDriver([]byte("0123456789abcdef"), nil, "AES-128-CBC", WithDecryptDebug(true))
 	if err != nil {
 		t.Fatalf("NewAESDriver: %v", err)
 	}

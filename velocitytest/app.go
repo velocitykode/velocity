@@ -6,8 +6,10 @@ package velocitytest
 
 import (
 	"github.com/velocitykode/velocity"
+	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/queue"
 )
 
 // NewApp constructs a Velocity app with the in-memory defaults needed for
@@ -19,15 +21,12 @@ func NewApp(opts ...velocity.Option) (*velocity.App, error) {
 		Env:   "testing",
 		Debug: true,
 		Port:  "0",
-		Cache: velocity.CacheConfig{
-			Driver: "memory",
-			Prefix: "test_cache",
-		},
+		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
 		Log: log.LogConfig{
 			Driver: "console",
 			Config: make(map[string]any),
 		},
-		Queue: velocity.QueueConfig{
+		Queue: queue.QueueConfig{
 			Driver: "memory",
 		},
 		Mail: mail.MailConfig{

@@ -12,9 +12,8 @@ import (
 
 func nullServer(t *testing.T, opts ...ServerOption) *Server {
 	t.Helper()
-	t.Setenv("GRPC_INSECURE", "true")
 	logger, _ := log.NewLogger(log.LogConfig{Driver: "null"})
-	return NewServer(append([]ServerOption{WithLogger(logger)}, opts...)...)
+	return NewServer(Config{Insecure: true}, append([]ServerOption{WithLogger(logger)}, opts...)...)
 }
 
 // TestBuild_DefaultBindsTCP confirms the legacy default still binds tcp on the

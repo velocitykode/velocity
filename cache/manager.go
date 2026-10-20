@@ -99,6 +99,52 @@ type Config struct {
 	Prefix  string
 }
 
+// SingleStoreConfig returns a Config holding one store, named "default",
+// under the manager-wide prefix.
+func SingleStoreConfig(prefix string, store StoreConfig) Config {
+	return Config{
+		Default: "default",
+		Prefix:  prefix,
+		Stores:  map[string]StoreConfig{"default": store},
+	}
+}
+
+// DefaultDriver returns the driver name of the default store, or "" when
+// the default store is not configured.
+func (c Config) DefaultDriver() string {
+	return c.Stores[c.Default].Driver
+}
+
+// Validate checks the Config for STRUCTURAL problems only, so a store that
+// is built lazily on first use cannot fail at request time for a reason
+// known at boot. A zero Config (no stores) is valid. Each store must pass
+// StoreConfig.Validate; a file store needs a Path (an empty path resolves to
+// the process working directory and silently pollutes the deployment); the
+// Redis port and database must be non-negative; with any store configured,
+// Default must name one of them.
+//
+// The driver name is not checked against the registry here, for the reason
+// StoreConfig.Validate gives.
+func (c Config) Validate() error {
+	for name, sc := range c.Stores {
+		if err := sc.Validate(); err != nil {
+			return errchain.Errorf("velocity/cache: store %q: %w", name, err)
+		}
+		if sc.Driver == DriverFile && sc.Path == "" {
+			return fmt.Errorf("velocity/cache: store %q uses the file driver but Path is empty", name)
+		}
+		if sc.Port < 0 || sc.Database < 0 {
+			return fmt.Errorf("velocity/cache: store %q: Port and Database must be non-negative", name)
+		}
+	}
+	if len(c.Stores) > 0 {
+		if _, ok := c.Stores[c.Default]; !ok {
+			return fmt.Errorf("velocity/cache: default store %q is not configured", c.Default)
+		}
+	}
+	return nil
+}
+
 // StoreConfig holds configuration for a specific store
 type StoreConfig struct {
 	Driver string

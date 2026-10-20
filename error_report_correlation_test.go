@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/console"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/events"
@@ -36,9 +37,9 @@ func newFieldApp(t *testing.T) (*App, *fieldLogger, *recordingReporter) {
 		Env:   "testing",
 		Debug: true,
 		Port:  "0",
-		Cache: CacheConfig{Driver: "memory", Prefix: "test_cache"},
+		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
 		Log:   log.LogConfig{Driver: driverName, Config: make(map[string]any)},
-		Queue: QueueConfig{Driver: "memory"},
+		Queue: queue.QueueConfig{Driver: "memory"},
 		Mail:  mail.MailConfig{Driver: "log"},
 	}))
 	if err != nil {

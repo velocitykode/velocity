@@ -2,7 +2,7 @@
 //
 // The package follows Velocity's patterns:
 //   - Interface-first design with pluggable auth validators
-//   - Option-function configuration sourced from environment variables
+//   - An explicit Config (filled by velocity.ConfigFromEnv) plus option functions
 //   - Builder pattern for assembling servers and gateways
 //
 // Interceptors live in the grpc/interceptors subpackage and are added via
@@ -13,7 +13,7 @@
 //
 //	import googlegrpc "google.golang.org/grpc"
 //
-//	server := grpc.NewServer(
+//	server := grpc.NewServer(cfg.GRPC, // cfg from velocity.ConfigFromEnv()
 //	    grpc.WithPort("50051"),
 //	    grpc.WithReflection(true),
 //	)
