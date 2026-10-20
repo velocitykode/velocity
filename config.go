@@ -15,10 +15,10 @@ import (
 	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/cache"
-	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/crypto"
 	"github.com/velocitykode/velocity/csrf"
 	"github.com/velocitykode/velocity/events"
+	"github.com/velocitykode/velocity/grpc/grpcconfig"
 	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/log"
@@ -71,7 +71,7 @@ type Config struct {
 	// GRPC configures grpc.NewServer and grpc.NewGateway (GRPC_*,
 	// GATEWAY_*). New does not build a gRPC server; an app passes this to
 	// them.
-	GRPC contract.GRPCConfig
+	GRPC grpcconfig.Config
 
 	// IdleTimeout is the HTTP server idle timeout (SERVER_IDLE_TIMEOUT,
 	// default 120s).
@@ -598,7 +598,7 @@ func ConfigFromEnv() Config {
 	}
 
 	// gRPC. Environment is the same normalised APP_ENV as Config.Env.
-	config.GRPC = contract.GRPCConfig{
+	config.GRPC = grpcconfig.Config{
 		ServerPort:       os.Getenv("GRPC_PORT"),
 		EnableReflection: os.Getenv("GRPC_REFLECTION") == "true",
 		GatewayPort:      os.Getenv("GATEWAY_PORT"),

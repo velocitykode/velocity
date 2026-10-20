@@ -100,7 +100,7 @@ type GatewayOption func(*Gateway)
 
 // NewGateway creates a new HTTP gateway from cfg and the given options. cfg
 // supplies the defaults (GatewayPort, GRPCEndpoint, Environment); a zero
-// field means the built-in default (see contract.GRPCConfig). NewGateway
+// field means the built-in default (see grpcconfig.Config). NewGateway
 // never reads the environment: velocity.ConfigFromEnv fills cfg from
 // GATEWAY_PORT / GRPC_ENDPOINT / APP_ENV. Explicit GatewayOption arguments
 // override cfg.

@@ -108,7 +108,7 @@ type ServerOption func(*Server)
 // NewServer creates a new gRPC server from cfg and the given options. cfg
 // supplies the defaults (port, reflection, message sizes, deployment
 // environment, the Insecure production TLS opt-out); a zero field means the
-// built-in default (see contract.GRPCConfig). NewServer never reads the
+// built-in default (see grpcconfig.Config). NewServer never reads the
 // environment: velocity.ConfigFromEnv fills cfg from GRPC_PORT /
 // GRPC_REFLECTION / GRPC_MAX_RECV_SIZE / GRPC_MAX_SEND_SIZE / GRPC_INSECURE /
 // APP_ENV. Explicit ServerOption arguments override cfg.

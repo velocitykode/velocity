@@ -3,7 +3,7 @@ package grpc
 import (
 	"fmt"
 
-	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/grpc/grpcconfig"
 )
 
 // Default values for gRPC configuration. Sourced once here so NewServer,
@@ -24,11 +24,11 @@ const (
 )
 
 // Config is the gRPC server and gateway configuration NewServer and
-// NewGateway take. It is defined in contract (see contract.GRPCConfig) so
-// the root velocity.ConfigFromEnv can fill it without importing grpc; the
+// NewGateway take. It is defined in grpcconfig (stdlib only) so the root
+// velocity.ConfigFromEnv can fill it without importing grpc; the
 // grpc package itself never reads the environment. The zero value of every
 // field means the built-in default.
-type Config = contract.GRPCConfig
+type Config = grpcconfig.Config
 
 // normalizeConfig returns cfg with every zero field replaced by its built-in
 // default and every message size sanitized. Corrections an operator should

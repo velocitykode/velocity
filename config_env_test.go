@@ -143,7 +143,7 @@ func TestConfigFromEnv_Maintenance(t *testing.T) {
 	}
 }
 
-// TestConfigFromEnv_GRPC pins the gRPC keys onto contract.GRPCConfig,
+// TestConfigFromEnv_GRPC pins the gRPC keys onto grpcconfig.Config,
 // including the warnings for message sizes that are not a positive integer.
 func TestConfigFromEnv_GRPC(t *testing.T) {
 	t.Setenv("APP_ENV", " Production ")
