@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"errors"
-	"fmt"
 	"maps"
 	"slices"
 	"sort"
@@ -292,7 +291,7 @@ func ValidateConfig(c Config) error {
 	sort.Strings(names)
 	for _, name := range names {
 		if err := drivers.Check(c.Disks[name].Driver); err != nil {
-			return fmt.Errorf("velocity/storage: disk %q: %w", name, err)
+			return errchain.Errorf("velocity/storage: disk %q: %w", name, err)
 		}
 	}
 	return nil
