@@ -19,15 +19,29 @@ import (
 
 // RateLimitConfig holds configuration for rate limiting middleware.
 type RateLimitConfig struct {
-	Burst           int
-	Skip            func(*Context) bool
-	OnLimitReached  func(*Context)
-	Message         string
+	// Burst is the number of requests allowed above the limit. RateLimit
+	// and RateLimitByKey default it to the request count.
+	Burst int
+
+	// CleanupInterval is the interval at which the keyed limiters remove
+	// stale per-key limiters. RateLimitByKey defaults it to 5 minutes.
 	CleanupInterval time.Duration
-	// TrustedProxies is a list of trusted proxy IPs/CIDRs.
-	// Only when the direct connection comes from a trusted proxy will
-	// X-Forwarded-For / X-Real-IP headers be used for IP extraction.
-	// If empty, only RemoteAddr is used (headers are not trusted).
+
+	// Message is the client-facing message of the 429 error a rate limiter
+	// returns. The default is "Rate limit exceeded".
+	Message string
+
+	// OnLimitReached is called when the rate limit is exceeded.
+	OnLimitReached func(*Context)
+
+	// Skip reports whether a request should skip rate limiting.
+	Skip func(*Context) bool
+
+	// TrustedProxies is a list of trusted proxy IPs/CIDRs, unioned at
+	// request time with the router-level trusted-proxy set. Only when the
+	// direct connection comes from a trusted proxy will X-Forwarded-For /
+	// X-Real-IP headers be used for IP extraction. If both lists are empty,
+	// only RemoteAddr is used (headers are not trusted).
 	TrustedProxies []string
 }
 

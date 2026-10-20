@@ -9,25 +9,33 @@ import (
 // Controllers can implement any subset of these methods
 type ResourceController interface{}
 
-// ResourceConfig maps HTTP verbs to controller methods
+// ResourceConfig maps one HTTP verb and path to a controller method.
 type ResourceConfig struct {
+	// Action is the controller method name the route calls, such as "Index".
+	Action string
+
+	// HasParam reports whether the path carries the {id} parameter.
+	HasParam bool
+
+	// HttpMethod is the HTTP verb the route answers, such as "GET".
 	HttpMethod string
-	Action     string
+
+	// PathSuffix is appended to the resource base path, such as "/{id}/edit";
+	// empty means the base path itself.
 	PathSuffix string
-	HasParam   bool
 }
 
 // DefaultResourceConfig returns the default REST resource configuration
 func DefaultResourceConfig() []ResourceConfig {
 	return []ResourceConfig{
-		{"GET", "Index", "", false},
-		{"GET", "Create", "/create", false},
-		{"POST", "Store", "", false},
-		{"GET", "Show", "/{id}", true},
-		{"GET", "Edit", "/{id}/edit", true},
-		{"PUT", "Update", "/{id}", true},
-		{"PATCH", "Update", "/{id}", true},
-		{"DELETE", "Destroy", "/{id}", true},
+		{Action: "Index", HasParam: false, HttpMethod: "GET", PathSuffix: ""},
+		{Action: "Create", HasParam: false, HttpMethod: "GET", PathSuffix: "/create"},
+		{Action: "Store", HasParam: false, HttpMethod: "POST", PathSuffix: ""},
+		{Action: "Show", HasParam: true, HttpMethod: "GET", PathSuffix: "/{id}"},
+		{Action: "Edit", HasParam: true, HttpMethod: "GET", PathSuffix: "/{id}/edit"},
+		{Action: "Update", HasParam: true, HttpMethod: "PUT", PathSuffix: "/{id}"},
+		{Action: "Update", HasParam: true, HttpMethod: "PATCH", PathSuffix: "/{id}"},
+		{Action: "Destroy", HasParam: true, HttpMethod: "DELETE", PathSuffix: "/{id}"},
 	}
 }
 

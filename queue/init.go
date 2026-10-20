@@ -12,39 +12,53 @@ import (
 
 // Config holds configuration for creating a queue driver.
 type Config struct {
-	// Driver is the queue driver to use: "memory", "redis", or "database".
-	Driver string
+	// AcceptUnsigned opts into running without any signing key outside
+	// development and testing. It is a process-wide setting: velocity.New
+	// applies it through ConfigureSigningWith before it calls NewQueue,
+	// which does not read it; a standalone caller applies it the same way
+	// (QUEUE_ACCEPT_UNSIGNED, default false; "1", "true", "yes" and "on",
+	// any case, enable it).
+	AcceptUnsigned bool
 
-	// Redis holds Redis-specific configuration. Required when Driver is "redis".
-	Redis RedisConfig
-
-	// DB holds a *sql.DB for the database driver. Required when Driver is "database".
+	// DB holds a *sql.DB for the database driver. Required when Driver is
+	// "database". velocity.New sets it from the app's database, replacing
+	// any value in velocity.Config.
 	DB *sql.DB
 
-	// DBDriver specifies the database driver name ("postgres", "mysql", "sqlite").
-	// Required when Driver is "database".
+	// DBDriver specifies the database driver name ("postgres", "mysql",
+	// "sqlite"). Required when Driver is "database". velocity.New sets it
+	// from the app's database, replacing any value in velocity.Config.
 	DBDriver string
+
+	// Driver is the queue driver to use: "memory", "redis", or "database"
+	// (QUEUE_DRIVER, default "memory").
+	Driver string
+
+	// Encrypt seals job payload data at rest with the app encryptor. It is
+	// a process-wide setting: velocity.New applies it through
+	// SetPayloadEncryptor before it calls NewQueue, which does not read
+	// it; a standalone caller applies it the same way (QUEUE_ENCRYPT,
+	// default false; only "true" enables it).
+	Encrypt bool
 
 	// Logger receives the driver's warnings, from construction on: a
 	// driver factory may write startup warnings through it, and NewQueue
 	// installs it on a driver implementing contract.LoggerAware. Nil leaves
 	// the driver on the framework's standalone fallback logger.
+	// velocity.New sets it to the app logger, replacing any value in
+	// velocity.Config.
 	Logger contract.Logger
 
+	// Redis holds Redis-specific configuration. Required when Driver is
+	// "redis".
+	Redis RedisConfig
+
 	// SigningKey is the HMAC key for payload signing (SENSITIVE: do not
-	// log). Empty falls back to the app key. AcceptUnsigned opts into
-	// running without any signing key outside development and testing.
-	// Encrypt seals job payload data at rest with the app encryptor.
-	//
-	// These three are process-wide settings: velocity.New applies them
-	// through ConfigureSigningWith and SetPayloadEncryptor before it calls
-	// NewQueue, which does not read them. A standalone caller applies them
-	// the same way. DB, DBDriver and Logger are set by velocity.New from
-	// the app's database and logger; values in velocity.Config are
-	// replaced.
-	SigningKey     string
-	AcceptUnsigned bool
-	Encrypt        bool
+	// log). Empty falls back to the app key. It is a process-wide setting:
+	// velocity.New applies it through ConfigureSigningWith before it calls
+	// NewQueue, which does not read it; a standalone caller applies it the
+	// same way (QUEUE_SIGNING_KEY, default empty).
+	SigningKey string
 }
 
 // String returns a safe representation with the signing key and the Redis

@@ -67,24 +67,24 @@ type AuthValidator interface {
 
 // AuthConfig configures the auth interceptor
 type AuthConfig struct {
-	// Validator is the token validator implementation (required)
-	Validator AuthValidator
-
-	// PublicMethods are method prefixes that don't require authentication.
-	// Examples: "/grpc.health.v1.Health/", "/mypackage.MyService/PublicMethod"
-	PublicMethods []string
-
-	// TokenExtractor extracts the token from context.
-	// Defaults to extracting from "authorization" header with "Bearer " prefix.
-	TokenExtractor func(ctx context.Context) (string, error)
-
-	// OnAuthError is called when authentication fails.
-	// Can be used for logging or custom error responses.
-	OnAuthError func(ctx context.Context, method string, err error)
-
 	// EventDispatcher routes grpcevents.AuthFailed to a listener when
 	// token extraction or validation fails.
 	EventDispatcher grpcevents.EventDispatchFunc
+
+	// OnAuthError is called when authentication fails. It can be used for
+	// logging or custom error responses.
+	OnAuthError func(ctx context.Context, method string, err error)
+
+	// PublicMethods are method prefixes that don't require authentication,
+	// e.g. "/grpc.health.v1.Health/" or "/mypackage.MyService/PublicMethod".
+	PublicMethods []string
+
+	// TokenExtractor extracts the token from context. It defaults to
+	// extracting from the "authorization" header with the "Bearer " prefix.
+	TokenExtractor func(ctx context.Context) (string, error)
+
+	// Validator is the token validator implementation (required).
+	Validator AuthValidator
 
 	// events holds EventDispatcher and applies the failure policy to a
 	// failed dispatch; Auth builds it once the options are applied.

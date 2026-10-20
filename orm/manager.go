@@ -26,33 +26,29 @@ import (
 
 // Config holds typed configuration for creating an ORM Manager.
 type Config struct {
-	Driver   string
-	Host     string
-	Port     string
-	Database string
-	Username string
-	Password string
-	Charset  string
-	SSLMode  string // postgres
-	TLS      string // mysql
-	// TimeZone is the database SESSION timezone (postgres `TimeZone=`,
-	// mysql `time_zone='...'`). It affects in-database functions and
-	// timestamptz/TIMESTAMP rendering only, never the encoding of bound
-	// time values (storage is unconditionally UTC). Unused on SQLite.
-	TimeZone        string
-	MaxIdleConns    int
-	MaxOpenConns    int
+	// Charset is the connection character set, used by the mysql driver.
+	// Empty means "utf8mb4" (DB_CHARSET, default empty).
+	Charset string
+
+	// ConnMaxLifetime is the longest a pooled connection is reused. Zero
+	// means 1h; negative fails Validate (DB_CONN_MAX_LIFETIME, in
+	// seconds, default 3600).
 	ConnMaxLifetime time.Duration
-	// LogQueries writes one debug line per executed statement through the
-	// manager's logger: the statement and its argument count, never the
-	// argument values (see drivers.BaseDriver.SetLogger). The line is
-	// written before the statement's connection returns to the pool, so
-	// the manager's logger must not use the pool it logs.
-	LogQueries bool
-	// SlowThreshold makes a completed statement that ran longer than it
-	// write one warn line through the manager's logger and marks its
-	// QueryExecuted Slow. Zero disables the rule.
-	SlowThreshold time.Duration
+
+	// Database is the database name, or the database file for sqlite,
+	// where empty means an in-memory database (DB_DATABASE, default
+	// empty).
+	Database string
+
+	// Driver is the database driver name, resolved through the driver
+	// registry. Empty means no database: Validate accepts it and
+	// velocity.New builds no manager (DB_CONNECTION, default empty).
+	Driver string
+
+	// Host is the database server host. Empty means "localhost"
+	// (DB_HOST, default "127.0.0.1").
+	Host string
+
 	// Logger is the manager's logger from construction on, as if SetLogger
 	// had installed it before the driver connected: the statements the
 	// driver runs while it connects write their query log lines to it.
@@ -60,6 +56,55 @@ type Config struct {
 	// installs one. velocity.New sets it to the app logger, replacing any
 	// value in velocity.Config.
 	Logger contract.Logger
+
+	// LogQueries writes one debug line per executed statement through the
+	// manager's logger: the statement and its argument count, never the
+	// argument values (see drivers.BaseDriver.SetLogger). The line is
+	// written before the statement's connection returns to the pool, so
+	// the manager's logger must not use the pool it logs (DB_LOG_QUERIES,
+	// default false; only "true" enables it).
+	LogQueries bool
+
+	// MaxIdleConns caps the idle connections kept in the pool. Zero means
+	// 10; negative fails Validate (DB_MAX_IDLE_CONNS, default 10).
+	MaxIdleConns int
+
+	// MaxOpenConns caps the open connections in the pool. Zero means 100;
+	// negative fails Validate (DB_MAX_OPEN_CONNS, default 100).
+	MaxOpenConns int
+
+	// Password is the database password (DB_PASSWORD, default empty).
+	Password string
+
+	// Port is the database server port. Empty means the driver's default
+	// port: "3306" for mysql, "5432" for postgres, none otherwise
+	// (DB_PORT, default "3306" for mysql, "5432" for postgres, empty
+	// otherwise).
+	Port string
+
+	// SlowThreshold makes a completed statement that ran longer than it
+	// write one warn line through the manager's logger and marks its
+	// QueryExecuted Slow. Zero disables the rule; negative fails Validate
+	// (DB_SLOW_QUERY_THRESHOLD, a Go duration, default 0).
+	SlowThreshold time.Duration
+
+	// SSLMode is the postgres sslmode. Empty means "require"
+	// (DB_SSL_MODE, default empty).
+	SSLMode string
+
+	// TimeZone is the database SESSION timezone (postgres `TimeZone=`,
+	// mysql `time_zone='...'`). It affects in-database functions and
+	// timestamptz/TIMESTAMP rendering only, never the encoding of bound
+	// time values (storage is unconditionally UTC). Unused on SQLite
+	// (DB_TIMEZONE, default empty).
+	TimeZone string
+
+	// TLS is the mysql tls= value. Empty means "true", requiring TLS with
+	// certificate verification (DB_MYSQL_TLS, default empty).
+	TLS string
+
+	// Username is the database user (DB_USERNAME, default empty).
+	Username string
 }
 
 // Validate checks the Config for STRUCTURAL problems only. A zero

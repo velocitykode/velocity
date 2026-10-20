@@ -25,23 +25,34 @@ var (
 	ErrTemplateRequired = errors.New("bond: template is required")
 )
 
-// Config holds bond configuration
+// Config holds bond configuration.
 type Config struct {
-	RootTemplate   string // Full HTML template with {{ .inertia }} placeholder
-	Version        string // Asset version for cache busting
-	ContainerID    string // Default: "app"
-	EncryptHistory bool   // Use pkg/crypto for history state encryption
-	SSR            SSRConfig
+	// ContainerID is the id of the Inertia container element. Empty means
+	// "app".
+	ContainerID string
+
+	// EncryptHistory turns on history state encryption with pkg/crypto.
+	EncryptHistory bool
 
 	// Funcs registers template helpers available inside RootTemplate.
 	// Typical use: bond/vite emits {{ vite "resources/js/app.tsx" }}
 	// which expands to <link>/<script> tags appropriate for the
 	// current dev/prod mode. nil means no custom helpers.
 	Funcs template.FuncMap
+
+	// RootTemplate is the full HTML template with the {{ .inertia }}
+	// placeholder. New returns ErrTemplateRequired when it is empty.
+	RootTemplate string
+
+	// SSR configures server-side rendering; see SSRConfig.
+	SSR SSRConfig
+
+	// Version is the asset version for cache busting. Empty means "1".
+	Version string
 }
 
 // SSRConfig configures server-side rendering. When Enabled is false
-// (the default) bond renders pages as plain CSR — the Inertia container
+// (the default) bond renders pages as plain CSR: the Inertia container
 // ships with an empty inner body and the client hydrates the page data
 // from the data-page attribute.
 //
@@ -50,16 +61,12 @@ type Config struct {
 // SSR server, so bond drops it and falls back to CSR rather than risk
 // unbounded memory growth.
 type SSRConfig struct {
+	// Enabled turns on server-side rendering. False (the default)
+	// renders plain CSR.
 	Enabled bool
-	URL     string        // Defaults to DefaultSSRURL when empty
-	Timeout time.Duration // Defaults to 3s
-	Except  []string      // URL prefixes excluded from SSR
 
-	// ThrowOnError makes Dispatch return a real error on failure
-	// instead of silently falling back to CSR. Equivalent to the
-	// Inertia SSR `throw_on_error` config flag — useful for E2E tests
-	// that need SSR failures to fail loudly rather than render CSR.
-	ThrowOnError bool
+	// Except lists URL prefixes excluded from SSR.
+	Except []string
 
 	// ForbidPrivateTarget rejects SSR targets that resolve to private,
 	// loopback, link-local, or cloud-metadata addresses. Default (false)
@@ -68,6 +75,18 @@ type SSRConfig struct {
 	// the SSR host comes from an untrusted source or should never be
 	// internal.
 	ForbidPrivateTarget bool
+
+	// ThrowOnError makes Dispatch return a real error on failure
+	// instead of silently falling back to CSR. Equivalent to the
+	// Inertia SSR `throw_on_error` config flag; useful for E2E tests
+	// that need SSR failures to fail loudly rather than render CSR.
+	ThrowOnError bool
+
+	// Timeout bounds each SSR call. Zero or negative means 3s.
+	Timeout time.Duration
+
+	// URL is the SSR server address. Empty means DefaultSSRURL.
+	URL string
 }
 
 // Bond is the main Inertia handler

@@ -65,16 +65,12 @@ func Defer(fn func() (any, error), group ...string) *DeferProp { return bond.Def
 
 // Config holds view configuration.
 type Config struct {
-	RootTemplate string
-	Version      string
-
-	// Server-side rendering. When SSREnabled is true the view engine
-	// pre-renders every full-page response via a Node SSR server and
-	// gracefully falls back to CSR on any failure.
-	SSREnabled bool
-	SSRURL     string        // Defaults to http://127.0.0.1:13714
-	SSRTimeout time.Duration // Defaults to 3s
-	SSRExcept  []string      // URL prefixes to exclude from SSR
+	// ErrorPage names the component a failed request renders as its error
+	// page (for example "Error"), at the response's real status with the
+	// props "status" and "message". Empty means no error page: an Inertia
+	// request is answered with a 409 reload instead (VIEW_ERROR_PAGE,
+	// default "").
+	ErrorPage string
 
 	// Funcs registers template helpers callable from RootTemplate. The
 	// canonical use is the bond/vite helper:
@@ -85,11 +81,31 @@ type Config struct {
 	// Then app.go.html says {{ vite "resources/js/app.tsx" }}.
 	Funcs template.FuncMap
 
-	// ErrorPage names the component a failed request renders as its error
-	// page (env VIEW_ERROR_PAGE, for example "Error"), at the response's
-	// real status with the props "status" and "message". Empty means no
-	// error page: an Inertia request is answered with a 409 reload instead.
-	ErrorPage string
+	// RootTemplate is the root HTML template. Empty means the built-in
+	// default template.
+	RootTemplate string
+
+	// SSREnabled turns on server-side rendering: the view engine
+	// pre-renders every full-page response via a Node SSR server and
+	// gracefully falls back to CSR on any failure (VIEW_SSR_ENABLED,
+	// default false).
+	SSREnabled bool
+
+	// SSRExcept lists URL prefixes to exclude from SSR. ConfigFromEnv
+	// splits the value on commas and trims each entry (VIEW_SSR_EXCEPT,
+	// default none).
+	SSRExcept []string
+
+	// SSRTimeout bounds each SSR render call; Validate requires it to be
+	// positive when SSREnabled is true (VIEW_SSR_TIMEOUT, default 3s).
+	SSRTimeout time.Duration
+
+	// SSRURL is the Node SSR server address. Empty means
+	// bond.DefaultSSRURL (VIEW_SSR_URL, default "http://127.0.0.1:13714").
+	SSRURL string
+
+	// Version is the asset version for cache busting. Empty means "1".
+	Version string
 }
 
 // Validate checks the view Config for structural problems. Empty

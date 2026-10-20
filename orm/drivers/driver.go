@@ -45,41 +45,91 @@ type Driver interface {
 
 // ConnectionConfig holds database connection settings
 type ConnectionConfig struct {
-	Driver    string
-	Host      string
-	Port      string
-	Database  string
-	Username  string
-	Password  string
-	Charset   string
+	// Charset is the connection character set, used by the mysql driver.
+	// Empty means "utf8mb4".
+	Charset string
+
+	// Collation is the connection collation, used by the mysql driver.
+	// Empty sends no collation parameter.
 	Collation string
-	Prefix    string
-	Schema    string
-	SSLMode   string // postgres: sslmode (disable/prefer/require/verify-ca/verify-full)
-	TLS       string // mysql: tls= value (true/false/skip-verify/preferred/named-profile)
-	// TimeZone sets the database SESSION timezone (postgres `TimeZone=`,
-	// mysql `time_zone='...'`), which affects in-database functions and
-	// timestamptz/TIMESTAMP rendering only. It never affects how bound
-	// time.Time values are encoded: storage is unconditionally UTC (see
-	// NormalizeTimeArgs). SQLite has no session timezone; unused there.
-	TimeZone        string
-	MaxIdleConns    int
-	MaxOpenConns    int
-	ConnMaxLifetime time.Duration
+
+	// ConnMaxIdleTime is the longest a pooled connection may sit idle
+	// (see BaseDriver.ConfigurePool). Zero or less leaves the
+	// database/sql default.
 	ConnMaxIdleTime time.Duration
-	// LogQueries writes one debug line per executed statement through the
-	// driver's query logger (see BaseDriver.SetLogger): the statement and
-	// its argument count, never the argument values.
-	LogQueries bool
-	// SlowThreshold makes a completed statement that ran longer than it
-	// write one warn line through the query logger and mark its event
-	// slow (StatementEvent.Slow). Zero disables the rule.
-	SlowThreshold time.Duration
+
+	// ConnMaxLifetime is the longest a pooled connection is reused (see
+	// BaseDriver.ConfigurePool). Zero or less leaves the database/sql
+	// default.
+	ConnMaxLifetime time.Duration
+
+	// Database is the database name, or the database file for sqlite,
+	// where empty means ":memory:".
+	Database string
+
+	// Driver is the database driver name.
+	Driver string
+
+	// Host is the database server host.
+	Host string
+
 	// Logger is the query logger (see BaseDriver.SetLogger) installed when
 	// the pool opens, before the driver runs its first statement, so the
 	// statements a driver runs while it connects (SQLite's PRAGMAs) log
 	// where the rest do. Nil leaves the driver's query logger as it is.
 	Logger contract.Logger
+
+	// LogQueries writes one debug line per executed statement through the
+	// driver's query logger (see BaseDriver.SetLogger): the statement and
+	// its argument count, never the argument values.
+	LogQueries bool
+
+	// MaxIdleConns caps the idle connections kept in the pool (see
+	// BaseDriver.ConfigurePool). Zero or less leaves the database/sql
+	// default.
+	MaxIdleConns int
+
+	// MaxOpenConns caps the open connections in the pool (see
+	// BaseDriver.ConfigurePool). Zero or less leaves the database/sql
+	// default.
+	MaxOpenConns int
+
+	// Password is the database password.
+	Password string
+
+	// Port is the database server port.
+	Port string
+
+	// Prefix is carried with the connection settings; no built-in driver
+	// reads it.
+	Prefix string
+
+	// Schema is the postgres search_path. Empty sends no search_path.
+	Schema string
+
+	// SlowThreshold makes a completed statement that ran longer than it
+	// write one warn line through the query logger and mark its event
+	// slow (StatementEvent.Slow). Zero disables the rule.
+	SlowThreshold time.Duration
+
+	// SSLMode is the postgres sslmode (disable/prefer/require/verify-ca/
+	// verify-full). Empty means "require".
+	SSLMode string
+
+	// TimeZone sets the database SESSION timezone (postgres `TimeZone=`,
+	// mysql `time_zone='...'`), which affects in-database functions and
+	// timestamptz/TIMESTAMP rendering only. It never affects how bound
+	// time.Time values are encoded: storage is unconditionally UTC (see
+	// NormalizeTimeArgs). SQLite has no session timezone; unused there.
+	TimeZone string
+
+	// TLS is the mysql tls= value (true/false/skip-verify/preferred/
+	// named-profile). Empty means "true", requiring TLS with certificate
+	// verification.
+	TLS string
+
+	// Username is the database user.
+	Username string
 }
 
 // QueryGrammar defines SQL dialect-specific query building

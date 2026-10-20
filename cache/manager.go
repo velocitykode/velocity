@@ -94,9 +94,21 @@ func (m *Manager) SetEventDispatcher(fn func(ctx context.Context, event interfac
 
 // Config holds cache configuration
 type Config struct {
+	// Default names the store Manager.DefaultStore returns and the
+	// Manager's own Get/Put/... methods use. With any store configured it
+	// must name one of Stores (see Validate).
+	// velocity.ConfigFromEnv sets it to "default".
 	Default string
-	Stores  map[string]StoreConfig
-	Prefix  string
+
+	// Prefix is the manager-wide key prefix, joined in front of each
+	// store's own Prefix as "<Prefix>:<StoreConfig.Prefix>"
+	// (CACHE_PREFIX, default "velocity_cache").
+	Prefix string
+
+	// Stores maps a store name to its configuration. Each store is built
+	// lazily on first use. velocity.ConfigFromEnv fills one store,
+	// "default", on CACHE_DRIVER.
+	Stores map[string]StoreConfig
 }
 
 // SingleStoreConfig returns a Config holding one store, named "default",
@@ -147,30 +159,59 @@ func (c Config) Validate() error {
 
 // StoreConfig holds configuration for a specific store
 type StoreConfig struct {
+	// Database is the Redis database number, used by the redis driver.
+	// It must be non-negative (REDIS_DATABASE, default 0).
+	Database int
+
+	// Driver is the store driver name: "memory", "file", "redis" or a
+	// driver registered via Drivers().Register (CACHE_DRIVER: exactly
+	// "file" or "redis" selects that driver, anything else, unset
+	// included, is "memory").
 	Driver string
-	Prefix string
-	// Additional driver-specific config can be added here
-	Path     string // For file driver
-	Host     string // For Redis driver
-	Port     int    // For Redis driver
-	Password string // For Redis driver
-	Database int    // For Redis driver
-	TLS      bool   // Enable TLS for Redis connections
-	// MaxEntries bounds the memory driver's entry count so unbounded key
-	// growth cannot OOM the process. 0 applies drivers.DefaultMaxEntries
-	// (1,000,000); negative disables the bound. Ignored by other drivers.
-	MaxEntries int
-	// MaxValueBytes caps the serialized size of a single cached value for
-	// the memory and file drivers; oversized Put/Add/Forever calls fail
-	// with cache.ErrValueTooLarge. 0 (the default) means unlimited.
-	// Ignored by other drivers.
-	MaxValueBytes int64
+
+	// Host is the Redis server host, used by the redis driver
+	// (REDIS_HOST, default "127.0.0.1").
+	Host string
+
 	// Logger receives the store's startup warnings (the Redis store's
 	// cleartext, missing-password and empty-prefix warnings). Nil (the
 	// default) takes the Manager's logger (see Manager.SetLogger); a store
 	// with neither writes them through the framework's standalone fallback
 	// logger.
 	Logger contract.Logger
+
+	// MaxEntries bounds the memory driver's entry count so unbounded key
+	// growth cannot OOM the process. 0 applies drivers.DefaultMaxEntries
+	// (1,000,000); negative disables the bound. Ignored by other drivers
+	// (CACHE_MEMORY_MAX_ENTRIES, default 0).
+	MaxEntries int
+
+	// MaxValueBytes caps the serialized size of a single cached value for
+	// the memory and file drivers; oversized Put/Add/Forever calls fail
+	// with cache.ErrValueTooLarge. 0 means unlimited. Ignored by other
+	// drivers (CACHE_MAX_VALUE_BYTES, default 0).
+	MaxValueBytes int64
+
+	// Password is the Redis password, used by the redis driver
+	// (REDIS_PASSWORD, default empty).
+	Password string
+
+	// Path is the cache directory, used by the file driver.
+	// Config.Validate rejects a file store with an empty Path, which would
+	// resolve to the process working directory (CACHE_PATH, default empty).
+	Path string
+
+	// Port is the Redis server port, used by the redis driver. It must be
+	// non-negative (REDIS_PORT, default 6379).
+	Port int
+
+	// Prefix is the store's own key prefix, joined after the manager-wide
+	// Config.Prefix.
+	Prefix string
+
+	// TLS enables TLS for Redis connections, used by the redis driver
+	// (REDIS_TLS, default false; only "true" enables it).
+	TLS bool
 }
 
 // Validate checks that a driver name is present. Per-driver field validation

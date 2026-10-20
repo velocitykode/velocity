@@ -402,23 +402,6 @@ const (
 // without a request, or when it reaches AbsoluteLifetime from sign-in,
 // whichever comes first (see ExpiresAt).
 type SessionConfig struct {
-	Name string
-
-	// IdleLifetime is the idle timeout in minutes: a session that receives
-	// no request for this long ends, and every request slides it forward
-	// (the cookie is re-issued and the server record's expiry refreshed,
-	// both at most once per ActivityRefreshInterval: a minute, or half the
-	// idle window when that is shorter). Zero means no idle timeout: the cookie
-	// is a browser-session cookie (no Max-Age) and only AbsoluteLifetime
-	// bounds the session.
-	IdleLifetime int // Minutes
-
-	Path     string
-	Domain   string
-	Secure   bool
-	HttpOnly bool
-	SameSite http.SameSite
-
 	// AbsoluteLifetime caps a session's total age in minutes, measured from
 	// its creation (a sign-in regenerates the session and restarts it),
 	// regardless of activity. The idle window slides on every request, so
@@ -430,23 +413,9 @@ type SessionConfig struct {
 	// NEGATIVE value is the explicit opt-out that disables the absolute
 	// cap entirely; only set this deliberately, it restores the
 	// unbounded-session behaviour. When positive it must be >= IdleLifetime
-	// (Validate rejects an absolute cap shorter than the idle window).
-	AbsoluteLifetime int // Minutes; 0 = default (30 days), negative = no cap (explicit opt-out)
-
-	// RememberLifetime is how long, in minutes, a remember-me credential
-	// signs its user back in after the session has ended. It is the remember
-	// cookie's Max-Age, independent of IdleLifetime and AbsoluteLifetime:
-	// those end the session, the remember credential then starts a new one
-	// (a revival is a sign-in and restarts the absolute cap). Every revival
-	// reissues the credential for another RememberLifetime. Zero means the
-	// framework default (30 days); negative is rejected by Validate.
-	RememberLifetime int // Minutes; 0 = default (30 days)
-
-	// AllowJSAccess opts in to HttpOnly=false. Without this flag the
-	// session cookie MUST be HttpOnly, otherwise JavaScript (and any
-	// injected script) can steal the session ID. Name is intentionally
-	// loud so reviewers notice.
-	AllowJSAccess bool
+	// (Validate rejects an absolute cap shorter than the idle window)
+	// (SESSION_ABSOLUTE_LIFETIME, default 0).
+	AbsoluteLifetime int
 
 	// AllowCookieStoreInProduction opts the framework into running the
 	// default CookieStore in a production environment without a
@@ -459,11 +428,67 @@ type SessionConfig struct {
 	// the name is loud so reviewers notice. See audit H-04.
 	AllowCookieStoreInProduction bool
 
+	// AllowJSAccess opts in to HttpOnly=false. Without this flag the
+	// session cookie MUST be HttpOnly, otherwise JavaScript (and any
+	// injected script) can steal the session ID. Name is intentionally
+	// loud so reviewers notice.
+	AllowJSAccess bool
+
+	// Domain is the session cookie's Domain attribute (SESSION_DOMAIN).
+	Domain string
+
+	// HttpOnly sets the session cookie's HttpOnly attribute;
+	// ValidateCookieSecurity rejects false unless AllowJSAccess is set.
+	// ConfigFromEnv sets it only for the value "true" (SESSION_HTTP_ONLY,
+	// default true).
+	HttpOnly bool
+
+	// IdleLifetime is the idle timeout in minutes: a session that receives
+	// no request for this long ends, and every request slides it forward
+	// (the cookie is re-issued and the server record's expiry refreshed,
+	// both at most once per ActivityRefreshInterval: a minute, or half the
+	// idle window when that is shorter). Zero means no idle timeout: the cookie
+	// is a browser-session cookie (no Max-Age) and only AbsoluteLifetime
+	// bounds the session (SESSION_IDLE_LIFETIME, default 120).
+	IdleLifetime int
+
+	// Name is the session cookie name (SESSION_NAME, default
+	// "velocity_session").
+	Name string
+
+	// Path is the session cookie's Path attribute (SESSION_PATH, default
+	// "/").
+	Path string
+
+	// RememberLifetime is how long, in minutes, a remember-me credential
+	// signs its user back in after the session has ended. It is the remember
+	// cookie's Max-Age, independent of IdleLifetime and AbsoluteLifetime:
+	// those end the session, the remember credential then starts a new one
+	// (a revival is a sign-in and restarts the absolute cap). Every revival
+	// reissues the credential for another RememberLifetime. Zero means the
+	// framework default (30 days); negative is rejected by Validate
+	// (SESSION_REMEMBER_LIFETIME, default 0).
+	RememberLifetime int
+
+	// SameSite is the session cookie's SameSite attribute;
+	// ValidateCookieSecurity rejects the zero and default modes, and None
+	// without Secure. ConfigFromEnv accepts strict, lax or none, and
+	// Config.Validate rejects any other non-empty value
+	// (SESSION_SAME_SITE, default lax).
+	SameSite http.SameSite
+
+	// Secure sets the session cookie's Secure attribute;
+	// ValidateCookieSecurity rejects false outside the dev and test
+	// profiles. ConfigFromEnv clears it only for the value "false"
+	// (SESSION_SECURE, default true).
+	Secure bool
+
 	// Store names where the session lives: SessionStoreCookie (the
 	// default when empty) keeps it in the encrypted cookie, which browsers
 	// cap at 4096 bytes; SessionStoreServer keeps it in the server session
-	// record and sends only the id. velocity.New reads it (env
-	// SESSION_STORE) to pick the session scheme's store.
+	// record and sends only the id (it needs a cache backend). velocity.New
+	// reads it to pick the session scheme's store (SESSION_STORE, default
+	// "cookie").
 	Store string
 }
 

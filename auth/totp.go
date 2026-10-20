@@ -41,19 +41,23 @@ const recoveryCodeAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 // follow RFC 6238 (SHA1 / 6 digits / 30-second period) and the otpauth://
 // URI convention.
 type TOTPConfig struct {
+	// Digits is the number of digits in generated codes. RFC 6238
+	// recommends 6 or 8; zero or negative means 6.
+	Digits int
+
 	// Issuer is the human-readable service name embedded in the otpauth://
 	// URI. Defaults to "Velocity" when empty.
 	Issuer string
-	// Digits is the number of digits in generated codes. RFC 6238
-	// recommends 6 or 8; defaults to 6.
-	Digits int
-	// Period is the time step in seconds. RFC 6238 recommends 30; defaults
-	// to 30.
+
+	// Period is the time step in seconds. RFC 6238 recommends 30; zero or
+	// negative means 30.
 	Period int
+
 	// Skew is the number of time steps tolerated on either side of the
-	// current step when verifying. Defaults to 1 (i.e. previous, current,
-	// and next windows are accepted). Use a negative value to disable
-	// skew (strict current-window only).
+	// current step when verifying. NewTOTP keeps a zero Skew as zero
+	// (strict current-window only) and clamps a negative value to zero;
+	// pass 1 (as the package-level TOTP does) to accept the previous,
+	// current, and next windows.
 	Skew int
 }
 

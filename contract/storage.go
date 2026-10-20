@@ -116,21 +116,46 @@ type StorageDriver interface {
 // StorageDiskConfig holds configuration for a storage disk.
 // The Key and Secret fields contain sensitive credentials and must not be logged.
 type StorageDiskConfig struct {
-	Driver string // "local", "s3", "memory"
+	// Bucket is the S3 bucket name, used by the s3 driver, which requires
+	// it. velocity.ConfigFromEnv configures the "s3" disk only when it is
+	// set (AWS_BUCKET, default empty).
+	Bucket string
 
-	// Local driver config
-	Root       string // Root directory for local storage
-	URL        string // Base URL for file access
-	Visibility string // Default visibility (public/private)
+	// Driver is the disk driver: "local", "s3" or "memory".
+	// velocity.ConfigFromEnv sets "local" on the "local" disk and "s3" on
+	// the "s3" disk.
+	Driver string
 
-	// S3 driver config
-	Key    string // AWS Access Key, SENSITIVE: do not log
-	Secret string // AWS Secret Key, SENSITIVE: do not log
-	Region string // AWS Region
-	Bucket string // S3 Bucket name
+	// Key is the AWS access key, used by the s3 driver together with
+	// Secret. SENSITIVE: do not log (AWS_ACCESS_KEY_ID, default empty).
+	Key string
 
-	// Memory driver config
-	MaxSize int64 // Maximum memory usage in bytes
+	// MaxSize is a size limit in bytes: the memory driver's maximum memory
+	// usage (0 means 100 MiB) and the local driver's maximum file size
+	// (0 or less means 100 MiB).
+	MaxSize int64
+
+	// Region is the AWS region, used by the s3 driver, which requires it
+	// (AWS_DEFAULT_REGION, default empty).
+	Region string
+
+	// Root is the root directory for local storage, used by the local
+	// driver (FILESYSTEM_LOCAL_ROOT, default "./storage/app").
+	Root string
+
+	// Secret is the AWS secret key, used by the s3 driver together with
+	// Key. SENSITIVE: do not log (AWS_SECRET_ACCESS_KEY, default empty).
+	Secret string
+
+	// URL is the base URL for file access, used by the local and s3
+	// drivers. velocity.ConfigFromEnv sets it on the "s3" disk only (AWS_URL,
+	// default empty).
+	URL string
+
+	// Visibility is the default visibility, "public" or "private", used
+	// by the local and s3 drivers. Anything other than "public" is
+	// private.
+	Visibility string
 }
 
 // String returns a safe representation with credentials redacted.
@@ -140,8 +165,14 @@ func (c StorageDiskConfig) String() string {
 
 // StorageConfig holds storage configuration.
 type StorageConfig struct {
-	Default string                       // Default disk name
-	Disks   map[string]StorageDiskConfig // Configured disks
+	// Default is the default disk name. When set and Disks is not empty,
+	// Validate requires it to name one of Disks (STORAGE_DRIVER, default
+	// "local").
+	Default string
+
+	// Disks maps a disk name to its configuration. velocity.ConfigFromEnv always
+	// configures "local", and "s3" when AWS_BUCKET is set.
+	Disks map[string]StorageDiskConfig
 }
 
 // Validate checks the StorageConfig for STRUCTURAL problems only. Each disk

@@ -10,11 +10,23 @@ import "fmt"
 // consumes it via queue.RedisConfig. The Password field contains sensitive
 // credentials and must not be logged.
 type RedisConfig struct {
-	Host     string
-	Port     string
-	Password string // SENSITIVE: do not log
-	DB       string
-	TLS      bool // Enable TLS connections
+	// DB is the Redis database number (QUEUE_REDIS_DB, default "0").
+	DB string
+
+	// Host is the Redis server host (QUEUE_REDIS_HOST, default
+	// "localhost").
+	Host string
+
+	// Password is the Redis password. SENSITIVE: do not log
+	// (QUEUE_REDIS_PASSWORD, default empty).
+	Password string
+
+	// Port is the Redis server port (QUEUE_REDIS_PORT, default "6379").
+	Port string
+
+	// TLS enables TLS connections (REDIS_TLS, default false; only "true"
+	// enables it).
+	TLS bool
 }
 
 // String returns a safe representation with credentials redacted.

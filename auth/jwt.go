@@ -205,25 +205,13 @@ func (s *InMemoryBlacklistStore) Cleanup() error {
 	return nil
 }
 
-// JWTConfig holds JWT configuration
+// JWTConfig holds JWT configuration. ConfigFromEnv fills one for the
+// "api" and "jwt" schemes only when AUTH_SCHEME is set.
 type JWTConfig struct {
-	Secret     string
-	Algorithm  string
-	TTL        int    // Minutes
-	RefreshTTL int    // Minutes
-	Issuer     string // Optional JWT issuer (iss claim)
-	Audience   string // Optional JWT audience (aud claim)
-	// BlacklistEnabled turns on JTI revocation: Logout blacklists the access
-	// token, ValidateToken refuses a blacklisted JTI, and RefreshToken
-	// spends each refresh token once (a second use gets
-	// ErrRefreshTokenUsed). When false there is no one-shot refresh: a
-	// refresh token mints access tokens as often as it is presented until
-	// it expires or its generation is revoked (Logout and RevokeAll bump
-	// the user's refresh generation; that check runs in either mode). The
-	// mode offers no replay exclusion and no reuse signal: a copied
-	// refresh token works alongside the original and nothing reports it.
-	BlacklistEnabled bool
-	BlacklistStore   BlacklistStore // Optional persistent store; defaults to in-memory
+	// Algorithm is the signing algorithm: HS256, HS384, HS512, RS256,
+	// RS384 or RS512 ("none" is never accepted). Empty means HS256
+	// (AUTH_JWT_ALGO, default "HS256").
+	Algorithm string
 
 	// AllowQueryToken opts into accepting the access token from the
 	// "?token=<jwt>" query parameter on WebSocket upgrade requests. It
@@ -234,19 +222,38 @@ type JWTConfig struct {
 	// cannot set the subprotocol header.
 	AllowQueryToken bool
 
-	// RefreshGenerationStore lets the operator install a shared
-	// (typically Redis-backed) per-user refresh-generation counter so
-	// Logout-driven bumps from H-07 propagate across hosts. Without
-	// this, multi-host deployments would each carry their own in-memory
-	// counter and a stolen refresh token would still refresh on hosts
-	// that did not see the Logout. Nil falls back to the in-process
-	// InMemoryRefreshGenerationStore.
-	RefreshGenerationStore RefreshGenerationStore
+	// Audience is the optional JWT audience (aud claim). When set it is
+	// written into minted tokens and required on validation.
+	Audience string
 
-	// RSAPrivateKey / RSAPublicKey enable asymmetric signing (RS256/RS384/RS512).
-	// When RSA algorithms are selected, the HMAC Secret is ignored for signing/verification.
-	RSAPrivateKey interface{} // *rsa.PrivateKey, signing key for RSxxx algorithms
-	RSAPublicKey  interface{} // *rsa.PublicKey, verification key for RSxxx algorithms
+	// BlacklistEnabled turns on JTI revocation: Logout blacklists the access
+	// token, ValidateToken refuses a blacklisted JTI, and RefreshToken
+	// spends each refresh token once (a second use gets
+	// ErrRefreshTokenUsed). When false there is no one-shot refresh: a
+	// refresh token mints access tokens as often as it is presented until
+	// it expires or its generation is revoked (Logout and RevokeAll bump
+	// the user's refresh generation; that check runs in either mode). The
+	// mode offers no replay exclusion and no reuse signal: a copied
+	// refresh token works alongside the original and nothing reports it.
+	// ConfigFromEnv enables it unless the value is "false"
+	// (AUTH_JWT_BLACKLIST_ENABLED, default true).
+	BlacklistEnabled bool
+
+	// BlacklistStore is the optional persistent store for blacklisted
+	// JTIs. Nil defaults to an in-memory store, but Validate rejects
+	// BlacklistEnabled with a nil store.
+	BlacklistStore BlacklistStore
+
+	// Issuer is the optional JWT issuer (iss claim). When set it is
+	// written into minted tokens and required on validation.
+	Issuer string
+
+	// PreviousRSAPublicKeys lists RSA public keys retired from minting
+	// but still accepted for verification (E-02). Same lifecycle and
+	// semantics as PreviousSecrets but for RSxxx algorithms. Entries
+	// MUST be *rsa.PublicKey values (mirrors the type stored in
+	// RSAPublicKey).
+	PreviousRSAPublicKeys []interface{}
 
 	// PreviousSecrets lists HMAC secrets retired from minting but still
 	// accepted for verification (E-02). Lets operators rotate Secret on
@@ -261,12 +268,37 @@ type JWTConfig struct {
 	// has expired.
 	PreviousSecrets []string
 
-	// PreviousRSAPublicKeys lists RSA public keys retired from minting
-	// but still accepted for verification (E-02). Same lifecycle and
-	// semantics as PreviousSecrets but for RSxxx algorithms. Entries
-	// MUST be *rsa.PublicKey values (mirrors the type stored in
-	// RSAPublicKey).
-	PreviousRSAPublicKeys []interface{}
+	// RefreshGenerationStore lets the operator install a shared
+	// (typically Redis-backed) per-user refresh-generation counter so
+	// Logout-driven bumps from H-07 propagate across hosts. Without
+	// this, multi-host deployments would each carry their own in-memory
+	// counter and a stolen refresh token would still refresh on hosts
+	// that did not see the Logout. Nil falls back to the in-process
+	// InMemoryRefreshGenerationStore.
+	RefreshGenerationStore RefreshGenerationStore
+
+	// RefreshTTL is the refresh-token lifetime in minutes. Zero means
+	// 20160 (two weeks) (AUTH_JWT_REFRESH_TTL, default 20160).
+	RefreshTTL int
+
+	// RSAPrivateKey is the *rsa.PrivateKey signing key for the RSxxx
+	// algorithms (RS256/RS384/RS512), which enable asymmetric signing.
+	// When an RSA algorithm is selected, the HMAC Secret is ignored for
+	// signing and verification.
+	RSAPrivateKey interface{}
+
+	// RSAPublicKey is the *rsa.PublicKey verification key for the RSxxx
+	// algorithms; see RSAPrivateKey.
+	RSAPublicKey interface{}
+
+	// Secret is the HMAC signing secret. Validate requires at least 32
+	// bytes for the HSxxx algorithms, and velocity.New skips a jwt scheme
+	// whose Secret is empty (AUTH_JWT_SECRET).
+	Secret string
+
+	// TTL is the access-token lifetime in minutes. Zero means 60
+	// (AUTH_JWT_TTL, default 60).
+	TTL int
 }
 
 // allowedJWTAlgorithms is the allowlist of accepted JWT signing algorithms.

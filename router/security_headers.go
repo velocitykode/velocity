@@ -10,16 +10,48 @@ import (
 
 // SecurityHeadersConfig holds configuration for the SecurityHeaders middleware.
 type SecurityHeadersConfig struct {
-	CSP                   string
-	HSTSEnabled           bool
-	HSTSMaxAge            int
+	// ContentTypeNoSniff sets "X-Content-Type-Options: nosniff" when true.
+	// SecurityHeaders defaults it to true.
+	ContentTypeNoSniff bool
+
+	// CrossDomainPolicies is the X-Permitted-Cross-Domain-Policies header
+	// value; empty omits the header. SecurityHeaders defaults it to "none".
+	CrossDomainPolicies string
+
+	// CSP is the Content-Security-Policy header value; empty omits the
+	// header. SecurityHeaders defaults it to "default-src 'self'".
+	CSP string
+
+	// FrameOptions is the X-Frame-Options header value; empty omits the
+	// header. SecurityHeaders defaults it to "DENY".
+	FrameOptions string
+
+	// HSTSEnabled sets the Strict-Transport-Security header when true.
+	// SecurityHeaders defaults it to true.
+	HSTSEnabled bool
+
+	// HSTSIncludeSubDomains adds includeSubDomains to the HSTS header.
+	// SecurityHeaders defaults it to true.
 	HSTSIncludeSubDomains bool
-	FrameOptions          string
-	ReferrerPolicy        string
-	PermissionsPolicy     string
-	CrossDomainPolicies   string
-	ContentTypeNoSniff    bool
-	XSSProtection         string
+
+	// HSTSMaxAge is the HSTS max-age directive in seconds. SecurityHeaders
+	// defaults it to 63072000 (two years).
+	HSTSMaxAge int
+
+	// PermissionsPolicy is the Permissions-Policy header value; empty omits
+	// the header. SecurityHeaders defaults it to
+	// "camera=(), microphone=(), geolocation=()".
+	PermissionsPolicy string
+
+	// ReferrerPolicy is the Referrer-Policy header value; empty omits the
+	// header. SecurityHeaders defaults it to
+	// "strict-origin-when-cross-origin".
+	ReferrerPolicy string
+
+	// XSSProtection is the X-XSS-Protection header value. The header is
+	// always set, even when the value is empty. SecurityHeaders defaults it
+	// to "0".
+	XSSProtection string
 }
 
 // SecurityHeadersOption is a functional option for configuring SecurityHeaders.

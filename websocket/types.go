@@ -47,28 +47,10 @@ type Client struct {
 
 // Config holds WebSocket server configuration
 type Config struct {
-	Host            string
-	Port            int
-	Path            string
-	AllowedOrigins  []string
-	MaxConnections  int
-	ReadBufferSize  int
-	WriteBufferSize int
-	MaxMessageSize  int64
-	PingInterval    time.Duration
-	PongTimeout     time.Duration
-	WriteTimeout    time.Duration
-	// MessageRateLimit caps the number of inbound messages per second per
-	// client. The zero value installs the secure default
-	// (DefaultMessageRateLimit) so unconfigured deployments are not silently
-	// unrate-limited. To explicitly opt out and run with no rate limit, set
-	// this field to a negative value (e.g. -1). Audit D-03.
-	MessageRateLimit int
-	// MessageBurstSize is the maximum burst above MessageRateLimit before a
-	// flooding client is disconnected. Zero defaults to 2x MessageRateLimit
-	// once the rate limit default is applied.
-	MessageBurstSize int
-	AuthFunc         func(r *http.Request) error // Pre-upgrade authentication; return non-nil to reject
+	// AllowedOrigins lists the Origin header values accepted on upgrade;
+	// "*" accepts every non-empty Origin. Empty means same-origin only: the
+	// Origin must be http(s) and its host must match the request Host.
+	AllowedOrigins []string
 
 	// AllowEmptyOrigin opts in to accepting upgrade requests that arrive with
 	// no Origin header. Browsers always send Origin on WebSocket upgrades, so
@@ -81,6 +63,62 @@ type Config struct {
 	// particular AllowedOrigins []string{"*"} no longer accepts a missing
 	// Origin header on its own - it also requires AllowEmptyOrigin=true.
 	AllowEmptyOrigin bool
+
+	// AuthFunc is the pre-upgrade authentication hook; return non-nil to
+	// reject the request.
+	AuthFunc func(r *http.Request) error
+
+	// Host is the server host, logged when Start runs. DefaultConfig sets
+	// "0.0.0.0".
+	Host string
+
+	// MaxConnections caps the number of connected clients. Zero defaults to
+	// 10000.
+	MaxConnections int
+
+	// MaxMessageSize is the read limit for one inbound message, in bytes.
+	// Zero defaults to 512 KiB.
+	MaxMessageSize int64
+
+	// MessageBurstSize is the maximum burst above MessageRateLimit before a
+	// flooding client is disconnected. Zero defaults to 2x MessageRateLimit
+	// once the rate limit default is applied.
+	MessageBurstSize int
+
+	// MessageRateLimit caps the number of inbound messages per second per
+	// client. The zero value installs the secure default
+	// (DefaultMessageRateLimit) so unconfigured deployments are not silently
+	// unrate-limited. To explicitly opt out and run with no rate limit, set
+	// this field to a negative value (e.g. -1). Audit D-03.
+	MessageRateLimit int
+
+	// Path is the server path, logged when Start runs. DefaultConfig sets
+	// "/ws".
+	Path string
+
+	// PingInterval is how often the server pings each client. Zero defaults
+	// to 30 seconds.
+	PingInterval time.Duration
+
+	// PongTimeout is the read deadline, extended on every pong. Zero
+	// defaults to 60 seconds.
+	PongTimeout time.Duration
+
+	// Port is the server port, logged when Start runs. DefaultConfig sets
+	// 6001.
+	Port int
+
+	// ReadBufferSize is the upgrader read buffer size, in bytes. Zero
+	// defaults to 1024.
+	ReadBufferSize int
+
+	// WriteBufferSize is the upgrader write buffer size, in bytes. Zero
+	// defaults to 1024.
+	WriteBufferSize int
+
+	// WriteTimeout is the write deadline for each outbound frame. Zero
+	// defaults to 10 seconds.
+	WriteTimeout time.Duration
 }
 
 // Stats holds server statistics

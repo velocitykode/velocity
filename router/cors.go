@@ -10,21 +10,21 @@ import (
 
 // CORSConfig holds configuration for the CORS middleware.
 type CORSConfig struct {
-	// AllowedOrigins is a list of origins allowed to access the resource.
-	// Use []string{"*"} to allow all origins.
-	AllowedOrigins []string
-
-	// AllowedMethods is a list of HTTP methods allowed for cross-origin requests.
-	AllowedMethods []string
+	// AllowCredentials indicates whether the request can include credentials.
+	AllowCredentials bool
 
 	// AllowedHeaders is a list of headers allowed in cross-origin requests.
 	AllowedHeaders []string
 
+	// AllowedMethods is a list of HTTP methods allowed for cross-origin requests.
+	AllowedMethods []string
+
+	// AllowedOrigins is a list of origins allowed to access the resource.
+	// Use []string{"*"} to allow all origins.
+	AllowedOrigins []string
+
 	// ExposedHeaders is a list of headers the browser is allowed to access.
 	ExposedHeaders []string
-
-	// AllowCredentials indicates whether the request can include credentials.
-	AllowCredentials bool
 
 	// MaxAge indicates how long preflight results can be cached.
 	MaxAge time.Duration

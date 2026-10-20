@@ -820,23 +820,8 @@ func NewManagerFromConfig(config Config) (*Manager, error) {
 	return manager, nil
 }
 
-// Config holds authentication configuration
+// Config holds authentication configuration.
 type Config struct {
-	DefaultScheme string
-	Schemes       map[string]SchemeConfig
-	BcryptCost    int // Bcrypt cost for password hashing. 0 uses the default.
-
-	// TrustedProxies is the list of IP/CIDR strings whose forwarded
-	// headers (Forwarded, X-Forwarded-For, X-Real-IP) may be honoured
-	// when deriving the client IP for the login throttler and the
-	// session audit trail. Empty means "no proxies trusted" (the
-	// secure default; XFF spoofing is fully ignored). Configure this
-	// at boot to match your load balancer / reverse proxy topology.
-	//
-	// Entries are parsed via internal/clientip.ParseCIDRs and
-	// propagated to every scheme via Manager.SetTrustedProxies.
-	TrustedProxies []string
-
 	// AttemptFloor is the minimum wall-clock duration a scheme.Attempt
 	// call must take, regardless of whether the user existed and
 	// regardless of whether the password matched. The H-09 fix uses
@@ -848,44 +833,99 @@ type Config struct {
 	// Both the session and JWT schemes apply the floor around every
 	// Attempt. A zero value falls back to DefaultAttemptFloor (200ms).
 	// Negative values are clamped to zero (no floor) which is for
-	// tests only.
+	// tests only. ConfigFromEnv reads a time.ParseDuration value such as
+	// "500ms" (AUTH_ATTEMPT_FLOOR, default 0).
 	AttemptFloor time.Duration
 
-	// LoginThrottle tunes the framework's login throttler.
+	// BcryptCost is the bcrypt cost for password hashing. Zero (or a
+	// negative value) keeps the default cost (HASH_BCRYPT_COST, default
+	// 10).
+	BcryptCost int
+
+	// DefaultScheme names the scheme Manager.DefaultScheme returns. Empty
+	// sets no default; ConfigFromEnv fills Schemes only when it is set
+	// (AUTH_SCHEME).
+	DefaultScheme string
+
+	// LoginThrottle tunes the framework's login throttler (the
+	// AUTH_LOGIN_* keys, see LoginThrottleConfig).
 	LoginThrottle LoginThrottleConfig
 
+	// Schemes maps a scheme name to its SchemeConfig; velocity.New
+	// registers one scheme per entry. When AUTH_SCHEME is set,
+	// ConfigFromEnv fills "web" and "session" (session driver) and "api"
+	// and "jwt" (jwt driver).
+	Schemes map[string]SchemeConfig
+
 	// Session configures the session cookie and store used by the session
-	// scheme and the CSRF session bag.
+	// scheme and the CSRF session bag (the SESSION_* keys, see
+	// SessionConfig).
 	Session SessionConfig
+
+	// TrustedProxies is the list of IP/CIDR strings whose forwarded
+	// headers (Forwarded, X-Forwarded-For, X-Real-IP) may be honoured
+	// when deriving the client IP for the login throttler and the
+	// session audit trail. Empty means "no proxies trusted" (the
+	// secure default; XFF spoofing is fully ignored). Configure this
+	// at boot to match your load balancer / reverse proxy topology.
+	//
+	// Entries are parsed via internal/clientip.ParseCIDRs and
+	// propagated to every scheme via Manager.SetTrustedProxies.
+	// ConfigFromEnv splits the value on commas and trims each entry
+	// (AUTH_TRUSTED_PROXIES, default empty).
+	TrustedProxies []string
 }
 
 // LoginThrottleConfig tunes the login throttler velocity.New installs.
 // Every zero field takes the framework default, so a zero value is the
-// default throttler.
+// default throttler. ConfigFromEnv turns an unset or invalid value into
+// zero.
 type LoginThrottleConfig struct {
-	// MaxAttempts caps failures per (identifier, IP) pair, and per key
-	// with no recognised dimension prefix. Zero or negative: 5.
-	MaxAttempts int
-	// MaxAttemptsPerIdentifier caps failures per identifier across all
-	// IPs (verify-first, see ThrottleKeys). Zero or negative: 20.
-	MaxAttemptsPerIdentifier int
-	// MaxAttemptsPerIP caps failures per source IP across all
-	// identifiers. Zero or negative: 50.
-	MaxAttemptsPerIP int
 	// Decay is how long a failure counts. Zero or negative: 60s.
+	// ConfigFromEnv reads a Go duration or bare seconds
+	// (AUTH_LOGIN_DECAY, default 0).
 	Decay time.Duration
+
 	// IdentifierDelay is the delay paid by the first attempt past the
 	// identifier cap, doubling per further failure. Zero:
-	// DefaultIdentifierDelay; negative disables the delay.
+	// DefaultIdentifierDelay; negative disables the delay. ConfigFromEnv
+	// reads a Go duration or bare seconds, and an explicit zero there
+	// becomes -1, disabling the delay (AUTH_LOGIN_IDENTIFIER_DELAY,
+	// default 0).
 	IdentifierDelay time.Duration
+
 	// IdentifierDelayMax caps the progressive delay. Zero or negative:
-	// DefaultIdentifierDelayMax.
+	// DefaultIdentifierDelayMax. ConfigFromEnv reads a Go duration or
+	// bare seconds (AUTH_LOGIN_IDENTIFIER_DELAY_MAX, default 0).
 	IdentifierDelayMax time.Duration
+
+	// MaxAttempts caps failures per (identifier, IP) pair, and per key
+	// with no recognised dimension prefix. Zero or negative: 5
+	// (AUTH_LOGIN_MAX_ATTEMPTS, default 0).
+	MaxAttempts int
+
+	// MaxAttemptsPerIdentifier caps failures per identifier across all
+	// IPs (verify-first, see ThrottleKeys). Zero or negative: 20
+	// (AUTH_LOGIN_MAX_ATTEMPTS_PER_IDENTIFIER, default 0).
+	MaxAttemptsPerIdentifier int
+
+	// MaxAttemptsPerIP caps failures per source IP across all
+	// identifiers. Zero or negative: 50 (AUTH_LOGIN_MAX_ATTEMPTS_PER_IP,
+	// default 0).
+	MaxAttemptsPerIP int
 }
 
-// SchemeConfig holds scheme configuration
+// SchemeConfig holds scheme configuration.
 type SchemeConfig struct {
-	Driver  string
+	// Driver names the scheme implementation: velocity.New builds a
+	// session scheme for "session" and a JWT scheme for "jwt", and skips
+	// any other value.
+	Driver string
+
+	// Options holds driver-specific settings. The jwt driver reads its
+	// JWTConfig from Options["jwt"]; the session driver takes
+	// Config.Session instead. ConfigFromEnv also stores Config.Session
+	// under Options["session"] for the session driver.
 	Options map[string]interface{}
 }
 

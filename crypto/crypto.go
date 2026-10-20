@@ -110,16 +110,31 @@ type Encryptor interface {
 // import of crypto/drivers.
 type Payload = drivers.Payload
 
-// Config holds encryption configuration
+// Config holds encryption configuration.
 type Config struct {
-	Key          string   // Primary encryption key
-	PreviousKeys []string // Previous keys for rotation
-	Cipher       string   // Cipher algorithm
-	// DisableV0 rejects legacy v0 payloads at decrypt time.
-	DisableV0 bool
+	// Cipher is the cipher algorithm: AES-128, AES-192 or AES-256 in CBC
+	// or GCM mode, for example "AES-256-GCM", matched case-insensitively.
+	// Empty means AES-256-GCM (CRYPTO_CIPHER, default "AES-256-GCM").
+	Cipher string
+
 	// Debug writes the stage and cause of every decrypt failure at debug
-	// level.
+	// level (CRYPTO_DEBUG, default false).
 	Debug bool
+
+	// DisableV0 rejects legacy v0 payloads at decrypt time
+	// (CRYPTO_DISABLE_V0, default false).
+	DisableV0 bool
+
+	// Key is the primary encryption key: raw bytes, or base64 behind a
+	// "base64:" prefix. Its raw length must match the cipher (see
+	// Validate) (CRYPTO_KEY, default the APP_KEY value).
+	Key string
+
+	// PreviousKeys lists previous keys kept for rotation. Each must pass
+	// the same parse and length checks as Key; empty entries are ignored.
+	// ConfigFromEnv splits the value on commas (CRYPTO_OLD_KEYS, default
+	// none).
+	PreviousKeys []string
 }
 
 // Validate checks that the Config is structurally usable. Allowed ciphers

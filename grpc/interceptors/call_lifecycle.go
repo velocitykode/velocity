@@ -25,34 +25,9 @@ import (
 
 // CallConfig configures the call lifecycle interceptor CallLifecycle builds.
 type CallConfig struct {
-	// Logger receives the request line (when RequestLine is set) and the
-	// line of a recovered panic the Reporter did not take. Nil means the
-	// framework's standalone fallback logger, which writes warnings and
-	// errors to standard error.
-	Logger contract.Logger
-
-	// RequestLine writes one line per call through Logger: info level,
-	// warn for a slow call or a failed one, error for an Internal or
-	// Unknown status. Off by default.
-	RequestLine bool
-
-	// SkipMethods lists methods that get no request line and no lifecycle
-	// events. They are still correlated, recovered and reported.
-	SkipMethods map[string]bool
-
-	// SkipHealthChecks treats the gRPC health service's methods as
-	// SkipMethods. On by default.
-	SkipHealthChecks bool
-
-	// SlowThreshold writes a successful call that ran longer than it at
-	// warn level ("gRPC request (slow)") instead of info. Zero disables
-	// the rule. The ORM's DB_SLOW_QUERY_THRESHOLD follows the same rule
-	// (internal/latency), and both lines write the duration as
-	// duration_ms. CallLifecycle defaults it to 5s.
-	SlowThreshold time.Duration
-
-	// ExtraFields adds fields to the request line.
-	ExtraFields func(ctx context.Context) []interface{}
+	// EnableStackTrace captures the stack of a recovered panic for its
+	// report, line and event. On by default.
+	EnableStackTrace bool
 
 	// EventDispatcher receives the call's lifecycle events (RequestStarted,
 	// RequestFailed, RequestCompleted and their stream counterparts) and
@@ -60,6 +35,20 @@ type CallConfig struct {
 	// leaving it nil uses the server's dispatcher; WithEventDispatcher(nil)
 	// turns the call's events off.
 	EventDispatcher grpcevents.EventDispatchFunc
+
+	// ExtraFields adds fields to the request line.
+	ExtraFields func(ctx context.Context) []interface{}
+
+	// Logger receives the request line (when RequestLine is set) and the
+	// line of a recovered panic the Reporter did not take. Nil means the
+	// framework's standalone fallback logger, which writes warnings and
+	// errors to standard error.
+	Logger contract.Logger
+
+	// PanicHandler, when set, turns a recovered panic into the error the
+	// call ends with, whatever it returns: nil ends the call without an
+	// error. Without it the call ends with codes.Internal.
+	PanicHandler func(ctx context.Context, p interface{}) error
 
 	// Reporter, when set, receives the call's one error report: a
 	// recovered panic, in place of the Logger's line, or else the error
@@ -71,14 +60,25 @@ type CallConfig struct {
 	// (Services.Errors). Reporting never changes what the client gets.
 	Reporter contract.Reporter
 
-	// PanicHandler, when set, turns a recovered panic into the error the
-	// call ends with, whatever it returns: nil ends the call without an
-	// error. Without it the call ends with codes.Internal.
-	PanicHandler func(ctx context.Context, p interface{}) error
+	// RequestLine writes one line per call through Logger: info level,
+	// warn for a slow call or a failed one, error for an Internal or
+	// Unknown status. Off by default.
+	RequestLine bool
 
-	// EnableStackTrace captures the stack of a recovered panic for its
-	// report, line and event. On by default.
-	EnableStackTrace bool
+	// SkipHealthChecks treats the gRPC health service's methods as
+	// SkipMethods. On by default.
+	SkipHealthChecks bool
+
+	// SkipMethods lists methods that get no request line and no lifecycle
+	// events. They are still correlated, recovered and reported.
+	SkipMethods map[string]bool
+
+	// SlowThreshold writes a successful call that ran longer than it at
+	// warn level ("gRPC request (slow)") instead of info. Zero disables
+	// the rule. The ORM's DB_SLOW_QUERY_THRESHOLD follows the same rule
+	// (internal/latency), and both lines write the duration as
+	// duration_ms. CallLifecycle defaults it to 5s.
+	SlowThreshold time.Duration
 
 	// events holds EventDispatcher and applies the failure policy to a
 	// failed dispatch; CallLifecycle builds it once the options are applied.

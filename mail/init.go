@@ -26,21 +26,33 @@ func Drivers() *driverregistry.Registry[Mailer, Config] { return drivers }
 
 // Config holds configuration for creating a mailer.
 type Config struct {
-	// Driver is the mail driver to use (e.g. "log", "postmark", "mailgun", "local").
-	Driver      string
+	// Driver is the mail driver to use (e.g. "log", "postmark", "mailgun",
+	// "local") (MAIL_DRIVER, default "log").
+	Driver string
+
+	// FromAddress is the default sender email address (MAIL_FROM_ADDRESS).
 	FromAddress string
-	FromName    string
+
+	// FromName is the default sender display name (MAIL_FROM_NAME, default
+	// "").
+	FromName string
+
+	// Local holds the local SMTP/sendmail driver settings.
+	Local LocalConfig
+
+	// Mailgun holds the Mailgun driver settings.
+	Mailgun MailgunConfig
 
 	// MaxAttachmentSize is the maximum per-attachment size in bytes accepted
 	// by Message.AttachFile / Message.AttachData. A zero (or negative) value
 	// means "use DefaultMaxAttachmentSize"; it does NOT mean "unlimited".
 	// The default (25 MiB) matches common SMTP provider limits: SES 40 MB,
-	// SendGrid 30 MB, Postmark 10 MB, Mailgun 25 MB.
+	// SendGrid 30 MB, Postmark 10 MB, Mailgun 25 MB
+	// (MAIL_MAX_ATTACHMENT_SIZE, default DefaultMaxAttachmentSize).
 	MaxAttachmentSize int64
 
-	Mailgun  MailgunConfig
+	// Postmark holds the Postmark driver settings.
 	Postmark PostmarkConfig
-	Local    LocalConfig
 }
 
 // Validate checks the Config for structural problems. An empty Driver
@@ -57,26 +69,59 @@ func (c Config) Validate() error {
 
 // MailgunConfig holds Mailgun-specific configuration.
 type MailgunConfig struct {
-	Domain            string
-	Secret            string // SENSITIVE: do not log
-	Endpoint          string
-	WebhookSigningKey string // SENSITIVE: do not log
+	// Domain is the Mailgun sending domain (MAIL_MAILGUN_DOMAIN, default
+	// "").
+	Domain string
+
+	// Endpoint is the Mailgun API base URL. The mailgun driver uses
+	// "https://api.mailgun.net/v3" when it is empty and rejects any scheme
+	// other than https (MAIL_MAILGUN_ENDPOINT).
+	Endpoint string
+
+	// Secret is the Mailgun API key. SENSITIVE: do not log
+	// (MAIL_MAILGUN_SECRET).
+	Secret string
+
+	// WebhookSigningKey is the Mailgun webhook signing key. SENSITIVE: do
+	// not log (MAIL_MAILGUN_WEBHOOK_SIGNING_KEY).
+	WebhookSigningKey string
 }
 
 // PostmarkConfig holds Postmark-specific configuration.
 type PostmarkConfig struct {
-	Token         string // SENSITIVE: do not log
+	// MessageStream is the Postmark message stream to send through. The
+	// postmark driver uses "outbound" when it is empty and rejects a stream
+	// not in its allowlist (MAIL_POSTMARK_MESSAGE_STREAM).
 	MessageStream string
+
+	// Token is the Postmark server API token. SENSITIVE: do not log
+	// (MAIL_POSTMARK_TOKEN).
+	Token string
 }
 
 // LocalConfig holds local SMTP/sendmail configuration.
 type LocalConfig struct {
-	Host         string
-	Port         string
-	Username     string // SENSITIVE: do not log
-	Password     string // SENSITIVE: do not log
-	Encryption   string
+	// Encryption is the SMTP encryption mode. "tls" or "ssl" (case
+	// insensitive) means implicit TLS; any other value means the server
+	// must offer STARTTLS before credentials are sent (MAIL_ENCRYPTION).
+	Encryption string
+
+	// Host is the SMTP server host (MAIL_HOST).
+	Host string
+
+	// Password is the SMTP password. SENSITIVE: do not log (MAIL_PASSWORD).
+	Password string
+
+	// Port is the SMTP server port. The local driver uses "587" when it is
+	// empty and Host is set (MAIL_PORT).
+	Port string
+
+	// SendmailPath is the path of the sendmail binary. When set, the local
+	// driver sends through sendmail instead of SMTP (MAIL_SENDMAIL_PATH).
 	SendmailPath string
+
+	// Username is the SMTP username. SENSITIVE: do not log (MAIL_USERNAME).
+	Username string
 }
 
 // NewMailer creates a new Mailer from the given configuration.

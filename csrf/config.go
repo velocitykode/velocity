@@ -46,11 +46,15 @@ func (m Mode) String() string {
 // SessionIDResolver is configured.
 var ErrInsecureCSRFConfig = errors.New("velocity/csrf: insecure config")
 
-// Config holds CSRF protection configuration
+// Config holds CSRF protection configuration.
 type Config struct {
-	HeaderName        string
-	FormField         string
-	SessionCookieName string // Name of the session cookie to read session ID from
+	// CookiePolicy is the Path, Domain, Secure and SameSite of the XSRF
+	// token cookie, its post-login rewrite and its logout deletion.
+	// velocity.New sets it to the app's policy (derived from the session
+	// config), so the token cookie follows SESSION_SAME_SITE,
+	// SESSION_DOMAIN, SESSION_PATH and SESSION_SECURE. The zero value is
+	// the secure default (Path "/", Secure, SameSite=Lax).
+	CookiePolicy contract.CookiePolicy
 
 	// Env is the application environment (APP_ENV), set by the framework from
 	// the app Config at construction (App.bootstrap copies a.config.Env here
@@ -63,6 +67,37 @@ type Config struct {
 	// empty, the bypass is strictly opt-in per instance and never leaks into the
 	// package's own test profile, even under `APP_ENV=testing go test ./csrf`.
 	Env string
+
+	// ErrorHandler answers a rejected request in place of the default
+	// 419, with the response writer, the request and the rejection
+	// reason (TokenMismatchError.Reason). The bare Middleware calls it
+	// directly; on the router path RenderTokenMismatch does. Nil keeps the
+	// default 419.
+	ErrorHandler func(http.ResponseWriter, *http.Request, error)
+
+	// ErrorMessage is the client-facing text of a rejection: the 419
+	// detail on the router path (carried by TokenMismatchError) and the
+	// body the bare Middleware writes (CSRF_ERROR_MESSAGE, default
+	// "CSRF token validation failed. Please refresh and try again.").
+	ErrorMessage string
+
+	// ExcludeFunc skips CSRF protection for a request when it returns
+	// true. It is consulted after ExcludePaths.
+	ExcludeFunc func(*http.Request) bool
+
+	// ExcludePaths lists request paths that skip CSRF protection: an
+	// entry matches the exact path, or every path with its prefix when it
+	// ends in "*".
+	ExcludePaths []string
+
+	// FormField is the field read for the token from an
+	// application/x-www-form-urlencoded body (CSRF_FORM_FIELD, default
+	// "_token").
+	FormField string
+
+	// HeaderName is the request header checked first for the token
+	// (CSRF_HEADER, default "X-CSRF-Token").
+	HeaderName string
 
 	// MaxFormBodyBytes bounds how many bytes of an
 	// application/x-www-form-urlencoded request body the CSRF middleware
@@ -77,53 +112,25 @@ type Config struct {
 	// Mode selects how tokens are bound to the client. Default ModeSession.
 	Mode Mode
 
-	// SingleUse consumes a token on its first successful validation. It
-	// requires a Store implementing AtomicConsumer (NewE refuses any
-	// other), and how far it reaches is that store's ConsumptionScope. The session-bag store velocity.New installs makes
-	// it exact per instance, and New refuses it for a session with no
-	// absolute cap.
-	SingleUse bool
+	// QueueAfterSessionSave defers the XSRF-TOKEN cookie a safe request
+	// bootstraps until the request's session is saved: it queues write to
+	// run after a successful save and reports true, or reports false when
+	// the request has no session save to follow, and the cookie is then
+	// written at once unless the response is already committed. A failed
+	// save drops the write, so the client never holds a token kept in a
+	// session that was not saved, and so does a sign-in or remember-me
+	// recall that replaces the session later in the request (it writes
+	// the XSRF-TOKEN of the session that replaced it, so a response
+	// carries one). write gets the response's headers only. velocity.New
+	// sets it (schemes.QueueSessionBoundWrite) together with the
+	// session-held Store; nil writes at once.
+	QueueAfterSessionSave func(r *http.Request, write func(w http.ResponseWriter)) bool
 
-	// CookiePolicy is the Path, Domain, Secure and SameSite of the XSRF
-	// token cookie, its post-login rewrite and its logout deletion.
-	// velocity.New sets it to the app's policy (derived from the session
-	// config), so the token cookie follows SESSION_SAME_SITE,
-	// SESSION_DOMAIN, SESSION_PATH and SESSION_SECURE. The zero value is
-	// the secure default (Path "/", Secure, SameSite=Lax).
-	CookiePolicy contract.CookiePolicy
-
-	// WriteXSRFCookie controls whether the middleware writes a non-
-	// HttpOnly cookie carrying the per-session CSRF token on safe
-	// (idempotent) requests. The cookie name is "XSRF-TOKEN" by
-	// convention (axios, angular, etc.) and its value is the URL-encoded
-	// token so axios-style clients can echo it back as X-XSRF-TOKEN.
-	// Default true. Set to false to opt out (the operator must then
-	// hand-roll cookie wiring or rely solely on RefreshHandler).
-	//
-	// Security notes:
-	//   - The cookie is intentionally NOT HttpOnly: SPA JS must read it
-	//     to echo into the header on unsafe requests.
-	//   - Secure, SameSite, Path and Domain come from CookiePolicy, the
-	//     same attributes as the session cookie.
-	//   - The cookie carries the SAME per-session token
-	//     GetToken(ctx, sessionID) returns. Single-use tokens MUST NOT be
-	//     exposed via this cookie - they are consumed on validation and
-	//     the client would echo a stale value. When SingleUse is true the cookie
-	//     write is skipped automatically.
-	WriteXSRFCookie bool
-
-	// XSRFCookieName is the name of the non-HttpOnly cookie written
-	// when WriteXSRFCookie is true. Default "XSRF-TOKEN" (axios
-	// convention). Header echoed by the client is X-XSRF-TOKEN by
-	// convention; the framework also accepts HeaderName.
-	XSRFCookieName string
-
-	// Store keeps the token of each session. velocity.New sets a
-	// stores.SessionBagStore when CSRF binds to the session, so the token
-	// lives in the session (saved with it, valid on every instance that
-	// can read the session, ended with it). Left nil, NewE installs a
-	// stores.MemoryStore: a map in this process, for session-less use.
-	Store Store
+	// SessionCookieName is the name of the session cookie to read the
+	// session ID from. DefaultConfig sets "session_id"; ConfigFromEnv
+	// defaults it to the session cookie name (CSRF_SESSION_COOKIE,
+	// default the SESSION_NAME value).
+	SessionCookieName string
 
 	// SessionIDResolver returns the plaintext session ID that CSRF tokens
 	// are keyed by. It is REQUIRED: csrf.NewE returns
@@ -151,31 +158,50 @@ type Config struct {
 	// The resolver returns ErrNoSession when no session is present.
 	SessionIDResolver func(*http.Request) (string, error)
 
-	// QueueAfterSessionSave defers the XSRF-TOKEN cookie a safe request
-	// bootstraps until the request's session is saved: it queues write to
-	// run after a successful save and reports true, or reports false when
-	// the request has no session save to follow, and the cookie is then
-	// written at once unless the response is already committed. A failed
-	// save drops the write, so the client never holds a token kept in a
-	// session that was not saved, and so does a sign-in or remember-me
-	// recall that replaces the session later in the request (it writes
-	// the XSRF-TOKEN of the session that replaced it, so a response
-	// carries one). write gets the response's headers only. velocity.New
-	// sets it (schemes.QueueSessionBoundWrite) together with the
-	// session-held Store; nil writes at once.
-	QueueAfterSessionSave func(r *http.Request, write func(w http.ResponseWriter)) bool
+	// SingleUse consumes a token on its first successful validation. It
+	// requires a Store implementing AtomicConsumer (NewE refuses any
+	// other), and how far it reaches is that store's ConsumptionScope. The session-bag store velocity.New installs makes
+	// it exact per instance, and New refuses it for a session with no
+	// absolute cap. ConfigFromEnv sets it only for the value "true"
+	// (CSRF_SINGLE_USE, default false).
+	SingleUse bool
 
-	// Exception handling
-	ExcludePaths []string
-	ExcludeFunc  func(*http.Request) bool
+	// Store keeps the token of each session. velocity.New sets a
+	// stores.SessionBagStore when CSRF binds to the session, so the token
+	// lives in the session (saved with it, valid on every instance that
+	// can read the session, ended with it). Left nil, NewE installs a
+	// stores.MemoryStore: a map in this process, for session-less use.
+	Store Store
 
-	// Error handling
+	// WriteXSRFCookie controls whether the middleware writes a non-
+	// HttpOnly cookie carrying the per-session CSRF token on safe
+	// (idempotent) requests. The cookie name is "XSRF-TOKEN" by
+	// convention (axios, angular, etc.) and its value is the URL-encoded
+	// token so axios-style clients can echo it back as X-XSRF-TOKEN.
+	// Default true. Set to false to opt out (the operator must then
+	// hand-roll cookie wiring or rely solely on RefreshHandler).
+	//
+	// Security notes:
+	//   - The cookie is intentionally NOT HttpOnly: SPA JS must read it
+	//     to echo into the header on unsafe requests.
+	//   - Secure, SameSite, Path and Domain come from CookiePolicy, the
+	//     same attributes as the session cookie.
+	//   - The cookie carries the SAME per-session token
+	//     GetToken(ctx, sessionID) returns. Single-use tokens MUST NOT be
+	//     exposed via this cookie - they are consumed on validation and
+	//     the client would echo a stale value. When SingleUse is true the cookie
+	//     write is skipped automatically.
+	//
+	// ConfigFromEnv keeps it on only for the value "true"
+	// (CSRF_WRITE_XSRF_COOKIE, default true).
+	WriteXSRFCookie bool
 
-	// ErrorMessage is the client-facing text of a rejection: the 419
-	// detail on the router path (carried by TokenMismatchError) and the
-	// body the bare Middleware writes.
-	ErrorMessage string
-	ErrorHandler func(http.ResponseWriter, *http.Request, error)
+	// XSRFCookieName is the name of the non-HttpOnly cookie written
+	// when WriteXSRFCookie is true. Default "XSRF-TOKEN" (axios
+	// convention). Header echoed by the client is X-XSRF-TOKEN by
+	// convention; the framework also accepts HeaderName
+	// (CSRF_XSRF_COOKIE_NAME, default "XSRF-TOKEN").
+	XSRFCookieName string
 }
 
 // DefaultConfig returns the default CSRF configuration

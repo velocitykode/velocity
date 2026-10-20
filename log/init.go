@@ -12,13 +12,19 @@ import (
 
 // Config holds configuration for creating a Logger instance.
 type Config struct {
-	// Driver specifies the log driver: "console", "file", "stack", "null", or
-	// any third-party driver registered via Drivers().Register.
-	Driver string
 	// Config holds driver-specific options (e.g., "path" for file driver,
 	// "stack" with []string of channel names for the stack driver, "level"
-	// for any driver).
+	// for any driver). ConfigFromEnv fills "path" (LOG_PATH, set only when
+	// non-empty), "days" (LOG_DAYS, default 14), "level" (LOG_LEVEL, default
+	// "debug"), "redact" (LOG_REDACT, set only when "true"), "redact_emails"
+	// (LOG_REDACT_EMAILS, set only when "true") and "stack" (LOG_STACK,
+	// comma-separated, set only when non-empty).
 	Config map[string]any
+
+	// Driver specifies the log driver: "console", "file", "stack", "null", or
+	// any third-party driver registered via Drivers().Register (LOG_DRIVER,
+	// default "console").
+	Driver string
 }
 
 // Validate checks structural requirements: empty Driver is treated as

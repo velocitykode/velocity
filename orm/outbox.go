@@ -525,32 +525,41 @@ func (m *Manager) EnsureOutboxTable(ctx context.Context) error {
 
 // RelayConfig configures a Relay.
 type RelayConfig struct {
-	// PollInterval is the time between scan ticks. Defaults to 1s.
-	PollInterval time.Duration
+	// BackoffBase is the base passed to the exponential backoff used to
+	// schedule retries (matches queue.ExponentialBackoff). Defaults to 1s.
+	BackoffBase time.Duration
+
+	// BackoffMax is the cap passed to the exponential backoff used to
+	// schedule retries (matches queue.ExponentialBackoff). Defaults to 5m.
+	BackoffMax time.Duration
+
+	// BatchSize is the maximum rows claimed per tick. Defaults to 32.
+	BatchSize int
+
 	// LeaseDuration is how long a claimed row remains owned by this relay
 	// before another relay may steal it. Defaults to 30s.
 	LeaseDuration time.Duration
-	// BatchSize is the maximum rows claimed per tick. Defaults to 32.
-	BatchSize int
-	// WorkerCount bounds in-flight dispatches. Defaults to 4.
-	WorkerCount int
+
 	// MaxAttempts is the default per-row max_attempts when the row's value
 	// is zero. Defaults to 5.
 	MaxAttempts int
-	// BackoffBase / BackoffMax are passed to the exponential backoff used
-	// to schedule retries (matches queue.ExponentialBackoff). Defaults:
-	// 1s base, 5m max.
-	BackoffBase time.Duration
-	BackoffMax  time.Duration
+
+	// PollInterval is the time between scan ticks. Defaults to 1s.
+	PollInterval time.Duration
+
 	// RelayID identifies this relay process in the leased_by column. When
-	// empty a random hex string is used.
+	// empty a random hex string is used, prefixed "relay-".
 	RelayID string
+
 	// ShutdownGrace is the grace window granted to in-flight workers after
 	// Stop is signalled before their database writes (recordSuccess /
 	// recordFailure) and dispatch callback contexts are cancelled. This
 	// guarantees Stop cannot block indefinitely under DB pressure even when
 	// Stop's own ctx is context.Background. Defaults to 5s.
 	ShutdownGrace time.Duration
+
+	// WorkerCount bounds in-flight dispatches. Defaults to 4.
+	WorkerCount int
 }
 
 // RelayCallbacks is the dispatch surface the relay calls into when it wins a
