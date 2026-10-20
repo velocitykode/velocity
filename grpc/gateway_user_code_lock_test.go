@@ -42,7 +42,7 @@ func (l *gatewayLogger) With(...any) contract.Logger { return l }
 func newCallbackGateway() (*grpc.Gateway, *gatewayLogger, *atomic.Pointer[grpc.Gateway]) {
 	ref := &atomic.Pointer[grpc.Gateway]{}
 	logger := &gatewayLogger{gateway: ref}
-	g := grpc.NewGateway(grpc.Config{}, grpc.GatewayWithPort("0"), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
+	g := grpc.NewGateway(grpc.Config{Environment: "test"}, grpc.GatewayWithPort("0"), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
 		grpc.GatewayWithEnvironment("development"), grpc.GatewayWithLogger(logger))
 	ref.Store(g)
 	return g, logger, ref
@@ -134,7 +134,7 @@ func TestGatewayBuild_FailedRegistrationPublishesNothing(t *testing.T) {
 // quietGateway returns a gateway on an ephemeral port with a logger that
 // does not call back.
 func quietGateway() *grpc.Gateway {
-	return grpc.NewGateway(grpc.Config{}, grpc.GatewayWithPort("0"), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
+	return grpc.NewGateway(grpc.Config{Environment: "test"}, grpc.GatewayWithPort("0"), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
 		grpc.GatewayWithEnvironment("development"), grpc.GatewayWithLogger(&gatewayLogger{gateway: &atomic.Pointer[grpc.Gateway]{}}))
 }
 

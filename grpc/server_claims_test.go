@@ -67,7 +67,7 @@ func TestServerChain_UserFieldsFromAuthReachTheLineAndEvents(t *testing.T) {
 				t.Fatalf("listen: %v", err)
 			}
 			quiet, _ := log.NewLogger(log.Config{Driver: "null"})
-			s := NewServer(Config{}, WithListener(lis), WithLogger(quiet), WithEnvironment("testing"), WithCallOptions(
+			s := NewServer(Config{Environment: "test"}, WithListener(lis), WithLogger(quiet), WithEnvironment("testing"), WithCallOptions(
 				interceptors.WithRequestLine(),
 				interceptors.WithLogger(lines),
 				interceptors.WithEventDispatcher(evs.dispatch),
@@ -202,7 +202,7 @@ func TestServerChain_NestedCallLifecycleKeepsOneOwner(t *testing.T) {
 				t.Fatalf("listen: %v", err)
 			}
 			quiet, _ := log.NewLogger(log.Config{Driver: "null"})
-			s := NewServer(Config{}, WithListener(lis), WithLogger(quiet), WithEnvironment("testing"), WithReporter(reports), WithCallOptions(
+			s := NewServer(Config{Environment: "test"}, WithListener(lis), WithLogger(quiet), WithEnvironment("testing"), WithReporter(reports), WithCallOptions(
 				interceptors.WithRequestLine(), interceptors.WithLogger(lines), interceptors.WithEventDispatcher(evs.dispatch),
 			))
 			s.UseAll(interceptors.CallLifecycle(

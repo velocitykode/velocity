@@ -135,14 +135,18 @@ func (c Config) DefaultDriver() string {
 // Redis port and database must be non-negative; with any store configured,
 // Default must name one of them.
 //
-// The driver name is not checked against the registry here, for the reason
-// StoreConfig.Validate gives.
+// Each store's driver must be registered: drivers register from their
+// package init(), which has run by the time New calls Validate, so an
+// unknown or unimported driver fails here instead of on first use.
 func (c Config) Validate() error {
 	for name, sc := range c.Stores {
 		if err := sc.Validate(); err != nil {
 			return errchain.Errorf("velocity/cache: store %q: %w", name, err)
 		}
-		if sc.Driver == DriverFile && sc.Path == "" {
+		if err := driverRegistry.Check(sc.Driver); err != nil {
+			return errchain.Errorf("velocity/cache: store %q: %w", name, err)
+		}
+		if driverregistry.Normalise(sc.Driver) == DriverFile && sc.Path == "" {
 			return fmt.Errorf("velocity/cache: store %q uses the file driver but Path is empty", name)
 		}
 		if sc.Port < 0 || sc.Database < 0 {
@@ -164,9 +168,8 @@ type StoreConfig struct {
 	Database int
 
 	// Driver is the store driver name: "memory", "file", "redis" or a
-	// driver registered via Drivers().Register (CACHE_DRIVER: exactly
-	// "file" or "redis" selects that driver, anything else, unset
-	// included, is "memory").
+	// driver registered via Drivers().Register (CACHE_DRIVER, trimmed and
+	// lower-cased, default "memory").
 	Driver string
 
 	// Host is the Redis server host, used by the redis driver
@@ -210,7 +213,7 @@ type StoreConfig struct {
 	Prefix string
 
 	// TLS enables TLS for Redis connections, used by the redis driver
-	// (REDIS_TLS, default false; only "true" enables it).
+	// (REDIS_TLS, default false).
 	TLS bool
 }
 
@@ -219,12 +222,8 @@ type StoreConfig struct {
 // third-party drivers registered via Drivers().Register can enforce their own
 // invariants without StoreConfig.Validate having to know about them.
 //
-// Validate intentionally does NOT consult Drivers().Names() to verify the
-// driver is registered: Validate runs at config-load time, and a driver
-// package whose init() registers a factory may not have been imported yet at
-// that point. Driver-name lookup is the registry's job; Resolve returns a
-// typed *driverregistry.NotFoundError if the name is unknown when the store
-// is actually constructed.
+// The registry check is Config.Validate's: a StoreConfig on its own does not
+// know whether its driver's package has been imported.
 func (sc StoreConfig) Validate() error {
 	if sc.Driver == "" {
 		return fmt.Errorf("velocity/cache: driver name required")

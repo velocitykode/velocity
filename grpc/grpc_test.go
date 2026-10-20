@@ -58,7 +58,7 @@ func TestServerOptions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			server := grpc.NewServer(grpc.Config{}, tt.opts...)
+			server := grpc.NewServer(grpc.Config{Environment: "test"}, tt.opts...)
 			if server.Port() != tt.wantPort {
 				t.Errorf("Port() = %v, want %v", server.Port(), tt.wantPort)
 			}
@@ -67,7 +67,7 @@ func TestServerOptions(t *testing.T) {
 }
 
 func TestServerLifecycle(t *testing.T) {
-	server := grpc.NewServer(grpc.Config{},
+	server := grpc.NewServer(grpc.Config{Environment: "test"},
 		grpc.WithPort("0"), // Random available port
 		grpc.WithReflection(true),
 	)
@@ -96,7 +96,7 @@ func TestServerLifecycle(t *testing.T) {
 }
 
 func TestServerDoubleStart(t *testing.T) {
-	server := grpc.NewServer(grpc.Config{}, grpc.WithPort("0"))
+	server := grpc.NewServer(grpc.Config{Environment: "test"}, grpc.WithPort("0"))
 
 	if err := server.StartAsync(); err != nil {
 		t.Fatalf("First StartAsync() error = %v", err)
@@ -155,7 +155,7 @@ func TestGatewayOptions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gateway := grpc.NewGateway(grpc.Config{}, tt.opts...)
+			gateway := grpc.NewGateway(grpc.Config{Environment: "test"}, tt.opts...)
 			if gateway.Port() != tt.wantPort {
 				t.Errorf("Port() = %v, want %v", gateway.Port(), tt.wantPort)
 			}
@@ -168,7 +168,7 @@ func TestGatewayOptions(t *testing.T) {
 
 func TestGatewayBuildRequiresTLS(t *testing.T) {
 	// GatewayWithTransportConfig with neither TLS nor Insecure should produce an error
-	gateway := grpc.NewGateway(grpc.Config{},
+	gateway := grpc.NewGateway(grpc.Config{Environment: "test"},
 		grpc.GatewayWithGRPCEndpoint("localhost:50051"),
 		grpc.GatewayWithTransportConfig(grpc.GatewayTransportConfig{}),
 	)
@@ -181,7 +181,7 @@ func TestGatewayBuildRequiresTLS(t *testing.T) {
 func TestGatewayBuildRequiresEndpoint(t *testing.T) {
 	// Force empty endpoint explicitly; the default (LoadConfig) now supplies
 	// "localhost:50051", so the no-endpoint case must be opted into.
-	gateway := grpc.NewGateway(grpc.Config{}, grpc.GatewayWithGRPCEndpoint(""))
+	gateway := grpc.NewGateway(grpc.Config{Environment: "test"}, grpc.GatewayWithGRPCEndpoint(""))
 	err := gateway.Build(context.Background())
 	if err != grpc.ErrNoEndpoint {
 		t.Errorf("Build() error = %v, want %v", err, grpc.ErrNoEndpoint)
@@ -543,7 +543,7 @@ func TestConfigFields(t *testing.T) {
 	})
 
 	t.Run("zero config uses defaults", func(t *testing.T) {
-		server := grpc.NewServer(grpc.Config{})
+		server := grpc.NewServer(grpc.Config{Environment: "test"})
 		if got := server.Port(); got != "50051" {
 			t.Errorf("ServerPort = %v, want 50051", got)
 		}
@@ -808,21 +808,21 @@ func TestPaginationConverters(t *testing.T) {
 // the Config they are given, with explicit options winning.
 
 func TestNewServer_PortFromConfig(t *testing.T) {
-	server := grpc.NewServer(grpc.Config{ServerPort: "60061"})
+	server := grpc.NewServer(grpc.Config{Environment: "test", ServerPort: "60061"})
 	if got := server.Port(); got != "60061" {
 		t.Errorf("Port() = %q, want %q (config should set default)", got, "60061")
 	}
 }
 
 func TestNewServer_WithPortOverridesConfig(t *testing.T) {
-	server := grpc.NewServer(grpc.Config{ServerPort: "60061"}, grpc.WithPort("7777"))
+	server := grpc.NewServer(grpc.Config{Environment: "test", ServerPort: "60061"}, grpc.WithPort("7777"))
 	if got := server.Port(); got != "7777" {
 		t.Errorf("Port() = %q, want %q (option must override config)", got, "7777")
 	}
 }
 
 func TestNewServer_ReflectionFromConfig(t *testing.T) {
-	server := grpc.NewServer(grpc.Config{EnableReflection: true}, grpc.WithPort("0"))
+	server := grpc.NewServer(grpc.Config{Environment: "test", EnableReflection: true}, grpc.WithPort("0"))
 	defer server.Stop()
 	// Reflection state isn't exposed directly; verify Build accepts the config
 	// value without error (Build also enforces the production check).
@@ -832,42 +832,42 @@ func TestNewServer_ReflectionFromConfig(t *testing.T) {
 }
 
 func TestNewServer_ConfigDefaultsOnEmpty(t *testing.T) {
-	server := grpc.NewServer(grpc.Config{ServerPort: ""})
+	server := grpc.NewServer(grpc.Config{Environment: "test", ServerPort: ""})
 	if got := server.Port(); got != "50051" {
 		t.Errorf("Port() = %q, want %q (empty config should fall back to const default)", got, "50051")
 	}
 }
 
 func TestNewGateway_PortFromConfig(t *testing.T) {
-	gw := grpc.NewGateway(grpc.Config{GatewayPort: "9090"})
+	gw := grpc.NewGateway(grpc.Config{Environment: "test", GatewayPort: "9090"})
 	if got := gw.Port(); got != "9090" {
 		t.Errorf("Port() = %q, want %q (config should set default)", got, "9090")
 	}
 }
 
 func TestNewGateway_GatewayWithPortOverridesConfig(t *testing.T) {
-	gw := grpc.NewGateway(grpc.Config{GatewayPort: "9090"}, grpc.GatewayWithPort("3000"))
+	gw := grpc.NewGateway(grpc.Config{Environment: "test", GatewayPort: "9090"}, grpc.GatewayWithPort("3000"))
 	if got := gw.Port(); got != "3000" {
 		t.Errorf("Port() = %q, want %q (option must override config)", got, "3000")
 	}
 }
 
 func TestNewGateway_EndpointFromConfig(t *testing.T) {
-	gw := grpc.NewGateway(grpc.Config{GRPCEndpoint: "grpc.internal:50051"})
+	gw := grpc.NewGateway(grpc.Config{Environment: "test", GRPCEndpoint: "grpc.internal:50051"})
 	if got := gw.GRPCEndpoint(); got != "grpc.internal:50051" {
 		t.Errorf("GRPCEndpoint() = %q, want %q (config should set default)", got, "grpc.internal:50051")
 	}
 }
 
 func TestNewGateway_GatewayWithGRPCEndpointOverridesConfig(t *testing.T) {
-	gw := grpc.NewGateway(grpc.Config{GRPCEndpoint: "grpc.internal:50051"}, grpc.GatewayWithGRPCEndpoint("override.local:9000"))
+	gw := grpc.NewGateway(grpc.Config{Environment: "test", GRPCEndpoint: "grpc.internal:50051"}, grpc.GatewayWithGRPCEndpoint("override.local:9000"))
 	if got := gw.GRPCEndpoint(); got != "override.local:9000" {
 		t.Errorf("GRPCEndpoint() = %q, want %q (option must override config)", got, "override.local:9000")
 	}
 }
 
 func TestNewGateway_ConfigDefaultsOnEmpty(t *testing.T) {
-	gw := grpc.NewGateway(grpc.Config{GatewayPort: "", GRPCEndpoint: ""})
+	gw := grpc.NewGateway(grpc.Config{Environment: "test", GatewayPort: "", GRPCEndpoint: ""})
 	if got := gw.Port(); got != "8080" {
 		t.Errorf("Port() = %q, want %q (empty config should fall back to const default)", got, "8080")
 	}

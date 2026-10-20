@@ -109,29 +109,34 @@ func TestCacheLoginThrottler_WithDelay_Clamps(t *testing.T) {
 	}
 }
 
-func TestEnvLoginDuration(t *testing.T) {
+func TestEnvReaderLoginDuration(t *testing.T) {
 	const envVar = "VELOCITY_TEST_THROTTLE_DURATION"
 	cases := []struct {
 		raw          string
 		zeroDisables bool
 		want         time.Duration
+		wantErr      bool
 	}{
-		{"", false, 0},
-		{"2s", false, 2 * time.Second},
-		{"500ms", false, 500 * time.Millisecond},
-		{"3", false, 3 * time.Second},
-		{"0", false, 0},
-		{"0", true, -1},
-		{"0s", true, -1},
-		{"-1", true, 0},
-		{"-2s", false, 0},
-		{"garbage", true, 0},
+		{"", false, 0, false},
+		{"2s", false, 2 * time.Second, false},
+		{"500ms", false, 500 * time.Millisecond, false},
+		{"3", false, 3 * time.Second, false},
+		{"0", false, 0, false},
+		{"0", true, -1, false},
+		{"0s", true, -1, false},
+		{"-1", true, 0, true},
+		{"-2s", false, 0, true},
+		{"garbage", true, 0, true},
 	}
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("%s/%v", tc.raw, tc.zeroDisables), func(t *testing.T) {
 			t.Setenv(envVar, tc.raw)
-			if got := envLoginDuration(envVar, tc.zeroDisables); got != tc.want {
-				t.Fatalf("envLoginDuration(%q, %v) = %v, want %v", tc.raw, tc.zeroDisables, got, tc.want)
+			r := &envReader{}
+			if got := r.loginDuration(envVar, tc.zeroDisables); got != tc.want {
+				t.Fatalf("loginDuration(%q, %v) = %v, want %v", tc.raw, tc.zeroDisables, got, tc.want)
+			}
+			if gotErr := len(r.errs) > 0; gotErr != tc.wantErr {
+				t.Fatalf("loginDuration(%q) recorded error = %v, want %v (%v)", tc.raw, gotErr, tc.wantErr, r.errs)
 			}
 		})
 	}

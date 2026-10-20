@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/velocitykode/velocity"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/migrate"
@@ -148,14 +149,15 @@ func (tc *TestCase) DB() *sql.DB {
 	return tc.db
 }
 
-// ensureSafeEnvironment checks we're in test mode. Production-class APP_ENV
-// values (production, prod, staging) panic outright; everything else requires
-// either APP_ENV=testing/test or a database name that looks like a test fixture.
+// ensureSafeEnvironment checks we're in test mode. A production-class
+// APP_ENV (production, prod, staging, an unrecognised name, or unset)
+// panics outright; a development name additionally requires a database
+// name that looks like a test fixture unless APP_ENV is testing/test.
 func (tc *TestCase) ensureSafeEnvironment() {
-	appEnv := contract.GetEnv()
+	appEnv := velocity.ConfigFromEnv().Env
 
 	if contract.IsProductionEnv(appEnv) {
-		panic(fmt.Sprintf("Tests cannot run with APP_ENV=%q (production class)", appEnv))
+		panic("Tests cannot run with " + describeProductionEnv(appEnv))
 	}
 
 	if !contract.IsTestingEnv(appEnv) {
@@ -169,4 +171,13 @@ func (tc *TestCase) ensureSafeEnvironment() {
 // ResetSchemaRefresh resets the schema refresh flag (for testing the testing framework)
 func ResetSchemaRefresh() {
 	schemaRefreshedOnce = sync.Once{}
+}
+
+// describeProductionEnv names a production-class APP_ENV for a guard's
+// panic message, spelling out the fix when the cause is an unset APP_ENV.
+func describeProductionEnv(env string) string {
+	if env == "" {
+		return "APP_ENV unset (unset is production); set APP_ENV=testing in .env.testing"
+	}
+	return fmt.Sprintf("APP_ENV=%q (production class); set APP_ENV=testing in .env.testing", env)
 }

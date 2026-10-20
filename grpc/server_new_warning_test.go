@@ -23,7 +23,7 @@ func (l warnPanicLogger) With(...any) contract.Logger { return l }
 func TestNewServer_PanickingLoggerOnAConfigWarning(t *testing.T) {
 	var s *grpc.Server
 	noPanic(t, "NewServer", func() {
-		s = grpc.NewServer(grpc.Config{MaxRecvMsgSize: -5}, grpc.WithLogger(warnPanicLogger{}), grpc.WithListener(testnet.Loopback(t)))
+		s = grpc.NewServer(grpc.Config{Environment: "test", MaxRecvMsgSize: -5}, grpc.WithLogger(warnPanicLogger{}), grpc.WithListener(testnet.Loopback(t)))
 	})
 	if s == nil {
 		t.Fatal("no server")

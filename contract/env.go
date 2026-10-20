@@ -1,7 +1,6 @@
 package contract
 
 import (
-	"os"
 	"strings"
 )
 
@@ -15,33 +14,20 @@ import (
 // Vocabulary is final for the 1.0 surface:
 //
 //	"production", "prod", "staging" -> IsProductionEnv == true
-//	"development", "dev", "test", "testing", "local", ""
+//	"development", "dev", "test", "testing", "local"
 //	                                -> IsProductionEnv == false
 //	"test", "testing"               -> IsTestingEnv == true
 //	"development", "dev", "test",
 //	"testing", "local"              -> IsDevOrTestEnv == true
 //
-// Anything outside the recognised set is treated as production
-// (fail-secure): a typo in APP_ENV should never silently disable a
-// production gate.
+// Anything outside the recognised set, including unset (""), is treated
+// as production (fail-secure): a typo in APP_ENV, or forgetting to set
+// it, never silently disables a production gate.
 
 // EnvVar is the canonical environment-variable name for the application
-// environment selector. Every direct read of the env var in framework
-// code must go through GetEnv (or app.Env, which delegates here) so a
-// rename can land in exactly one place.
+// environment selector. velocity.ConfigFromEnv is the only reader; the rest
+// of the framework classifies the booted value (Config.Env, Services.Env).
 const EnvVar = "APP_ENV"
-
-// GetEnv returns the normalised value of the APP_ENV environment
-// variable: lowercased, surrounding whitespace trimmed. An empty result
-// distinguishes "unset" from "explicitly set to production".
-//
-// This is the single canonical reader. Callers MUST NOT call
-// os.Getenv("APP_ENV") directly; route through this helper (or its
-// app.Env() re-export) so vocabulary, casing, and trim semantics stay
-// consistent across the framework.
-func GetEnv() string {
-	return strings.ToLower(strings.TrimSpace(os.Getenv(EnvVar)))
-}
 
 // NonProdEnvNames returns the canonical list of APP_ENV values that
 // IsDevOrTestEnv recognises as non-production. Exported so error
@@ -58,10 +44,10 @@ func NonProdEnvNames() []string {
 // comparison.
 func IsProductionEnv(env string) bool {
 	switch strings.ToLower(strings.TrimSpace(env)) {
-	case "development", "dev", "test", "testing", "local", "":
+	case "development", "dev", "test", "testing", "local":
 		return false
 	default:
-		// production, prod, staging, or anything unknown.
+		// production, prod, staging, unset, or anything unknown.
 		return true
 	}
 }

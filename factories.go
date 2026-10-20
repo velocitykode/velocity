@@ -33,9 +33,11 @@ func initCache(config cache.Config, logger contract.Logger) *cache.Manager {
 	return m
 }
 
-// initStorage builds the storage manager and configures its disks. Disk
-// configuration failures are logged as warnings rather than failing
-// startup, since storage may not be required by every app.
+// initStorage builds the storage manager and configures its disks. An
+// unknown or unimported disk driver has already failed New in
+// Config.Validate; any other disk configuration failure is logged as a
+// warning rather than failing startup, since storage may not be required
+// by every app.
 func initStorage(config storage.Config, logger contract.Logger) *storage.Manager {
 	mgr := storage.NewManager(config)
 	if err := mgr.Configure(config); err != nil {

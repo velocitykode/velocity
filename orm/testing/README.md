@@ -182,7 +182,7 @@ func TestSomething(t *testing.T) {
 
 RefreshDatabase has built-in safety checks:
 - ✅ Requires `testing.T` (only works in tests)
-- ✅ Checks `APP_ENV != "production"`
+- ✅ Refuses a production-class `APP_ENV` (a prod alias, an unrecognised name, or unset)
 - ✅ Validates database name contains "test" or is ":memory:"
 
 ## Faker

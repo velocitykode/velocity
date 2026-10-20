@@ -21,7 +21,7 @@ var productionGuardedDBCommands = []string{"db wipe", "migrate fresh", "migrate 
 // lifecycle runs.
 func TestDestructiveDBCommands_RefuseInProductionWithoutForce(t *testing.T) {
 	for _, name := range productionGuardedDBCommands {
-		for _, env := range []string{"production", "prod", "staging", "some-typo"} {
+		for _, env := range []string{"production", "prod", "staging", "some-typo", ""} {
 			t.Run(name+"/"+env, func(t *testing.T) {
 				a, err := NewTestApp()
 				if err != nil {
@@ -86,7 +86,7 @@ func TestDestructiveDBCommands_ForceOverridesProductionGuard(t *testing.T) {
 // without --force.
 func TestDestructiveDBCommands_UnguardedInDevAndTestEnvs(t *testing.T) {
 	for _, name := range productionGuardedDBCommands {
-		for _, env := range []string{"development", "dev", "test", "testing", "local", ""} {
+		for _, env := range []string{"development", "dev", "test", "testing", "local"} {
 			t.Run(name+"/env="+env, func(t *testing.T) {
 				a, err := NewTestApp()
 				if err != nil {

@@ -7,12 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed - `ConfigFromEnv` is the only environment reader
+### Changed - Configuration: one reader, one shape, one rule at boot
 
 - **Packages no longer read the environment; `ConfigFromEnv()` reads every
   key into the typed `velocity.Config`, and each package takes its part as a
-  struct.** The keys and their parsing are unchanged for an app that boots
-  from the environment. The env reads that lived in packages moved:
+  struct.** The env reads that lived in packages moved:
   `QUEUE_ACCEPT_UNSIGNED` to `Config.Queue.AcceptUnsigned`; `AUTH_LOGIN_*`
   to `Config.Auth.LoginThrottle` (new `auth.LoginThrottleConfig`; a negative
   `IdentifierDelay` disables the delay, as `AUTH_LOGIN_IDENTIFIER_DELAY=0`
@@ -20,37 +19,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.Debug` (applied through the new `drivers.WithV0Disabled` /
   `WithDecryptDebug` options of `NewAESDriver`); `LOG_REDACT` /
   `LOG_REDACT_EMAILS` to the `"redact"` / `"redact_emails"` keys of
-  `Config.Log.Config`; `VELOCITY_MAINTENANCE_ROOT` /
-  `VELOCITY_MAINTENANCE_EXCLUDE_PATHS` to `Config.Maintenance` (new
-  `contract.MaintenanceConfig`, with the bypass salt in `AppKey`);
+  `Config.Log.Config`; `VELOCITY_MAINTENANCE_*` to `Config.Maintenance`;
   `GRPC_*`, `GATEWAY_PORT`, `GRPC_ENDPOINT`, `GRPC_INSECURE` and the gRPC
-  view of `APP_ENV` to `Config.GRPC` (new `contract.GRPCConfig`).
-- **Breaking: the root twin config types are removed.** `velocity.DBConfig`,
-  `CacheConfig`, `QueueConfig`, `StorageConfig` and `DiskConfig` are gone;
-  `Config.DB` is `orm.ManagerConfig` (`DB.Connection` is now `DB.Driver`),
-  `Config.Cache` is `cache.Config` (build one store with the new
-  `cache.SingleStoreConfig`), `Config.Queue` is `queue.QueueConfig` (Redis
-  fields under `Queue.Redis`; new `SigningKey`, `AcceptUnsigned`, `Encrypt`)
-  and `Config.Storage` is `storage.Config`. Their checks moved to
-  `orm.ManagerConfig.Validate`, `cache.Config.Validate` (a configured store
-  set must name its `Default`) and `contract.StorageConfig.Validate`;
-  messages name the Go field, not the env key. `New` still sets
-  `DB.Logger`, `Queue.DB`, `Queue.DBDriver` and `Queue.Logger` itself.
-- **Breaking: constructors that apps call outside `New` take their config.**
-  `grpc.NewServer(cfg, opts...)` and `grpc.NewGateway(cfg, opts...)` take a
-  `grpc.Config`; `grpc.LoadConfig` is removed. Pass
-  `velocity.ConfigFromEnv().GRPC` to keep the env behaviour: a zero config
-  has an empty environment, which is non-production, so the production TLS
-  and reflection checks only fire when `Environment` (or `WithEnvironment`)
-  names a production environment. `PreventRequestsDuringMaintenance(settings,
-  opts...)` takes a `contract.MaintenanceConfig`; inside `App.Middleware`
-  pass `m.Maintenance()` (new on the middleware stack, with `AppKey`
-  defaulted to `Config.Key`). `console.Down` takes the root in
-  `DownOptions.Root` and `console.Up(root)` takes it as a parameter.
-  `log.BuildDefaultRedactors(emails bool)` takes the email switch.
+  view of `APP_ENV` to `Config.GRPC`. The `orm/testing` guards read
+  `APP_ENV` through `ConfigFromEnv()` too.
+- **Breaking: every subsystem field of `velocity.Config` is the owning
+  package's `Config`.** The root twin types (`velocity.DBConfig`,
+  `CacheConfig`, `QueueConfig`, `StorageConfig`, `DiskConfig`) are gone, and
+  the stuttering names are renamed: `orm.ManagerConfig` is `orm.Config`
+  (`DB.Connection` is now `DB.Driver`), `log.LogConfig` is `log.Config`,
+  `mail.MailConfig` is `mail.Config`, `queue.QueueConfig` is `queue.Config`
+  (Redis fields under `Queue.Redis`; new `SigningKey`, `AcceptUnsigned`,
+  `Encrypt`). Build one cache store with the new `cache.SingleStoreConfig`.
+  The session settings moved from `Config.Session` to
+  `Config.Auth.Session`. `New` still sets `DB.Logger`, `Queue.DB`,
+  `Queue.DBDriver` and `Queue.Logger` itself.
+- **Breaking: the maintenance gate is its own package.**
+  `velocity.PreventRequestsDuringMaintenance(settings, opts...)` is
+  `maintenance.Middleware(cfg, opts...)` with `maintenance.WithExcludePaths`
+  and `maintenance.WithLogger`; inside `App.Middleware` pass
+  `m.Maintenance()` (new on the middleware stack, with `AppKey` defaulted
+  to `Config.Key`). `console.Down` takes the root in `DownOptions.Root` and
+  `console.Up(root)` takes it as a parameter.
+- **Breaking: the gRPC config type moved to `grpc/grpcconfig`.**
+  `grpc.Config` stays an alias of `grpcconfig.Config`, a standard-library
+  leaf the root can name without linking grpc-go. `grpc.NewServer(cfg,
+  opts...)` and `grpc.NewGateway(cfg, opts...)` take it; `grpc.LoadConfig`
+  is removed. Pass `velocity.ConfigFromEnv().GRPC` to keep the env
+  behaviour.
+- **Breaking: a set env value that does not parse fails `New()`.**
+  `Config.Validate` returns every problem at once (`errors.Join`, each
+  wrapping `ErrInvalidConfig`): unparseable integers and durations
+  (`SERVER_WRITE_TIMEOUT=60` is not a duration), booleans outside one
+  parser (`1`/`true`/`yes`/`on`, `0`/`false`/`no`/`off`, any case; this
+  replaces the per-key `== "true"`, `!= "false"` and truthy rules),
+  `SESSION_SAME_SITE` outside strict/lax/none (any case), ports outside
+  1-65535 (`DB_PORT`, `QUEUE_REDIS_PORT`, `MAIL_PORT`, `GRPC_PORT`,
+  `GATEWAY_PORT`), a negative `QUEUE_REDIS_DB`, non-positive values where a
+  positive one is required (`AUTH_LOGIN_MAX_ATTEMPTS*`, `AUTH_LOGIN_DECAY`,
+  `GRPC_MAX_*_SIZE`) and negative login delays
+  (`AUTH_LOGIN_IDENTIFIER_DELAY*`). They used to fall back to the default
+  silently. Values are trimmed, `AUTH_LOGIN_DECAY` and
+  `VELOCITY_MAINTENANCE_EXCLUDE_PATHS` entries included.
+- **Breaking: some valid boolean spellings change meaning.** Keys that
+  were off only for `"false"` (`SESSION_SECURE`, `SESSION_HTTP_ONLY`,
+  `CSRF_WRITE_XSRF_COOKIE`, `AUTH_JWT_BLACKLIST_ENABLED`) now turn off for
+  `0`, `no`, `off` and any case of `false`: `SESSION_SECURE=0` drops
+  Secure, `AUTH_JWT_BLACKLIST_ENABLED=0` disables the JWT blacklist. Keys
+  that were on only for `"true"` (`APP_DEBUG`, `DB_LOG_QUERIES`,
+  `CSRF_SINGLE_USE`, `REDIS_TLS`, `LOG_REDACT*`, `CRYPTO_*`,
+  `QUEUE_ENCRYPT`, `VIEW_SSR_ENABLED`, `GRPC_REFLECTION`, `GRPC_INSECURE`)
+  now turn on for `1`, `yes`, `on` and any case of `true`:
+  `GRPC_INSECURE=1` now lifts the production TLS requirement. Audit
+  deployments that set these keys to anything but `true` or `false`.
+- **Breaking: an unknown or unimported driver name fails `New()`.** The
+  cache, storage, mail, log (including every `LOG_STACK` channel), orm and
+  queue configs check their driver names against the registry in
+  `Validate` (new `driverregistry.Registry.Check`, `storage.ValidateConfig`),
+  so a typo or a missing blank import no longer boots and fails on first
+  use. Mail and storage used to log a warning and boot without the
+  subsystem. Driver env values are trimmed and lower-cased;
+  `CACHE_DRIVER` no longer maps unknown names to `memory`.
+  `queue.Config.Validate` checks only the driver name; the database
+  driver's factory checks `DB` and `DBDriver`.
+- **Breaking: unset `APP_ENV` is production.** `contract.IsProductionEnv("")`
+  is now true, like any unrecognised name, so every gate (error details,
+  gRPC reflection and TLS, the mail log warning, destructive console
+  commands, the `orm/testing` guards) fails closed when `APP_ENV` is
+  forgotten. Set `APP_ENV=local` (the starters do) or `testing` for tests.
+- **Breaking: no environment reads after boot.** `app.Env()`,
+  `app.IsProduction()`, `app.IsTesting()` and `contract.GetEnv()` are
+  removed. `Services.Env` (new) carries the booted `Config.Env`;
+  `s.IsProduction()` and `s.IsTesting()` classify it, and the
+  `contract.Is*Env` helpers classify an explicit value.
 - **A config built by hand no longer picks up these env keys.** A
   `WithConfig(Config{...})` literal, a direct `crypto.NewEncryptor`, or a
-  logger built from its own `log.LogConfig` sees only the fields it sets;
+  logger built from its own `log.Config` sees only the fields it sets;
   start from `ConfigFromEnv()` to keep them.
 
 ### Changed - Router answers 405 when only the method is wrong

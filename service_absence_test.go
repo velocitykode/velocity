@@ -23,7 +23,7 @@ import (
 
 // notOwned lists the Services fields that are not services: they carry
 // configuration, not an instance a lookup can find missing.
-var notOwned = map[string]bool{"RedirectAllowlist": true, "CookiePolicy": true, "FlashBag": true}
+var notOwned = map[string]bool{"RedirectAllowlist": true, "CookiePolicy": true, "Env": true, "FlashBag": true}
 
 // absenceRow is one owned Services field: the name its missing-service
 // error carries, a typed nil of a concrete type for the fields the test app

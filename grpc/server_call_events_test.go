@@ -25,7 +25,7 @@ func defaultUnaryCall(s *Server) func() {
 
 func quietServer() *Server {
 	quiet, _ := log.NewLogger(log.Config{Driver: "null"})
-	return NewServer(Config{}, WithLogger(quiet))
+	return NewServer(Config{Environment: "test"}, WithLogger(quiet))
 }
 
 // The default call lifecycle reads the Server's live dispatcher: one set
@@ -81,7 +81,7 @@ func TestDefaultCallLifecycle_FailedDispatchIsCountedOnceByTheServer(t *testing.
 func TestDefaultCallLifecycle_CallOptionDispatcherWins(t *testing.T) {
 	var server, option atomic.Int32
 	quiet, _ := log.NewLogger(log.Config{Driver: "null"})
-	s := NewServer(Config{}, WithLogger(quiet), WithCallOptions(interceptors.WithEventDispatcher(func(context.Context, any) error {
+	s := NewServer(Config{Environment: "test"}, WithLogger(quiet), WithCallOptions(interceptors.WithEventDispatcher(func(context.Context, any) error {
 		option.Add(1)
 		return nil
 	})))

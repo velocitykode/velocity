@@ -16,7 +16,7 @@ func buildGateway(t *testing.T, opts ...GatewayOption) *Gateway {
 		GatewayWithGRPCEndpoint("localhost:50051"),
 		GatewayWithInsecure(),
 	}
-	g := NewGateway(Config{}, append(base, opts...)...)
+	g := NewGateway(Config{Environment: "test"}, append(base, opts...)...)
 	if err := g.Build(context.Background()); err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}

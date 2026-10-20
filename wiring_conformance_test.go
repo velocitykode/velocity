@@ -579,7 +579,7 @@ func TestConformance_OwnedFieldsFollowAReplacement(t *testing.T) {
 // (and so without rebind following it) fails here by name.
 func TestConformance_OwnedFieldsAreEnumerated(t *testing.T) {
 	notOwned := map[string]bool{
-		"Validator": true, "RedirectAllowlist": true, "CookiePolicy": true, "FlashBag": true,
+		"Validator": true, "RedirectAllowlist": true, "CookiePolicy": true, "Env": true, "FlashBag": true,
 	}
 	var got []string
 	st := reflect.TypeOf(app.Services{})

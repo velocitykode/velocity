@@ -33,7 +33,7 @@ func startSlowGateway(t *testing.T, logger contract.Logger) *slowGateway {
 	t.Helper()
 	lis := testnet.Loopback(t)
 	sg := &slowGateway{addr: lis.Addr().String(), entered: make(chan struct{}, 8), release: make(chan struct{})}
-	sg.g = grpc.NewGateway(grpc.Config{}, grpc.GatewayWithListener(lis), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
+	sg.g = grpc.NewGateway(grpc.Config{Environment: "test"}, grpc.GatewayWithListener(lis), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
 		grpc.GatewayWithEnvironment("development"), grpc.GatewayWithLogger(logger))
 	sg.g.RegisterHandler(func(context.Context, *runtime.ServeMux, string, []grpcgo.DialOption) error { return nil })
 	sg.g.Use(func(http.Handler) http.Handler {

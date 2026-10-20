@@ -6,6 +6,7 @@ import (
 
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/driverregistry"
+	"github.com/velocitykode/velocity/internal/errchain"
 	"github.com/velocitykode/velocity/internal/nilval"
 	"github.com/velocitykode/velocity/log/drivers"
 )
@@ -16,8 +17,8 @@ type Config struct {
 	// "stack" with []string of channel names for the stack driver, "level"
 	// for any driver). ConfigFromEnv fills "path" (LOG_PATH, set only when
 	// non-empty), "days" (LOG_DAYS, default 14), "level" (LOG_LEVEL, default
-	// "debug"), "redact" (LOG_REDACT, set only when "true"), "redact_emails"
-	// (LOG_REDACT_EMAILS, set only when "true") and "stack" (LOG_STACK,
+	// "debug"), "redact" (LOG_REDACT, set only when true), "redact_emails"
+	// (LOG_REDACT_EMAILS, set only when true) and "stack" (LOG_STACK,
 	// comma-separated, set only when non-empty).
 	Config map[string]any
 
@@ -27,15 +28,25 @@ type Config struct {
 	Driver string
 }
 
-// Validate checks structural requirements: empty Driver is treated as
-// "console" by NewLogger so it is accepted. Per-driver field validation
-// (path for file, stack list for stack) lives in each driver's factory
-// because the registry is open for third-party drivers; Config.Validate
-// does not introspect the Config map.
+// Validate checks that Driver names a registered driver (empty is accepted:
+// NewLogger treats it as "console") and, for the stack driver, that every
+// channel in the "stack" list does too, so an unknown or unimported driver
+// fails at boot. Per-driver field validation (path for file) lives in each
+// driver's factory because the registry is open for third-party drivers.
 func (c Config) Validate() error {
-	// Reserved for future structural checks. Driver name resolution is
-	// driver-registry's job (Drivers().Resolve returns a typed error when
-	// the name is unknown), so we do not duplicate that allowlist here.
+	if c.Driver != "" {
+		if err := driverRegistry.Check(c.Driver); err != nil {
+			return err
+		}
+	}
+	if driverregistry.Normalise(c.Driver) == "stack" {
+		channels, _ := c.Config["stack"].([]string)
+		for _, name := range channels {
+			if err := driverRegistry.Check(name); err != nil {
+				return errchain.Errorf("velocity/log: stack channel %q: %w", name, err)
+			}
+		}
+	}
 	return nil
 }
 

@@ -24,8 +24,7 @@ type RedisConfig struct {
 	// Port is the Redis server port (QUEUE_REDIS_PORT, default "6379").
 	Port string
 
-	// TLS enables TLS connections (REDIS_TLS, default false; only "true"
-	// enables it).
+	// TLS enables TLS connections (REDIS_TLS, default false).
 	TLS bool
 }
 

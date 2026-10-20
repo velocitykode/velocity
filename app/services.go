@@ -59,6 +59,14 @@ type Services struct {
 	// Services still writes Secure cookies.
 	CookiePolicy contract.CookiePolicy
 
+	// Env is the normalised application environment (Config.Env, from
+	// APP_ENV), set by velocity.New. Code that needs the environment after
+	// boot classifies this value (IsProduction, IsTesting, or the
+	// contract.Is*Env helpers) instead of reading the process environment,
+	// which can disagree with the booted config after os.Setenv. Empty is
+	// unset, which classifies as production.
+	Env string
+
 	// FlashBag returns the flash bag of the session the request carries,
 	// or nil when it carries none (no session scheme is the default, or
 	// the request did not pass through the session middleware). The router
@@ -84,4 +92,15 @@ type Services struct {
 	// is a stable basis for reverse-order shutdown and for ListComponents.
 	// componentIdx points into this slice.
 	componentOrder []componentEntry
+}
+
+// IsProduction reports whether s.Env names a production-class environment;
+// unset and unrecognised names are production.
+func (s *Services) IsProduction() bool {
+	return contract.IsProductionEnv(s.Env)
+}
+
+// IsTesting reports whether s.Env names a test environment.
+func (s *Services) IsTesting() bool {
+	return contract.IsTestingEnv(s.Env)
 }

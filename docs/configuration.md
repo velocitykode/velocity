@@ -6,9 +6,10 @@ surface and will not change without a deprecation cycle.
 `ConfigFromEnv()` in `config.go` reads every key below into the typed
 `velocity.Config`; packages take their part of it as a struct and never read
 the environment themselves. The "Package" column names the reader and, after
-it, the field the value lands in. Two readers remain outside `config.go`:
-`contract.GetEnv` / `app.Env()` (the `APP_ENV` helpers) and the `orm/testing`
-guards, which run in test processes that build no `Config`.
+it, the field the value lands in. `ConfigFromEnv()` is the only reader: the
+`orm/testing` guards call it too, and code that needs the environment after
+boot classifies `Services.Env` (`s.IsProduction()`, `s.IsTesting()`, or the
+`contract.Is*Env` helpers on an explicit value).
 
 Read sites are inventoried via:
 
@@ -16,11 +17,24 @@ Read sites are inventoried via:
 grep -rn 'os\.Getenv\|os\.LookupEnv' --include='*.go' | grep -v _test.go
 ```
 
-Sentinel reader for `APP_ENV`: `app.Env()` / `app.IsProduction()` /
-`app.IsTesting()` / `app.IsDevOrTestEnv()` in `app/env.go`. Every
-"is this production?" check inside the framework routes through these
-helpers (or accepts an explicit env string at sub-package boundaries
-that cannot import `app`).
+## Value rules
+
+One rule for every key, checked by `Config.Validate`, which `New()` runs
+before building anything:
+
+- Unset or empty takes the default in the table.
+- A set value that does not parse is an error. `New()` returns one error
+  listing every bad key (`errors.Join`), each wrapping `ErrInvalidConfig`;
+  the app never runs with a value it was not given.
+- Booleans accept `1`, `true`, `yes`, `on` and `0`, `false`, `no`, `off`, in
+  any case; anything else is an error.
+- Integers are base 10; durations use Go syntax (`30s`, `1m30s`); a bare
+  number is not a duration unless the row says so.
+- Driver names (`DB_CONNECTION`, `CACHE_DRIVER`, `QUEUE_DRIVER`,
+  `LOG_DRIVER`, `MAIL_DRIVER`, storage disks) are trimmed and lower-cased,
+  and must name a registered driver: an unknown or unimported driver fails
+  `New()`, not the first call.
+- `APP_ENV` unset classifies as production, like any unrecognised name.
 
 ## Notation
 
@@ -33,7 +47,7 @@ that cannot import `app`).
 
 | Name | Package | Default | Required in prod? | Security impact | Notes |
 |------|---------|---------|-------------------|-----------------|-------|
-| `APP_ENV` | `config.go` (`Env`, `GRPC.Environment`), `app/env.go`, `orm/testing/*` | empty (non-production for `IsProductionEnv`, but not a dev/test profile, so `APP_KEY` is still required) | recommended | drives every "is prod?" gate (cookies Secure, queue signing, gRPC TLS) | Canonical: route reads through `app.Env()` / `app.IsProduction()` |
+| `APP_ENV` | `config.go` (`Env`, `GRPC.Environment`, `Services.Env`) | empty (classified as production) | recommended | drives every "is prod?" gate (cookies Secure, queue signing, gRPC TLS) | Classify the booted value: `Services.Env`, `s.IsProduction()` |
 | `APP_DEBUG` | `config.go` | `false` | no (force-disabled in prod by `exceptions.Handler`) | leaks stack traces and source if enabled in prod | |
 | `APP_PORT` | `config.go` | `4000` | no | none | |
 | `APP_KEY` | `config.go` (`Key`, `Maintenance.AppKey`) | empty | YES (errors out unless `APP_ENV` is one of `development`, `dev`, `test`, `testing`, `local` per `contract.NonProdEnvNames()`) | crypto/session/CSRF/queue-signing all key off this; weak key compromises every secret | Generate via `vel key generate` |
@@ -96,12 +110,12 @@ that cannot import `app`).
 | `AUTH_SCHEME` | `config.go` | empty | optional | none | enables `web`/`api` schemes |
 | `AUTH_TRUSTED_PROXIES` | `config.go` | empty | YES if behind proxy | XFF spoofing -> throttle bypass + bogus audit IPs | comma-separated IP/CIDR; empty = trust nothing (secure default) |
 | `AUTH_ATTEMPT_FLOOR` | `config.go` | `200ms` | no | login timing side-channel | raise when `HASH_BCRYPT_COST` >= 12 |
-| `AUTH_LOGIN_MAX_ATTEMPTS` | `config.go` (`Auth.LoginThrottle.MaxAttempts`) | `5` | no | brute force per (identifier, IP) | positive integer; anything else is the default |
-| `AUTH_LOGIN_MAX_ATTEMPTS_PER_IDENTIFIER` | `config.go` (`Auth.LoginThrottle.MaxAttemptsPerIdentifier`) | `20` | no | password spraying across IPs | positive integer; anything else is the default |
-| `AUTH_LOGIN_MAX_ATTEMPTS_PER_IP` | `config.go` (`Auth.LoginThrottle.MaxAttemptsPerIP`) | `50` | no | spraying from one IP | positive integer; anything else is the default |
-| `AUTH_LOGIN_DECAY` | `config.go` (`Auth.LoginThrottle.Decay`) | `60s` | no | how long a failure counts | Go duration or bare seconds, untrimmed; zero, negative or malformed is the default |
-| `AUTH_LOGIN_IDENTIFIER_DELAY` | `config.go` (`Auth.LoginThrottle.IdentifierDelay`) | `1s` | no | the only bound on the identifier dimension once pair and IP buckets rotate | Go duration or bare seconds; `0` disables the delay; negative or malformed is the default |
-| `AUTH_LOGIN_IDENTIFIER_DELAY_MAX` | `config.go` (`Auth.LoginThrottle.IdentifierDelayMax`) | `30s` | no | none | ceiling of the doubling delay; zero, negative or malformed is the default |
+| `AUTH_LOGIN_MAX_ATTEMPTS` | `config.go` (`Auth.LoginThrottle.MaxAttempts`) | `5` | no | brute force per (identifier, IP) | positive integer; anything else fails `New()` |
+| `AUTH_LOGIN_MAX_ATTEMPTS_PER_IDENTIFIER` | `config.go` (`Auth.LoginThrottle.MaxAttemptsPerIdentifier`) | `20` | no | password spraying across IPs | positive integer; anything else fails `New()` |
+| `AUTH_LOGIN_MAX_ATTEMPTS_PER_IP` | `config.go` (`Auth.LoginThrottle.MaxAttemptsPerIP`) | `50` | no | spraying from one IP | positive integer; anything else fails `New()` |
+| `AUTH_LOGIN_DECAY` | `config.go` (`Auth.LoginThrottle.Decay`) | `60s` | no | how long a failure counts | positive Go duration or bare seconds; zero, negative or malformed fails `New()` |
+| `AUTH_LOGIN_IDENTIFIER_DELAY` | `config.go` (`Auth.LoginThrottle.IdentifierDelay`) | `1s` | no | the only bound on the identifier dimension once pair and IP buckets rotate | Go duration or bare seconds; `0` disables the delay; negative or malformed fails `New()` |
+| `AUTH_LOGIN_IDENTIFIER_DELAY_MAX` | `config.go` (`Auth.LoginThrottle.IdentifierDelayMax`) | `30s` | no | none | ceiling of the doubling delay; `0` is the default; negative or malformed fails `New()` |
 | `HASH_BCRYPT_COST` | `config.go` | `10` | recommended >=12 | weak password hashes | |
 | `AUTH_JWT_ALGO` | `config.go` | `HS256` | only if JWT used | weak signature alg | |
 | `AUTH_JWT_SECRET` | `config.go` | empty | YES (JWT) | forge JWTs | SENSITIVE |
@@ -152,7 +166,7 @@ and `SESSION_SAME_SITE` (the app's `contract.CookiePolicy`).
 
 | Name | Package | Default | Required in prod? | Security impact | Notes |
 |------|---------|---------|-------------------|-----------------|-------|
-| `CACHE_DRIVER` | `config.go` | `memory` | recommended (redis on HA) | per-process state on multi-host | exactly `file` or `redis` select that driver; any other value (`database`, a typo, other casing) silently means `memory` |
+| `CACHE_DRIVER` | `config.go` | `memory` | recommended (redis on HA) | per-process state on multi-host | must name a registered cache driver (`memory`, `file`, `redis`, ...); an unknown name fails `New()` |
 | `CACHE_PREFIX` | `config.go` | `velocity_cache` | no | none | |
 | `CACHE_PATH` | `config.go` | empty | only if file driver | path traversal if attacker-controlled | |
 | `CACHE_MEMORY_MAX_ENTRIES` | `config.go` | `0` (= 1,000,000) | no | unbounded cache map is OOM-able via attacker-influenceable keys | memory driver entry cap with LRU eviction. `0` = default cap, negative = unlimited (escape hatch) |
@@ -180,7 +194,7 @@ and `SESSION_SAME_SITE` (the app's `contract.CookiePolicy`).
 |------|---------|---------|-------------------|-----------------|-------|
 | `STORAGE_DRIVER` | `config.go` | `local` | no | none | |
 | `FILESYSTEM_LOCAL_ROOT` | `config.go` | `./storage/app` | no | path traversal if attacker-controlled | |
-| `AWS_BUCKET` | `config.go` | empty | only if s3 used | none | |
+| `AWS_BUCKET` | `config.go` | empty | only if s3 used | none | setting it adds an `s3` disk, so the app must blank-import `storage/s3` (or `storage/standard`) or `New()` fails |
 | `AWS_DEFAULT_REGION` | `config.go` | empty | only if s3 used | none | |
 | `AWS_ACCESS_KEY_ID` | `config.go` | empty | only if s3 used | SENSITIVE | |
 | `AWS_SECRET_ACCESS_KEY` | `config.go` | empty | only if s3 used | SENSITIVE | |
@@ -215,7 +229,7 @@ and `SESSION_SAME_SITE` (the app's `contract.CookiePolicy`).
 | `LOG_DAYS` | `config.go` | `14` | no | none | |
 | `LOG_LEVEL` | `config.go` | `debug` | recommended `info`/`warn` in prod | debug logs may leak request bodies | |
 | `LOG_STACK` | `config.go` | empty | no | none | comma-separated channels |
-| `LOG_REDACT` | `config.go` (`Log.Config["redact"]`) | `false` | recommended | PII in logs | covers every channel of the app logger (the stack passes its config to its children); a logger built from another `log.LogConfig` redacts only when that config sets `"redact": true` |
+| `LOG_REDACT` | `config.go` (`Log.Config["redact"]`) | `false` | recommended | PII in logs | covers every channel of the app logger (the stack passes its config to its children); a logger built from another `log.Config` redacts only when that config sets `"redact": true` |
 | `LOG_REDACT_EMAILS` | `config.go` (`Log.Config["redact_emails"]`) | `false` | recommended | emails in logs | needs `LOG_REDACT` |
 
 The async package's panic hook (a panic recovered in a background goroutine is reported to the app's error handler) and the async and trace package loggers are process-wide. With several apps in one process, the newest live app owns them. An app's `Shutdown`, or the cleanup of its failed `New`, hands them back to the previous live app (or to the defaults: no hook, the standalone fallback logger) and never clears or replaces another app's installation. An app's hook and both loggers change owner together, in one step. Replacing them never waits on a line or report already being written: that line may still reach the replaced logger after its app shut it down. The built-in file logger never reopens its file after `Shutdown`; a late warning or error goes to the standalone fallback logger (standard error) with its bound fields, and a late Debug or Info line is dropped. A custom logger's behaviour after it is closed is its own. Known limits: a panic in a goroutine an older app started is reported to the newest app's error handler while that app lives, and an app that is never shut down stays live and stays reachable.
@@ -227,8 +241,8 @@ The async package's panic hook (a panic recovered in a background goroutine is r
 | `CRYPTO_KEY` | `config.go` | falls back to `APP_KEY` | YES | encryption broken; cookies forgeable | rotate every 6 months |
 | `CRYPTO_CIPHER` | `config.go` | `AES-256-GCM` | no | weaker cipher if changed | |
 | `CRYPTO_OLD_KEYS` | `config.go` | empty | only during rotation | none | comma-separated previous keys |
-| `CRYPTO_DEBUG` | `config.go` (`Crypto.Debug`) | `false` | NO | decrypt-failure causes in the log (never key bytes or plaintext) | exactly `true`; applied when the driver is built; each decrypt failure is a debug line (stage, cause) through the app logger, so it shows only at `LOG_LEVEL=debug`; tests and debugging only |
-| `CRYPTO_DISABLE_V0` | `config.go` (`Crypto.DisableV0`) | `false` | no | rejects v0 ciphertexts on read | exactly `true` |
+| `CRYPTO_DEBUG` | `config.go` (`Crypto.Debug`) | `false` | NO | decrypt-failure causes in the log (never key bytes or plaintext) | boolean; applied when the driver is built; each decrypt failure is a debug line (stage, cause) through the app logger, so it shows only at `LOG_LEVEL=debug`; tests and debugging only |
+| `CRYPTO_DISABLE_V0` | `config.go` (`Crypto.DisableV0`) | `false` | no | rejects v0 ciphertexts on read | boolean |
 
 ## View / Bond
 

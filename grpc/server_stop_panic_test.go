@@ -67,7 +67,7 @@ func TestServerStop_PanickingLoggerStillStops(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			lis := &closeTracker{Listener: testnet.Loopback(t)}
-			s := grpc.NewServer(grpc.Config{}, grpc.WithListener(lis), grpc.WithLogger(&stopPanicLogger{}))
+			s := grpc.NewServer(grpc.Config{Environment: "test"}, grpc.WithListener(lis), grpc.WithLogger(&stopPanicLogger{}))
 			counter := &stoppedCounter{}
 			s.SetEventDispatcher(counter.dispatch)
 			startHealth(t, s)
@@ -100,7 +100,7 @@ func TestGatewayStop_PanickingLoggerStillStops(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			lis := &closeTracker{Listener: testnet.Loopback(t)}
-			g := grpc.NewGateway(grpc.Config{}, grpc.GatewayWithListener(lis), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
+			g := grpc.NewGateway(grpc.Config{Environment: "test"}, grpc.GatewayWithListener(lis), grpc.GatewayWithGRPCEndpoint("127.0.0.1:1"),
 				grpc.GatewayWithEnvironment("development"), grpc.GatewayWithLogger(&stopPanicLogger{}))
 			g.RegisterHandler(func(context.Context, *runtime.ServeMux, string, []grpcgo.DialOption) error { return nil })
 			if err := g.StartAsync(); err != nil {

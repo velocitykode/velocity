@@ -694,7 +694,9 @@ func New(opts ...Option) (*App, error) {
 		mailer, err := mail.NewMailer(a.config.Mail)
 		if err != nil {
 			// Fail-soft (PRD decision): mail is an optional subsystem and an
-			// app must be able to boot without a mailer. A misconfiguration
+			// app must be able to boot without a mailer. An unknown or
+			// unimported driver name has already failed New in
+			// Config.Validate; any other misconfiguration
 			// is surfaced by this startup warn and again on the first send,
 			// matching initStorage's warn-not-fail policy. Queue, view,
 			// crypto and CSRF stay fail-hard because the app cannot run
@@ -750,6 +752,7 @@ func New(opts ...Option) (*App, error) {
 	// SameSite=None only with Secure. Set BEFORE SetServices for the same
 	// reason as RedirectAllowlist above.
 	a.Services.CookiePolicy = a.config.Auth.Session.CookiePolicy()
+	a.Services.Env = a.config.Env
 	a.Router.SetServices(a.Services)
 	// Events the router drops itself (a full async buffer, a stopped
 	// pool) count as failed events beside the failures the app's dispatch

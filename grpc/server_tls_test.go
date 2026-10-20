@@ -74,7 +74,7 @@ func nullServerLogger(t *testing.T) log.Logger {
 // TestServerBuild_ProductionRequiresTLS covers the core finding: production
 // environment with no creds and no Insecure (GRPC_INSECURE) opt-out must fail Build.
 func TestServerBuild_ProductionRequiresTLS(t *testing.T) {
-	s := grpc.NewServer(grpc.Config{},
+	s := grpc.NewServer(grpc.Config{Environment: "test"},
 		grpc.WithPort("0"),
 		grpc.WithEnvironment("production"),
 		grpc.WithLogger(nullServerLogger(t)),
@@ -102,7 +102,7 @@ func TestServerBuild_ProductionRequiresTLS(t *testing.T) {
 // service mesh, etc.) can set Config.Insecure (GRPC_INSECURE=true) and Build
 // will not refuse.
 func TestServerBuild_ProductionAllowsInsecureOptOut(t *testing.T) {
-	s := grpc.NewServer(grpc.Config{Insecure: true},
+	s := grpc.NewServer(grpc.Config{Environment: "test", Insecure: true},
 		grpc.WithPort("0"),
 		grpc.WithEnvironment("production"),
 		grpc.WithLogger(nullServerLogger(t)),
@@ -116,7 +116,7 @@ func TestServerBuild_ProductionAllowsInsecureOptOut(t *testing.T) {
 // TestServerBuild_ProductionAllowsWithCreds covers the canonical path: the
 // caller explicitly attaches transport credentials via WithCreds.
 func TestServerBuild_ProductionAllowsWithCreds(t *testing.T) {
-	s := grpc.NewServer(grpc.Config{},
+	s := grpc.NewServer(grpc.Config{Environment: "test"},
 		grpc.WithPort("0"),
 		grpc.WithEnvironment("production"),
 		grpc.WithLogger(nullServerLogger(t)),
@@ -131,7 +131,7 @@ func TestServerBuild_ProductionAllowsWithCreds(t *testing.T) {
 // TestServerBuild_DevWarnsWithoutCreds covers the dev ergonomics path: outside
 // production the server still boots without creds, just with a warning.
 func TestServerBuild_DevWarnsWithoutCreds(t *testing.T) {
-	s := grpc.NewServer(grpc.Config{},
+	s := grpc.NewServer(grpc.Config{Environment: "test"},
 		grpc.WithPort("0"),
 		grpc.WithEnvironment("development"),
 		grpc.WithLogger(nullServerLogger(t)),
@@ -162,7 +162,7 @@ func TestServerBuild_ProductionFromConfigEnvironment(t *testing.T) {
 // rule: a zero Config.Environment is non-production (contract.IsProductionEnv
 // of ""), so the server boots without creds.
 func TestServerBuild_UnsetEnvironmentIsNonProduction(t *testing.T) {
-	s := grpc.NewServer(grpc.Config{},
+	s := grpc.NewServer(grpc.Config{Environment: "test"},
 		grpc.WithPort("0"),
 		grpc.WithLogger(nullServerLogger(t)),
 	)

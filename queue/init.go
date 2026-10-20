@@ -16,8 +16,7 @@ type Config struct {
 	// development and testing. It is a process-wide setting: velocity.New
 	// applies it through ConfigureSigningWith before it calls NewQueue,
 	// which does not read it; a standalone caller applies it the same way
-	// (QUEUE_ACCEPT_UNSIGNED, default false; "1", "true", "yes" and "on",
-	// any case, enable it).
+	// (QUEUE_ACCEPT_UNSIGNED, default false).
 	AcceptUnsigned bool
 
 	// DB holds a *sql.DB for the database driver. Required when Driver is
@@ -38,7 +37,7 @@ type Config struct {
 	// a process-wide setting: velocity.New applies it through
 	// SetPayloadEncryptor before it calls NewQueue, which does not read
 	// it; a standalone caller applies it the same way (QUEUE_ENCRYPT,
-	// default false; only "true" enables it).
+	// default false).
 	Encrypt bool
 
 	// Logger receives the driver's warnings, from construction on: a
@@ -76,24 +75,16 @@ func (c Config) String() string {
 // GoString keeps %#v redacted too.
 func (c Config) GoString() string { return c.String() }
 
-// Validate checks the Config for structural problems before NewQueue
-// resolves a driver factory. The database driver requires DB and DBDriver
-// to be set; the redis driver does not validate Redis credentials here so
-// dev fixtures can boot with empty defaults that the local redis allows.
-// Per-driver factory errors still surface from Drivers().Resolve.
+// Validate checks that Driver names a registered queue driver (empty is
+// accepted: NewQueue treats it as "memory"), so an unknown or unimported
+// driver fails at boot. It checks only what the caller configures: the
+// database driver's DB and DBDriver are wired by velocity.New and checked
+// by that driver's factory.
 func (c Config) Validate() error {
 	if c.Driver == "" {
 		return nil
 	}
-	if c.Driver == "database" {
-		if c.DB == nil {
-			return fmt.Errorf("velocity/queue: QUEUE_DRIVER=database requires a non-nil *sql.DB")
-		}
-		if c.DBDriver == "" {
-			return fmt.Errorf("velocity/queue: QUEUE_DRIVER=database requires DBDriver (postgres, mysql, or sqlite)")
-		}
-	}
-	return nil
+	return drivers.Check(c.Driver)
 }
 
 // drivers is the canonical Velocity driver registry for queues. Built-in
@@ -126,6 +117,9 @@ func init() {
 	Drivers().Register("database", func(_ context.Context, cfg Config) (Driver, error) {
 		if cfg.DB == nil {
 			return nil, fmt.Errorf("velocity/queue: database driver requires a *sql.DB in Config.DB")
+		}
+		if cfg.DBDriver == "" {
+			return nil, fmt.Errorf("velocity/queue: database driver requires DBDriver (postgres, mysql, or sqlite)")
 		}
 		return NewDatabaseDriver(cfg.DB, cfg.DBDriver), nil
 	})

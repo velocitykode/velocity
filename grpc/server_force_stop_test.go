@@ -51,7 +51,7 @@ func TestServerStop_IndependentForceRunsAsStopWork(t *testing.T) {
 	logger := newPausingLogger("gracefully stopping")
 	nested := newNestedStop(stopCalls["Shutdown"])
 	lis := &nestedListener{Listener: testnet.Loopback(t), nested: nested}
-	s := grpc.NewServer(grpc.Config{}, grpc.WithListener(lis), grpc.WithLogger(logger))
+	s := grpc.NewServer(grpc.Config{Environment: "test"}, grpc.WithListener(lis), grpc.WithLogger(logger))
 	nested.server.Store(s)
 	// Stop closes the listener through grpc-go only once grpc-go serves it.
 	served(t, startHealth(t, s))

@@ -62,7 +62,7 @@ type Config struct {
 	// argument values (see drivers.BaseDriver.SetLogger). The line is
 	// written before the statement's connection returns to the pool, so
 	// the manager's logger must not use the pool it logs (DB_LOG_QUERIES,
-	// default false; only "true" enables it).
+	// default false).
 	LogQueries bool
 
 	// MaxIdleConns caps the idle connections kept in the pool. Zero means
@@ -120,6 +120,9 @@ type Config struct {
 func (c Config) Validate() error {
 	if c.Driver == "" {
 		return nil
+	}
+	if err := driverRegistry.Check(c.Driver); err != nil {
+		return err
 	}
 	if c.MaxIdleConns < 0 || c.MaxOpenConns < 0 {
 		return fmt.Errorf("velocity/orm: MaxIdleConns and MaxOpenConns must be non-negative")

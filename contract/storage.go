@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -187,7 +188,7 @@ func (c StorageConfig) Validate() error {
 		if disk.Driver == "" {
 			return fmt.Errorf("velocity/storage: disk %q has empty driver", name)
 		}
-		if disk.Driver == "s3" && disk.Bucket == "" {
+		if strings.EqualFold(strings.TrimSpace(disk.Driver), "s3") && disk.Bucket == "" {
 			return fmt.Errorf("velocity/storage: disk %q uses the s3 driver but Bucket is empty", name)
 		}
 	}

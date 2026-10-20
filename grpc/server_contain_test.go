@@ -41,7 +41,7 @@ func (r *probeReports) Report(_ error, ec *contract.ErrorContext) {
 // panic was reported once (late when it came after the call ended).
 func runContainProbe(t *testing.T, kind, when string) {
 	reports := &probeReports{}
-	s := grpc.NewServer(grpc.Config{}, grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}), grpc.WithReporter(reports))
+	s := grpc.NewServer(grpc.Config{Environment: "test"}, grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}), grpc.WithReporter(reports))
 	returned, finished := make(chan struct{}), make(chan struct{})
 	var finishOnce sync.Once
 	finish := func() { finishOnce.Do(func() { close(finished) }) }

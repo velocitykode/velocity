@@ -28,7 +28,7 @@ func (panickyContextStream) Context() context.Context { panic("stream context br
 // reported once.
 func runStreamGetterProbe(t *testing.T, through bool) {
 	reports := &probeReports{}
-	s := grpc.NewServer(grpc.Config{}, grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}), grpc.WithReporter(reports))
+	s := grpc.NewServer(grpc.Config{Environment: "test"}, grpc.WithListener(testnet.Loopback(t)), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}), grpc.WithReporter(reports))
 	interceptors := []grpcgo.StreamServerInterceptor{
 		func(srv any, ss grpcgo.ServerStream, _ *grpcgo.StreamServerInfo, h grpcgo.StreamHandler) error {
 			done := make(chan error, 1)

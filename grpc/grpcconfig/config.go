@@ -8,8 +8,10 @@ package grpcconfig
 // The zero value of every field means the built-in default, so Config{} is
 // a valid, secure-by-default configuration: server port 50051, gateway port
 // 8080, gateway endpoint localhost:50051, 4 MiB receive and send message
-// sizes, reflection off, insecure off, and the "" environment
-// (non-production, as IsProductionEnv decides).
+// sizes, reflection off, insecure off, and the "" environment, which
+// IsProductionEnv classifies as production: a zero Config requires TLS
+// credentials (WithCreds) or Insecure, and refuses reflection. Set
+// Environment to a development or test name to relax both.
 type Config struct {
 	// EnableReflection turns on gRPC server reflection (GRPC_REFLECTION,
 	// default off). The server refuses to build with reflection on in a
@@ -17,7 +19,7 @@ type Config struct {
 	EnableReflection bool
 
 	// Environment is the deployment environment, classified by
-	// IsProductionEnv (APP_ENV, empty means unset, which is non-production).
+	// IsProductionEnv (APP_ENV; empty means unset, which is production).
 	Environment string
 
 	// GRPCEndpoint is the gRPC endpoint the gateway dials (GRPC_ENDPOINT,

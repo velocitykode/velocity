@@ -3,8 +3,10 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
+	"sort"
 	"sync"
 
 	"github.com/velocitykode/velocity/contract"
@@ -272,4 +274,26 @@ func createDriverWithContext(ctx context.Context, config DiskConfig) (Driver, er
 		return nil, errchain.Errorf("velocity/storage: %w", err)
 	}
 	return d, nil
+}
+
+// ValidateConfig checks c's structure (Config.Validate) and that every disk
+// names a registered driver, so an unknown or unimported disk driver fails
+// at boot instead of when the disk is first used. The driver check lives
+// here, not on Config, because Config is defined in contract, which cannot
+// reach this package's registry.
+func ValidateConfig(c Config) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	names := make([]string, 0, len(c.Disks))
+	for name := range c.Disks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if err := drivers.Check(c.Disks[name].Driver); err != nil {
+			return fmt.Errorf("velocity/storage: disk %q: %w", name, err)
+		}
+	}
+	return nil
 }

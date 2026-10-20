@@ -74,7 +74,7 @@ func nullLogger(t *testing.T) log.Logger {
 // environment with no credentials must hard-fail. The old behaviour was a
 // silent cleartext default that leaks every Authorization header.
 func TestGatewayBuild_ProductionRefusesMissingCreds(t *testing.T) {
-	g := grpc.NewGateway(grpc.Config{},
+	g := grpc.NewGateway(grpc.Config{Environment: "test"},
 		grpc.GatewayWithGRPCEndpoint("localhost:50051"),
 		grpc.GatewayWithEnvironment("production"),
 		grpc.GatewayWithLogger(nullLogger(t)),
@@ -117,7 +117,7 @@ func TestGatewayBuild_ProductionFromConfigEnvironment(t *testing.T) {
 // an operator running a known-internal cleartext mesh can call
 // GatewayWithInsecure() and Build will not refuse.
 func TestGatewayBuild_ProductionAllowsExplicitInsecure(t *testing.T) {
-	g := grpc.NewGateway(grpc.Config{},
+	g := grpc.NewGateway(grpc.Config{Environment: "test"},
 		grpc.GatewayWithGRPCEndpoint("localhost:50051"),
 		grpc.GatewayWithEnvironment("production"),
 		grpc.GatewayWithInsecure(),
@@ -132,7 +132,7 @@ func TestGatewayBuild_ProductionAllowsExplicitInsecure(t *testing.T) {
 // path: outside production the gateway still boots with cleartext but the
 // caller is warned. We just assert no error here.
 func TestGatewayBuild_DevDefaultsToInsecureWithWarning(t *testing.T) {
-	g := grpc.NewGateway(grpc.Config{},
+	g := grpc.NewGateway(grpc.Config{Environment: "test"},
 		grpc.GatewayWithGRPCEndpoint("localhost:50051"),
 		grpc.GatewayWithEnvironment("development"),
 		grpc.GatewayWithLogger(nullLogger(t)),
@@ -151,7 +151,7 @@ func TestGatewayWithTransportConfig_MissingCAFile(t *testing.T) {
 	keyPath := filepath.Join(dir, "client.key")
 	writeSelfSignedCertAndKey(t, certPath, keyPath)
 
-	g := grpc.NewGateway(grpc.Config{},
+	g := grpc.NewGateway(grpc.Config{Environment: "test"},
 		grpc.GatewayWithGRPCEndpoint("localhost:50051"),
 		grpc.GatewayWithLogger(nullLogger(t)),
 		grpc.GatewayWithTransportConfig(grpc.GatewayTransportConfig{
@@ -182,7 +182,7 @@ func TestGatewayWithTransportConfig_MalformedCAPEM(t *testing.T) {
 		t.Fatalf("write bad CA: %v", err)
 	}
 
-	g := grpc.NewGateway(grpc.Config{},
+	g := grpc.NewGateway(grpc.Config{Environment: "test"},
 		grpc.GatewayWithGRPCEndpoint("localhost:50051"),
 		grpc.GatewayWithLogger(nullLogger(t)),
 		grpc.GatewayWithTransportConfig(grpc.GatewayTransportConfig{
@@ -205,7 +205,7 @@ func TestGatewayWithTransportConfig_MalformedCAPEM(t *testing.T) {
 // no-client-cert TLS handshake.
 func TestGatewayWithTransportConfig_MissingClientCert(t *testing.T) {
 	dir := t.TempDir()
-	g := grpc.NewGateway(grpc.Config{},
+	g := grpc.NewGateway(grpc.Config{Environment: "test"},
 		grpc.GatewayWithGRPCEndpoint("localhost:50051"),
 		grpc.GatewayWithLogger(nullLogger(t)),
 		grpc.GatewayWithTransportConfig(grpc.GatewayTransportConfig{
@@ -232,7 +232,7 @@ func TestGatewayWithTransportConfig_ValidCertAndCA(t *testing.T) {
 
 	// Reuse the self-signed cert as a CA. It is a CA in the generated
 	// template, so it parses as a valid PEM block.
-	g := grpc.NewGateway(grpc.Config{},
+	g := grpc.NewGateway(grpc.Config{Environment: "test"},
 		grpc.GatewayWithGRPCEndpoint("localhost:50051"),
 		grpc.GatewayWithLogger(nullLogger(t)),
 		grpc.GatewayWithTransportConfig(grpc.GatewayTransportConfig{
@@ -255,7 +255,7 @@ func TestGatewayWithTransportConfig_ValidCertNoCA(t *testing.T) {
 	keyPath := filepath.Join(dir, "client.key")
 	writeSelfSignedCertAndKey(t, certPath, keyPath)
 
-	g := grpc.NewGateway(grpc.Config{},
+	g := grpc.NewGateway(grpc.Config{Environment: "test"},
 		grpc.GatewayWithGRPCEndpoint("localhost:50051"),
 		grpc.GatewayWithLogger(nullLogger(t)),
 		grpc.GatewayWithEnvironment("production"),

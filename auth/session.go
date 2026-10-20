@@ -438,9 +438,8 @@ type SessionConfig struct {
 	Domain string
 
 	// HttpOnly sets the session cookie's HttpOnly attribute;
-	// ValidateCookieSecurity rejects false unless AllowJSAccess is set.
-	// ConfigFromEnv sets it only for the value "true" (SESSION_HTTP_ONLY,
-	// default true).
+	// ValidateCookieSecurity rejects false unless AllowJSAccess is set
+	// (SESSION_HTTP_ONLY, default true).
 	HttpOnly bool
 
 	// IdleLifetime is the idle timeout in minutes: a session that receives

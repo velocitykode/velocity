@@ -46,7 +46,7 @@ func closeRebuild(lis *buildingListener, s *atomic.Pointer[grpc.Server]) *error 
 func TestServerBuild_StoppedAbortHoldsTheBuildUntilItsCloseEnds(t *testing.T) {
 	var ref atomic.Pointer[grpc.Server]
 	lis := &buildingListener{Listener: testnet.Loopback(t)}
-	s := grpc.NewServer(grpc.Config{}, grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s := grpc.NewServer(grpc.Config{Environment: "test"}, grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	ref.Store(s)
 	stopOnCleanup(t, s)
 	nested := closeRebuild(lis, &ref)
@@ -77,7 +77,7 @@ func TestServerBuild_StoppedAbortHoldsTheBuildUntilItsCloseEnds(t *testing.T) {
 func TestServerStop_UnservedCloseHoldsOffABuild(t *testing.T) {
 	var ref atomic.Pointer[grpc.Server]
 	lis := &buildingListener{Listener: testnet.Loopback(t)}
-	s := grpc.NewServer(grpc.Config{}, grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s := grpc.NewServer(grpc.Config{Environment: "test"}, grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	ref.Store(s)
 	stopOnCleanup(t, s)
 	if err := s.Build(); err != nil {
@@ -100,7 +100,7 @@ func TestServerStop_UnservedCloseHoldsOffABuild(t *testing.T) {
 func TestServerBuild_RacingTheStoppedAbortsCloseIsHeldOff(t *testing.T) {
 	var ref atomic.Pointer[grpc.Server]
 	lis := &buildingListener{Listener: testnet.Loopback(t)}
-	s := grpc.NewServer(grpc.Config{}, grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
+	s := grpc.NewServer(grpc.Config{Environment: "test"}, grpc.WithListener(lis), grpc.WithLogger(&reentrantLogger{server: &atomic.Pointer[grpc.Server]{}}))
 	ref.Store(s)
 	stopOnCleanup(t, s)
 	entered, release := make(chan struct{}), make(chan struct{})

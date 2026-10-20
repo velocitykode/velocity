@@ -61,6 +61,11 @@ type Config struct {
 // test fixtures can construct partial configs; missing credentials will
 // surface at Send time via the driver's own error path.
 func (c Config) Validate() error {
+	if c.Driver != "" {
+		if err := drivers.Check(c.Driver); err != nil {
+			return err
+		}
+	}
 	if c.MaxAttachmentSize < 0 {
 		return fmt.Errorf("velocity/mail: MAIL_MAX_ATTACHMENT_SIZE must be non-negative, got %d", c.MaxAttachmentSize)
 	}

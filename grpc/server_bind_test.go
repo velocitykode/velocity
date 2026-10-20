@@ -13,7 +13,7 @@ import (
 func nullServer(t *testing.T, opts ...ServerOption) *Server {
 	t.Helper()
 	logger, _ := log.NewLogger(log.Config{Driver: "null"})
-	return NewServer(Config{Insecure: true}, append([]ServerOption{WithLogger(logger)}, opts...)...)
+	return NewServer(Config{Environment: "test", Insecure: true}, append([]ServerOption{WithLogger(logger)}, opts...)...)
 }
 
 // TestBuild_DefaultBindsTCP confirms the legacy default still binds tcp on the

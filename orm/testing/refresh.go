@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/velocitykode/velocity"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/orm/migrate"
@@ -261,14 +262,13 @@ func RefreshDatabase(t *testing.T, manager *orm.Manager) *sql.DB {
 
 	dbName := manager.DatabaseName()
 
-	// Safety check: Verify we're in testing environment. Production-class
-	// names (production, prod, staging) panic so RefreshDatabase cannot
-	// silently destroy a real database when APP_ENV is set to one of the
-	// canonical prod aliases.
-	appEnv := contract.GetEnv()
+	// Safety check: Verify we're in testing environment. A production-class
+	// APP_ENV (a prod alias, an unrecognised name, or unset) panics so
+	// RefreshDatabase cannot silently destroy a real database.
+	appEnv := velocity.ConfigFromEnv().Env
 
 	if contract.IsProductionEnv(appEnv) {
-		panic(fmt.Sprintf("RefreshDatabase refuses to run with APP_ENV=%q (production class)", appEnv))
+		panic("RefreshDatabase refuses to run with " + describeProductionEnv(appEnv))
 	}
 
 	// Best practice: APP_ENV should be "testing" or "test" (set via .env.testing).

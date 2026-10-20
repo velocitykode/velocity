@@ -13,7 +13,7 @@ import (
 // via Config.Insecure so the reflection check is the one exercised here.
 func TestBuild_RefusesReflectionInProduction(t *testing.T) {
 	logger, _ := log.NewLogger(log.Config{Driver: "null"})
-	s := NewServer(Config{Insecure: true},
+	s := NewServer(Config{Environment: "test", Insecure: true},
 		WithPort("0"),
 		WithReflection(true),
 		WithEnvironment("production"),
@@ -39,7 +39,7 @@ func TestBuild_RefusesReflectionInProduction(t *testing.T) {
 // re-enable reflection.
 func TestBuild_RefusesReflectionInStaging(t *testing.T) {
 	logger, _ := log.NewLogger(log.Config{Driver: "null"})
-	s := NewServer(Config{Insecure: true},
+	s := NewServer(Config{Environment: "test", Insecure: true},
 		WithPort("0"),
 		WithReflection(true),
 		WithEnvironment("staging"),
@@ -61,7 +61,7 @@ func TestBuild_RefusesReflectionInStaging(t *testing.T) {
 // prod label and reflection is welcome there.
 func TestBuild_AllowsReflectionInDevelopment(t *testing.T) {
 	logger, _ := log.NewLogger(log.Config{Driver: "null"})
-	s := NewServer(Config{},
+	s := NewServer(Config{Environment: "test"},
 		WithPort("0"),
 		WithReflection(true),
 		WithEnvironment("development"),
@@ -78,7 +78,7 @@ func TestBuild_AllowsReflectionInDevelopment(t *testing.T) {
 func TestBuild_RequiresNonNilLogger(t *testing.T) {
 	// NewServer installs a default console logger; clear it to exercise the
 	// Build() nil-logger guard.
-	s := NewServer(Config{}, WithPort("0"))
+	s := NewServer(Config{Environment: "test"}, WithPort("0"))
 	s.logger = nil
 
 	err := s.Build()

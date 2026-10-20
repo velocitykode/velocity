@@ -204,16 +204,22 @@ func TestConfigFromEnv_StructKeysLandInTheirFields(t *testing.T) {
 	})
 }
 
-// With the keys unset (or unparseable where the key is numeric), each
-// field takes its documented default.
+// With the keys unset or unparseable, each field takes its documented
+// default; every unparseable key is reported by Validate.
 func TestConfigFromEnv_StructKeysDefaults(t *testing.T) {
 	clearConfigEnv(t)
 	t.Setenv("REDIS_PORT", "x")
-	t.Setenv("REDIS_TLS", "TRUE") // exact "true" only
+	t.Setenv("REDIS_TLS", "maybe")
 	t.Setenv("CACHE_MAX_VALUE_BYTES", "4k")
 	t.Setenv("DB_MAX_OPEN_CONNS", "many")
-	t.Setenv("QUEUE_ENCRYPT", "1") // exact "true" only
+	t.Setenv("QUEUE_ENCRYPT", "sometimes")
 	cfg := ConfigFromEnv()
+	err := cfg.Validate()
+	for _, key := range []string{"REDIS_PORT", "REDIS_TLS", "CACHE_MAX_VALUE_BYTES", "DB_MAX_OPEN_CONNS", "QUEUE_ENCRYPT"} {
+		if err == nil || !strings.Contains(err.Error(), key+"=") {
+			t.Errorf("Validate error does not report %s: %v", key, err)
+		}
+	}
 	runFieldChecks(t, cfg, []fieldCheck{
 		{"Cache.Prefix", func(c Config) any { return c.Cache.Prefix }, "velocity_cache"},
 		{"Cache store Driver", func(c Config) any { return defaultStore(c).Driver }, "memory"},

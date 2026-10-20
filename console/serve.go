@@ -68,8 +68,8 @@ func Serve(opts ServeOptions) error {
 // normalizeServeEnv applies the dev-server default for APP_ENV: vel serve is
 // the development server, so an unset env becomes "development". It returns the
 // resolved env and whether the default was applied (so the caller can warn
-// once). The input is already normalised (lowercased/trimmed) by ConfigFromEnv
-// via app.Env, so this does not re-normalise.
+// once). The input is already normalised (lowercased/trimmed) by
+// ConfigFromEnv, so this does not re-normalise.
 func normalizeServeEnv(env string) (string, bool) {
 	if env == "" {
 		return defaultServeEnv, true

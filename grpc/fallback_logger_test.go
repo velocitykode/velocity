@@ -23,12 +23,12 @@ func TestServerAndGateway_WithoutLoggerWarnThroughTheFallback(t *testing.T) {
 			fallback := fallbacklogtest.Capture(t)
 			stdlib := fallbacklogtest.CaptureStdlib(t)
 
-			s := NewServer(Config{}, append([]ServerOption{WithPort("0"), WithEnvironment("development")}, tc.serverOpts...)...)
+			s := NewServer(Config{Environment: "test"}, append([]ServerOption{WithPort("0"), WithEnvironment("development")}, tc.serverOpts...)...)
 			if err := s.Build(); err != nil {
 				t.Fatalf("server Build: %v", err)
 			}
 			t.Cleanup(s.Stop)
-			g := NewGateway(Config{}, append([]GatewayOption{GatewayWithEnvironment("development")}, tc.gwOpts...)...)
+			g := NewGateway(Config{Environment: "test"}, append([]GatewayOption{GatewayWithEnvironment("development")}, tc.gwOpts...)...)
 			if err := g.Build(context.Background()); err != nil {
 				t.Fatalf("gateway Build: %v", err)
 			}

@@ -83,6 +83,11 @@ func normalise(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }
 
+// Normalise returns name the way the registry looks it up: trimmed and
+// lower-cased. Callers that compare a driver name against a constant next
+// to a registry check use it so both agree on "File" and " file ".
+func Normalise(name string) string { return normalise(name) }
+
 // Register installs a factory under name. Callers typically invoke this
 // from a package init():
 //
@@ -139,6 +144,16 @@ func (r *Registry[D, C]) Override(name string, factory Factory[D, C]) Factory[D,
 		r.factories[key] = factory
 	}
 	return prev
+}
+
+// Check returns a *NotFoundError when no driver is registered under name
+// (case-insensitive), and nil otherwise. Config.Validate methods call it so
+// an unknown or unimported driver name fails at boot, not on first use.
+func (r *Registry[D, C]) Check(name string) error {
+	if r.Has(name) {
+		return nil
+	}
+	return &NotFoundError{Subsystem: r.subsystem, Name: name, Available: r.Names()}
 }
 
 // Has reports whether a driver is registered under name (case-insensitive).

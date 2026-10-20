@@ -2,6 +2,7 @@ package velocity
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,21 +47,25 @@ func TestConfigFromEnv_DBTimezoneAndAppTimezone(t *testing.T) {
 	}
 }
 
-// TestConfigFromEnv_CryptoFlagsExactTrue pins that CRYPTO_DISABLE_V0 and
-// CRYPTO_DEBUG turn on only for the exact string "true": a nearly-correct
-// value ("1", "TRUE") must not silently flip either.
-func TestConfigFromEnv_CryptoFlagsExactTrue(t *testing.T) {
-	for _, v := range []string{"1", "yes", "TRUE", "True", ""} {
+// TestConfigFromEnv_CryptoFlags pins CRYPTO_DISABLE_V0 and CRYPTO_DEBUG to
+// the one boolean parser: any case of 1/true/yes/on is on, 0/false/no/off
+// or unset is off, and anything else is a Validate error.
+func TestConfigFromEnv_CryptoFlags(t *testing.T) {
+	for v, want := range map[string]bool{"1": true, "yes": true, "TRUE": true, "True": true, "": false, "0": false, "off": false} {
 		t.Setenv("CRYPTO_DISABLE_V0", v)
 		t.Setenv("CRYPTO_DEBUG", v)
-		if c := ConfigFromEnv().Crypto; c.DisableV0 || c.Debug {
-			t.Fatalf("value %q: DisableV0=%v Debug=%v, want both false", v, c.DisableV0, c.Debug)
+		cfg := ConfigFromEnv()
+		if c := cfg.Crypto; c.DisableV0 != want || c.Debug != want {
+			t.Fatalf("value %q: DisableV0=%v Debug=%v, want both %v", v, c.DisableV0, c.Debug, want)
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("value %q: Validate = %v", v, err)
 		}
 	}
-	t.Setenv("CRYPTO_DISABLE_V0", "true")
-	t.Setenv("CRYPTO_DEBUG", "true")
-	if c := ConfigFromEnv().Crypto; !c.DisableV0 || !c.Debug {
-		t.Fatalf("value \"true\": DisableV0=%v Debug=%v, want both true", c.DisableV0, c.Debug)
+	t.Setenv("CRYPTO_DISABLE_V0", "maybe")
+	t.Setenv("CRYPTO_DEBUG", "")
+	if err := ConfigFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), `CRYPTO_DISABLE_V0="maybe"`) {
+		t.Fatalf("Validate = %v, want the bad CRYPTO_DISABLE_V0 named", err)
 	}
 }
 
@@ -96,29 +101,34 @@ func TestConfigFromEnv_LogRedactFlags(t *testing.T) {
 	}
 }
 
-// TestConfigFromEnv_CacheDriverFallsBackToMemory pins CACHE_DRIVER: exactly
-// "file" or "redis" select that driver; any other value is memory.
-func TestConfigFromEnv_CacheDriverFallsBackToMemory(t *testing.T) {
-	for raw, want := range map[string]string{
-		"": "memory", "memory": "memory", "file": "file", "redis": "redis",
-		"database": "memory", "memcached": "memory", "FILE": "memory", " file ": "memory", "Redis": "memory",
-	} {
+// TestConfigFromEnv_CacheDriver pins CACHE_DRIVER: unset is memory, any
+// other value is passed through, and Validate rejects a name no cache
+// driver is registered under.
+func TestConfigFromEnv_CacheDriver(t *testing.T) {
+	for raw, want := range map[string]string{"": "memory", "memory": "memory", "file": "file", "FILE": "file", " Redis ": "redis", "memcached": "memcached"} {
 		t.Setenv("CACHE_DRIVER", raw)
 		if got := ConfigFromEnv().Cache.DefaultDriver(); got != want {
 			t.Fatalf("CACHE_DRIVER=%q: driver = %q, want %q", raw, got, want)
 		}
 	}
+	t.Setenv("CACHE_DRIVER", "memcached")
+	if err := ConfigFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), `"memcached" not registered`) {
+		t.Fatalf("Validate = %v, want the unknown cache driver named", err)
+	}
 }
 
-// TestConfigFromEnv_LoginDecayUntrimmed pins AUTH_LOGIN_DECAY parsing:
-// surrounding space is not trimmed, so it falls back to the default.
-func TestConfigFromEnv_LoginDecayUntrimmed(t *testing.T) {
-	for raw, want := range map[string]time.Duration{
-		"30s": 30 * time.Second, "7": 7 * time.Second, " 30s": 0, "7 ": 0, "0": 0, "-5": 0, "x": 0,
-	} {
+// TestConfigFromEnv_LoginDecay pins AUTH_LOGIN_DECAY parsing: a positive
+// Go duration or bare seconds, surrounding space trimmed; zero, negative
+// or malformed keeps the default and is a Validate error.
+func TestConfigFromEnv_LoginDecay(t *testing.T) {
+	for raw, want := range map[string]time.Duration{"30s": 30 * time.Second, "7": 7 * time.Second, " 30s": 30 * time.Second, "0": 0, "-5": 0, "x": 0} {
 		t.Setenv("AUTH_LOGIN_DECAY", raw)
-		if got := ConfigFromEnv().Auth.LoginThrottle.Decay; got != want {
+		cfg := ConfigFromEnv()
+		if got := cfg.Auth.LoginThrottle.Decay; got != want {
 			t.Fatalf("AUTH_LOGIN_DECAY=%q: Decay = %v, want %v", raw, got, want)
+		}
+		if bad := want == 0; bad != (cfg.Validate() != nil) {
+			t.Fatalf("AUTH_LOGIN_DECAY=%q: Validate error = %v, want error %v", raw, cfg.Validate(), bad)
 		}
 	}
 }
@@ -133,8 +143,8 @@ func TestConfigFromEnv_Maintenance(t *testing.T) {
 	if m.Root != "/srv/app" || m.AppKey != "k" {
 		t.Fatalf("Root=%q AppKey=%q, want /srv/app and k", m.Root, m.AppKey)
 	}
-	if len(m.ExcludePaths) != 2 || m.ExcludePaths[0] != "/webhooks" || m.ExcludePaths[1] != " /metrics" {
-		t.Fatalf("ExcludePaths = %q, want the raw comma split", m.ExcludePaths)
+	if len(m.ExcludePaths) != 2 || m.ExcludePaths[0] != "/webhooks" || m.ExcludePaths[1] != "/metrics" {
+		t.Fatalf("ExcludePaths = %q, want the trimmed comma split", m.ExcludePaths)
 	}
 
 	t.Setenv("VELOCITY_MAINTENANCE_EXCLUDE_PATHS", "")
@@ -144,7 +154,7 @@ func TestConfigFromEnv_Maintenance(t *testing.T) {
 }
 
 // TestConfigFromEnv_GRPC pins the gRPC keys onto grpcconfig.Config,
-// including the warnings for message sizes that are not a positive integer.
+// with message sizes that are not a positive integer reported by Validate.
 func TestConfigFromEnv_GRPC(t *testing.T) {
 	t.Setenv("APP_ENV", " Production ")
 	t.Setenv("GRPC_PORT", "6000")
@@ -161,15 +171,21 @@ func TestConfigFromEnv_GRPC(t *testing.T) {
 	if g.Environment != "production" {
 		t.Fatalf("Environment = %q, want the normalised APP_ENV", g.Environment)
 	}
-	if g.MaxRecvMsgSize != 0 || g.MaxSendMsgSize != 0 || len(g.Warnings) != 2 {
-		t.Fatalf("sizes %d/%d warnings %q, want 0/0 and two warnings", g.MaxRecvMsgSize, g.MaxSendMsgSize, g.Warnings)
+	if g.MaxRecvMsgSize != 0 || g.MaxSendMsgSize != 0 {
+		t.Fatalf("sizes %d/%d, want 0/0 (the default) for bad values", g.MaxRecvMsgSize, g.MaxSendMsgSize)
+	}
+	err := ConfigFromEnv().Validate()
+	for _, want := range []string{`GRPC_MAX_RECV_SIZE="abc"`, `GRPC_MAX_SEND_SIZE="0"`} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("Validate = %v, want %s reported", err, want)
+		}
 	}
 
 	t.Setenv("GRPC_MAX_RECV_SIZE", "-5")
 	t.Setenv("GRPC_MAX_SEND_SIZE", "1024")
-	t.Setenv("GRPC_INSECURE", "TRUE")
+	t.Setenv("GRPC_INSECURE", "OFF")
 	g = ConfigFromEnv().GRPC
-	if g.MaxRecvMsgSize != -5 || g.MaxSendMsgSize != 1024 || len(g.Warnings) != 0 || g.Insecure {
-		t.Fatalf("sizes %d/%d warnings %q insecure %v, want -5/1024, none, false", g.MaxRecvMsgSize, g.MaxSendMsgSize, g.Warnings, g.Insecure)
+	if g.MaxRecvMsgSize != 0 || g.MaxSendMsgSize != 1024 || g.Insecure {
+		t.Fatalf("sizes %d/%d insecure %v, want 0/1024, false", g.MaxRecvMsgSize, g.MaxSendMsgSize, g.Insecure)
 	}
 }
