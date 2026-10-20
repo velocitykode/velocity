@@ -81,7 +81,7 @@ func TestManager_Transaction_DispatchesTxRecoverOnRollbackFailure(t *testing.T) 
 	// the error path of Transaction by forcing the callback to return
 	// and verifying that Transaction returns the original error (i.e.
 	// the recover path did not swallow it).
-	m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:"})
+	m, err := NewManager(Config{Driver: "sqlite", Database: ":memory:"})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

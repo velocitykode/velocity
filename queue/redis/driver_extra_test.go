@@ -40,7 +40,7 @@ func TestRedisDriver_RegistryResolves(t *testing.T) {
 	}
 	defer mr.Close()
 
-	d, err := queue.NewQueue(queue.QueueConfig{
+	d, err := queue.NewQueue(queue.Config{
 		Driver: "redis",
 		Redis:  queue.RedisConfig{Host: mr.Host(), Port: mr.Port(), DB: "0"},
 	})

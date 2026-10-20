@@ -35,9 +35,9 @@ func TestRequestStarted_CarriesTheReportedClientIP(t *testing.T) {
 		Env:   "testing",
 		Port:  "0",
 		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
-		Log:   log.LogConfig{Driver: "null", Config: make(map[string]any)},
-		Queue: queue.QueueConfig{Driver: "memory"},
-		Mail:  mail.MailConfig{Driver: "log"},
+		Log:   log.Config{Driver: "null", Config: make(map[string]any)},
+		Queue: queue.Config{Driver: "memory"},
+		Mail:  mail.Config{Driver: "log"},
 		Auth:  auth.Config{TrustedProxies: []string{"10.0.0.0/8"}},
 	}))
 	if err != nil {

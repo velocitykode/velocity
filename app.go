@@ -423,11 +423,11 @@ func New(opts ...Option) (*App, error) {
 			_ = a.Cache.Shutdown(context.Background())
 		}
 	})
-	sessionOpts, sessionRecords, err := sessionStoreFromConfig(a.config.Session, a.Cache, &a.sessionCacheCell)
+	sessionOpts, sessionRecords, err := sessionStoreFromConfig(a.config.Auth.Session, a.Cache, &a.sessionCacheCell)
 	if err != nil {
 		return nil, err
 	}
-	a.Auth = initAuth(a.config.Auth, a.config.Session, a.Log, boundCrypto, sessionOpts...)
+	a.Auth = initAuth(a.config.Auth, a.Log, boundCrypto, sessionOpts...)
 	if authManager, ok := a.Auth.(*auth.Manager); ok {
 		if sessionRecords != nil {
 			authManager.SetServerSessionStore(sessionRecords)
@@ -453,7 +453,7 @@ func New(opts ...Option) (*App, error) {
 	//     or encrypted under a different scheme). Resolving it through
 	//     the session store would 419 every request.
 	//   - The app does not use the built-in session cookie at all
-	//     (a.config.Session.Name is empty). Same outcome.
+	//     (a.config.Auth.Session.Name is empty). Same outcome.
 	//
 	// In both skipped cases we install a strict-reject resolver that
 	// always returns ErrNoSession. csrf.NewE rejects nil resolvers because
@@ -461,8 +461,8 @@ func New(opts ...Option) (*App, error) {
 	// the strict-reject resolver fails closed (all unsafe requests 419)
 	// until the operator wires a real resolver via Config.SessionIDResolver.
 	if a.config.CSRF.SessionIDResolver == nil &&
-		a.config.Session.Name != "" &&
-		a.config.CSRF.SessionCookieName == a.config.Session.Name {
+		a.config.Auth.Session.Name != "" &&
+		a.config.CSRF.SessionCookieName == a.config.Auth.Session.Name {
 		// The scheme is read per request: installSessionMiddleware sets
 		// it at the end of New and bootstrap re-points it when a chain
 		// module changes the default scheme.
@@ -472,7 +472,7 @@ func New(opts ...Option) (*App, error) {
 		// on every replica that can read the session, and ends with the
 		// session. A Store the app set is kept.
 		if a.config.CSRF.Store == nil {
-			consumedLifetime := csrfConsumedTokenLifetime(a.config.Session)
+			consumedLifetime := csrfConsumedTokenLifetime(a.config.Auth.Session)
 			if a.config.CSRF.SingleUse && consumedLifetime <= 0 {
 				return nil, errchain.Errorf("%w: CSRF_SINGLE_USE needs a session absolute lifetime: with SESSION_ABSOLUTE_LIFETIME negative a captured session cookie can be renewed forever, so a consumed token could never be refused for as long as it can be replayed", ErrInvalidConfig)
 			}
@@ -498,7 +498,7 @@ func New(opts ...Option) (*App, error) {
 	// derived from the session config validated at step 5, so its
 	// SameSite, Domain, Path and Secure match the session cookie on the
 	// bootstrap write, the post-login rewrite and the logout clear.
-	a.config.CSRF.CookiePolicy = a.config.Session.CookiePolicy()
+	a.config.CSRF.CookiePolicy = a.config.Auth.Session.CookiePolicy()
 	csrfInstance, err := csrf.NewE(&a.config.CSRF)
 	if err != nil {
 		return nil, errchain.Errorf("velocity: failed to initialize csrf: %w", err)
@@ -749,7 +749,7 @@ func New(opts ...Option) (*App, error) {
 	// step 5: Secure=false survives only in dev/test profiles, and
 	// SameSite=None only with Secure. Set BEFORE SetServices for the same
 	// reason as RedirectAllowlist above.
-	a.Services.CookiePolicy = a.config.Session.CookiePolicy()
+	a.Services.CookiePolicy = a.config.Auth.Session.CookiePolicy()
 	a.Router.SetServices(a.Services)
 	// Events the router drops itself (a full async buffer, a stopped
 	// pool) count as failed events beside the failures the app's dispatch
@@ -1054,7 +1054,7 @@ func (a *App) envGatedSecurityCheck(warnMsg string, warnArgs []any, prodErr erro
 // only true production classes ("production", "prod", "staging", or any
 // unknown value) fail closed.
 func (a *App) checkSessionCookieSecurity() error {
-	err := a.config.Session.ValidateCookieSecurity(a.config.Env)
+	err := a.config.Auth.Session.ValidateCookieSecurity(a.config.Env)
 	if err == nil {
 		return nil
 	}

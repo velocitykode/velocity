@@ -53,7 +53,7 @@ func csrfResolverLogin(t *testing.T, a *App) *http.Cookie {
 		t.Fatalf("Login: %v", err)
 	}
 	for _, c := range w.Result().Cookies() {
-		if c.Name == a.config.Session.Name {
+		if c.Name == a.config.Auth.Session.Name {
 			return &http.Cookie{Name: c.Name, Value: c.Value}
 		}
 	}
@@ -234,7 +234,7 @@ func TestCSRFSessionResolver_ExpiredSessionPostGets419(t *testing.T) {
 		var token string
 		for _, c := range lw.Result().Cookies() {
 			switch c.Name {
-			case a.config.Session.Name:
+			case a.config.Auth.Session.Name:
 				live = &http.Cookie{Name: c.Name, Value: c.Value}
 			case "XSRF-TOKEN":
 				token, _ = url.QueryUnescape(c.Value)

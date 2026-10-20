@@ -136,7 +136,7 @@ func sessionFlashVisit(t *testing.T, client *http.Client, base string, partial b
 func sessionCookieFlash(t *testing.T, a *App, resp *http.Response) (map[string]any, bool) {
 	t.Helper()
 	for _, c := range resp.Cookies() {
-		if c.Name != a.config.Session.Name {
+		if c.Name != a.config.Auth.Session.Name {
 			continue
 		}
 		plaintext, err := a.Services.Crypto.Decrypt(c.Value)
@@ -159,8 +159,8 @@ func sessionCookieFlash(t *testing.T, a *App, resp *http.Response) (map[string]a
 func assertOnlySessionCookie(t *testing.T, a *App, step string, resp *http.Response) {
 	t.Helper()
 	for _, c := range resp.Cookies() {
-		if c.Name != a.config.Session.Name {
-			t.Errorf("%s: sets cookie %q; only the session cookie %q may carry flash data", step, c.Name, a.config.Session.Name)
+		if c.Name != a.config.Auth.Session.Name {
+			t.Errorf("%s: sets cookie %q; only the session cookie %q may carry flash data", step, c.Name, a.config.Auth.Session.Name)
 		}
 	}
 }

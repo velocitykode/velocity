@@ -21,7 +21,7 @@ func (d discardLogger) With(kvs ...any) contract.Logger { return contract.BindFi
 // BenchmarkManagerExecLogged runs a write with the statement log on, the
 // line going through the manager's logger as a connection holds it.
 func BenchmarkManagerExecLogged(b *testing.B) {
-	m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:", LogQueries: true})
+	m, err := NewManager(Config{Driver: "sqlite", Database: ":memory:", LogQueries: true})
 	if err != nil {
 		b.Fatalf("NewManager: %v", err)
 	}
@@ -43,7 +43,7 @@ func BenchmarkManagerExecLogged(b *testing.B) {
 // BenchmarkManagerQueryObserved reads a result set with a dispatcher
 // installed (the statement observer on) and the statement log off.
 func BenchmarkManagerQueryObserved(b *testing.B) {
-	m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:"})
+	m, err := NewManager(Config{Driver: "sqlite", Database: ":memory:"})
 	if err != nil {
 		b.Fatalf("NewManager: %v", err)
 	}

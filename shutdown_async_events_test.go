@@ -66,7 +66,7 @@ func (m *observeStraggler) Shutdown(context.Context) error {
 func TestShutdown_AsyncEventsStragglerPastDeadline(t *testing.T) {
 	logs := &closingLogger{}
 	const driverName = "shutdown-async-events-capture"
-	prev := log.Drivers().Override(driverName, func(context.Context, log.LogConfig) (log.Logger, error) {
+	prev := log.Drivers().Override(driverName, func(context.Context, log.Config) (log.Logger, error) {
 		return logs, nil
 	})
 	t.Cleanup(func() { log.Drivers().Override(driverName, prev) })
@@ -76,9 +76,9 @@ func TestShutdown_AsyncEventsStragglerPastDeadline(t *testing.T) {
 		Env:   "testing",
 		Port:  "0",
 		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
-		Log:   log.LogConfig{Driver: driverName, Config: make(map[string]any)},
-		Queue: queue.QueueConfig{Driver: "memory"},
-		Mail:  mail.MailConfig{Driver: "log"},
+		Log:   log.Config{Driver: driverName, Config: make(map[string]any)},
+		Queue: queue.Config{Driver: "memory"},
+		Mail:  mail.Config{Driver: "log"},
 	}), WithModules(mod))
 	if err != nil {
 		t.Fatalf("New: %v", err)

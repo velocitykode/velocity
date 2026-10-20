@@ -15,7 +15,7 @@ import (
 // log/splitcheck so it runs in a leaf-free test binary.
 func TestStandard_RegistersLeafDrivers(t *testing.T) {
 	for _, name := range []string{"file", "daily", "stack"} {
-		cfg := log.LogConfig{Driver: name, Config: map[string]any{
+		cfg := log.Config{Driver: name, Config: map[string]any{
 			"path":  t.TempDir(),
 			"stack": []string{"null"},
 		}}

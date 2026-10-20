@@ -17,7 +17,7 @@ import (
 func TestSessionScheme_LogsThroughTheAppLogger(t *testing.T) {
 	capture := &levelLogger{}
 	const driverName = "session-scheme-logger-capture"
-	prev := log.Drivers().Override(driverName, func(context.Context, log.LogConfig) (log.Logger, error) {
+	prev := log.Drivers().Override(driverName, func(context.Context, log.Config) (log.Logger, error) {
 		return capture, nil
 	})
 	t.Cleanup(func() { log.Drivers().Override(driverName, prev) })
@@ -36,7 +36,7 @@ func TestSessionScheme_LogsThroughTheAppLogger(t *testing.T) {
 		t.Setenv(k, v)
 	}
 	cfg := ConfigFromEnv()
-	cfg.Log = log.LogConfig{Driver: driverName, Config: make(map[string]any)}
+	cfg.Log = log.Config{Driver: driverName, Config: make(map[string]any)}
 	a, err := New(WithConfig(cfg))
 	if err != nil {
 		t.Fatalf("New: %v", err)

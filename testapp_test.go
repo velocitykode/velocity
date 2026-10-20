@@ -24,14 +24,14 @@ func testAppConfig() Config {
 		Debug: true,
 		Port:  "0",
 		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
-		Log: log.LogConfig{
+		Log: log.Config{
 			Driver: "console",
 			Config: make(map[string]any),
 		},
-		Queue: queue.QueueConfig{
+		Queue: queue.Config{
 			Driver: "memory",
 		},
-		Mail: mail.MailConfig{
+		Mail: mail.Config{
 			Driver: "log",
 		},
 	}

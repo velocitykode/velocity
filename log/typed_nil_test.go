@@ -12,7 +12,7 @@ func TestRedactionWrappers_TypedNilIsNotWrapped(t *testing.T) {
 	if got := WithRedactors(typed, EmailRedactor()); got != nil {
 		t.Errorf("WithRedactors(typed nil) = %T, want nil", got)
 	}
-	cfg := LogConfig{Config: map[string]any{"redact": true}}
+	cfg := Config{Config: map[string]any{"redact": true}}
 	if got := WrapWithRedactors(typed, cfg); got != nil {
 		t.Errorf("WrapWithRedactors(typed nil) = %T, want nil", got)
 	}

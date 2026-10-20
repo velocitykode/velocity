@@ -69,7 +69,7 @@ func TestRebind_CryptoSwapSealsSessionsUnderTheNewKey(t *testing.T) {
 	a.Router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/put", nil))
 	var sealed string
 	for _, c := range rec.Result().Cookies() {
-		if c.Name == a.config.Session.Name {
+		if c.Name == a.config.Auth.Session.Name {
 			sealed = c.Value
 		}
 	}

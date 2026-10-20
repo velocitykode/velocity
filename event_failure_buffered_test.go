@@ -30,7 +30,7 @@ func TestBufferedTransactionEventFailures_ReachTheFailurePolicyOnce(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			var rec hookRecorder
 			a, _ := newLoggerWiringApp(t, func(c *Config) {
-				c.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}
+				c.DB = orm.Config{Driver: "sqlite", Database: ":memory:"}
 			}, WithFailedEventHook(rec.hook))
 			a.Services.Events.Listen("app.buffered", failingListener{name: "app.buffered"})
 			a.Services.Events.Listen("app.buffered", failingListener{name: "app.buffered"})

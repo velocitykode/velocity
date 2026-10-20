@@ -73,8 +73,8 @@ func TestSchemaIntrospectionMySQLIntegration(t *testing.T) {
 	}
 }
 
-func mysqlIntrospectionConfig() orm.ManagerConfig {
-	return orm.ManagerConfig{
+func mysqlIntrospectionConfig() orm.Config {
+	return orm.Config{
 		Driver:   "mysql",
 		Host:     envOr("MYSQL_HOST", "localhost"),
 		Port:     envOr("MYSQL_PORT", "3306"),

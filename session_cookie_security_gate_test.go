@@ -46,7 +46,7 @@ func TestCheckSessionCookieSecurity(t *testing.T) {
 	} {
 		t.Run(tt.env, func(t *testing.T) {
 			rec := &recordingLogger{}
-			cfg := Config{Env: tt.env, Session: insecure}
+			cfg := Config{Env: tt.env, Auth: auth.Config{Session: insecure}}
 			a := &App{Services: &app.Services{Log: rec}, config: &cfg}
 			err := a.checkSessionCookieSecurity()
 			if tt.wantErr != (err != nil) {

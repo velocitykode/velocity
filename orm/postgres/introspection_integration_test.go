@@ -73,8 +73,8 @@ func TestSchemaIntrospectionPostgresIntegration(t *testing.T) {
 	}
 }
 
-func postgresIntrospectionConfig() orm.ManagerConfig {
-	return orm.ManagerConfig{
+func postgresIntrospectionConfig() orm.Config {
+	return orm.Config{
 		Driver:   "postgres",
 		Host:     envOr("POSTGRES_HOST", "localhost"),
 		Port:     envOr("POSTGRES_PORT", "5432"),

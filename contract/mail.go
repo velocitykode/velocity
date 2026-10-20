@@ -263,7 +263,7 @@ type Attachment struct {
 }
 
 // DefaultMaxAttachmentSize is the fallback per-attachment size limit used
-// when neither the MailConfig nor the *Message specifies one. 25 MiB matches
+// when neither the mail.Config nor the *Message specifies one. 25 MiB matches
 // the common sweet spot across SMTP providers (SES 40, SendGrid 30,
 // Postmark 10, Mailgun 25) and prevents trivial OOM-via-attachment DoS.
 const DefaultMaxAttachmentSize int64 = 25 * 1024 * 1024
@@ -302,7 +302,7 @@ func templatePath() string {
 }
 
 // defaultMaxAttachmentSize is the package-level fallback used by NewMessage
-// when no explicit limit is supplied. NewMailer promotes MailConfig values
+// when no explicit limit is supplied. NewMailer promotes mail.Config values
 // into it at boot so freshly constructed messages inherit the app config.
 var (
 	defaultMaxAttachmentSize   = DefaultMaxAttachmentSize

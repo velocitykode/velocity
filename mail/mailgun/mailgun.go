@@ -42,7 +42,7 @@ func formatAddress(name, email string) string {
 }
 
 func init() {
-	mail.Drivers().Register("mailgun", func(_ context.Context, cfg mail.MailConfig) (mail.Mailer, error) {
+	mail.Drivers().Register("mailgun", func(_ context.Context, cfg mail.Config) (mail.Mailer, error) {
 		return NewMailgunDriver(cfg.Mailgun, cfg.FromAddress, cfg.FromName)
 	})
 }

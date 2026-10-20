@@ -7,7 +7,7 @@ import (
 
 func TestManagerSchemaIntrospectionSQLite(t *testing.T) {
 	ctx := context.Background()
-	m, err := NewManager(ManagerConfig{
+	m, err := NewManager(Config{
 		Driver:       "sqlite",
 		Database:     ":memory:",
 		MaxOpenConns: 1,
@@ -64,7 +64,7 @@ func TestManagerSchemaIntrospectionSQLite(t *testing.T) {
 
 func TestManagerSchemaIntrospectionRejectsUnsafeTableName(t *testing.T) {
 	ctx := context.Background()
-	m, err := NewManager(ManagerConfig{
+	m, err := NewManager(Config{
 		Driver:       "sqlite",
 		Database:     ":memory:",
 		MaxOpenConns: 1,
@@ -81,7 +81,7 @@ func TestManagerSchemaIntrospectionRejectsUnsafeTableName(t *testing.T) {
 
 func TestManagerSchemaIntrospectionMissingTable(t *testing.T) {
 	ctx := context.Background()
-	m, err := NewManager(ManagerConfig{
+	m, err := NewManager(Config{
 		Driver:       "sqlite",
 		Database:     ":memory:",
 		MaxOpenConns: 1,

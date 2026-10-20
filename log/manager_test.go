@@ -236,7 +236,7 @@ func TestManager_ChannelConcurrentLoserShutdown(t *testing.T) {
 	var once sync.Once
 
 	const driverName = "counting-loser-test"
-	Drivers().Register(driverName, func(_ context.Context, _ LogConfig) (Logger, error) {
+	Drivers().Register(driverName, func(_ context.Context, _ Config) (Logger, error) {
 		atomic.AddInt32(&constructed, 1)
 		// Block until at least two builders overlap, guaranteeing a loser.
 		if atomic.AddInt32(&started, 1) >= 2 {
@@ -319,7 +319,7 @@ func TestManager_ChannelConcurrentStackLoserNonDestructiveShutdown(t *testing.T)
 	var once sync.Once
 
 	const childDriver = "counting-stack-loser-child"
-	Drivers().Register(childDriver, func(_ context.Context, _ LogConfig) (Logger, error) {
+	Drivers().Register(childDriver, func(_ context.Context, _ Config) (Logger, error) {
 		atomic.AddInt32(&childConstructed, 1)
 		// Block until at least two builders overlap. Both stack builders
 		// resolve this child concurrently, which both guarantees a child-level

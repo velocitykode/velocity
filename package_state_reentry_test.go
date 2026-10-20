@@ -22,9 +22,9 @@ func packageTestConfig(driver string) Config {
 		Env:   "testing",
 		Port:  "0",
 		Cache: cache.SingleStoreConfig("package_state", cache.StoreConfig{Driver: "memory"}),
-		Log:   log.LogConfig{Driver: driver, Config: make(map[string]any)},
-		Queue: queue.QueueConfig{Driver: "memory"},
-		Mail:  mail.MailConfig{Driver: "log"},
+		Log:   log.Config{Driver: driver, Config: make(map[string]any)},
+		Queue: queue.Config{Driver: "memory"},
+		Mail:  mail.Config{Driver: "log"},
 	}
 }
 
@@ -32,7 +32,7 @@ func packageTestConfig(driver string) Config {
 // test's duration.
 func useLogDriver(t *testing.T, name string, l log.Logger) {
 	t.Helper()
-	prev := log.Drivers().Override(name, func(context.Context, log.LogConfig) (log.Logger, error) {
+	prev := log.Drivers().Override(name, func(context.Context, log.Config) (log.Logger, error) {
 		return l, nil
 	})
 	t.Cleanup(func() { log.Drivers().Override(name, prev) })

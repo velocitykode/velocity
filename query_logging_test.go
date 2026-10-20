@@ -48,15 +48,15 @@ func newQueryLoggingApp(t *testing.T, dir string, opts ...Option) *App {
 	t.Helper()
 	registerRootSleep()
 	env := ConfigFromEnv()
-	db := orm.ManagerConfig{Driver: "sqlite", Database: ":memory:", MaxOpenConns: 1, LogQueries: env.DB.LogQueries, SlowThreshold: env.DB.SlowThreshold}
+	db := orm.Config{Driver: "sqlite", Database: ":memory:", MaxOpenConns: 1, LogQueries: env.DB.LogQueries, SlowThreshold: env.DB.SlowThreshold}
 	a, err := New(append([]Option{WithConfig(Config{
 		Env:   "testing",
 		Port:  "0",
-		Log:   log.LogConfig{Driver: "file", Config: map[string]any{"path": dir, "level": "debug"}},
+		Log:   log.Config{Driver: "file", Config: map[string]any{"path": dir, "level": "debug"}},
 		DB:    db,
 		Cache: cache.SingleStoreConfig("", cache.StoreConfig{Driver: "memory"}),
-		Queue: queue.QueueConfig{Driver: "memory"},
-		Mail:  mail.MailConfig{Driver: "log"},
+		Queue: queue.Config{Driver: "memory"},
+		Mail:  mail.Config{Driver: "log"},
 	})}, opts...)...)
 	if err != nil {
 		t.Fatalf("New: %v", err)

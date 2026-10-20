@@ -29,7 +29,7 @@ func (c *capturingT) Errorf(format string, args ...interface{}) {
 func newAssertManager(t *testing.T) *orm.Manager {
 	t.Helper()
 
-	m, err := orm.NewManager(orm.ManagerConfig{
+	m, err := orm.NewManager(orm.Config{
 		Driver:   "sqlite",
 		Database: ":memory:",
 	})

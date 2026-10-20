@@ -240,7 +240,7 @@ func TestDSLGaps_Check_TablePath(t *testing.T) {
 // connections share one database (a plain :memory: db is per-connection and the
 // rebuild pins its own connection).
 func TestDSLGaps_Check_SQLiteRebuild(t *testing.T) {
-	manager, err := orm.NewManager(orm.ManagerConfig{
+	manager, err := orm.NewManager(orm.Config{
 		Driver:   "sqlite",
 		Database: filepath.Join(t.TempDir(), "rebuild.db"),
 	})
@@ -320,7 +320,7 @@ func TestDSLGaps_Check_SQLiteRebuild(t *testing.T) {
 // fails AND the column added in the same call is rolled back (not left behind),
 // and the original table is untouched.
 func TestDSLGaps_Check_SQLiteRebuild_AtomicRollback(t *testing.T) {
-	manager, err := orm.NewManager(orm.ManagerConfig{
+	manager, err := orm.NewManager(orm.Config{
 		Driver:   "sqlite",
 		Database: filepath.Join(t.TempDir(), "atomic.db"),
 	})

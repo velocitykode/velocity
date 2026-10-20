@@ -175,7 +175,7 @@ func TestFrameworkEvents_SurviveTheQueueCodec(t *testing.T) {
 			})
 		}},
 		{"orm.query.completed", reflect.TypeOf(&orm.QueryExecuted{}), func(t *testing.T, c *capturedEvents) {
-			m, err := orm.NewManager(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"})
+			m, err := orm.NewManager(orm.Config{Driver: "sqlite", Database: ":memory:"})
 			if err != nil {
 				t.Fatalf("NewManager: %v", err)
 			}

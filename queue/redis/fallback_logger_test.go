@@ -91,7 +91,7 @@ func TestRedisDriver_WithoutLoggerWarnsThroughTheFallback(t *testing.T) {
 	}
 }
 
-// A logger in QueueConfig reaches the driver the registry builds: its
+// A logger in queue.Config reaches the driver the registry builds: its
 // construction-time warnings and its later advisories.
 func TestNewQueue_HandsConfigLoggerToTheDriver(t *testing.T) {
 	mr, err := miniredis.Run()
@@ -101,7 +101,7 @@ func TestNewQueue_HandsConfigLoggerToTheDriver(t *testing.T) {
 	t.Cleanup(mr.Close)
 	logs := &redisCaptureLogger{}
 
-	d, err := queue.NewQueue(queue.QueueConfig{
+	d, err := queue.NewQueue(queue.Config{
 		Driver: "redis",
 		Redis:  queue.RedisConfig{Host: mr.Host(), Port: mr.Port(), DB: "0"},
 		Logger: logs,

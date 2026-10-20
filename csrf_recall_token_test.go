@@ -142,11 +142,11 @@ func TestCSRFToken_RememberRevivalRendersTheRotatedToken(t *testing.T) {
 			if w := jar.send(t, a.Router, http.MethodPost, "/login-remember", jar.xsrf(t)); w.Code != http.StatusOK {
 				t.Fatalf("POST /login-remember: %d %s", w.Code, w.Body.String())
 			}
-			if _, ok := jar["remember_"+a.config.Session.Name]; !ok {
+			if _, ok := jar["remember_"+a.config.Auth.Session.Name]; !ok {
 				t.Fatal("no remember cookie after a remember-me sign-in")
 			}
 			// The session ends (cookie gone); the remember cookie stays.
-			delete(jar, a.config.Session.Name)
+			delete(jar, a.config.Auth.Session.Name)
 			delete(jar, "XSRF-TOKEN")
 
 			w := jar.send(t, a.Router, http.MethodGet, "/dashboard", "")
@@ -164,7 +164,7 @@ func TestCSRFToken_RememberRevivalRendersTheRotatedToken(t *testing.T) {
 			if lines[0] != rendered {
 				t.Fatalf("XSRF-TOKEN cookie %q differs from the rendered token %q", lines[0], rendered)
 			}
-			if _, ok := jar[a.config.Session.Name]; !ok {
+			if _, ok := jar[a.config.Auth.Session.Name]; !ok {
 				t.Fatal("the revival set no session cookie")
 			}
 

@@ -12,7 +12,7 @@ import (
 
 func nullServer(t *testing.T, opts ...ServerOption) *Server {
 	t.Helper()
-	logger, _ := log.NewLogger(log.LogConfig{Driver: "null"})
+	logger, _ := log.NewLogger(log.Config{Driver: "null"})
 	return NewServer(Config{Insecure: true}, append([]ServerOption{WithLogger(logger)}, opts...)...)
 }
 

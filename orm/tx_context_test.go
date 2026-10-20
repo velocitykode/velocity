@@ -24,7 +24,7 @@ func setupTxContextTest(t *testing.T) (*Manager, func()) {
 	// Use a per-test file under t.TempDir() so every connection in the
 	// pool sees the same database; the file is wiped automatically on
 	// test cleanup.
-	m, err := NewManager(ManagerConfig{
+	m, err := NewManager(Config{
 		Driver:   "sqlite",
 		Database: filepath.Join(t.TempDir(), "txctx.db"),
 	})

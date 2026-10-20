@@ -16,7 +16,7 @@ import (
 // slow, so each line is a warning, which the fallback logger writes.
 func panickingLoggerManager(t *testing.T) *Manager {
 	t.Helper()
-	m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:", LogQueries: true, SlowThreshold: time.Nanosecond, Logger: &levelLog{}})
+	m, err := NewManager(Config{Driver: "sqlite", Database: ":memory:", LogQueries: true, SlowThreshold: time.Nanosecond, Logger: &levelLog{}})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -113,7 +113,7 @@ func (panickingObserver) ObserveStatement(drivers.StatementEvent) { panic("obser
 // through the query logger.
 func TestStatementObserver_PanickingObserverIsContained(t *testing.T) {
 	logs := &levelLog{}
-	m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:", LogQueries: true, Logger: logs})
+	m, err := NewManager(Config{Driver: "sqlite", Database: ":memory:", LogQueries: true, Logger: logs})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

@@ -60,7 +60,7 @@ func TestStatementLog_HostileSweep(t *testing.T) {
 		for _, target := range []string{"logger", "observer"} {
 			t.Run(mode.String()+"/"+target, func(t *testing.T) {
 				fallbacklogtest.Capture(t)
-				m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:", LogQueries: true})
+				m, err := NewManager(Config{Driver: "sqlite", Database: ":memory:", LogQueries: true})
 				if err != nil {
 					t.Fatalf("NewManager: %v", err)
 				}

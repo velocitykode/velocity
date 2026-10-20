@@ -16,7 +16,7 @@ import (
 // log/standard.
 func TestLeafDriverUnregisteredWithoutImport(t *testing.T) {
 	for _, name := range []string{"file", "daily", "stack"} {
-		_, err := log.Drivers().Resolve(context.Background(), name, log.LogConfig{Driver: name})
+		_, err := log.Drivers().Resolve(context.Background(), name, log.Config{Driver: name})
 		if err == nil {
 			t.Fatalf("Resolve(%q) must fail when no log leaf is imported", name)
 		}
@@ -27,7 +27,7 @@ func TestLeafDriverUnregisteredWithoutImport(t *testing.T) {
 	// The light root drivers must still resolve so zero-config apps work without
 	// importing any leaf.
 	for _, name := range []string{"console", "null"} {
-		logger, err := log.Drivers().Resolve(context.Background(), name, log.LogConfig{Driver: name})
+		logger, err := log.Drivers().Resolve(context.Background(), name, log.Config{Driver: name})
 		if err != nil {
 			t.Fatalf("Resolve(%q) must succeed from root-only imports: %v", name, err)
 		}

@@ -114,7 +114,7 @@ func TestAppLog_PassesToEveryLoggerOption(t *testing.T) {
 		{"cache.StoreConfig.Logger", func() { _ = cache.StoreConfig{Logger: log} }},
 		{"async.GoWithLogger", func() { async.GoWithLogger(log, "logger-seam", func() { close(done) }); <-done }},
 		{"queue.SetSigningLogger", func() { queue.SetSigningLogger(log) }},
-		{"queue.QueueConfig.Logger", func() { _ = queue.QueueConfig{Logger: log} }},
+		{"queue.Config.Logger", func() { _ = queue.Config{Logger: log} }},
 		{"queue.WithWorkerLogger", func() { _ = queue.WithWorkerLogger(log) }},
 		{"console.QueueWorkOptions.Logger", func() { _ = console.QueueWorkOptions{Logger: log} }},
 		{"bus.LoggingMiddleware", func() { _ = bus.LoggingMiddleware(log) }},

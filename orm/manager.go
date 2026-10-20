@@ -24,8 +24,8 @@ import (
 	"github.com/velocitykode/velocity/trace"
 )
 
-// ManagerConfig holds typed configuration for creating an ORM Manager.
-type ManagerConfig struct {
+// Config holds typed configuration for creating an ORM Manager.
+type Config struct {
 	Driver   string
 	Host     string
 	Port     string
@@ -62,8 +62,8 @@ type ManagerConfig struct {
 	Logger contract.Logger
 }
 
-// Validate checks the ManagerConfig for STRUCTURAL problems only. A zero
-// ManagerConfig (no Driver) is valid: velocity.New treats it as "no
+// Validate checks the Config for STRUCTURAL problems only. A zero
+// Config (no Driver) is valid: velocity.New treats it as "no
 // database configured" and builds no manager.
 //
 // Validate deliberately does NOT check the driver name against an allowlist.
@@ -72,7 +72,7 @@ type ManagerConfig struct {
 // driverregistry.NotFoundError that also lists the drivers that ARE
 // registered. Consulting the registry here would couple config loading to
 // import order and produce a worse error than the registry's own.
-func (c ManagerConfig) Validate() error {
+func (c Config) Validate() error {
 	if c.Driver == "" {
 		return nil
 	}
@@ -200,14 +200,14 @@ type Manager struct {
 // The driver name is resolved through the canonical driver registry; any
 // third-party driver registered via orm.Drivers().Register is available
 // alongside the built-in sqlite, postgres, and mysql backends.
-func NewManager(config ManagerConfig) (*Manager, error) {
+func NewManager(config Config) (*Manager, error) {
 	return NewManagerWithContext(context.Background(), config)
 }
 
 // NewManagerWithContext is the context-aware variant of NewManager. The
 // ctx is forwarded to the driver factory so drivers performing network
 // I/O during Connect can honour deadlines.
-func NewManagerWithContext(ctx context.Context, config ManagerConfig) (*Manager, error) {
+func NewManagerWithContext(ctx context.Context, config Config) (*Manager, error) {
 	connConfig := drivers.ConnectionConfig{
 		Driver:   config.Driver,
 		Host:     stringOrDefault(config.Host, "localhost"),
@@ -318,7 +318,7 @@ func (m *Manager) Connection(name string) (drivers.Driver, error) {
 
 // AddConnection registers a named database connection. Statements executed
 // against it dispatch through this manager's event dispatcher, and the
-// manager's logger, once it has one (ManagerConfig.Logger or SetLogger),
+// manager's logger, once it has one (Config.Logger or SetLogger),
 // becomes the driver's query logger: the driver is handed the manager's
 // forwarding logger once, and every later SetLogger reaches it through
 // that. A driver added while the manager has no logger keeps its own until
@@ -1258,7 +1258,7 @@ func flushBufferedEntry(ctx context.Context, entry events.BufferedEvent, bus eve
 // SetLogger installs a logger that receives warnings about recovered
 // transaction panics and failed rollbacks, and that every connection's
 // driver that takes one (contract.LoggerAware) writes its query log to
-// (ManagerConfig.LogQueries, ManagerConfig.SlowThreshold). Nil restores
+// (Config.LogQueries, Config.SlowThreshold). Nil restores
 // the default, the framework's standalone fallback logger, for both (it
 // drops the query log's debug lines and writes slow query warnings to
 // standard error).

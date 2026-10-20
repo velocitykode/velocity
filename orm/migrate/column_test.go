@@ -17,7 +17,7 @@ var dbIdentifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 func newTestManager(t *testing.T) *orm.Manager {
 	t.Helper()
-	manager, err := orm.NewManager(orm.ManagerConfig{
+	manager, err := orm.NewManager(orm.Config{
 		Driver:   "sqlite",
 		Database: ":memory:",
 	})
@@ -296,7 +296,7 @@ func TestColumnBuilder_ToSQL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			manager, err := orm.NewManager(orm.ManagerConfig{
+			manager, err := orm.NewManager(orm.Config{
 				Driver:   tt.driver,
 				Database: ":memory:",
 			})

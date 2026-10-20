@@ -713,7 +713,7 @@ func initPostgres(t *testing.T) *orm.Manager {
 	pass := envOr("TEST_PG_PASS", "postgres")
 	db := envOr("TEST_PG_DB", "velocity_test")
 
-	manager, err := orm.NewManager(orm.ManagerConfig{
+	manager, err := orm.NewManager(orm.Config{
 		Driver:   "postgres",
 		Host:     host,
 		Port:     port,

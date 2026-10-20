@@ -11,7 +11,7 @@ import (
 // registry the same way an application would.
 func resolveStack(t *testing.T, cfg map[string]any) (log.Logger, error) {
 	t.Helper()
-	return log.Drivers().Resolve(context.Background(), "stack", log.LogConfig{Driver: "stack", Config: cfg})
+	return log.Drivers().Resolve(context.Background(), "stack", log.Config{Driver: "stack", Config: cfg})
 }
 
 // TestStackLeaf_ChannelsAnySlice verifies the leaf accepts a []any list

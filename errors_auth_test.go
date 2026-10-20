@@ -407,9 +407,9 @@ func TestAuthErrorRules_InertiaIntendedURLSurvivesCookieSession(t *testing.T) {
 		Env:   "testing",
 		Port:  "0",
 		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
-		Log:   log.LogConfig{Driver: "null", Config: make(map[string]any)},
-		Queue: queue.QueueConfig{Driver: "memory"},
-		Mail:  mail.MailConfig{Driver: "log"},
+		Log:   log.Config{Driver: "null", Config: make(map[string]any)},
+		Queue: queue.Config{Driver: "memory"},
+		Mail:  mail.Config{Driver: "log"},
 		View:  view.Config{RootTemplate: inertiaTestTemplate, Version: "v1"},
 	}))
 	if err != nil {

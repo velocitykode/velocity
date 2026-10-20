@@ -29,7 +29,7 @@ func init() {
 
 func newExampleTestManager(t *testing.T) *orm.Manager {
 	t.Helper()
-	manager, err := orm.NewManager(orm.ManagerConfig{
+	manager, err := orm.NewManager(orm.Config{
 		Driver:   "sqlite",
 		Database: ":memory:",
 	})

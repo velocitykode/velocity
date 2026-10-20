@@ -13,22 +13,22 @@ import (
 func TestCrossDatabaseMigrations(t *testing.T) {
 	drivers := []struct {
 		name   string
-		config orm.ManagerConfig
+		config orm.Config
 		skip   bool
 	}{
 		{
 			name:   "sqlite",
-			config: orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"},
+			config: orm.Config{Driver: "sqlite", Database: ":memory:"},
 			skip:   false,
 		},
 		{
 			name:   "mysql",
-			config: orm.ManagerConfig{Driver: "mysql", Database: "velocity_test"},
+			config: orm.Config{Driver: "mysql", Database: "velocity_test"},
 			skip:   true, // Skip if MySQL not available
 		},
 		{
 			name:   "postgres",
-			config: orm.ManagerConfig{Driver: "postgres", Database: "velocity_test"},
+			config: orm.Config{Driver: "postgres", Database: "velocity_test"},
 			skip:   true, // Skip if Postgres not available
 		},
 	}
@@ -75,22 +75,22 @@ func TestCrossDatabaseMigrations(t *testing.T) {
 func TestCrossDatabaseFactories(t *testing.T) {
 	drivers := []struct {
 		name   string
-		config orm.ManagerConfig
+		config orm.Config
 		skip   bool
 	}{
 		{
 			name:   "sqlite",
-			config: orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"},
+			config: orm.Config{Driver: "sqlite", Database: ":memory:"},
 			skip:   false,
 		},
 		{
 			name:   "mysql",
-			config: orm.ManagerConfig{Driver: "mysql", Database: "velocity_test"},
+			config: orm.Config{Driver: "mysql", Database: "velocity_test"},
 			skip:   true,
 		},
 		{
 			name:   "postgres",
-			config: orm.ManagerConfig{Driver: "postgres", Database: "velocity_test"},
+			config: orm.Config{Driver: "postgres", Database: "velocity_test"},
 			skip:   true,
 		},
 	}
@@ -142,22 +142,22 @@ func TestCrossDatabaseFactories(t *testing.T) {
 func TestCrossDatabaseRefresh(t *testing.T) {
 	drivers := []struct {
 		name   string
-		config orm.ManagerConfig
+		config orm.Config
 		skip   bool
 	}{
 		{
 			name:   "sqlite",
-			config: orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"},
+			config: orm.Config{Driver: "sqlite", Database: ":memory:"},
 			skip:   false,
 		},
 		{
 			name:   "mysql",
-			config: orm.ManagerConfig{Driver: "mysql", Database: "velocity_test"},
+			config: orm.Config{Driver: "mysql", Database: "velocity_test"},
 			skip:   true,
 		},
 		{
 			name:   "postgres",
-			config: orm.ManagerConfig{Driver: "postgres", Database: "velocity_test"},
+			config: orm.Config{Driver: "postgres", Database: "velocity_test"},
 			skip:   true,
 		},
 	}
@@ -211,22 +211,22 @@ func TestCrossDatabaseRefresh(t *testing.T) {
 func TestCrossDatabasePlaceholders(t *testing.T) {
 	drivers := []struct {
 		name   string
-		config orm.ManagerConfig
+		config orm.Config
 		skip   bool
 	}{
 		{
 			name:   "sqlite",
-			config: orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"},
+			config: orm.Config{Driver: "sqlite", Database: ":memory:"},
 			skip:   false,
 		},
 		{
 			name:   "mysql",
-			config: orm.ManagerConfig{Driver: "mysql", Database: "velocity_test"},
+			config: orm.Config{Driver: "mysql", Database: "velocity_test"},
 			skip:   true,
 		},
 		{
 			name:   "postgres",
-			config: orm.ManagerConfig{Driver: "postgres", Database: "velocity_test"},
+			config: orm.Config{Driver: "postgres", Database: "velocity_test"},
 			skip:   true,
 		},
 	}

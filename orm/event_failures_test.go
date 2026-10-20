@@ -240,7 +240,7 @@ func (l *countingLogger) With(kvs ...any) contract.Logger { return contract.Bind
 // one query line whether its event was delivered or dropped, and every
 // dropped event is recorded once, with one policy line for the event name.
 func TestQueryEventPump_DropsComposeWithTheStatementLog(t *testing.T) {
-	m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:", LogQueries: true})
+	m, err := NewManager(Config{Driver: "sqlite", Database: ":memory:", LogQueries: true})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

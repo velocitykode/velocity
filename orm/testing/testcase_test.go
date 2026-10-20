@@ -50,7 +50,7 @@ func TestMain(m *testing.M) {
 
 	// Use in-memory SQLite for tests
 	var err error
-	testManager, err = orm.NewManager(orm.ManagerConfig{
+	testManager, err = orm.NewManager(orm.Config{
 		Driver:   "sqlite",
 		Database: ":memory:",
 	})

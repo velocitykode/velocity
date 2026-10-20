@@ -51,7 +51,7 @@ type Config struct {
 	Timezone string // APP_TIMEZONE, default "UTC"
 
 	// Database. A zero Driver means no database.
-	DB orm.ManagerConfig
+	DB orm.Config
 
 	// Auth
 	Auth auth.Config
@@ -60,19 +60,16 @@ type Config struct {
 	Cache cache.Config
 
 	// Log
-	Log log.LogConfig
+	Log log.Config
 
 	// Queue
-	Queue queue.QueueConfig
+	Queue queue.Config
 
 	// Storage
 	Storage storage.Config
 
 	// CSRF
 	CSRF csrf.Config
-
-	// Session
-	Session auth.SessionConfig
 
 	sessionSameSiteRaw string
 
@@ -87,7 +84,7 @@ type Config struct {
 	Crypto crypto.Config
 
 	// Mail
-	Mail mail.MailConfig
+	Mail mail.Config
 
 	// Maintenance configures the maintenance gate and the down/up
 	// commands. New passes it to App.Middleware as m.Maintenance(), with
@@ -305,7 +302,7 @@ func ConfigFromEnv() Config {
 
 	// Database
 	dbConnection := os.Getenv("DB_CONNECTION")
-	config.DB = orm.ManagerConfig{
+	config.DB = orm.Config{
 		Driver:          dbConnection,
 		Host:            envOrDefault("DB_HOST", "127.0.0.1"),
 		Port:            envOrDefault("DB_PORT", defaultPortForDriver(dbConnection)),
@@ -326,7 +323,7 @@ func ConfigFromEnv() Config {
 	sessionSameSiteRaw := os.Getenv("SESSION_SAME_SITE")
 
 	// Session
-	config.Session = auth.SessionConfig{
+	sessionCfg := auth.SessionConfig{
 		Name:         envOrDefault("SESSION_NAME", "velocity_session"),
 		IdleLifetime: envIntOrDefault("SESSION_IDLE_LIFETIME", 120),
 		// Idle timeout in minutes: each request slides it, a session idle
@@ -356,6 +353,7 @@ func ConfigFromEnv() Config {
 		Schemes:        make(map[string]auth.SchemeConfig),
 		BcryptCost:     envIntOrDefault("HASH_BCRYPT_COST", 10),
 		TrustedProxies: splitTrustedProxies(os.Getenv("AUTH_TRUSTED_PROXIES")),
+		Session:        sessionCfg,
 		// AUTH_ATTEMPT_FLOOR is the wall-clock floor for scheme Attempt
 		// (H-09); zero falls back to auth.DefaultAttemptFloor (200ms).
 		// Operators with high bcrypt cost (12+) should raise this so
@@ -383,7 +381,7 @@ func ConfigFromEnv() Config {
 		config.Auth.Schemes["web"] = auth.SchemeConfig{
 			Driver: "session",
 			Options: map[string]interface{}{
-				"session": config.Session,
+				"session": config.Auth.Session,
 			},
 		}
 		config.Auth.Schemes["session"] = config.Auth.Schemes["web"]
@@ -417,7 +415,7 @@ func ConfigFromEnv() Config {
 	csrfCfg := csrf.DefaultConfig()
 	csrfCfg.HeaderName = envOrDefault("CSRF_HEADER", csrfCfg.HeaderName)
 	csrfCfg.FormField = envOrDefault("CSRF_FORM_FIELD", csrfCfg.FormField)
-	csrfCfg.SessionCookieName = envOrDefault("CSRF_SESSION_COOKIE", config.Session.Name)
+	csrfCfg.SessionCookieName = envOrDefault("CSRF_SESSION_COOKIE", config.Auth.Session.Name)
 	csrfCfg.SingleUse = os.Getenv("CSRF_SINGLE_USE") == "true"
 	csrfCfg.ErrorMessage = envOrDefault("CSRF_ERROR_MESSAGE", csrfCfg.ErrorMessage)
 	csrfCfg.WriteXSRFCookie = envOrDefault("CSRF_WRITE_XSRF_COOKIE", "true") == "true"
@@ -442,7 +440,7 @@ func ConfigFromEnv() Config {
 	})
 
 	// Log
-	config.Log = log.LogConfig{
+	config.Log = log.Config{
 		Driver: envOrDefault("LOG_DRIVER", "console"),
 		Config: make(map[string]any),
 	}
@@ -486,7 +484,7 @@ func ConfigFromEnv() Config {
 	}
 
 	// Queue
-	config.Queue = queue.QueueConfig{
+	config.Queue = queue.Config{
 		Driver: envOrDefault("QUEUE_DRIVER", "memory"),
 		Redis: queue.RedisConfig{
 			Host:     envOrDefault("QUEUE_REDIS_HOST", "localhost"),
@@ -528,7 +526,7 @@ func ConfigFromEnv() Config {
 	}
 
 	// Mail
-	config.Mail = mail.MailConfig{
+	config.Mail = mail.Config{
 		Driver:            envOrDefault("MAIL_DRIVER", "log"),
 		FromAddress:       os.Getenv("MAIL_FROM_ADDRESS"),
 		FromName:          os.Getenv("MAIL_FROM_NAME"),
@@ -826,13 +824,13 @@ func (c Config) Validate() error {
 	if _, err := parseSameSiteStrict("SESSION_SAME_SITE", c.sessionSameSiteRaw); err != nil {
 		return err
 	}
-	if err := c.Session.ValidateLifetimes(); err != nil {
+	if err := c.Auth.Session.ValidateLifetimes(); err != nil {
 		return errchain.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
-	switch c.Session.Store {
+	switch c.Auth.Session.Store {
 	case "", auth.SessionStoreCookie, auth.SessionStoreServer:
 	default:
-		return errchain.Errorf("%w: SESSION_STORE=%q is not one of %q, %q", ErrInvalidConfig, c.Session.Store, auth.SessionStoreCookie, auth.SessionStoreServer)
+		return errchain.Errorf("%w: SESSION_STORE=%q is not one of %q, %q", ErrInvalidConfig, c.Auth.Session.Store, auth.SessionStoreCookie, auth.SessionStoreServer)
 	}
 	if err := c.DB.Validate(); err != nil {
 		return errchain.Errorf("%w: %v", ErrInvalidConfig, err)
@@ -843,7 +841,7 @@ func (c Config) Validate() error {
 	if err := c.Storage.Validate(); err != nil {
 		return errchain.Errorf("%w: %v", ErrInvalidConfig, err)
 	}
-	// Queue is not validated here: queue.QueueConfig.Validate checks the
+	// Queue is not validated here: queue.Config.Validate checks the
 	// *sql.DB that New wires in later, and NewQueue runs it then.
 	// View validation runs at the root level so a bad view config fails
 	// here whether or not New builds the engine (see buildsViewEngine):

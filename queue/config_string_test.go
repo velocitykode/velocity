@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-// QueueConfig's String, and %v / %+v / Sprint through it, never carry the
+// Config's String, and %v / %+v / Sprint through it, never carry the
 // signing key or the Redis password.
 func TestQueueConfigString_RedactsSecrets(t *testing.T) {
 	const signingKey, password = "signing-key-secret", "redis-password-secret"
-	cfg := QueueConfig{
+	cfg := Config{
 		Driver:     "redis",
 		Redis:      RedisConfig{Host: "queue.internal", Port: "6390", Password: password, DB: "2"},
 		SigningKey: signingKey,
@@ -33,7 +33,7 @@ func TestQueueConfigString_RedactsSecrets(t *testing.T) {
 
 // An empty signing key prints empty rather than [REDACTED].
 func TestQueueConfigString_EmptySigningKey(t *testing.T) {
-	out := QueueConfig{Driver: "memory"}.String()
+	out := Config{Driver: "memory"}.String()
 	if !strings.Contains(out, "SigningKey:,") {
 		t.Fatalf("String = %q, want an empty SigningKey", out)
 	}

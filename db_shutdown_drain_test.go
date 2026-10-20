@@ -16,7 +16,7 @@ import (
 // closed.
 func TestAppShutdown_ReportsAnUnfinishedQueryEventDrain(t *testing.T) {
 	a, _ := newLoggerWiringApp(t, func(c *Config) {
-		c.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}
+		c.DB = orm.Config{Driver: "sqlite", Database: ":memory:"}
 	})
 	gate := make(chan struct{})
 	var once, first sync.Once

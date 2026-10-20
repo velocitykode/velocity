@@ -25,7 +25,7 @@ func TestConfigFromEnv_UnsetAppEnvStaysEmptyAndFailsClosed(t *testing.T) {
 }
 
 // TestConfigFromEnv_DBTimezoneAndAppTimezone pins the two timezone knobs:
-// DB_TIMEZONE flows to orm.ManagerConfig.TimeZone (database SESSION timezone only),
+// DB_TIMEZONE flows to orm.Config.TimeZone (database SESSION timezone only),
 // APP_TIMEZONE flows to Config.Timezone (presentation) and defaults to UTC.
 func TestConfigFromEnv_DBTimezoneAndAppTimezone(t *testing.T) {
 	t.Setenv("DB_TIMEZONE", "Asia/Karachi")

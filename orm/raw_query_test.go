@@ -42,11 +42,11 @@ func (env *rawQueryTestEnv) newRawQueryPartial(sql string, args ...any) *RawQuer
 }
 
 func setupRawQueryTestDB(t *testing.T, driverName string) (*rawQueryTestEnv, func()) {
-	var config ManagerConfig
+	var config Config
 
 	switch driverName {
 	case "sqlite":
-		config = ManagerConfig{
+		config = Config{
 			Driver:   "sqlite",
 			Database: ":memory:",
 		}
@@ -72,7 +72,7 @@ func setupRawQueryTestDB(t *testing.T, driverName string) (*rawQueryTestEnv, fun
 			password = ""
 		}
 
-		config = ManagerConfig{
+		config = Config{
 			Driver:   "postgres",
 			Host:     host,
 			Port:     port,

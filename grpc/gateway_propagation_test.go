@@ -148,7 +148,7 @@ func startEchoRig(t *testing.T) *echoRig {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	quiet, _ := log.NewLogger(log.LogConfig{Driver: "null"})
+	quiet, _ := log.NewLogger(log.Config{Driver: "null"})
 	rig := &echoRig{addr: lis.Addr().String(), echo: &echoServer{}, logs: &requestLog{}, events: &grpcEventLog{}}
 	s := NewServer(Config{}, WithListener(lis), WithLogger(quiet), WithEnvironment("testing"), WithCallOptions(
 		interceptors.WithRequestLine(),
@@ -177,7 +177,7 @@ func startEchoRig(t *testing.T) *echoRig {
 // Gateway.Use.
 func buildEchoGateway(t *testing.T, rig *echoRig, middleware ...func(http.Handler) http.Handler) http.Handler {
 	t.Helper()
-	quiet, _ := log.NewLogger(log.LogConfig{Driver: "null"})
+	quiet, _ := log.NewLogger(log.Config{Driver: "null"})
 	g := NewGateway(Config{},
 		GatewayWithGRPCEndpoint(rig.addr),
 		GatewayWithInsecure(),

@@ -309,7 +309,7 @@ func TestAddGlobalScope_Concurrent(t *testing.T) {
 	// In-memory sqlite gives each connection its own database, so
 	// pin the pool to a single connection for this test (same pattern
 	// the drivers/context_test.go cases use).
-	manager, err := NewManager(ManagerConfig{
+	manager, err := NewManager(Config{
 		Driver: "sqlite", Database: ":memory:", MaxOpenConns: 1,
 	})
 	if err != nil {

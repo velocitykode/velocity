@@ -144,9 +144,9 @@ func shutdownApp(t *testing.T, a *App) {
 func TestRebind_ORMDefaultFollowsDB(t *testing.T) {
 	var next *orm.Manager
 	cfg := testAppConfig()
-	cfg.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}
+	cfg.DB = orm.Config{Driver: "sqlite", Database: ":memory:"}
 	a, err := New(WithConfig(cfg), WithModules(swapIn(func(s *app.Services) {
-		m, err := initDB(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}, s.Log)
+		m, err := initDB(orm.Config{Driver: "sqlite", Database: ":memory:"}, s.Log)
 		if err != nil {
 			t.Fatalf("initDB: %v", err)
 		}
@@ -305,14 +305,14 @@ func TestLoginThrottler_StoreSwapWhileCounting(t *testing.T) {
 func dbChannelApp(t *testing.T, fn func(s *app.Services)) (*App, error) {
 	t.Helper()
 	cfg := testAppConfig()
-	cfg.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}
+	cfg.DB = orm.Config{Driver: "sqlite", Database: ":memory:"}
 	return New(WithConfig(cfg), WithModules(swapIn(fn)))
 }
 
 func TestRebind_NotificationDatabaseChannelFollowsDB(t *testing.T) {
 	var next *orm.Manager
 	a, err := dbChannelApp(t, func(s *app.Services) {
-		m, err := initDB(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}, s.Log)
+		m, err := initDB(orm.Config{Driver: "sqlite", Database: ":memory:"}, s.Log)
 		if err != nil {
 			t.Fatalf("initDB: %v", err)
 		}
@@ -344,7 +344,7 @@ func TestRebind_NotificationDatabaseChannelAModuleSetIsKept(t *testing.T) {
 			t.Fatalf("Channel: %v", err)
 		}
 		ch.(notificationDBChannel).SetDB(own, "sqlite")
-		m, err := initDB(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}, s.Log)
+		m, err := initDB(orm.Config{Driver: "sqlite", Database: ":memory:"}, s.Log)
 		if err != nil {
 			t.Fatalf("initDB: %v", err)
 		}

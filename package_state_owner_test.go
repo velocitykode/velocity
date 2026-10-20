@@ -162,7 +162,7 @@ func TestPackageState_FailedNewRestoresTheLiveOwner(t *testing.T) {
 	before := len(packageStack)
 	packageStateMu.Unlock()
 
-	cfg := Config{Env: "testing", Port: "0", Cache: cache.SingleStoreConfig("", cache.StoreConfig{Driver: "memory"}), Queue: queue.QueueConfig{Driver: "memory"}}
+	cfg := Config{Env: "testing", Port: "0", Cache: cache.SingleStoreConfig("", cache.StoreConfig{Driver: "memory"}), Queue: queue.Config{Driver: "memory"}}
 	if _, err := New(WithConfig(cfg), WithModules(failingInitModule{})); !errors.Is(err, errOwnerInitFailed) {
 		t.Fatalf("New = %v, want the module's Init error", err)
 	}
@@ -283,8 +283,8 @@ func TestShutdown_LateWriteThroughTheOldPackageLoggerDoesNotReopenTheLogFile(t *
 		Env:   "testing",
 		Port:  "0",
 		Cache: cache.SingleStoreConfig("", cache.StoreConfig{Driver: "memory"}),
-		Queue: queue.QueueConfig{Driver: "memory"},
-		Log:   log.LogConfig{Driver: "file", Config: map[string]any{"path": dir, "days": 0}},
+		Queue: queue.Config{Driver: "memory"},
+		Log:   log.Config{Driver: "file", Config: map[string]any{"path": dir, "days": 0}},
 	}
 	a, err := New(WithConfig(cfg))
 	if err != nil {

@@ -73,7 +73,7 @@ func TestLogin_RetiresThePreviousSessionAndItsToken(t *testing.T) {
 				records = session.NewMemoryStore()
 			}
 			a := retirementInstance(t, tt.store, records, false)
-			name := a.config.Session.Name
+			name := a.config.Auth.Session.Name
 
 			jar := csrfBagJar{}
 			jar.send(t, a.Router, http.MethodGet, "/form", "")
@@ -151,7 +151,7 @@ func TestCSRFToken_ConsumedTokenNeverReturnsThroughRenewal(t *testing.T) {
 	t.Cleanup(restore)
 
 	a := retirementInstance(t, "cookie", nil, true)
-	name := a.config.Session.Name
+	name := a.config.Auth.Session.Name
 	jar := csrfBagJar{}
 	jar.send(t, a.Router, http.MethodGet, "/form", "")
 	tok := jar.send(t, a.Router, http.MethodGet, "/token", "").Body.String()

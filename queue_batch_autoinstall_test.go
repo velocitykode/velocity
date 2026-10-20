@@ -37,16 +37,16 @@ func TestQueueBatch_AutoInstallsDatabaseRepository(t *testing.T) {
 		Debug: true,
 		Port:  "0",
 		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
-		Log: log.LogConfig{
+		Log: log.Config{
 			Driver: "console",
 			Config: make(map[string]any),
 		},
-		Queue: queue.QueueConfig{Driver: "database"},
-		DB: orm.ManagerConfig{
+		Queue: queue.Config{Driver: "database"},
+		DB: orm.Config{
 			Driver:   "sqlite",
 			Database: ":memory:",
 		},
-		Mail: mail.MailConfig{Driver: "log"},
+		Mail: mail.Config{Driver: "log"},
 	}
 
 	app, err := New(WithConfig(cfg))
@@ -84,16 +84,16 @@ func TestQueueBatch_AutoInstall_PreservesCustomRepo(t *testing.T) {
 		Debug: true,
 		Port:  "0",
 		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
-		Log: log.LogConfig{
+		Log: log.Config{
 			Driver: "console",
 			Config: make(map[string]any),
 		},
-		Queue: queue.QueueConfig{Driver: "database"},
-		DB: orm.ManagerConfig{
+		Queue: queue.Config{Driver: "database"},
+		DB: orm.Config{
 			Driver:   "sqlite",
 			Database: ":memory:",
 		},
-		Mail: mail.MailConfig{Driver: "log"},
+		Mail: mail.Config{Driver: "log"},
 	}
 
 	app, err := New(WithConfig(cfg))
@@ -123,12 +123,12 @@ func TestQueueBatch_AutoInstall_MemoryDriverLeavesDefault(t *testing.T) {
 		Debug: true,
 		Port:  "0",
 		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
-		Log: log.LogConfig{
+		Log: log.Config{
 			Driver: "console",
 			Config: make(map[string]any),
 		},
-		Queue: queue.QueueConfig{Driver: "memory"},
-		Mail:  mail.MailConfig{Driver: "log"},
+		Queue: queue.Config{Driver: "memory"},
+		Mail:  mail.Config{Driver: "log"},
 	}
 
 	app, err := New(WithConfig(cfg))
@@ -170,16 +170,16 @@ func TestQueueBatch_AutoInstall_TwoCycle(t *testing.T) {
 			Debug: true,
 			Port:  "0",
 			Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
-			Log: log.LogConfig{
+			Log: log.Config{
 				Driver: "console",
 				Config: make(map[string]any),
 			},
-			Queue: queue.QueueConfig{Driver: "database"},
-			DB: orm.ManagerConfig{
+			Queue: queue.Config{Driver: "database"},
+			DB: orm.Config{
 				Driver:   "sqlite",
 				Database: ":memory:",
 			},
-			Mail: mail.MailConfig{Driver: "log"},
+			Mail: mail.Config{Driver: "log"},
 		}
 	}
 

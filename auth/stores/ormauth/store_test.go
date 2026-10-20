@@ -38,7 +38,7 @@ const usersSchema = `CREATE TABLE users (
 func newManager(t *testing.T) *orm.Manager {
 	t.Helper()
 
-	m, err := orm.NewManager(orm.ManagerConfig{
+	m, err := orm.NewManager(orm.Config{
 		Driver:   "sqlite",
 		Database: filepath.Join(t.TempDir(), "ormauth.db"),
 	})

@@ -42,7 +42,7 @@ var sideSinkLines = map[string]string{
 // authenticate a payload (crypto Debug on), a Unique rule queries a missing table, a
 // route is registered after the router started serving, and the Redis
 // cache store connects without TLS to a host it cannot tell is loopback.
-func driveSideSinkLines(t *testing.T, logCfg log.LogConfig) {
+func driveSideSinkLines(t *testing.T, logCfg log.Config) {
 	t.Helper()
 	mr := miniredis.RunT(t)
 
@@ -50,12 +50,12 @@ func driveSideSinkLines(t *testing.T, logCfg log.LogConfig) {
 		Env:  "testing",
 		Port: "0",
 		Log:  logCfg,
-		DB:   orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"},
+		DB:   orm.Config{Driver: "sqlite", Database: ":memory:"},
 		// "localhost." reaches the loopback miniredis, but the store does
 		// not resolve names, so it warns as for a remote host.
 		Cache:  cache.SingleStoreConfig("sinks", cache.StoreConfig{Driver: "redis", Host: "localhost.", Port: mr.Server().Addr().Port}),
-		Queue:  queue.QueueConfig{Driver: "memory"},
-		Mail:   mail.MailConfig{Driver: "log"},
+		Queue:  queue.Config{Driver: "memory"},
+		Mail:   mail.Config{Driver: "log"},
 		Crypto: crypto.Config{Key: "0123456789abcdef0123456789abcdef", Cipher: "AES-256-GCM", Debug: true},
 	}))
 	if err != nil {
@@ -96,7 +96,7 @@ func driveSideSinkLines(t *testing.T, logCfg log.LogConfig) {
 // file driver's format.
 func TestLogFileDriver_FrameworkLinesLandInTheLogFile(t *testing.T) {
 	dir := t.TempDir()
-	driveSideSinkLines(t, log.LogConfig{Driver: "file", Config: map[string]any{"path": dir, "level": "debug"}})
+	driveSideSinkLines(t, log.Config{Driver: "file", Config: map[string]any{"path": dir, "level": "debug"}})
 
 	files, err := filepath.Glob(filepath.Join(dir, "velocity-*.log"))
 	if err != nil || len(files) != 1 {
@@ -151,7 +151,7 @@ func TestLogNullDriver_FrameworkLinesReachNoStandardStream(t *testing.T) {
 	fallback := fallbacklogtest.Capture(t)
 	streams := captureStdStreams(t)
 
-	driveSideSinkLines(t, log.LogConfig{Driver: "null", Config: map[string]any{}})
+	driveSideSinkLines(t, log.Config{Driver: "null", Config: map[string]any{}})
 
 	written := streams() + stdlib.String() + fallback.String()
 	// Fragments each line has carried in every wording it has had.

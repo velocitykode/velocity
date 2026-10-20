@@ -520,7 +520,7 @@ var ownedClosedAtShutdown = [ownedFieldCount]bool{
 // a database, an APP_KEY and a view engine.
 func conformanceSwapConfig() Config {
 	cfg := testAppConfig()
-	cfg.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}
+	cfg.DB = orm.Config{Driver: "sqlite", Database: ":memory:"}
 	cfg.Crypto.Key = strings.Repeat("k", 32)
 	cfg.Key = strings.Repeat("k", 32)
 	cfg.View = view.Config{RootTemplate: inertiaTestTemplate, Version: "v1"}

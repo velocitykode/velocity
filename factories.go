@@ -60,7 +60,7 @@ func initStorage(config storage.Config, logger contract.Logger) *storage.Manager
 //
 // Misconfigured schemes are skipped with a warning so the app can still start -
 // only the broken scheme is unavailable at runtime.
-func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger contract.Logger, enc crypto.Encryptor, sessionOpts ...schemes.SessionSchemeOption) *auth.Manager {
+func initAuth(authCfg auth.Config, logger contract.Logger, enc crypto.Encryptor, sessionOpts ...schemes.SessionSchemeOption) *auth.Manager {
 	manager := auth.NewManager()
 
 	// Route auth diagnostics (authentication/authorization denials, hasher
@@ -109,7 +109,7 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger contract.L
 	for name, schemeCfg := range authCfg.Schemes {
 		switch schemeCfg.Driver {
 		case "session":
-			scheme, err := schemes.NewSessionScheme(userStore, sessCfg, enc, sessionOpts...)
+			scheme, err := schemes.NewSessionScheme(userStore, authCfg.Session, enc, sessionOpts...)
 			if err != nil {
 				if logger != nil {
 					logger.Warn("Failed to create session scheme", "scheme", name, "error", err)
@@ -168,7 +168,7 @@ func initAuth(authCfg auth.Config, sessCfg auth.SessionConfig, logger contract.L
 // initDB creates the ORM manager from config, writing through logger from
 // the first statement its driver runs. Returns nil if no connection is
 // configured.
-func initDB(config orm.ManagerConfig, logger contract.Logger) (*orm.Manager, error) {
+func initDB(config orm.Config, logger contract.Logger) (*orm.Manager, error) {
 	if config.Driver == "" {
 		return nil, nil
 	}
@@ -184,7 +184,7 @@ func initDB(config orm.ManagerConfig, logger contract.Logger) (*orm.Manager, err
 // DB for the database driver prevents the requested driver from starting,
 // so boot fails loudly rather than silently downgrading to the in-memory
 // driver.
-func initQueue(config queue.QueueConfig, db *sql.DB, dbDriver string, appKey string, appEnv string, encryptor contract.Encryptor, logger contract.Logger) (_ queue.Driver, err error) {
+func initQueue(config queue.Config, db *sql.DB, dbDriver string, appKey string, appEnv string, encryptor contract.Encryptor, logger contract.Logger) (_ queue.Driver, err error) {
 	// Route queue-signing diagnostics through the framework logger before
 	// configuring so missing/APP_KEY fallbacks are surfaced consistently.
 	queue.SetSigningLogger(logger)

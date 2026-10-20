@@ -97,7 +97,7 @@ func TestTableBuilder_SoftDeletes_SQL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			manager, err := orm.NewManager(orm.ManagerConfig{
+			manager, err := orm.NewManager(orm.Config{
 				Driver:   tt.driver,
 				Database: ":memory:",
 			})
@@ -158,7 +158,7 @@ func TestTableBuilder_TimestampsResetsLastColumn(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			manager, err := orm.NewManager(orm.ManagerConfig{
+			manager, err := orm.NewManager(orm.Config{
 				Driver:   "sqlite",
 				Database: ":memory:",
 			})
@@ -599,7 +599,7 @@ func TestTableBuilder_JSON_SQL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			manager, err := orm.NewManager(orm.ManagerConfig{
+			manager, err := orm.NewManager(orm.Config{
 				Driver:   tt.driver,
 				Database: ":memory:",
 			})
@@ -727,7 +727,7 @@ func TestTableBuilder_Decimal_SQL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			manager, err := orm.NewManager(orm.ManagerConfig{
+			manager, err := orm.NewManager(orm.Config{
 				Driver:   tt.driver,
 				Database: ":memory:",
 			})

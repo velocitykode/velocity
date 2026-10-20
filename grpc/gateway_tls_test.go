@@ -63,7 +63,7 @@ func writeSelfSignedCertAndKey(t *testing.T, certPath, keyPath string) {
 // emitted by the non-production fallback does not pollute test output.
 func nullLogger(t *testing.T) log.Logger {
 	t.Helper()
-	l, err := log.NewLogger(log.LogConfig{Driver: "null"})
+	l, err := log.NewLogger(log.Config{Driver: "null"})
 	if err != nil {
 		t.Fatalf("null logger: %v", err)
 	}

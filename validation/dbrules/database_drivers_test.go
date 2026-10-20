@@ -117,7 +117,7 @@ func buildExistsSQL(driver, table, column string) string {
 // behaviour which is not testable without CGO.
 func newSQLiteOrm(t *testing.T) orm.Database {
 	t.Helper()
-	m, err := orm.NewManager(orm.ManagerConfig{
+	m, err := orm.NewManager(orm.Config{
 		Driver:   "sqlite",
 		Database: ":memory:",
 	})

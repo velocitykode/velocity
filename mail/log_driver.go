@@ -14,7 +14,7 @@ import (
 // The log driver registers from the mail root so MAIL_DRIVER=log works with
 // only package mail imported.
 func init() {
-	Drivers().Register("log", func(_ context.Context, cfg MailConfig) (Mailer, error) {
+	Drivers().Register("log", func(_ context.Context, cfg Config) (Mailer, error) {
 		return NewLogDriver(), nil
 	})
 }

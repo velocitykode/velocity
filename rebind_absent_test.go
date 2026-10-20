@@ -112,7 +112,7 @@ func TestRebind_NotificationDatabaseChannelAModuleSetIsKeptWhenADatabaseArrivesL
 			t.Fatalf("Channel: %v", err)
 		}
 		ch.(notificationDBChannel).SetDB(own, "sqlite")
-		m, err := initDB(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}, s.Log)
+		m, err := initDB(orm.Config{Driver: "sqlite", Database: ":memory:"}, s.Log)
 		if err != nil {
 			t.Fatalf("initDB: %v", err)
 		}
@@ -133,7 +133,7 @@ func TestRebind_ORMDefaultInstalledWhenADatabaseArrivesLate(t *testing.T) {
 	}
 	var next *orm.Manager
 	a, err := NewTestApp(WithModules(swapIn(func(s *app.Services) {
-		m, err := initDB(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}, s.Log)
+		m, err := initDB(orm.Config{Driver: "sqlite", Database: ":memory:"}, s.Log)
 		if err != nil {
 			t.Fatalf("initDB: %v", err)
 		}
@@ -152,7 +152,7 @@ func TestRebind_ORMDefaultInstalledWhenADatabaseArrivesLate(t *testing.T) {
 // A default the module installed itself is kept when its database arrives
 // late.
 func TestRebind_ORMDefaultAModuleSetIsKeptWhenADatabaseArrivesLate(t *testing.T) {
-	own, err := initDB(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}, nil)
+	own, err := initDB(orm.Config{Driver: "sqlite", Database: ":memory:"}, nil)
 	if err != nil {
 		t.Fatalf("initDB: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestRebind_ORMDefaultAModuleSetIsKeptWhenADatabaseArrivesLate(t *testing.T)
 		orm.ResetDefault()
 	})
 	a, err := NewTestApp(WithModules(swapIn(func(s *app.Services) {
-		m, err := initDB(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}, s.Log)
+		m, err := initDB(orm.Config{Driver: "sqlite", Database: ":memory:"}, s.Log)
 		if err != nil {
 			t.Fatalf("initDB: %v", err)
 		}
@@ -182,7 +182,7 @@ func TestRebind_ORMDefaultAModuleSetIsKeptWhenADatabaseArrivesLate(t *testing.T)
 func TestRebind_NotificationDatabaseChannelBoundWhenADatabaseArrivesLate(t *testing.T) {
 	var next *orm.Manager
 	a, err := NewTestApp(WithModules(swapIn(func(s *app.Services) {
-		m, err := initDB(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}, s.Log)
+		m, err := initDB(orm.Config{Driver: "sqlite", Database: ":memory:"}, s.Log)
 		if err != nil {
 			t.Fatalf("initDB: %v", err)
 		}

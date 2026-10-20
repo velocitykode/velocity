@@ -44,9 +44,9 @@ func newInertiaTestApp(t *testing.T, errorPage string, debug, withBond bool) (*A
 		Debug: debug,
 		Port:  "0",
 		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
-		Log:   log.LogConfig{Driver: "null", Config: make(map[string]any)},
-		Queue: queue.QueueConfig{Driver: "memory"},
-		Mail:  mail.MailConfig{Driver: "log"},
+		Log:   log.Config{Driver: "null", Config: make(map[string]any)},
+		Queue: queue.Config{Driver: "memory"},
+		Mail:  mail.Config{Driver: "log"},
 		View:  view.Config{RootTemplate: inertiaTestTemplate, Version: "v1", ErrorPage: errorPage},
 	}))
 	if err != nil {

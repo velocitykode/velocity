@@ -39,7 +39,7 @@ func init() {
 
 func newMigrateTestManager(t *testing.T) *orm.Manager {
 	t.Helper()
-	mgr, err := orm.NewManager(orm.ManagerConfig{
+	mgr, err := orm.NewManager(orm.Config{
 		Driver:   "sqlite",
 		Database: ":memory:",
 	})

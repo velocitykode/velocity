@@ -8,11 +8,11 @@ import (
 )
 
 // TestNewManager_ForwardsTimeZone pins the DB_TIMEZONE plumbing: the
-// session-timezone knob must survive ManagerConfig -> ConnectionConfig so
+// session-timezone knob must survive Config -> ConnectionConfig so
 // the postgres/mysql DSN builders can emit it. SQLite ignores it, which
 // makes it safe to assert on a real in-memory connection.
 func TestNewManager_ForwardsTimeZone(t *testing.T) {
-	m, err := NewManager(ManagerConfig{
+	m, err := NewManager(Config{
 		Driver:   "sqlite",
 		Database: ":memory:",
 		TimeZone: "Asia/Karachi",

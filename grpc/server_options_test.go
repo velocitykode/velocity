@@ -151,7 +151,7 @@ func startKeepaliveServer(t *testing.T, opts ...ServerOption) string {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	quiet, _ := log.NewLogger(log.LogConfig{Driver: "null"})
+	quiet, _ := log.NewLogger(log.Config{Driver: "null"})
 	s := NewServer(Config{}, append([]ServerOption{WithListener(lis), WithLogger(quiet), WithEnvironment("testing")}, opts...)...)
 	if err := s.StartAsync(); err != nil {
 		t.Fatalf("StartAsync: %v", err)

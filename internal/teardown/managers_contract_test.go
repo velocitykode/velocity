@@ -192,7 +192,7 @@ func logSubject(t *testing.T) *subject {
 	cfg := log.LoggingConfig{Channels: map[string]log.ChannelConfig{}}
 	for _, name := range contractNames {
 		drv := driverName(t, "log", name)
-		log.Drivers().Override(drv, func(context.Context, log.LogConfig) (log.Logger, error) { return kids.of(sl.build(name)), nil })
+		log.Drivers().Override(drv, func(context.Context, log.Config) (log.Logger, error) { return kids.of(sl.build(name)), nil })
 		t.Cleanup(func() { log.Drivers().Override(drv, nil) })
 		cfg.Channels[name] = log.ChannelConfig{Driver: drv}
 	}
@@ -374,7 +374,7 @@ func ormSubject(t *testing.T) *subject {
 		return &ormChild{p: &probe{}}, nil
 	})
 	t.Cleanup(func() { orm.Drivers().Override(drv, nil) })
-	m, err := orm.NewManager(orm.ManagerConfig{Driver: drv})
+	m, err := orm.NewManager(orm.Config{Driver: drv})
 	if err != nil {
 		t.Fatalf("orm.NewManager: %v", err)
 	}
@@ -790,7 +790,7 @@ func ormDefault(t *testing.T, wrap func(*probe) drivers.Driver) (*orm.Manager, *
 		return wrap(p), nil
 	})
 	t.Cleanup(func() { orm.Drivers().Override(drv, nil) })
-	m, err := orm.NewManager(orm.ManagerConfig{Driver: drv})
+	m, err := orm.NewManager(orm.Config{Driver: drv})
 	if err != nil {
 		t.Fatalf("orm.NewManager: %v", err)
 	}

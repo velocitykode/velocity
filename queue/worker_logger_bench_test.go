@@ -41,7 +41,7 @@ func (l fieldLogger) With(kvs ...any) contract.Logger {
 // a job that succeeds, which binds the job's fields to the worker's logger
 // once (With) and writes no line, for each kind of logger.
 func BenchmarkWorker_ProcessJobLogger(b *testing.B) {
-	consoleLogger, err := log.NewLogger(log.LogConfig{Driver: "console"})
+	consoleLogger, err := log.NewLogger(log.Config{Driver: "console"})
 	if err != nil {
 		b.Fatal(err)
 	}

@@ -344,7 +344,7 @@ func TestInstrumentation_NoDispatcherEmitsNothing(t *testing.T) {
 // hang.
 func newSingleConnManager(t *testing.T) *Manager {
 	t.Helper()
-	m, err := NewManager(ManagerConfig{
+	m, err := NewManager(Config{
 		Driver:       "sqlite",
 		Database:     ":memory:",
 		MaxOpenConns: 1,
@@ -441,7 +441,7 @@ func TestInstrumentation_EventsBindToOwningManager(t *testing.T) {
 	t.Cleanup(func() { SetDefault(prev) })
 
 	newM := func(table string) (*Manager, *stmtCollector) {
-		m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:"})
+		m, err := NewManager(Config{Driver: "sqlite", Database: ":memory:"})
 		if err != nil {
 			t.Fatalf("NewManager: %v", err)
 		}
@@ -497,7 +497,7 @@ func TestInstrumentation_EventsBindToOwningManager(t *testing.T) {
 // concurrently with the togglers: checking only after the togglers finish
 // would leave a window of a few nanoseconds and miss the bug.
 func TestInstrumentation_ConcurrentDispatcherToggleKeepsFlagConsistent(t *testing.T) {
-	m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:"})
+	m, err := NewManager(Config{Driver: "sqlite", Database: ":memory:"})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

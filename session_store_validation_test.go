@@ -51,7 +51,7 @@ func newAppWithSessionScheme(t *testing.T, env string) *App {
 
 	cfg := ConfigFromEnv()
 	cfg.Env = env
-	cfg.Session = newTestSessionStoreConfig()
+	cfg.Auth.Session = newTestSessionStoreConfig()
 
 	return &App{
 		Services: &app.Services{
@@ -103,7 +103,7 @@ func TestValidateSessionStoreForProduction_RefusesCookieStoreWithoutOptIn(t *tes
 // SessionConfig.AllowCookieStoreInProduction and Bootstrap proceeds.
 func TestValidateSessionStoreForProduction_AllowsExplicitOptIn(t *testing.T) {
 	a := newAppWithSessionScheme(t, "production")
-	a.config.Session.AllowCookieStoreInProduction = true
+	a.config.Auth.Session.AllowCookieStoreInProduction = true
 
 	if err := validateSessionStoreForProduction(a); err != nil {
 		t.Fatalf("validateSessionStoreForProduction with opt-in returned %v; expected nil", err)

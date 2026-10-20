@@ -78,7 +78,7 @@ func TestStackLogger_HostileChildSweep(t *testing.T) {
 // channel is created.
 func TestManager_HostileDriverFactorySweep(t *testing.T) {
 	registerSweepDriver.Do(func() {
-		Drivers().Register("hostile-sweep", func(_ context.Context, cfg LogConfig) (Logger, error) {
+		Drivers().Register("hostile-sweep", func(_ context.Context, cfg Config) (Logger, error) {
 			sweepCodesMu.Lock()
 			code := sweepCodes[cfg.Config["id"].(string)]
 			sweepCodesMu.Unlock()

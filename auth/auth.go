@@ -853,6 +853,10 @@ type Config struct {
 
 	// LoginThrottle tunes the framework's login throttler.
 	LoginThrottle LoginThrottleConfig
+
+	// Session configures the session cookie and store used by the session
+	// scheme and the CSRF session bag.
+	Session SessionConfig
 }
 
 // LoginThrottleConfig tunes the login throttler velocity.New installs.

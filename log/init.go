@@ -10,8 +10,8 @@ import (
 	"github.com/velocitykode/velocity/log/drivers"
 )
 
-// LogConfig holds configuration for creating a Logger instance.
-type LogConfig struct {
+// Config holds configuration for creating a Logger instance.
+type Config struct {
 	// Driver specifies the log driver: "console", "file", "stack", "null", or
 	// any third-party driver registered via Drivers().Register.
 	Driver string
@@ -24,9 +24,9 @@ type LogConfig struct {
 // Validate checks structural requirements: empty Driver is treated as
 // "console" by NewLogger so it is accepted. Per-driver field validation
 // (path for file, stack list for stack) lives in each driver's factory
-// because the registry is open for third-party drivers; LogConfig.Validate
+// because the registry is open for third-party drivers; Config.Validate
 // does not introspect the Config map.
-func (c LogConfig) Validate() error {
+func (c Config) Validate() error {
 	// Reserved for future structural checks. Driver name resolution is
 	// driver-registry's job (Drivers().Resolve returns a typed error when
 	// the name is unknown), so we do not duplicate that allowlist here.
@@ -38,18 +38,18 @@ func (c LogConfig) Validate() error {
 // init(); the file/daily and stack drivers self-register from the log/file
 // and log/stack leaves. Third-party drivers can register additional
 // factories.
-var driverRegistry = driverregistry.New[Logger, LogConfig]("log")
+var driverRegistry = driverregistry.New[Logger, Config]("log")
 
 // Drivers returns the registry that log driver factories register
 // themselves into. Use this from a driver package's init() to install a
 // factory:
 //
 //	func init() {
-//	    log.Drivers().Register("syslog", func(_ context.Context, cfg log.LogConfig) (log.Logger, error) {
+//	    log.Drivers().Register("syslog", func(_ context.Context, cfg log.Config) (log.Logger, error) {
 //	        return newSyslogLogger(cfg.Config), nil
 //	    })
 //	}
-func Drivers() *driverregistry.Registry[Logger, LogConfig] { return driverRegistry }
+func Drivers() *driverregistry.Registry[Logger, Config] { return driverRegistry }
 
 // init wires the framework's built-in light log drivers into the canonical
 // driver registry. Registrations happen at package import time so that
@@ -64,7 +64,7 @@ func Drivers() *driverregistry.Registry[Logger, LogConfig] { return driverRegist
 // github.com/velocitykode/velocity/log/stack, or the aggregator
 // github.com/velocitykode/velocity/log/standard to enable them.
 func init() {
-	Drivers().Register("console", func(_ context.Context, cfg LogConfig) (Logger, error) {
+	Drivers().Register("console", func(_ context.Context, cfg Config) (Logger, error) {
 		// Optional "writer": "stderr" moves output off stdout so stdout
 		// can carry machine-readable command output (vel routes --json).
 		if w, ok := cfg.Config["writer"].(string); ok && w == "stderr" {
@@ -73,7 +73,7 @@ func init() {
 		return WrapWithRedactors(drivers.NewConsoleLogger(ExtractLevel(cfg.Config)), cfg), nil
 	})
 
-	Drivers().Register("null", func(_ context.Context, _ LogConfig) (Logger, error) {
+	Drivers().Register("null", func(_ context.Context, _ Config) (Logger, error) {
 		return NewNullLogger(), nil
 	})
 }
@@ -111,7 +111,7 @@ func ExtractLevel(config map[string]any) contract.LogLevel {
 //
 // Returns inner unchanged when no opt-in is in effect so the common
 // path stays allocation-free, and nil for a nil inner, typed or not.
-func WrapWithRedactors(inner Logger, cfg LogConfig) Logger {
+func WrapWithRedactors(inner Logger, cfg Config) Logger {
 	if nilval.Is(inner) {
 		return nil
 	}

@@ -5,7 +5,7 @@ import "fmt"
 // RedisConfig holds Redis connection configuration.
 //
 // The type lives in the queue root (not the queue/redis leaf) because
-// QueueConfig.Redis embeds it: keeping it here lets callers build a queue
+// Config.Redis embeds it: keeping it here lets callers build a queue
 // config without importing the heavy redis leaf, while the leaf driver
 // consumes it via queue.RedisConfig. The Password field contains sensitive
 // credentials and must not be logged.

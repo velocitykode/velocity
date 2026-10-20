@@ -27,7 +27,7 @@ func TestInitQueue_EncryptRequiresEncryptor(t *testing.T) {
 	resetQueueSigningState(t)
 	resetQueueEncryptionState(t)
 
-	_, err := initQueue(queue.QueueConfig{Driver: "memory", Encrypt: true}, nil, "", "", "local", nil, log.NewNullLogger())
+	_, err := initQueue(queue.Config{Driver: "memory", Encrypt: true}, nil, "", "", "local", nil, log.NewNullLogger())
 	if !errors.Is(err, queue.ErrEncryptorRequired) {
 		t.Fatalf("expected ErrEncryptorRequired, got %v", err)
 	}
@@ -51,7 +51,7 @@ func TestInitQueue_EncryptWiresEncryptor(t *testing.T) {
 		t.Fatalf("NewEncryptor: %v", err)
 	}
 
-	d, err := initQueue(queue.QueueConfig{Driver: "memory", Encrypt: true}, nil, "", "", "local", enc, log.NewNullLogger())
+	d, err := initQueue(queue.Config{Driver: "memory", Encrypt: true}, nil, "", "", "local", enc, log.NewNullLogger())
 	if err != nil {
 		t.Fatalf("initQueue: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestInitQueue_EncryptOffClearsEncryptor(t *testing.T) {
 	}
 	queue.SetPayloadEncryptor(enc)
 
-	if _, err := initQueue(queue.QueueConfig{Driver: "memory"}, nil, "", "", "local", nil, log.NewNullLogger()); err != nil {
+	if _, err := initQueue(queue.Config{Driver: "memory"}, nil, "", "", "local", nil, log.NewNullLogger()); err != nil {
 		t.Fatalf("initQueue: %v", err)
 	}
 	if queue.IsEncryptionEnabled() {

@@ -27,7 +27,7 @@ func (User) AssignableFields() []string {
 
 func newTestManager(t testing.TB) *Manager {
 	t.Helper()
-	m, err := NewManager(ManagerConfig{
+	m, err := NewManager(Config{
 		Driver:   "sqlite",
 		Database: ":memory:",
 	})
@@ -88,7 +88,7 @@ func TestDriverCreation(t *testing.T) {
 }
 
 func TestConnectionPool(t *testing.T) {
-	m, err := NewManager(ManagerConfig{
+	m, err := NewManager(Config{
 		Driver:          "sqlite",
 		Database:        ":memory:",
 		MaxIdleConns:    5,

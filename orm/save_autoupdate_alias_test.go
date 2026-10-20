@@ -26,7 +26,7 @@ func (touchTracker) TableName() string { return "touch_trackers" }
 
 func setupAliasTest(t *testing.T) *orm.Manager {
 	t.Helper()
-	manager, err := orm.NewManager(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"})
+	manager, err := orm.NewManager(orm.Config{Driver: "sqlite", Database: ":memory:"})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

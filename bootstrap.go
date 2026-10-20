@@ -636,7 +636,7 @@ func validateSessionStoreForProduction(a *App) error {
 	if contract.IsDevOrTestEnv(a.config.Env) {
 		return nil
 	}
-	if a.config.Session.AllowCookieStoreInProduction {
+	if a.config.Auth.Session.AllowCookieStoreInProduction {
 		return nil
 	}
 	mgr, ok := a.Auth.(*auth.Manager)

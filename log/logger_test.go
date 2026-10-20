@@ -8,7 +8,7 @@ import (
 )
 
 func TestNewLogger_ConsoleDriver(t *testing.T) {
-	logger, err := NewLogger(LogConfig{
+	logger, err := NewLogger(Config{
 		Driver: "console",
 		Config: map[string]any{},
 	})
@@ -23,8 +23,8 @@ func TestNewLogger_ConsoleDriver(t *testing.T) {
 func TestNewLogger_EmptyDriverDefaultsToConsole(t *testing.T) {
 	// An empty Driver must default to the always-registered "console"
 	// driver rather than erroring on an unknown-driver lookup, so a
-	// zero-value LogConfig produces a working logger.
-	logger, err := NewLogger(LogConfig{Config: map[string]any{}})
+	// zero-value Config produces a working logger.
+	logger, err := NewLogger(Config{Config: map[string]any{}})
 	if err != nil {
 		t.Fatalf("NewLogger(empty driver) error = %v", err)
 	}
@@ -38,18 +38,18 @@ func TestNewLogger_EmptyDriverDefaultsToConsole(t *testing.T) {
 func TestNewLogger_FileDriver(t *testing.T) {
 	tests := []struct {
 		name   string
-		config LogConfig
+		config Config
 	}{
 		{
 			name: "file driver with path",
-			config: LogConfig{
+			config: Config{
 				Driver: "file",
 				Config: map[string]any{"path": "/tmp/test-logs"},
 			},
 		},
 		{
 			name: "file driver without path",
-			config: LogConfig{
+			config: Config{
 				Driver: "file",
 				Config: map[string]any{},
 			},
@@ -70,14 +70,14 @@ func TestNewLogger_FileDriver(t *testing.T) {
 }
 
 func TestNewLogger_InvalidDriver(t *testing.T) {
-	_, err := NewLogger(LogConfig{Driver: "invalid_driver_that_will_fail"})
+	_, err := NewLogger(Config{Driver: "invalid_driver_that_will_fail"})
 	if err == nil {
 		t.Error("Expected error for invalid driver")
 	}
 }
 
 func TestNewLogger_UnsupportedDriver(t *testing.T) {
-	_, err := NewLogger(LogConfig{
+	_, err := NewLogger(Config{
 		Driver: "unknown",
 		Config: map[string]any{},
 	})
@@ -87,7 +87,7 @@ func TestNewLogger_UnsupportedDriver(t *testing.T) {
 }
 
 func TestLoggerMethods_DoNotPanic(t *testing.T) {
-	logger, err := NewLogger(LogConfig{
+	logger, err := NewLogger(Config{
 		Driver: "console",
 		Config: map[string]any{},
 	})
@@ -137,7 +137,7 @@ func (m *mockLogger) Fatal(msg string, kvs ...any) {
 func (m *mockLogger) With(kvs ...any) contract.Logger { return contract.BindFields(m, kvs...) }
 
 func TestNewLogger_NullDriver(t *testing.T) {
-	logger, err := NewLogger(LogConfig{
+	logger, err := NewLogger(Config{
 		Driver: "null",
 		Config: map[string]any{},
 	})
@@ -150,7 +150,7 @@ func TestNewLogger_NullDriver(t *testing.T) {
 }
 
 func TestNewLogger_StackDriver(t *testing.T) {
-	logger, err := NewLogger(LogConfig{
+	logger, err := NewLogger(Config{
 		Driver: "stack",
 		Config: map[string]any{
 			"stack": []string{"console", "null"},
@@ -165,7 +165,7 @@ func TestNewLogger_StackDriver(t *testing.T) {
 
 func TestNewLogger_StackDriver_DefaultChannels(t *testing.T) {
 	tempDir := t.TempDir()
-	logger, err := NewLogger(LogConfig{
+	logger, err := NewLogger(Config{
 		Driver: "stack",
 		Config: map[string]any{
 			"path": tempDir,
@@ -179,7 +179,7 @@ func TestNewLogger_StackDriver_DefaultChannels(t *testing.T) {
 }
 
 func TestNewLogger_StackDriver_SkipsRecursion(t *testing.T) {
-	logger, err := NewLogger(LogConfig{
+	logger, err := NewLogger(Config{
 		Driver: "stack",
 		Config: map[string]any{
 			"stack": []string{"stack", "console"},
@@ -192,7 +192,7 @@ func TestNewLogger_StackDriver_SkipsRecursion(t *testing.T) {
 }
 
 func TestNewLogger_StackDriver_NoValidChannels(t *testing.T) {
-	_, err := NewLogger(LogConfig{
+	_, err := NewLogger(Config{
 		Driver: "stack",
 		Config: map[string]any{
 			"stack": []string{"stack"},

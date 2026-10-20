@@ -78,7 +78,7 @@ func newPipelineApp(t *testing.T, opts ...Option) (*App, *levelLogger, *recordin
 	t.Helper()
 	capture := &levelLogger{}
 	const driverName = "pipeline-capture"
-	prev := log.Drivers().Override(driverName, func(_ context.Context, _ log.LogConfig) (log.Logger, error) {
+	prev := log.Drivers().Override(driverName, func(_ context.Context, _ log.Config) (log.Logger, error) {
 		return capture, nil
 	})
 	t.Cleanup(func() { log.Drivers().Override(driverName, prev) })
@@ -88,9 +88,9 @@ func newPipelineApp(t *testing.T, opts ...Option) (*App, *levelLogger, *recordin
 		Debug: true,
 		Port:  "0",
 		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
-		Log:   log.LogConfig{Driver: driverName, Config: make(map[string]any)},
-		Queue: queue.QueueConfig{Driver: "memory"},
-		Mail:  mail.MailConfig{Driver: "log"},
+		Log:   log.Config{Driver: driverName, Config: make(map[string]any)},
+		Queue: queue.Config{Driver: "memory"},
+		Mail:  mail.Config{Driver: "log"},
 	})}, opts...)...)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)

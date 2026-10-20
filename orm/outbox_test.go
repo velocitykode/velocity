@@ -31,7 +31,7 @@ func newOutboxFileManager(t testing.TB) (*Manager, string) {
 	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "outbox.db")
-	m, err := NewManager(ManagerConfig{
+	m, err := NewManager(Config{
 		Driver:       "sqlite",
 		Database:     dbPath,
 		MaxOpenConns: 1, // sqlite serialises writes; one conn avoids spurious lock errors

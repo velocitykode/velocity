@@ -31,7 +31,7 @@ func (wiringAdmin) AssignableFields() []string {
 // an app that sets nothing still authenticates, against the framework's
 // built-in model.
 func TestInitAuth_InstallsDefaultUserStore(t *testing.T) {
-	manager := initAuth(auth.Config{}, auth.SessionConfig{}, nil, nil)
+	manager := initAuth(auth.Config{}, nil, nil)
 
 	userStore := manager.DefaultUserStore()
 	if userStore == nil {
@@ -46,7 +46,7 @@ func TestInitAuth_InstallsDefaultUserStore(t *testing.T) {
 // bcrypt cost reaches the user store rather than the user store falling back to
 // its own default.
 func TestInitAuth_ThreadsManagerHasherToStore(t *testing.T) {
-	manager := initAuth(auth.Config{BcryptCost: 12}, auth.SessionConfig{}, nil, nil)
+	manager := initAuth(auth.Config{BcryptCost: 12}, nil, nil)
 
 	userStore, ok := manager.DefaultUserStore().(*ormauth.Store[ormauth.User])
 	if !ok {
@@ -65,7 +65,7 @@ func TestInitAuth_ThreadsManagerHasherToStore(t *testing.T) {
 // model authenticates: hand the manager a user store built on the app's own
 // type. No configuration string, no registry, no name to typo.
 func TestSetUserStore_SwapsTheAuthModel(t *testing.T) {
-	manager := initAuth(auth.Config{}, auth.SessionConfig{}, nil, nil)
+	manager := initAuth(auth.Config{}, nil, nil)
 
 	swapped := ormauth.New[wiringAdmin](
 		ormauth.WithIdentifierColumn("username"),
@@ -106,7 +106,7 @@ func TestSetUserStore_RepointsRegisteredSchemes(t *testing.T) {
 // TestSetUserStore_IgnoresNil keeps a nil argument from silently
 // uninstalling authentication.
 func TestSetUserStore_IgnoresNil(t *testing.T) {
-	manager := initAuth(auth.Config{}, auth.SessionConfig{}, nil, nil)
+	manager := initAuth(auth.Config{}, nil, nil)
 	before := manager.DefaultUserStore()
 
 	manager.SetUserStore(nil)
@@ -120,7 +120,7 @@ func TestSetUserStore_IgnoresNil(t *testing.T) {
 // the uncommon app that authenticates two identity stores in one process.
 // It is deliberately absent from configuration.
 func TestRegisterUserStore_EscapeHatch(t *testing.T) {
-	manager := initAuth(auth.Config{}, auth.SessionConfig{}, nil, nil)
+	manager := initAuth(auth.Config{}, nil, nil)
 
 	second := ormauth.New[wiringAdmin](
 		ormauth.WithIdentifierColumn("username"),

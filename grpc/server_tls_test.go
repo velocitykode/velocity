@@ -64,7 +64,7 @@ func selfSignedTLSCreds(t *testing.T) credentials.TransportCredentials {
 
 func nullServerLogger(t *testing.T) log.Logger {
 	t.Helper()
-	l, err := log.NewLogger(log.LogConfig{Driver: "null"})
+	l, err := log.NewLogger(log.Config{Driver: "null"})
 	if err != nil {
 		t.Fatalf("null logger: %v", err)
 	}

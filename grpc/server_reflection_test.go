@@ -12,7 +12,7 @@ import (
 // (I-02) fires earlier than the reflection guard, so the test opts out of it
 // via Config.Insecure so the reflection check is the one exercised here.
 func TestBuild_RefusesReflectionInProduction(t *testing.T) {
-	logger, _ := log.NewLogger(log.LogConfig{Driver: "null"})
+	logger, _ := log.NewLogger(log.Config{Driver: "null"})
 	s := NewServer(Config{Insecure: true},
 		WithPort("0"),
 		WithReflection(true),
@@ -38,7 +38,7 @@ func TestBuild_RefusesReflectionInProduction(t *testing.T) {
 // classifies staging as production: a typo'd APP_ENV must not silently
 // re-enable reflection.
 func TestBuild_RefusesReflectionInStaging(t *testing.T) {
-	logger, _ := log.NewLogger(log.LogConfig{Driver: "null"})
+	logger, _ := log.NewLogger(log.Config{Driver: "null"})
 	s := NewServer(Config{Insecure: true},
 		WithPort("0"),
 		WithReflection(true),
@@ -60,7 +60,7 @@ func TestBuild_RefusesReflectionInStaging(t *testing.T) {
 // after the staging tightening above. "development" is the unambiguous non-
 // prod label and reflection is welcome there.
 func TestBuild_AllowsReflectionInDevelopment(t *testing.T) {
-	logger, _ := log.NewLogger(log.LogConfig{Driver: "null"})
+	logger, _ := log.NewLogger(log.Config{Driver: "null"})
 	s := NewServer(Config{},
 		WithPort("0"),
 		WithReflection(true),

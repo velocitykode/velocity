@@ -131,7 +131,7 @@ func TestServerChain_FailedCallEndsWithItsEventsAndCorrelatedReport(t *testing.T
 				if err != nil {
 					t.Fatalf("listen: %v", err)
 				}
-				quiet, _ := log.NewLogger(log.LogConfig{Driver: "null"})
+				quiet, _ := log.NewLogger(log.Config{Driver: "null"})
 				s := NewServer(Config{}, WithListener(lis), WithLogger(quiet), WithEnvironment("testing"), WithReporter(reports), WithCallOptions(
 					interceptors.WithRequestLine(),
 					interceptors.WithLogger(lines),

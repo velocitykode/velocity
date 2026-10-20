@@ -61,7 +61,7 @@ func TestStackLogger_Contract(t *testing.T) {
 
 func TestRegistry_ConsoleDriver_Contract(t *testing.T) {
 	logtest.RunLoggerContractTests(t, func(t *testing.T) log.Logger {
-		l, err := log.NewLogger(log.LogConfig{Driver: "console"})
+		l, err := log.NewLogger(log.Config{Driver: "console"})
 		if err != nil {
 			t.Fatalf("registry resolve console: %v", err)
 		}
@@ -71,7 +71,7 @@ func TestRegistry_ConsoleDriver_Contract(t *testing.T) {
 
 func TestRegistry_FileDriver_Contract(t *testing.T) {
 	logtest.RunLoggerContractTests(t, func(t *testing.T) log.Logger {
-		l, err := log.NewLogger(log.LogConfig{
+		l, err := log.NewLogger(log.Config{
 			Driver: "file",
 			Config: map[string]any{
 				"path": filepath.Join(t.TempDir(), "file.log"),
@@ -90,7 +90,7 @@ func TestRegistry_FileDriver_Contract(t *testing.T) {
 // alias mapping that the direct NewFileLogger test cannot.
 func TestRegistry_DailyDriver_Contract(t *testing.T) {
 	logtest.RunLoggerContractTests(t, func(t *testing.T) log.Logger {
-		l, err := log.NewLogger(log.LogConfig{
+		l, err := log.NewLogger(log.Config{
 			Driver: "daily",
 			Config: map[string]any{
 				"path": filepath.Join(t.TempDir(), "daily.log"),
@@ -106,7 +106,7 @@ func TestRegistry_DailyDriver_Contract(t *testing.T) {
 
 func TestRegistry_NullDriver_Contract(t *testing.T) {
 	logtest.RunLoggerContractTests(t, func(t *testing.T) log.Logger {
-		l, err := log.NewLogger(log.LogConfig{Driver: "null"})
+		l, err := log.NewLogger(log.Config{Driver: "null"})
 		if err != nil {
 			t.Fatalf("registry resolve null: %v", err)
 		}
@@ -116,7 +116,7 @@ func TestRegistry_NullDriver_Contract(t *testing.T) {
 
 func TestRegistry_StackDriver_Contract(t *testing.T) {
 	logtest.RunLoggerContractTests(t, func(t *testing.T) log.Logger {
-		l, err := log.NewLogger(log.LogConfig{
+		l, err := log.NewLogger(log.Config{
 			Driver: "stack",
 			Config: map[string]any{
 				// Explicit child list so the stack does not pull in

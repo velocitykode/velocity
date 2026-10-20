@@ -72,7 +72,7 @@ func (managedReleaseUUID) TableName() string { return "managed_release_uuids" }
 // created_at/updated_at columns.
 func setupOptOutTest(t *testing.T) *orm.Manager {
 	t.Helper()
-	manager, err := orm.NewManager(orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"})
+	manager, err := orm.NewManager(orm.Config{Driver: "sqlite", Database: ":memory:"})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

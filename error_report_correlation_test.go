@@ -28,7 +28,7 @@ func newFieldApp(t *testing.T) (*App, *fieldLogger, *recordingReporter) {
 	t.Helper()
 	logger := newFieldLogger()
 	const driverName = "field-capture"
-	prev := log.Drivers().Override(driverName, func(context.Context, log.LogConfig) (log.Logger, error) {
+	prev := log.Drivers().Override(driverName, func(context.Context, log.Config) (log.Logger, error) {
 		return logger, nil
 	})
 	t.Cleanup(func() { log.Drivers().Override(driverName, prev) })
@@ -38,9 +38,9 @@ func newFieldApp(t *testing.T) (*App, *fieldLogger, *recordingReporter) {
 		Debug: true,
 		Port:  "0",
 		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
-		Log:   log.LogConfig{Driver: driverName, Config: make(map[string]any)},
-		Queue: queue.QueueConfig{Driver: "memory"},
-		Mail:  mail.MailConfig{Driver: "log"},
+		Log:   log.Config{Driver: driverName, Config: make(map[string]any)},
+		Queue: queue.Config{Driver: "memory"},
+		Mail:  mail.Config{Driver: "log"},
 	}))
 	if err != nil {
 		t.Fatalf("New() error: %v", err)

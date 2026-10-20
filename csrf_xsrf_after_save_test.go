@@ -35,7 +35,7 @@ func TestCSRFBootstrapCookie_FollowsTheSessionSave(t *testing.T) {
 			var session, xsrf bool
 			for _, c := range w.Result().Cookies() {
 				switch c.Name {
-				case a.config.Session.Name:
+				case a.config.Auth.Session.Name:
 					session = true
 				case "XSRF-TOKEN":
 					xsrf = true

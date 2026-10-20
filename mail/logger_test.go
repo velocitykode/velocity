@@ -86,7 +86,7 @@ func TestLogDriver_RecipientsPassThroughTheRedactor(t *testing.T) {
 // NewMailer's mailer hands a logger to the log driver it wraps, the way
 // velocity.New's logger sweep reaches it.
 func TestNewMailer_LogDriverTakesTheLogger(t *testing.T) {
-	m, err := NewMailer(MailConfig{Driver: "log"})
+	m, err := NewMailer(Config{Driver: "log"})
 	if err != nil {
 		t.Fatalf("NewMailer: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestLogDriver_SetLoggerEdgeInputs(t *testing.T) {
 	})
 
 	t.Run("mailer nil and after shutdown", func(t *testing.T) {
-		m, err := NewMailer(MailConfig{Driver: "log"})
+		m, err := NewMailer(Config{Driver: "log"})
 		if err != nil {
 			t.Fatalf("NewMailer: %v", err)
 		}

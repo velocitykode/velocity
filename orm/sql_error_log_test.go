@@ -195,12 +195,12 @@ func TestRelay_ClaimFailureLogsErrorKindOnly(t *testing.T) {
 	}
 }
 
-// ManagerConfig.Logger is the manager's logger from construction on: the
+// Config.Logger is the manager's logger from construction on: the
 // statements its driver runs while it connects write to it, and so do the
 // manager's own lines. Nil leaves the fallback in place.
 func TestNewManager_ConfigLoggerTakesTheConnectStatements(t *testing.T) {
 	logs := &kvRecorder{}
-	m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:", LogQueries: true, Logger: logs})
+	m, err := NewManager(Config{Driver: "sqlite", Database: ":memory:", LogQueries: true, Logger: logs})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestNewManager_ConfigLoggerTakesTheConnectStatements(t *testing.T) {
 		t.Errorf("Logger() = %T, want the config logger", m.Logger())
 	}
 
-	bare, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:"})
+	bare, err := NewManager(Config{Driver: "sqlite", Database: ":memory:"})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

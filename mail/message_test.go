@@ -408,7 +408,7 @@ func TestAttachData_AcceptsAtLimit(t *testing.T) {
 }
 
 func TestMaxAttachmentSize_ConfigDefault(t *testing.T) {
-	// Zero-value MailConfig must yield DefaultMaxAttachmentSize, NOT "unlimited".
+	// Zero-value Config must yield DefaultMaxAttachmentSize, NOT "unlimited".
 	prev := GetDefaultMaxAttachmentSize()
 	t.Cleanup(func() { SetDefaultMaxAttachmentSize(prev) })
 

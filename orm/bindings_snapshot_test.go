@@ -15,7 +15,7 @@ import (
 // change what the event reports: QueryExecuted.Bindings holds the bytes
 // the statement ran with.
 func TestQueryExecuted_BindingsSnapshotByteArguments(t *testing.T) {
-	m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:"})
+	m, err := NewManager(Config{Driver: "sqlite", Database: ":memory:"})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

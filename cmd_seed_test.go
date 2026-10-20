@@ -48,7 +48,7 @@ func (m *seederModule) Seeders(r *chain.Seeders) {
 // seed path reaches a real *orm.Manager instead of the nil-DB warning.
 func withSQLiteDB() Option {
 	return func(a *App) {
-		a.config.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}
+		a.config.DB = orm.Config{Driver: "sqlite", Database: ":memory:"}
 	}
 }
 

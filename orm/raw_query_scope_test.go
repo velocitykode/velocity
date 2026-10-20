@@ -20,7 +20,7 @@ func (RawScopeUser) TableName() string {
 
 func setupRawScopeTest(t *testing.T) *Manager {
 	t.Helper()
-	m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:"})
+	m, err := NewManager(Config{Driver: "sqlite", Database: ":memory:"})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

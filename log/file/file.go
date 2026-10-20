@@ -18,7 +18,7 @@ import (
 // do, so loggers produced through this leaf are identical to the ones the
 // registry produced before the driver split.
 func init() {
-	factory := func(_ context.Context, cfg log.LogConfig) (log.Logger, error) {
+	factory := func(_ context.Context, cfg log.Config) (log.Logger, error) {
 		path := "./storage/logs"
 		if p, ok := cfg.Config["path"].(string); ok {
 			path = p

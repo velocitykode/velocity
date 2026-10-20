@@ -5,7 +5,7 @@
 //   - D: the driver instance type the subsystem returns to its callers
 //     (e.g. cache.Store, storage.Driver, mail.Mailer).
 //   - C: the driver configuration shape the subsystem uses to construct an
-//     instance (e.g. cache.StoreConfig, storage.DiskConfig, mail.MailConfig).
+//     instance (e.g. cache.StoreConfig, storage.DiskConfig, mail.Config).
 //
 // Drivers register themselves via Registry.Register from an init() in their
 // own package; the consuming subsystem creates an instance with

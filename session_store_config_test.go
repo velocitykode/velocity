@@ -71,7 +71,7 @@ func TestNew_ServerSessionStoreCarriesFlashBehindAnIDCookie(t *testing.T) {
 	resp := sessionFlashPost(t, client, srv.URL, "/save")
 	var id string
 	for _, c := range resp.Cookies() {
-		if c.Name == a.config.Session.Name {
+		if c.Name == a.config.Auth.Session.Name {
 			id = c.Value
 		}
 	}
@@ -194,7 +194,7 @@ func TestNew_ServerSessionStoreOverTheFileCache(t *testing.T) {
 	}
 	var id string
 	for _, c := range resp.Cookies() {
-		if c.Name == a.config.Session.Name {
+		if c.Name == a.config.Auth.Session.Name {
 			id = c.Value
 		}
 	}

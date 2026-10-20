@@ -10,8 +10,8 @@ import (
 	"github.com/velocitykode/velocity/internal/errchain"
 )
 
-// QueueConfig holds configuration for creating a queue driver.
-type QueueConfig struct {
+// Config holds configuration for creating a queue driver.
+type Config struct {
 	// Driver is the queue driver to use: "memory", "redis", or "database".
 	Driver string
 
@@ -50,24 +50,24 @@ type QueueConfig struct {
 // String returns a safe representation with the signing key and the Redis
 // password redacted, so a driver factory that logs its config with %v does
 // not leak them.
-func (c QueueConfig) String() string {
+func (c Config) String() string {
 	key := ""
 	if c.SigningKey != "" {
 		key = "[REDACTED]"
 	}
-	return fmt.Sprintf("QueueConfig{Driver:%s, Redis:%s, DBDriver:%s, SigningKey:%s, AcceptUnsigned:%t, Encrypt:%t}",
+	return fmt.Sprintf("queue.Config{Driver:%s, Redis:%s, DBDriver:%s, SigningKey:%s, AcceptUnsigned:%t, Encrypt:%t}",
 		c.Driver, c.Redis, c.DBDriver, key, c.AcceptUnsigned, c.Encrypt)
 }
 
 // GoString keeps %#v redacted too.
-func (c QueueConfig) GoString() string { return c.String() }
+func (c Config) GoString() string { return c.String() }
 
-// Validate checks the QueueConfig for structural problems before NewQueue
+// Validate checks the Config for structural problems before NewQueue
 // resolves a driver factory. The database driver requires DB and DBDriver
 // to be set; the redis driver does not validate Redis credentials here so
 // dev fixtures can boot with empty defaults that the local redis allows.
 // Per-driver factory errors still surface from Drivers().Resolve.
-func (c QueueConfig) Validate() error {
+func (c Config) Validate() error {
 	if c.Driver == "" {
 		return nil
 	}
@@ -85,20 +85,20 @@ func (c QueueConfig) Validate() error {
 // drivers is the canonical Velocity driver registry for queues. Built-in
 // drivers (memory, redis, database) self-register from this file's init();
 // third-party queue backends can register additional factories.
-var drivers = driverregistry.New[Driver, QueueConfig]("queue")
+var drivers = driverregistry.New[Driver, Config]("queue")
 
 // Drivers returns the registry that queue drivers register themselves
 // into. Use this from a driver package's init() to install a factory:
 //
 //	func init() {
-//	    queue.Drivers().Register("kafka", func(ctx context.Context, cfg queue.QueueConfig) (queue.Driver, error) {
+//	    queue.Drivers().Register("kafka", func(ctx context.Context, cfg queue.Config) (queue.Driver, error) {
 //	        return newKafkaDriver(cfg), nil
 //	    })
 //	}
-func Drivers() *driverregistry.Registry[Driver, QueueConfig] { return drivers }
+func Drivers() *driverregistry.Registry[Driver, Config] { return drivers }
 
 func init() {
-	Drivers().Register("memory", func(_ context.Context, _ QueueConfig) (Driver, error) {
+	Drivers().Register("memory", func(_ context.Context, _ Config) (Driver, error) {
 		d := NewMemoryDriver()
 		d.Start()
 		return d, nil
@@ -109,9 +109,9 @@ func init() {
 	// from its own init(). Blank-import github.com/velocitykode/velocity/queue/redis
 	// or github.com/velocitykode/velocity/queue/standard to enable it.
 
-	Drivers().Register("database", func(_ context.Context, cfg QueueConfig) (Driver, error) {
+	Drivers().Register("database", func(_ context.Context, cfg Config) (Driver, error) {
 		if cfg.DB == nil {
-			return nil, fmt.Errorf("velocity/queue: database driver requires a *sql.DB in QueueConfig.DB")
+			return nil, fmt.Errorf("velocity/queue: database driver requires a *sql.DB in Config.DB")
 		}
 		return NewDatabaseDriver(cfg.DB, cfg.DBDriver), nil
 	})
@@ -125,14 +125,14 @@ func init() {
 // An empty Driver field defaults to "memory" so zero-value configs work
 // for tests and quick-start scenarios without surfacing a not-found
 // error.
-func NewQueue(config QueueConfig) (Driver, error) {
+func NewQueue(config Config) (Driver, error) {
 	return NewQueueWithContext(context.Background(), config)
 }
 
 // NewQueueWithContext is the context-aware variant of NewQueue. The ctx
 // is forwarded to the driver factory so drivers performing network I/O
 // at construction can honour deadlines.
-func NewQueueWithContext(ctx context.Context, config QueueConfig) (Driver, error) {
+func NewQueueWithContext(ctx context.Context, config Config) (Driver, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}

@@ -24,7 +24,7 @@ func defaultUnaryCall(s *Server) func() {
 }
 
 func quietServer() *Server {
-	quiet, _ := log.NewLogger(log.LogConfig{Driver: "null"})
+	quiet, _ := log.NewLogger(log.Config{Driver: "null"})
 	return NewServer(Config{}, WithLogger(quiet))
 }
 
@@ -80,7 +80,7 @@ func TestDefaultCallLifecycle_FailedDispatchIsCountedOnceByTheServer(t *testing.
 // Server's: the call events reach it, not the Server's dispatcher.
 func TestDefaultCallLifecycle_CallOptionDispatcherWins(t *testing.T) {
 	var server, option atomic.Int32
-	quiet, _ := log.NewLogger(log.LogConfig{Driver: "null"})
+	quiet, _ := log.NewLogger(log.Config{Driver: "null"})
 	s := NewServer(Config{}, WithLogger(quiet), WithCallOptions(interceptors.WithEventDispatcher(func(context.Context, any) error {
 		option.Add(1)
 		return nil

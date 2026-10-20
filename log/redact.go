@@ -337,7 +337,7 @@ var emailRegex = regexp.MustCompile(`[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]{1,25
 // EmailRedactor returns a Redactor that replaces every email address
 // with [EMAIL]. Off by default; opt in either by registering it
 // explicitly via WithRedactors(...), by passing true to
-// BuildDefaultRedactors, or with "redact_emails": true in a LogConfig
+// BuildDefaultRedactors, or with "redact_emails": true in a Config
 // (LOG_REDACT_EMAILS=true through velocity.ConfigFromEnv).
 //
 // Email redaction is opt-in because email addresses are often the
@@ -427,7 +427,7 @@ type leveler interface {
 //
 // Callers should compose this around any *FileLogger, *ConsoleLogger,
 // *StackLogger, or third-party driver they construct. The framework
-// wires it automatically via the LogConfig "redact": true option;
+// wires it automatically via the Config "redact": true option;
 // direct API users invoke it explicitly.
 func WithRedactors(logger Logger, redactors ...Redactor) Logger {
 	if nilval.Is(logger) {

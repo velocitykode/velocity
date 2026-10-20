@@ -41,7 +41,7 @@ var driverRegistry = driverregistry.New[drivers.Driver, drivers.ConnectionConfig
 // driver-specific knowledge.
 //
 // Query telemetry (orm.query.completed / orm.query.failed) and the statement
-// log (ManagerConfig.LogQueries, ManagerConfig.SlowThreshold) come from the
+// log (Config.LogQueries, Config.SlowThreshold) come from the
 // database/sql driver wrapper, so a registered driver inherits them only if it
 // opens its pool through drivers.BaseDriver.OpenAndPing or
 // drivers.BaseDriver.OpenInstrumented. A driver that calls sql.Open directly

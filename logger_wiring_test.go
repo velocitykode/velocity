@@ -33,7 +33,7 @@ func newLoggerWiringApp(t *testing.T, adjust func(*Config), opts ...Option) (*Ap
 	t.Helper()
 	capture := &levelLogger{}
 	const driverName = "logger-wiring-capture"
-	prev := log.Drivers().Override(driverName, func(context.Context, log.LogConfig) (log.Logger, error) {
+	prev := log.Drivers().Override(driverName, func(context.Context, log.Config) (log.Logger, error) {
 		return capture, nil
 	})
 	t.Cleanup(func() { log.Drivers().Override(driverName, prev) })
@@ -42,9 +42,9 @@ func newLoggerWiringApp(t *testing.T, adjust func(*Config), opts ...Option) (*Ap
 		Env:   "testing",
 		Port:  "0",
 		Cache: cache.SingleStoreConfig("logger_wiring", cache.StoreConfig{Driver: "memory"}),
-		Log:   log.LogConfig{Driver: driverName, Config: make(map[string]any)},
-		Queue: queue.QueueConfig{Driver: "memory"},
-		Mail:  mail.MailConfig{Driver: "log"},
+		Log:   log.Config{Driver: driverName, Config: make(map[string]any)},
+		Queue: queue.Config{Driver: "memory"},
+		Mail:  mail.Config{Driver: "log"},
 	}
 	if adjust != nil {
 		adjust(&cfg)
@@ -75,7 +75,7 @@ func entriesStartingWith(l *levelLogger, level, prefix string) int {
 // transaction is one error line through the app logger.
 func TestNew_ORMRollbackFailureAfterPanicLogsThroughTheAppLogger(t *testing.T) {
 	a, capture := newLoggerWiringApp(t, func(c *Config) {
-		c.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}
+		c.DB = orm.Config{Driver: "sqlite", Database: ":memory:"}
 	})
 	mgr, ok := a.DB.(*orm.Manager)
 	if !ok {
@@ -150,7 +150,7 @@ func TestNew_RedisQueueAdvisoryLogsThroughTheAppLogger(t *testing.T) {
 	}
 	t.Cleanup(mr.Close)
 	a, capture := newLoggerWiringApp(t, func(c *Config) {
-		c.Queue = queue.QueueConfig{Driver: "redis", Redis: queue.RedisConfig{Host: mr.Host(), Port: mr.Port(), DB: "0"}}
+		c.Queue = queue.Config{Driver: "redis", Redis: queue.RedisConfig{Host: mr.Host(), Port: mr.Port(), DB: "0"}}
 	})
 
 	ctx := context.Background()
@@ -233,7 +233,7 @@ func sameServiceValue(a, b any) bool {
 // implement the logger facet, so the sweep reaches them.
 func TestNew_FrameworkBuiltServicesAreLoggerAware(t *testing.T) {
 	a, _ := newLoggerWiringApp(t, func(c *Config) {
-		c.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}
+		c.DB = orm.Config{Driver: "sqlite", Database: ":memory:"}
 		c.View = view.Config{ErrorPage: "Error"}
 		c.Crypto = crypto.Config{Key: "0123456789abcdef0123456789abcdef", Cipher: "AES-256-GCM"}
 	})

@@ -51,11 +51,11 @@ func TestPackageState_OlderAppShutdownDuringANewerAppsWiringLeavesNoClosedLogger
 	gated := &sweepGatedMailer{entered: make(chan struct{}), gate: make(chan struct{})}
 	gated.armed.Store(true)
 	const driver = "package-state-sweep-gated"
-	prev := mail.Drivers().Override(driver, func(context.Context, mail.MailConfig) (mail.Mailer, error) { return gated, nil })
+	prev := mail.Drivers().Override(driver, func(context.Context, mail.Config) (mail.Mailer, error) { return gated, nil })
 	t.Cleanup(func() { mail.Drivers().Override(driver, prev) })
 	useLogDriver(t, driver, &levelLogger{})
 	cfg := packageTestConfig(driver)
-	cfg.Mail = mail.MailConfig{Driver: driver}
+	cfg.Mail = mail.Config{Driver: driver}
 
 	var (
 		b    *App

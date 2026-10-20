@@ -42,7 +42,7 @@ func BenchmarkQueryBindings(b *testing.B) {
 			}
 			args := bindingArgs(n)
 			setup := func(b *testing.B) *Manager {
-				m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:"})
+				m, err := NewManager(Config{Driver: "sqlite", Database: ":memory:"})
 				if err != nil {
 					b.Fatalf("NewManager: %v", err)
 				}

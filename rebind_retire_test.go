@@ -336,7 +336,7 @@ func TestRebind_ADisplacedDatabaseClosesAfterTheQueue(t *testing.T) {
 	var order []string
 	var db *dbProbe
 	cfg := testAppConfig()
-	cfg.DB = orm.ManagerConfig{Driver: "sqlite", Database: ":memory:"}
+	cfg.DB = orm.Config{Driver: "sqlite", Database: ":memory:"}
 	a, err := New(WithConfig(cfg), WithModules(swapIn(func(s *app.Services) {
 		db = &dbProbe{Database: s.DB, rp: &retireProbe{inner: s.DB}}
 		s.DB = db

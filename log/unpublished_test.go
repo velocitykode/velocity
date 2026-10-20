@@ -32,7 +32,7 @@ func (l *builtLogger) Shutdown(context.Context) error {
 func registerLogDriver(t *testing.T, factory func() Logger) string {
 	t.Helper()
 	name := "unpublished-" + strings.ReplaceAll(t.Name(), "/", "-")
-	Drivers().Register(name, func(context.Context, LogConfig) (Logger, error) { return factory(), nil })
+	Drivers().Register(name, func(context.Context, Config) (Logger, error) { return factory(), nil })
 	t.Cleanup(func() { Drivers().Override(name, nil) })
 	return name
 }

@@ -11,7 +11,7 @@ import (
 
 func TestNewMailer(t *testing.T) {
 	t.Run("with log driver", func(t *testing.T) {
-		mailer, err := mail.NewMailer(mail.MailConfig{Driver: "log"})
+		mailer, err := mail.NewMailer(mail.Config{Driver: "log"})
 		if err != nil {
 			t.Errorf("Expected no error creating log mailer, got %v", err)
 		}
@@ -22,7 +22,7 @@ func TestNewMailer(t *testing.T) {
 	})
 
 	t.Run("with empty driver falls back to log", func(t *testing.T) {
-		mailer, err := mail.NewMailer(mail.MailConfig{Driver: ""})
+		mailer, err := mail.NewMailer(mail.Config{Driver: ""})
 		if err != nil {
 			t.Errorf("Expected no error with empty driver, got %v", err)
 		}
@@ -34,7 +34,7 @@ func TestNewMailer(t *testing.T) {
 }
 
 func TestNewMailerWithInvalidDriver(t *testing.T) {
-	_, err := mail.NewMailer(mail.MailConfig{Driver: "invalid"})
+	_, err := mail.NewMailer(mail.Config{Driver: "invalid"})
 	if err == nil {
 		t.Error("Expected error creating mailer with invalid driver")
 	}
@@ -47,14 +47,14 @@ func (m *mockMailer) Send(ctx context.Context, msg *mail.Message) error {
 }
 
 func TestRegisterDriver(t *testing.T) {
-	mail.Drivers().Register("custom", func(_ context.Context, cfg mail.MailConfig) (mail.Mailer, error) {
+	mail.Drivers().Register("custom", func(_ context.Context, cfg mail.Config) (mail.Mailer, error) {
 		return &mockMailer{}, nil
 	})
 	// The registry is process-wide: remove the driver so a rerun
 	// (-count) can register it again.
 	t.Cleanup(func() { mail.Drivers().Override("custom", nil) })
 
-	mailer, err := mail.NewMailer(mail.MailConfig{Driver: "custom"})
+	mailer, err := mail.NewMailer(mail.Config{Driver: "custom"})
 	if err != nil {
 		t.Errorf("Expected no error with custom driver, got %v", err)
 	}

@@ -144,7 +144,7 @@ func TestSave_InlineAfterCommitPanicWritesThroughTheManagerLogger(t *testing.T) 
 // The manager hands its logger to its connections' query logger, those it
 // holds when SetLogger runs and those added later.
 func TestManagerSetLogger_ReachesTheQueryLogger(t *testing.T) {
-	m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:", LogQueries: true})
+	m, err := NewManager(Config{Driver: "sqlite", Database: ":memory:", LogQueries: true})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

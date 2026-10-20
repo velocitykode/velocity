@@ -27,7 +27,7 @@ type Logger = contract.Logger
 // alongside the built-in console / file / daily / stack / null drivers.
 // An empty config.Driver defaults to "console"; if the console driver is
 // not registered the registry still returns a clear unknown-driver error.
-func NewLogger(config LogConfig) (Logger, error) {
+func NewLogger(config Config) (Logger, error) {
 	return NewLoggerWithContext(context.Background(), config)
 }
 
@@ -36,9 +36,9 @@ func NewLogger(config LogConfig) (Logger, error) {
 // when resolving its child channels.
 //
 // An empty config.Driver defaults to "console" (the always-registered
-// light root driver) so a zero-value LogConfig produces a working logger
+// light root driver) so a zero-value Config produces a working logger
 // rather than an unknown-driver error.
-func NewLoggerWithContext(ctx context.Context, config LogConfig) (Logger, error) {
+func NewLoggerWithContext(ctx context.Context, config Config) (Logger, error) {
 	driver := config.Driver
 	if driver == "" {
 		driver = "console"

@@ -15,7 +15,7 @@ import (
 // application declares its user model through the root package, without
 // naming the user store package at all.
 func TestSetAuthModel_InstallsApplicationModel(t *testing.T) {
-	manager := initAuth(auth.Config{}, auth.SessionConfig{}, nil, nil)
+	manager := initAuth(auth.Config{}, nil, nil)
 	services := &app.Services{Auth: manager}
 
 	if err := SetAuthModel[wiringAdmin](services,
@@ -39,7 +39,7 @@ func TestSetAuthModel_InstallsApplicationModel(t *testing.T) {
 // bcrypt cost survives the swap rather than resetting to the user store's own
 // default.
 func TestSetAuthModel_InheritsManagerHasher(t *testing.T) {
-	manager := initAuth(auth.Config{BcryptCost: 12}, auth.SessionConfig{}, nil, nil)
+	manager := initAuth(auth.Config{BcryptCost: 12}, nil, nil)
 	services := &app.Services{Auth: manager}
 
 	if err := SetAuthModel[ormauth.User](services); err != nil {
@@ -60,7 +60,7 @@ func TestSetAuthModel_InheritsManagerHasher(t *testing.T) {
 // order: the inherited hasher is applied first so an explicit one replaces
 // it rather than being replaced by it.
 func TestSetAuthModel_CallerOptionsWinOverInheritedHasher(t *testing.T) {
-	manager := initAuth(auth.Config{BcryptCost: 12}, auth.SessionConfig{}, nil, nil)
+	manager := initAuth(auth.Config{BcryptCost: 12}, nil, nil)
 	services := &app.Services{Auth: manager}
 
 	explicit := auth.NewBcryptHasher(10)
@@ -78,7 +78,7 @@ func TestSetAuthModel_CallerOptionsWinOverInheritedHasher(t *testing.T) {
 // installation: a model the user store cannot map is a boot error naming the
 // problem, and the previously installed user store is left in place.
 func TestSetAuthModel_RejectsUnmappableModel(t *testing.T) {
-	manager := initAuth(auth.Config{}, auth.SessionConfig{}, nil, nil)
+	manager := initAuth(auth.Config{}, nil, nil)
 	services := &app.Services{Auth: manager}
 	before := manager.DefaultUserStore()
 
@@ -114,7 +114,7 @@ func TestSetAuthModel_WithoutAuthConfigured(t *testing.T) {
 // TestORMUserStore_BuildsWithoutInstalling covers the escape hatch used
 // when the caller wants the user store itself.
 func TestORMUserStore_BuildsWithoutInstalling(t *testing.T) {
-	manager := initAuth(auth.Config{}, auth.SessionConfig{}, nil, nil)
+	manager := initAuth(auth.Config{}, nil, nil)
 	before := manager.DefaultUserStore()
 
 	userStore := ORMUserStore[wiringAdmin](

@@ -157,7 +157,7 @@ func (m *Manager) OwnsCaller() bool {
 // NewLogger's stack constructs siblings ad hoc from cfg.Config["stack"].
 //
 // Non-stack drivers delegate to the canonical driver registry. Channel
-// configuration (level, path, max-age) is forwarded through LogConfig so
+// configuration (level, path, max-age) is forwarded through Config so
 // the registered factory uses the same fields as standalone NewLogger.
 func (m *Manager) createLogger(cfg ChannelConfig) (Logger, error) {
 	if cfg.Driver == "stack" {
@@ -203,7 +203,7 @@ func (m *Manager) createLogger(cfg ChannelConfig) (Logger, error) {
 	for k, v := range cfg.Options {
 		driverConfig[k] = v
 	}
-	return driverRegistry.Resolve(context.Background(), cfg.Driver, LogConfig{Driver: cfg.Driver, Config: driverConfig})
+	return driverRegistry.Resolve(context.Background(), cfg.Driver, Config{Driver: cfg.Driver, Config: driverConfig})
 }
 
 // ToStringSlice coerces a config value into a []string, accepting both a

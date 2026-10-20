@@ -51,7 +51,7 @@ type QueryExecuted struct {
 	// or the number of rows the caller consumed from a read.
 	RowsAffected int64
 	// Slow reports that Duration exceeded the connection's slow threshold
-	// (ManagerConfig.SlowThreshold, DB_SLOW_QUERY_THRESHOLD in an app).
+	// (Config.SlowThreshold, DB_SLOW_QUERY_THRESHOLD in an app).
 	// The same statement wrote the "velocity/orm: slow query" warn line.
 	// Always false when the threshold is zero.
 	Slow       bool

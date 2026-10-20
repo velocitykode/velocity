@@ -18,7 +18,7 @@ import (
 // channel through log.Drivers().Resolve; the default child set ("console" plus
 // "daily") requires the file leaf, so log/standard wires both leaves together.
 func init() {
-	log.Drivers().Register("stack", func(ctx context.Context, cfg log.LogConfig) (log.Logger, error) {
+	log.Drivers().Register("stack", func(ctx context.Context, cfg log.Config) (log.Logger, error) {
 		// Prefer the unified "channels" key (what the Manager's stack uses),
 		// falling back to the legacy "stack" key. Coerce via log.ToStringSlice
 		// so a []any-of-string (the shape JSON/env decoding yields) is accepted
@@ -58,7 +58,7 @@ func init() {
 			if name == "stack" {
 				continue // prevent recursion
 			}
-			child, err := log.Drivers().Resolve(ctx, name, log.LogConfig{Driver: name, Config: cfg.Config})
+			child, err := log.Drivers().Resolve(ctx, name, log.Config{Driver: name, Config: cfg.Config})
 			if err != nil {
 				childErrs = append(childErrs, errchain.Errorf("velocity/log: stack driver: child %q: %w", name, err))
 				continue

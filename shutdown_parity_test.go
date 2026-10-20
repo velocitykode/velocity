@@ -150,15 +150,15 @@ func TestShutdown_ClearsQueuePayloadEncryptor(t *testing.T) {
 			Key: "base64:MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
 		},
 		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
-		Log: log.LogConfig{
+		Log: log.Config{
 			Driver: "console",
 			Config: make(map[string]any),
 		},
-		Queue: queue.QueueConfig{
+		Queue: queue.Config{
 			Driver:  "memory",
 			Encrypt: true,
 		},
-		Mail: mail.MailConfig{
+		Mail: mail.Config{
 			Driver: "log",
 		},
 	}))

@@ -177,12 +177,12 @@ func TestCSRFToken_FollowsLoginAndLogout(t *testing.T) {
 				t.Fatalf("POST with the post-login token = %d, want 200", w.Code)
 			}
 
-			cookieBeforeLogout := jar[a.config.Session.Name]
+			cookieBeforeLogout := jar[a.config.Auth.Session.Name]
 			if w := jar.send(t, a.Router, http.MethodPost, "/logout", signedIn); w.Code != http.StatusOK {
 				t.Fatalf("POST /logout = %d", w.Code)
 			}
 			// A captured pre-logout cookie with its token must not pass.
-			replay := csrfBagJar{a.config.Session.Name: cookieBeforeLogout}
+			replay := csrfBagJar{a.config.Auth.Session.Name: cookieBeforeLogout}
 			if w := replay.send(t, a.Router, http.MethodPost, "/form", signedIn); w.Code != contract419 {
 				t.Fatalf("POST replaying the pre-logout session and token = %d, want 419", w.Code)
 			}

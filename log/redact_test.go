@@ -622,7 +622,7 @@ func TestFactoryWiring_RedactOptInViaConfig(t *testing.T) {
 	resetDefaultRedactorCache(t)
 
 	tempDir := t.TempDir()
-	logger, err := NewLogger(LogConfig{
+	logger, err := NewLogger(Config{
 		Driver: "file",
 		Config: map[string]any{
 			"path":   tempDir,
@@ -664,7 +664,7 @@ func TestFactoryWiring_RedactEmailsViaConfig(t *testing.T) {
 	resetDefaultRedactorCache(t)
 
 	tempDir := t.TempDir()
-	logger, err := NewLogger(LogConfig{
+	logger, err := NewLogger(Config{
 		Driver: "file",
 		Config: map[string]any{"path": tempDir, "redact": true, "redact_emails": true},
 	})
@@ -696,7 +696,7 @@ func TestFactoryWiring_DefaultIsNoRedaction(t *testing.T) {
 	resetDefaultRedactorCache(t)
 
 	tempDir := t.TempDir()
-	logger, err := NewLogger(LogConfig{
+	logger, err := NewLogger(Config{
 		Driver: "file",
 		Config: map[string]any{"path": tempDir},
 	})

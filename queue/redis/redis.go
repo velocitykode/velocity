@@ -30,7 +30,7 @@ import (
 // in the go-redis dependency; importing this package (directly or via
 // queue/standard) wires the "redis" factory.
 func init() {
-	queue.Drivers().Register("redis", func(_ context.Context, cfg queue.QueueConfig) (queue.Driver, error) {
+	queue.Drivers().Register("redis", func(_ context.Context, cfg queue.Config) (queue.Driver, error) {
 		return newRedisDriver(cfg.Redis, cfg.Logger)
 	})
 }
@@ -83,7 +83,7 @@ func New(cfg queue.RedisConfig) (queue.Driver, error) {
 // NewRedisDriver creates a new Redis queue driver. It has no logger until
 // SetLogger installs one: its startup warnings and advisories go to the
 // framework's standalone fallback logger. Built through queue.NewQueue, it
-// logs through QueueConfig.Logger from construction on.
+// logs through queue.Config.Logger from construction on.
 func NewRedisDriver(config queue.RedisConfig) (*RedisDriver, error) {
 	return newRedisDriver(config, nil)
 }

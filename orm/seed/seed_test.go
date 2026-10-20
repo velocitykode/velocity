@@ -71,7 +71,7 @@ func recording(name string, order *[]string) *stubSeeder {
 
 func newTestManager(t *testing.T) *orm.Manager {
 	t.Helper()
-	manager, err := orm.NewManager(orm.ManagerConfig{
+	manager, err := orm.NewManager(orm.Config{
 		Driver:   "sqlite",
 		Database: ":memory:",
 	})

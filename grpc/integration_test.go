@@ -89,7 +89,7 @@ func startRig(t *testing.T, configure func(s *grpc.Server, p *panickingHealth)) 
 	// released for anyone else to take.
 	lis := testnet.Loopback(t)
 
-	logger, _ := log.NewLogger(log.LogConfig{Driver: "null"})
+	logger, _ := log.NewLogger(log.Config{Driver: "null"})
 	panicSvc := &panickingHealth{}
 	s := grpc.NewServer(grpc.Config{},
 		grpc.WithListener(lis),

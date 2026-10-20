@@ -30,20 +30,20 @@ func baseSignedURLBootConfig() Config {
 		Debug: false, // production must not set Debug=true
 		Port:  "0",
 		Cache: cache.SingleStoreConfig("test_cache", cache.StoreConfig{Driver: "memory"}),
-		Log: log.LogConfig{
+		Log: log.Config{
 			Driver: "console",
 			Config: make(map[string]any),
 		},
-		Queue: queue.QueueConfig{Driver: "memory"},
-		Mail:  mail.MailConfig{Driver: "log"},
-		Session: auth.SessionConfig{
+		Queue: queue.Config{Driver: "memory"},
+		Mail:  mail.Config{Driver: "log"},
+		Auth: auth.Config{Session: auth.SessionConfig{
 			Name:         "velocity_session",
 			IdleLifetime: 120,
 			Path:         "/",
 			Secure:       true,
 			HttpOnly:     true,
 			SameSite:     http.SameSiteLaxMode,
-		},
+		}},
 		CSRF: *csrfCfg,
 	}
 }

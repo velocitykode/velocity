@@ -28,7 +28,7 @@ func resetQueueSigningState(t *testing.T) {
 func TestInitQueue_FailsClosedOnEmptyKeyInProduction(t *testing.T) {
 	resetQueueSigningState(t)
 
-	_, err := initQueue(queue.QueueConfig{Driver: "memory"}, nil, "", "", "production", nil, log.NewNullLogger())
+	_, err := initQueue(queue.Config{Driver: "memory"}, nil, "", "", "production", nil, log.NewNullLogger())
 	if !errors.Is(err, queue.ErrSigningKeyRequired) {
 		t.Fatalf("expected ErrSigningKeyRequired, got %v", err)
 	}
@@ -41,7 +41,7 @@ func TestInitQueue_FailsClosedOnEmptyKeyInProduction(t *testing.T) {
 // log path stays so the choice is visible.
 func TestInitQueue_QueueAcceptUnsignedAllowsEmptyKey(t *testing.T) {
 	resetQueueSigningState(t)
-	d, err := initQueue(queue.QueueConfig{Driver: "memory", AcceptUnsigned: true}, nil, "", "", "production", nil, log.NewNullLogger())
+	d, err := initQueue(queue.Config{Driver: "memory", AcceptUnsigned: true}, nil, "", "", "production", nil, log.NewNullLogger())
 	if err != nil {
 		t.Fatalf("expected nil error with AcceptUnsigned, got %v", err)
 	}
@@ -59,7 +59,7 @@ func TestInitQueue_QueueAcceptUnsignedAllowsEmptyKey(t *testing.T) {
 func TestInitQueue_ValidSigningKeyEnablesSigning(t *testing.T) {
 	resetQueueSigningState(t)
 
-	d, err := initQueue(queue.QueueConfig{Driver: "memory", SigningKey: "real-signing-key-32-bytes-long!!"}, nil, "", "", "production", nil, log.NewNullLogger())
+	d, err := initQueue(queue.Config{Driver: "memory", SigningKey: "real-signing-key-32-bytes-long!!"}, nil, "", "", "production", nil, log.NewNullLogger())
 	if err != nil {
 		t.Fatalf("expected nil error with a real signing key, got %v", err)
 	}
@@ -79,7 +79,7 @@ func TestInitQueue_ShortSigningKeyFailsClosed(t *testing.T) {
 	resetQueueSigningState(t)
 
 	shortKey := "31-byte-key-aaaaaaaaaaaaaaaaaaa"
-	_, err := initQueue(queue.QueueConfig{Driver: "memory", SigningKey: shortKey}, nil, "", "", "production", nil, log.NewNullLogger())
+	_, err := initQueue(queue.Config{Driver: "memory", SigningKey: shortKey}, nil, "", "", "production", nil, log.NewNullLogger())
 	if !errors.Is(err, queue.ErrSigningKeyTooShort) {
 		t.Fatalf("expected ErrSigningKeyTooShort, got %v", err)
 	}
@@ -95,7 +95,7 @@ func TestInitQueue_ShortSigningKeyFailsClosed(t *testing.T) {
 func TestInitQueue_DevEnvAllowsEmptyKey(t *testing.T) {
 	resetQueueSigningState(t)
 
-	d, err := initQueue(queue.QueueConfig{Driver: "memory"}, nil, "", "", "local", nil, log.NewNullLogger())
+	d, err := initQueue(queue.Config{Driver: "memory"}, nil, "", "", "local", nil, log.NewNullLogger())
 	if err != nil {
 		t.Fatalf("expected nil error in dev env, got %v", err)
 	}

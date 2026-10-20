@@ -34,7 +34,7 @@ func registerSleep() {
 func TestManagerSlowThreshold_WarnsAndMarksQueryExecuted(t *testing.T) {
 	registerSleep()
 	const threshold = 100 * time.Millisecond
-	m, err := NewManager(ManagerConfig{Driver: "sqlite", Database: ":memory:", MaxOpenConns: 1, SlowThreshold: threshold})
+	m, err := NewManager(Config{Driver: "sqlite", Database: ":memory:", MaxOpenConns: 1, SlowThreshold: threshold})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

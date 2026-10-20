@@ -271,7 +271,7 @@ func TestConfigValidate_ReachesPackageValidators(t *testing.T) {
 		want string
 	}{
 		{"db", func(c *Config) {
-			c.DB = orm.ManagerConfig{Driver: "sqlite", MaxOpenConns: -1}
+			c.DB = orm.Config{Driver: "sqlite", MaxOpenConns: -1}
 		}, "velocity/orm: MaxIdleConns and MaxOpenConns must be non-negative"},
 		{"cache", func(c *Config) {
 			c.Cache = cache.SingleStoreConfig("p", cache.StoreConfig{Driver: cache.DriverFile})

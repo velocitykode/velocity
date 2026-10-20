@@ -50,7 +50,7 @@ func TestNew_CSRFTokenLivesInTheSession(t *testing.T) {
 			if _, ok := a.config.CSRF.Store.(*stores.SessionBagStore); !ok {
 				t.Fatalf("CSRF store %T, want *stores.SessionBagStore", a.config.CSRF.Store)
 			}
-			if got := csrfConsumedTokenLifetime(a.config.Session); got != tt.want {
+			if got := csrfConsumedTokenLifetime(a.config.Auth.Session); got != tt.want {
 				t.Fatalf("consumed token lifetime = %v, want %v", got, tt.want)
 			}
 		})
@@ -114,7 +114,7 @@ func TestConfigFromEnv_SessionRememberLifetime(t *testing.T) {
 	for _, tt := range tests {
 		t.Setenv("SESSION_IDLE_LIFETIME", "120")
 		t.Setenv("SESSION_REMEMBER_LIFETIME", tt.env)
-		if got := ConfigFromEnv().Session.RememberTimeout(); got != tt.want {
+		if got := ConfigFromEnv().Auth.Session.RememberTimeout(); got != tt.want {
 			t.Errorf("SESSION_REMEMBER_LIFETIME=%q: RememberTimeout = %v, want %v", tt.env, got, tt.want)
 		}
 	}
