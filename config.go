@@ -294,15 +294,7 @@ func WithSchedulerInProcess() Option {
 
 // ConfigFromEnv loads configuration from environment variables and .env file.
 func ConfigFromEnv() Config {
-	r := &envReader{}
-	// Load .env file if present; warn if it exists but fails to parse.
-	// This runs before any app logger exists, so the warning goes through
-	// the framework's standalone fallback logger (standard error).
-	if err := godotenv.Load(); err != nil {
-		if _, statErr := os.Stat(".env"); statErr == nil {
-			fallbacklog.Logger{}.Warn("velocity: .env file exists but failed to parse", "error", err)
-		}
-	}
+	r := NewEnvReader()
 
 	// Config.Env is the normalised (lowercased, trimmed) APP_ENV. Unset stays
 	// empty, which every gate classifies as production, so a deploy that
@@ -313,19 +305,19 @@ func ConfigFromEnv() Config {
 	envValue := strings.ToLower(r.raw(app.EnvVar))
 	config := Config{
 		Env:      envValue,
-		Debug:    r.bool("APP_DEBUG", false),
-		Port:     r.str("APP_PORT", "4000"),
+		Debug:    r.Bool("APP_DEBUG", false),
+		Port:     r.String("APP_PORT", "4000"),
 		Key:      os.Getenv("APP_KEY"),
 		FileRoot: os.Getenv("FILE_ROOT"),
-		Timezone: r.str("APP_TIMEZONE", "UTC"),
+		Timezone: r.String("APP_TIMEZONE", "UTC"),
 	}
 
 	// Database
 	dbConnection := r.driver("DB_CONNECTION", "")
 	config.DB = orm.Config{
 		Driver:          dbConnection,
-		Host:            r.str("DB_HOST", "127.0.0.1"),
-		Port:            r.port("DB_PORT", defaultPortForDriver(dbConnection)),
+		Host:            r.String("DB_HOST", "127.0.0.1"),
+		Port:            r.Port("DB_PORT", defaultPortForDriver(dbConnection)),
 		Database:        os.Getenv("DB_DATABASE"),
 		Username:        os.Getenv("DB_USERNAME"),
 		Password:        os.Getenv("DB_PASSWORD"),
@@ -333,43 +325,43 @@ func ConfigFromEnv() Config {
 		SSLMode:         os.Getenv("DB_SSL_MODE"),
 		TLS:             os.Getenv("DB_MYSQL_TLS"),
 		TimeZone:        os.Getenv("DB_TIMEZONE"),
-		MaxIdleConns:    r.int("DB_MAX_IDLE_CONNS", 10),
-		MaxOpenConns:    r.int("DB_MAX_OPEN_CONNS", 100),
-		ConnMaxLifetime: time.Duration(r.int("DB_CONN_MAX_LIFETIME", 3600)) * time.Second,
-		LogQueries:      r.bool("DB_LOG_QUERIES", false),
-		SlowThreshold:   r.duration("DB_SLOW_QUERY_THRESHOLD", 0),
+		MaxIdleConns:    r.Int("DB_MAX_IDLE_CONNS", 10),
+		MaxOpenConns:    r.Int("DB_MAX_OPEN_CONNS", 100),
+		ConnMaxLifetime: time.Duration(r.Int("DB_CONN_MAX_LIFETIME", 3600)) * time.Second,
+		LogQueries:      r.Bool("DB_LOG_QUERIES", false),
+		SlowThreshold:   r.Duration("DB_SLOW_QUERY_THRESHOLD", 0),
 	}
 
 	// Session
 	sessionCfg := auth.SessionConfig{
-		Name:         r.str("SESSION_NAME", "velocity_session"),
-		IdleLifetime: r.int("SESSION_IDLE_LIFETIME", 120),
+		Name:         r.String("SESSION_NAME", "velocity_session"),
+		IdleLifetime: r.Int("SESSION_IDLE_LIFETIME", 120),
 		// Idle timeout in minutes: each request slides it, a session idle
 		// for longer ends. Absolute cap in minutes from sign-in, which
 		// activity never extends: 0 (the default) applies the framework
 		// default of 30 days; negative explicitly disables the cap
 		// (unbounded sessions).
-		AbsoluteLifetime: r.int("SESSION_ABSOLUTE_LIFETIME", 0),
+		AbsoluteLifetime: r.Int("SESSION_ABSOLUTE_LIFETIME", 0),
 		// Remember-me credential lifetime in minutes, independent of
 		// the session lifetime: 0 (the default) is 30 days.
-		RememberLifetime: r.int("SESSION_REMEMBER_LIFETIME", 0),
-		Path:             r.str("SESSION_PATH", "/"),
+		RememberLifetime: r.Int("SESSION_REMEMBER_LIFETIME", 0),
+		Path:             r.String("SESSION_PATH", "/"),
 		Domain:           os.Getenv("SESSION_DOMAIN"),
-		Secure:           r.bool("SESSION_SECURE", true),
-		HttpOnly:         r.bool("SESSION_HTTP_ONLY", true),
+		Secure:           r.Bool("SESSION_SECURE", true),
+		HttpOnly:         r.Bool("SESSION_HTTP_ONLY", true),
 		SameSite:         r.sameSite("SESSION_SAME_SITE"),
 		// Where the session lives: "cookie" (the default) in the
 		// encrypted cookie, "server" in the session's server record
 		// with only the id in the cookie (needs a cache backend).
-		Store: r.str("SESSION_STORE", auth.SessionStoreCookie),
+		Store: r.String("SESSION_STORE", auth.SessionStoreCookie),
 	}
 
 	// Auth
 	config.Auth = auth.Config{
 		DefaultScheme:  os.Getenv("AUTH_SCHEME"),
 		Schemes:        make(map[string]auth.SchemeConfig),
-		BcryptCost:     r.int("HASH_BCRYPT_COST", 10),
-		TrustedProxies: r.list("AUTH_TRUSTED_PROXIES"),
+		BcryptCost:     r.Int("HASH_BCRYPT_COST", 10),
+		TrustedProxies: r.List("AUTH_TRUSTED_PROXIES"),
 		Session:        sessionCfg,
 		// AUTH_ATTEMPT_FLOOR is the wall-clock floor for scheme Attempt
 		// (H-09); zero falls back to auth.DefaultAttemptFloor (200ms).
@@ -379,13 +371,13 @@ func ConfigFromEnv() Config {
 		// distinguishable from the wrong-password path running real
 		// bcrypt for 500ms+. Accepts time.ParseDuration syntax
 		// (e.g. "500ms", "1s"). See F2.
-		AttemptFloor: r.duration("AUTH_ATTEMPT_FLOOR", 0),
+		AttemptFloor: r.Duration("AUTH_ATTEMPT_FLOOR", 0),
 		// Login throttler. An unset or invalid value is zero, which the
 		// throttler reads as its default (see auth.LoginThrottleConfig).
 		LoginThrottle: auth.LoginThrottleConfig{
-			MaxAttempts:              r.positiveInt("AUTH_LOGIN_MAX_ATTEMPTS"),
-			MaxAttemptsPerIdentifier: r.positiveInt("AUTH_LOGIN_MAX_ATTEMPTS_PER_IDENTIFIER"),
-			MaxAttemptsPerIP:         r.positiveInt("AUTH_LOGIN_MAX_ATTEMPTS_PER_IP"),
+			MaxAttempts:              r.PositiveInt("AUTH_LOGIN_MAX_ATTEMPTS"),
+			MaxAttemptsPerIdentifier: r.PositiveInt("AUTH_LOGIN_MAX_ATTEMPTS_PER_IDENTIFIER"),
+			MaxAttemptsPerIP:         r.PositiveInt("AUTH_LOGIN_MAX_ATTEMPTS_PER_IP"),
 			Decay:                    r.loginDecay("AUTH_LOGIN_DECAY"),
 			IdentifierDelay:          r.loginDuration("AUTH_LOGIN_IDENTIFIER_DELAY", true),
 			IdentifierDelayMax:       r.loginDuration("AUTH_LOGIN_IDENTIFIER_DELAY_MAX", false),
@@ -415,9 +407,9 @@ func ConfigFromEnv() Config {
 				"jwt": auth.JWTConfig{
 					Secret:           os.Getenv("AUTH_JWT_SECRET"),
 					Algorithm:        jwtAlgo,
-					TTL:              r.int("AUTH_JWT_TTL", 60),
-					RefreshTTL:       r.int("AUTH_JWT_REFRESH_TTL", 20160),
-					BlacklistEnabled: r.bool("AUTH_JWT_BLACKLIST_ENABLED", true),
+					TTL:              r.Int("AUTH_JWT_TTL", 60),
+					RefreshTTL:       r.Int("AUTH_JWT_REFRESH_TTL", 20160),
+					BlacklistEnabled: r.Bool("AUTH_JWT_BLACKLIST_ENABLED", true),
 				},
 			},
 		}
@@ -430,29 +422,29 @@ func ConfigFromEnv() Config {
 	// matching edit here. Env overrides only the fields with explicit
 	// knobs; everything else inherits the package default.
 	csrfCfg := csrf.DefaultConfig()
-	csrfCfg.HeaderName = r.str("CSRF_HEADER", csrfCfg.HeaderName)
-	csrfCfg.FormField = r.str("CSRF_FORM_FIELD", csrfCfg.FormField)
-	csrfCfg.SessionCookieName = r.str("CSRF_SESSION_COOKIE", config.Auth.Session.Name)
-	csrfCfg.SingleUse = r.bool("CSRF_SINGLE_USE", false)
-	csrfCfg.ErrorMessage = r.str("CSRF_ERROR_MESSAGE", csrfCfg.ErrorMessage)
-	csrfCfg.WriteXSRFCookie = r.bool("CSRF_WRITE_XSRF_COOKIE", true)
-	csrfCfg.XSRFCookieName = r.str("CSRF_XSRF_COOKIE_NAME", csrfCfg.XSRFCookieName)
+	csrfCfg.HeaderName = r.String("CSRF_HEADER", csrfCfg.HeaderName)
+	csrfCfg.FormField = r.String("CSRF_FORM_FIELD", csrfCfg.FormField)
+	csrfCfg.SessionCookieName = r.String("CSRF_SESSION_COOKIE", config.Auth.Session.Name)
+	csrfCfg.SingleUse = r.Bool("CSRF_SINGLE_USE", false)
+	csrfCfg.ErrorMessage = r.String("CSRF_ERROR_MESSAGE", csrfCfg.ErrorMessage)
+	csrfCfg.WriteXSRFCookie = r.Bool("CSRF_WRITE_XSRF_COOKIE", true)
+	csrfCfg.XSRFCookieName = r.String("CSRF_XSRF_COOKIE_NAME", csrfCfg.XSRFCookieName)
 	config.CSRF = *csrfCfg
 
 	// Cache
-	redisTLS := r.bool("REDIS_TLS", false)
+	redisTLS := r.Bool("REDIS_TLS", false)
 	// One store, "default", on CACHE_DRIVER. Each driver reads only its
 	// own fields (memory: MaxEntries; file: Path; redis: the connection;
 	// memory and file: MaxValueBytes) and ignores the rest.
-	config.Cache = cache.SingleStoreConfig(r.str("CACHE_PREFIX", "velocity_cache"), cache.StoreConfig{
+	config.Cache = cache.SingleStoreConfig(r.String("CACHE_PREFIX", "velocity_cache"), cache.StoreConfig{
 		Driver:        r.driver("CACHE_DRIVER", cache.DriverMemory),
 		Path:          os.Getenv("CACHE_PATH"),
-		MaxEntries:    r.int("CACHE_MEMORY_MAX_ENTRIES", 0),
-		MaxValueBytes: r.int64("CACHE_MAX_VALUE_BYTES", 0),
-		Host:          r.str("REDIS_HOST", "127.0.0.1"),
-		Port:          r.int("REDIS_PORT", 6379),
+		MaxEntries:    r.Int("CACHE_MEMORY_MAX_ENTRIES", 0),
+		MaxValueBytes: r.Int64("CACHE_MAX_VALUE_BYTES", 0),
+		Host:          r.String("REDIS_HOST", "127.0.0.1"),
+		Port:          r.Int("REDIS_PORT", 6379),
 		Password:      os.Getenv("REDIS_PASSWORD"),
-		Database:      r.int("REDIS_DATABASE", 0),
+		Database:      r.Int("REDIS_DATABASE", 0),
 		TLS:           redisTLS,
 	})
 
@@ -464,18 +456,18 @@ func ConfigFromEnv() Config {
 	if logPath := os.Getenv("LOG_PATH"); logPath != "" {
 		config.Log.Config["path"] = logPath
 	}
-	config.Log.Config["days"] = r.int("LOG_DAYS", 14)
-	config.Log.Config["level"] = r.str("LOG_LEVEL", "debug")
+	config.Log.Config["days"] = r.Int("LOG_DAYS", 14)
+	config.Log.Config["level"] = r.String("LOG_LEVEL", "debug")
 	// Redaction (see log.WrapWithRedactors): the "stack" driver passes
 	// this map to every child, so the flags cover every channel of the
 	// app logger.
-	if r.bool("LOG_REDACT", false) {
+	if r.Bool("LOG_REDACT", false) {
 		config.Log.Config["redact"] = true
 	}
-	if r.bool("LOG_REDACT_EMAILS", false) {
+	if r.Bool("LOG_REDACT_EMAILS", false) {
 		config.Log.Config["redact_emails"] = true
 	}
-	if stack := r.list("LOG_STACK"); stack != nil {
+	if stack := r.List("LOG_STACK"); stack != nil {
 		config.Log.Config["stack"] = stack
 	}
 
@@ -486,9 +478,9 @@ func ConfigFromEnv() Config {
 	}
 	config.Crypto = crypto.Config{
 		Key:       cryptoKey,
-		Cipher:    r.str("CRYPTO_CIPHER", "AES-256-GCM"),
-		DisableV0: r.bool("CRYPTO_DISABLE_V0", false),
-		Debug:     r.bool("CRYPTO_DEBUG", false),
+		Cipher:    r.String("CRYPTO_CIPHER", "AES-256-GCM"),
+		DisableV0: r.Bool("CRYPTO_DISABLE_V0", false),
+		Debug:     r.Bool("CRYPTO_DEBUG", false),
 	}
 	if oldKeys := os.Getenv("CRYPTO_OLD_KEYS"); oldKeys != "" {
 		config.Crypto.PreviousKeys = strings.Split(oldKeys, ",")
@@ -498,8 +490,8 @@ func ConfigFromEnv() Config {
 	config.Queue = queue.Config{
 		Driver: r.driver("QUEUE_DRIVER", "memory"),
 		Redis: queue.RedisConfig{
-			Host:     r.str("QUEUE_REDIS_HOST", "localhost"),
-			Port:     r.port("QUEUE_REDIS_PORT", "6379"),
+			Host:     r.String("QUEUE_REDIS_HOST", "localhost"),
+			Port:     r.Port("QUEUE_REDIS_PORT", "6379"),
 			Password: os.Getenv("QUEUE_REDIS_PASSWORD"),
 			DB:       r.index("QUEUE_REDIS_DB", "0"),
 			TLS:      redisTLS,
@@ -507,8 +499,8 @@ func ConfigFromEnv() Config {
 		SigningKey: os.Getenv("QUEUE_SIGNING_KEY"),
 		// final: do not rename. QUEUE_ACCEPT_UNSIGNED is the 1.0 surface
 		// name for the queue payload-signing opt-out.
-		AcceptUnsigned: r.bool("QUEUE_ACCEPT_UNSIGNED", false),
-		Encrypt:        r.bool("QUEUE_ENCRYPT", false),
+		AcceptUnsigned: r.Bool("QUEUE_ACCEPT_UNSIGNED", false),
+		Encrypt:        r.Bool("QUEUE_ENCRYPT", false),
 	}
 
 	// Storage
@@ -520,7 +512,7 @@ func ConfigFromEnv() Config {
 	// Always configure a local disk
 	config.Storage.Disks["local"] = storage.DiskConfig{
 		Driver: "local",
-		Root:   r.str("FILESYSTEM_LOCAL_ROOT", "./storage/app"),
+		Root:   r.String("FILESYSTEM_LOCAL_ROOT", "./storage/app"),
 	}
 	// Configure S3 disk if credentials are present
 	if s3Bucket := os.Getenv("AWS_BUCKET"); s3Bucket != "" {
@@ -539,7 +531,7 @@ func ConfigFromEnv() Config {
 		Driver:            r.driver("MAIL_DRIVER", "log"),
 		FromAddress:       os.Getenv("MAIL_FROM_ADDRESS"),
 		FromName:          os.Getenv("MAIL_FROM_NAME"),
-		MaxAttachmentSize: r.int64("MAIL_MAX_ATTACHMENT_SIZE", mail.DefaultMaxAttachmentSize),
+		MaxAttachmentSize: r.Int64("MAIL_MAX_ATTACHMENT_SIZE", mail.DefaultMaxAttachmentSize),
 		Mailgun: mail.MailgunConfig{
 			Domain:            os.Getenv("MAIL_MAILGUN_DOMAIN"),
 			Secret:            os.Getenv("MAIL_MAILGUN_SECRET"),
@@ -552,7 +544,7 @@ func ConfigFromEnv() Config {
 		},
 		Local: mail.LocalConfig{
 			Host:         os.Getenv("MAIL_HOST"),
-			Port:         r.port("MAIL_PORT", ""),
+			Port:         r.Port("MAIL_PORT", ""),
 			Username:     os.Getenv("MAIL_USERNAME"),
 			Password:     os.Getenv("MAIL_PASSWORD"),
 			Encryption:   os.Getenv("MAIL_ENCRYPTION"),
@@ -564,74 +556,115 @@ func ConfigFromEnv() Config {
 	// build the view engine (with the built-in root template); the other
 	// VIEW_SSR_* variables tune SSR once it is enabled.
 	config.View = view.Config{
-		SSREnabled: r.bool("VIEW_SSR_ENABLED", false),
-		SSRURL:     r.str("VIEW_SSR_URL", "http://127.0.0.1:13714"),
-		SSRTimeout: r.duration("VIEW_SSR_TIMEOUT", 3*time.Second),
+		SSREnabled: r.Bool("VIEW_SSR_ENABLED", false),
+		SSRURL:     r.String("VIEW_SSR_URL", "http://127.0.0.1:13714"),
+		SSRTimeout: r.Duration("VIEW_SSR_TIMEOUT", 3*time.Second),
 		ErrorPage:  strings.TrimSpace(os.Getenv("VIEW_ERROR_PAGE")),
 	}
-	config.View.SSRExcept = r.list("VIEW_SSR_EXCEPT")
+	config.View.SSRExcept = r.List("VIEW_SSR_EXCEPT")
 
 	// Maintenance. An unset VELOCITY_MAINTENANCE_EXCLUDE_PATHS adds no paths.
 	config.Maintenance = maintenance.Config{
 		Root:         os.Getenv("VELOCITY_MAINTENANCE_ROOT"),
 		AppKey:       config.Key,
-		ExcludePaths: r.list("VELOCITY_MAINTENANCE_EXCLUDE_PATHS"),
+		ExcludePaths: r.List("VELOCITY_MAINTENANCE_EXCLUDE_PATHS"),
 	}
 
 	// gRPC. Environment is the same normalised APP_ENV as Config.Env.
 	config.GRPC = grpcconfig.Config{
-		ServerPort:       r.port("GRPC_PORT", ""),
-		EnableReflection: r.bool("GRPC_REFLECTION", false),
-		GatewayPort:      r.port("GATEWAY_PORT", ""),
+		ServerPort:       r.Port("GRPC_PORT", ""),
+		EnableReflection: r.Bool("GRPC_REFLECTION", false),
+		GatewayPort:      r.Port("GATEWAY_PORT", ""),
 		GRPCEndpoint:     os.Getenv("GRPC_ENDPOINT"),
 		Environment:      config.Env,
 		// final: do not rename. GRPC_INSECURE is the 1.0 surface name for
 		// the production TLS opt-out.
-		Insecure: r.bool("GRPC_INSECURE", false),
+		Insecure: r.Bool("GRPC_INSECURE", false),
 	}
 	config.GRPC.MaxRecvMsgSize = r.grpcMsgSize("GRPC_MAX_RECV_SIZE")
 	config.GRPC.MaxSendMsgSize = r.grpcMsgSize("GRPC_MAX_SEND_SIZE")
 
 	// Server timeouts
-	config.ReadTimeout = r.duration("SERVER_READ_TIMEOUT", 30*time.Second)
-	config.WriteTimeout = r.duration("SERVER_WRITE_TIMEOUT", 30*time.Second)
-	config.IdleTimeout = r.duration("SERVER_IDLE_TIMEOUT", 120*time.Second)
-	config.ReadHeaderTimeout = r.duration("SERVER_READ_HEADER_TIMEOUT", 10*time.Second)
+	config.ReadTimeout = r.Duration("SERVER_READ_TIMEOUT", 30*time.Second)
+	config.WriteTimeout = r.Duration("SERVER_WRITE_TIMEOUT", 30*time.Second)
+	config.IdleTimeout = r.Duration("SERVER_IDLE_TIMEOUT", 120*time.Second)
+	config.ReadHeaderTimeout = r.Duration("SERVER_READ_HEADER_TIMEOUT", 10*time.Second)
 
 	config.envErrs = r.errs
 	return config
 }
 
-// envReader reads the environment for ConfigFromEnv. Unset or empty keys
-// take the default. A set value that does not parse is recorded in errs and
-// its field keeps the default, so Validate (called by New) reports every
-// bad key at once instead of the app running with a value it was not given.
-type envReader struct {
+// EnvReader reads environment variables with the framework's strict rules,
+// for ConfigFromEnv and for an application's own keys. Unset or empty keys
+// take the default. A set value that does not parse is recorded and its
+// field keeps the default; Err returns every recorded problem at once, so
+// a typo stops boot instead of the app running with a value it was not
+// given. Values are trimmed; booleans accept 1, true, yes, on and 0, false,
+// no, off in any case.
+//
+// An application reads its settings in one place, at boot:
+//
+//	r := velocity.NewEnvReader()
+//	cfg := AppConfig{
+//		CORSOrigins: r.List("CORS_ALLOWED_ORIGINS"),
+//		PageSize:    r.Int("APP_PAGE_SIZE", 20),
+//	}
+//	if err := r.Err(); err != nil {
+//		return err
+//	}
+//
+// An EnvReader is not safe for concurrent use.
+type EnvReader struct {
 	errs []error
 }
 
+// NewEnvReader loads .env from the working directory, as ConfigFromEnv
+// does (variables already set in the process win), and returns a reader.
+func NewEnvReader() *EnvReader {
+	loadDotEnv()
+	return &EnvReader{}
+}
+
+// loadDotEnv loads .env if present and warns when it exists but does not
+// parse. It runs before any app logger exists, so the warning goes through
+// the framework's standalone fallback logger (standard error).
+func loadDotEnv() {
+	if err := godotenv.Load(); err != nil {
+		if _, statErr := os.Stat(".env"); statErr == nil {
+			fallbacklog.Logger{}.Warn("velocity: .env file exists but failed to parse", "error", err)
+		}
+	}
+}
+
+// Err returns every value the reader could not parse, joined with
+// errors.Join, each wrapping ErrInvalidConfig and naming the key and the
+// value; nil when every value parsed.
+func (r *EnvReader) Err() error {
+	return errors.Join(r.errs...)
+}
+
 // raw returns key's value with surrounding space trimmed.
-func (r *envReader) raw(key string) string {
+func (r *EnvReader) raw(key string) string {
 	return strings.TrimSpace(os.Getenv(key))
 }
 
 // invalid records that key holds raw, which is not want.
-func (r *envReader) invalid(key, raw, want string) {
+func (r *EnvReader) invalid(key, raw, want string) {
 	r.errs = append(r.errs, errchain.Errorf("%w: %s=%q is not %s", ErrInvalidConfig, key, raw, want))
 }
 
-// str returns key's value, or def when it is unset or empty. The value is
+// String returns key's value, or def when it is unset or empty. The value is
 // not trimmed: secrets and paths are taken as written.
-func (r *envReader) str(key, def string) string {
+func (r *EnvReader) String(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return def
 }
 
-// port reads a TCP port held as a string field: a set value must be an
+// Port reads a TCP port held as a string field: a set value must be an
 // integer from 1 to 65535. Unset is def.
-func (r *envReader) port(key, def string) string {
+func (r *EnvReader) Port(key, def string) string {
 	raw := r.raw(key)
 	if raw == "" {
 		return def
@@ -645,7 +678,7 @@ func (r *envReader) port(key, def string) string {
 
 // index reads a non-negative integer held as a string field, such as a
 // Redis database number. Unset is def.
-func (r *envReader) index(key, def string) string {
+func (r *EnvReader) index(key, def string) string {
 	raw := r.raw(key)
 	if raw == "" {
 		return def
@@ -660,15 +693,15 @@ func (r *envReader) index(key, def string) string {
 // driver reads a driver name, trimmed and lower-cased like the driver
 // registries' own lookup, so a later exact comparison (cache.DriverFile,
 // "stack") sees the same name the registry resolved. Unset is def.
-func (r *envReader) driver(key, def string) string {
+func (r *EnvReader) driver(key, def string) string {
 	if raw := r.raw(key); raw != "" {
 		return strings.ToLower(raw)
 	}
 	return def
 }
 
-// int reads a base-10 integer.
-func (r *envReader) int(key string, def int) int {
+// Int reads a base-10 integer.
+func (r *EnvReader) Int(key string, def int) int {
 	raw := r.raw(key)
 	if raw == "" {
 		return def
@@ -681,8 +714,8 @@ func (r *envReader) int(key string, def int) int {
 	return n
 }
 
-// int64 reads a base-10 integer in raw units (no K/M/G suffixes).
-func (r *envReader) int64(key string, def int64) int64 {
+// Int64 reads a base-10 integer in raw units (no K/M/G suffixes).
+func (r *EnvReader) Int64(key string, def int64) int64 {
 	raw := r.raw(key)
 	if raw == "" {
 		return def
@@ -695,9 +728,9 @@ func (r *envReader) int64(key string, def int64) int64 {
 	return n
 }
 
-// positiveInt reads an integer above zero; unset is 0, which the consumer
+// PositiveInt reads an integer above zero; unset is 0, which the consumer
 // reads as its own default.
-func (r *envReader) positiveInt(key string) int {
+func (r *EnvReader) PositiveInt(key string) int {
 	raw := r.raw(key)
 	if raw == "" {
 		return 0
@@ -710,8 +743,8 @@ func (r *envReader) positiveInt(key string) int {
 	return n
 }
 
-// duration reads a Go duration such as "30s" or "1m30s".
-func (r *envReader) duration(key string, def time.Duration) time.Duration {
+// Duration reads a Go duration such as "30s" or "1m30s".
+func (r *EnvReader) Duration(key string, def time.Duration) time.Duration {
 	raw := r.raw(key)
 	if raw == "" {
 		return def
@@ -724,9 +757,9 @@ func (r *envReader) duration(key string, def time.Duration) time.Duration {
 	return d
 }
 
-// bool reads 1, true, yes or on as true and 0, false, no or off as false,
+// Bool reads 1, true, yes or on as true and 0, false, no or off as false,
 // in any case.
-func (r *envReader) bool(key string, def bool) bool {
+func (r *EnvReader) Bool(key string, def bool) bool {
 	raw := r.raw(key)
 	switch strings.ToLower(raw) {
 	case "":
@@ -740,9 +773,9 @@ func (r *envReader) bool(key string, def bool) bool {
 	return def
 }
 
-// list splits a comma-separated value, trimming entries and dropping empty
+// List splits a comma-separated value, trimming entries and dropping empty
 // ones. Unset or empty is nil.
-func (r *envReader) list(key string) []string {
+func (r *EnvReader) List(key string) []string {
 	var out []string
 	for _, p := range strings.Split(os.Getenv(key), ",") {
 		if p = strings.TrimSpace(p); p != "" {
@@ -753,7 +786,7 @@ func (r *envReader) list(key string) []string {
 }
 
 // sameSite reads strict, lax or none (any case); unset is Lax.
-func (r *envReader) sameSite(key string) http.SameSite {
+func (r *EnvReader) sameSite(key string) http.SameSite {
 	raw := r.raw(key)
 	switch strings.ToLower(raw) {
 	case "", "lax":
@@ -771,7 +804,7 @@ func (r *envReader) sameSite(key string) http.SameSite {
 // "500ms") or bare seconds. Unset is 0 (the default). An explicit zero is 0
 // too, unless zeroDisables: then it is -1, the value
 // auth.LoginThrottleConfig reads as "disabled". Negative is invalid.
-func (r *envReader) loginDuration(key string, zeroDisables bool) time.Duration {
+func (r *EnvReader) loginDuration(key string, zeroDisables bool) time.Duration {
 	raw := r.raw(key)
 	if raw == "" {
 		return 0
@@ -797,7 +830,7 @@ func (r *envReader) loginDuration(key string, zeroDisables bool) time.Duration {
 
 // loginDecay reads AUTH_LOGIN_DECAY as a positive Go duration or bare
 // seconds. Unset is 0 (the default).
-func (r *envReader) loginDecay(key string) time.Duration {
+func (r *EnvReader) loginDecay(key string) time.Duration {
 	raw := r.raw(key)
 	if raw == "" {
 		return 0
@@ -813,8 +846,8 @@ func (r *envReader) loginDecay(key string) time.Duration {
 // grpcMsgSize reads a gRPC message-size limit in bytes. Unset is 0 (the
 // grpc package default); a set value must be a positive integer. The grpc
 // package clamps a value above its 1 GiB ceiling, with a warning.
-func (r *envReader) grpcMsgSize(key string) int {
-	return r.positiveInt(key)
+func (r *EnvReader) grpcMsgSize(key string) int {
+	return r.PositiveInt(key)
 }
 
 func defaultPortForDriver(driver string) string {

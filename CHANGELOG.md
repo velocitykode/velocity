@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - `velocity.EnvReader` for application settings
+
+- **The strict reader `ConfigFromEnv` uses is exported.**
+  `velocity.NewEnvReader()` loads `.env` like `ConfigFromEnv` and returns a
+  reader with `String`, `Int`, `Int64`, `PositiveInt`, `Duration`, `Bool`,
+  `List` and `Port`; `Err()` returns every value that did not parse, joined,
+  each wrapping `ErrInvalidConfig` and naming the key. An application reads
+  its own keys with it, under the same rules as the framework's, instead of
+  hand-written `os.Getenv` helpers that parse each key differently.
+
 ### Changed - Configuration: one reader, one shape, one rule at boot
 
 - **Packages no longer read the environment; `ConfigFromEnv()` reads every
@@ -86,7 +96,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is now true, like any unrecognised name, so every gate (error details,
   gRPC reflection and TLS, the mail log warning, destructive console
   commands, the `orm/testing` guards) fails closed when `APP_ENV` is
-  forgotten. Set `APP_ENV=local` (the starters do) or `testing` for tests.
+  forgotten. Set `APP_ENV=development` (the starters do; `vel serve`
+  defaults an unset value to it) or `testing` for tests.
 - **Breaking: no environment reads after boot.** `app.Env()`,
   `app.IsProduction()`, `app.IsTesting()` and `contract.GetEnv()` are
   removed. `Services.Env` (new) carries the booted `Config.Env`;

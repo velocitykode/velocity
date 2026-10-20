@@ -11,6 +11,12 @@ it, the field the value lands in. `ConfigFromEnv()` is the only reader: the
 boot classifies `Services.Env` (`s.IsProduction()`, `s.IsTesting()`, or the
 `contract.Is*Env` helpers on an explicit value).
 
+An application reads its own keys with the same reader:
+`r := velocity.NewEnvReader()`, then `r.String`, `r.Int`, `r.Int64`,
+`r.PositiveInt`, `r.Duration`, `r.Bool`, `r.List`, `r.Port`, and
+`r.Err()` once at boot, which reports every bad value with the rules
+below.
+
 Read sites are inventoried via:
 
 ```sh

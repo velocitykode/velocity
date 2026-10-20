@@ -131,7 +131,7 @@ func TestEnvReaderLoginDuration(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("%s/%v", tc.raw, tc.zeroDisables), func(t *testing.T) {
 			t.Setenv(envVar, tc.raw)
-			r := &envReader{}
+			r := &EnvReader{}
 			if got := r.loginDuration(envVar, tc.zeroDisables); got != tc.want {
 				t.Fatalf("loginDuration(%q, %v) = %v, want %v", tc.raw, tc.zeroDisables, got, tc.want)
 			}
