@@ -1,8 +1,8 @@
-package contract
+package maintenance
 
-// MaintenanceConfig configures the maintenance-mode gate and the down/up
+// Config configures the maintenance-mode gate and the down/up
 // commands that write its marker file.
-type MaintenanceConfig struct {
+type Config struct {
 	// Root is the absolute directory holding the .vel marker directory.
 	// Empty means the process working directory captured at first use.
 	// It must be absolute and contain no ".." segment; an invalid Root

@@ -4,7 +4,7 @@
 // single resolution policy keep them in sync.
 //
 // Resolution policy (first match wins):
-//  1. The configured root (contract.MaintenanceConfig.Root, read from
+//  1. The configured root (maintenance.Config.Root, read from
 //     VELOCITY_MAINTENANCE_ROOT by velocity.ConfigFromEnv), if set. Must be an absolute path
 //     and must not contain any `..` segment. Symlinked roots are accepted
 //     because the file inside may not exist yet (vel down creates it), but

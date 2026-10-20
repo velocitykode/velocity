@@ -1,4 +1,4 @@
-package velocity
+package maintenance
 
 import (
 	"crypto/hmac"
@@ -127,38 +127,38 @@ func readDownPayload(path string) (*downPayload, bool) {
 //
 // Webhook endpoints are intentionally NOT included by default because their
 // path layout varies per application (/webhooks/stripe, /api/webhooks/...
-// /hooks/github). Operators add their own via WithMaintenanceExcludePaths
+// /hooks/github). Operators add their own via WithExcludePaths
 // or the VELOCITY_MAINTENANCE_EXCLUDE_PATHS env var.
 var defaultMaintenanceExcludePaths = []string{"/healthz", "/livez", "/readyz"}
 
-// MaintenanceOption configures PreventRequestsDuringMaintenance.
-type MaintenanceOption func(*maintenanceConfig)
+// Option configures Middleware.
+type Option func(*resolved)
 
-// maintenanceConfig is the resolved option set for one middleware instance.
-type maintenanceConfig struct {
+// resolved is the resolved option set for one middleware instance.
+type resolved struct {
 	// excludePaths holds the request-path prefixes that bypass the 503
 	// short-circuit. Stored as a deduped slice, scanned linearly per
 	// request; on the order of a handful of entries so prefix-trie not
 	// warranted.
 	excludePaths []string
-	// root is the configured maintenance root (MaintenanceConfig.Root).
+	// root is the configured maintenance root (Config.Root).
 	root string
 	// salt is the HKDF salt for the bypass MAC, derived once at middleware
-	// construction from MaintenanceConfig.AppKey (see maintenanceSalt).
+	// construction from Config.AppKey (see maintenanceSalt).
 	salt []byte
 	// logger receives the one-time marker-path resolution warning: the
-	// logger WithMaintenanceLogger set, otherwise nil, which writes through
+	// logger WithLogger set, otherwise nil, which writes through
 	// the framework's standalone fallback logger.
 	logger contract.Logger
 }
 
-// WithMaintenanceExcludePaths appends path prefixes to the bypass list.
-// Each call adds to whatever the defaults + MaintenanceConfig.ExcludePaths
+// WithExcludePaths appends path prefixes to the bypass list.
+// Each call adds to whatever the defaults + Config.ExcludePaths
 // already produced; pass
 // the empty string nowhere because that would match every request and
 // silently disable the middleware.
-func WithMaintenanceExcludePaths(paths ...string) MaintenanceOption {
-	return func(c *maintenanceConfig) {
+func WithExcludePaths(paths ...string) Option {
+	return func(c *resolved) {
 		for _, p := range paths {
 			p = strings.TrimSpace(p)
 			if p == "" {
@@ -169,7 +169,7 @@ func WithMaintenanceExcludePaths(paths ...string) MaintenanceOption {
 	}
 }
 
-// WithMaintenanceLogger sets the logger used for the one-time marker-path
+// WithLogger sets the logger used for the one-time marker-path
 // resolution warning, written at warn level. Without it, or with nil, the
 // warning goes through the app logger of the request that resolves the
 // path (Services.Log), and through the framework's standalone fallback
@@ -178,23 +178,23 @@ func WithMaintenanceExcludePaths(paths ...string) MaintenanceOption {
 // process (see maintenancePathLogOnce), the logger supplied to the FIRST
 // middleware instance that resolves the path wins; loggers on any later
 // instance are not consulted for that line.
-func WithMaintenanceLogger(logger contract.Logger) MaintenanceOption {
-	return func(c *maintenanceConfig) {
+func WithLogger(logger contract.Logger) Option {
+	return func(c *resolved) {
 		if !nilval.Is(logger) {
 			c.logger = logger
 		}
 	}
 }
 
-// resolveMaintenanceConfig builds the per-instance config. Order:
-// defaults -> settings -> caller options. Caller options always win.
-func resolveMaintenanceConfig(settings contract.MaintenanceConfig, opts ...MaintenanceOption) *maintenanceConfig {
-	cfg := &maintenanceConfig{
+// resolve builds the per-instance config. Order:
+// defaults -> Config -> caller options. Caller options always win.
+func resolve(conf Config, opts ...Option) *resolved {
+	cfg := &resolved{
 		excludePaths: append([]string{}, defaultMaintenanceExcludePaths...),
-		root:         settings.Root,
-		salt:         maintenanceSalt(settings.AppKey),
+		root:         conf.Root,
+		salt:         maintenanceSalt(conf.AppKey),
 	}
-	for _, p := range settings.ExcludePaths {
+	for _, p := range conf.ExcludePaths {
 		p = strings.TrimSpace(p)
 		if p == "" {
 			continue
@@ -237,7 +237,7 @@ func matchesExcludePath(reqPath string, excludes []string) bool {
 	return false
 }
 
-// PreventRequestsDuringMaintenance returns middleware that returns a 503
+// Middleware returns middleware that returns a 503
 // Service Unavailable response while the application is in maintenance mode.
 //
 // If the down-file contains a secret and the request path matches "/" + secret,
@@ -249,14 +249,14 @@ func matchesExcludePath(reqPath string, excludes []string) bool {
 // Paths in the configured exclude list pass through to the next handler
 // even while in maintenance. The defaults ("/healthz", "/livez", "/readyz")
 // keep load-balancer probes happy; operators add webhook prefixes through
-// MaintenanceConfig.ExcludePaths (VELOCITY_MAINTENANCE_EXCLUDE_PATHS) or
-// WithMaintenanceExcludePaths.
+// Config.ExcludePaths (VELOCITY_MAINTENANCE_EXCLUDE_PATHS) or
+// WithExcludePaths.
 //
-// settings is the app's maintenance config; inside App.Middleware pass
+// conf is the app's maintenance config; inside App.Middleware pass
 // m.Maintenance(), which carries the root and the app key the down/up
 // commands use.
-func PreventRequestsDuringMaintenance(settings contract.MaintenanceConfig, opts ...MaintenanceOption) router.MiddlewareFunc {
-	cfg := resolveMaintenanceConfig(settings, opts...)
+func Middleware(conf Config, opts ...Option) router.MiddlewareFunc {
+	cfg := resolve(conf, opts...)
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c *router.Context) error {
 			logger := cfg.logger
@@ -336,7 +336,7 @@ func isDownForMaintenance(root string) bool {
 
 // maintenanceSalt returns the HKDF salt for the bypass MAC: the app key when
 // set, otherwise a fixed default. It is derived once at middleware
-// construction (see resolveMaintenanceConfig) and threaded down as a
+// construction (see resolve) and threaded down as a
 // parameter.
 func maintenanceSalt(appKey string) []byte {
 	salt := []byte(appKey)

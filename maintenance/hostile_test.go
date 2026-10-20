@@ -1,4 +1,4 @@
-package velocity
+package maintenance
 
 import (
 	"testing"

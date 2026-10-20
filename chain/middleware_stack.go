@@ -2,7 +2,7 @@ package chain
 
 import (
 	"github.com/velocitykode/velocity/app"
-	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/maintenance"
 	"github.com/velocitykode/velocity/router"
 )
 
@@ -13,13 +13,13 @@ type MiddlewareStack struct {
 	web         []router.MiddlewareFunc
 	api         []router.MiddlewareFunc
 	services    *app.Services
-	maintenance contract.MaintenanceConfig
+	maintenance maintenance.Config
 }
 
 // NewMiddlewareStack constructs a MiddlewareStack bound to the given services
 // and the app's maintenance settings. Callers inside the root velocity package
 // build this during bootstrap; user code never constructs one directly.
-func NewMiddlewareStack(services *app.Services, maintenance contract.MaintenanceConfig) *MiddlewareStack {
+func NewMiddlewareStack(services *app.Services, maintenance maintenance.Config) *MiddlewareStack {
 	return &MiddlewareStack{services: services, maintenance: maintenance}
 }
 
@@ -44,8 +44,8 @@ func (m *MiddlewareStack) Services() *app.Services {
 }
 
 // Maintenance returns the app's maintenance settings, for
-// velocity.PreventRequestsDuringMaintenance.
-func (m *MiddlewareStack) Maintenance() contract.MaintenanceConfig {
+// maintenance.Middleware.
+func (m *MiddlewareStack) Maintenance() maintenance.Config {
 	return m.maintenance
 }
 

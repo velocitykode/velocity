@@ -20,6 +20,7 @@ import (
 	"github.com/velocitykode/velocity/grpc"
 	"github.com/velocitykode/velocity/grpc/interceptors"
 	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/maintenance"
 	"github.com/velocitykode/velocity/notification"
 	notificationbroadcast "github.com/velocitykode/velocity/notification/broadcast"
 	"github.com/velocitykode/velocity/orm"
@@ -118,7 +119,7 @@ func TestAppLog_PassesToEveryLoggerOption(t *testing.T) {
 		{"queue.WithWorkerLogger", func() { _ = queue.WithWorkerLogger(log) }},
 		{"console.QueueWorkOptions.Logger", func() { _ = console.QueueWorkOptions{Logger: log} }},
 		{"bus.LoggingMiddleware", func() { _ = bus.LoggingMiddleware(log) }},
-		{"velocity.WithMaintenanceLogger", func() { _ = WithMaintenanceLogger(log) }},
+		{"maintenance.WithLogger", func() { _ = maintenance.WithLogger(log) }},
 		{"routerbridge.WithLogger", func() { _ = routerbridge.WithLogger(log) }},
 		{"problem.WithLogger", func() { _ = problem.WithLogger(log) }},
 		{"problem.WithHandlerLogger", func() { _ = problem.WithHandlerLogger(log) }},

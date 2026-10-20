@@ -1,11 +1,12 @@
-package velocity
+package maintenance
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/velocitykode/velocity/app"
 	"github.com/velocitykode/velocity/contract"
 	"github.com/velocitykode/velocity/internal/fallbacklog/fallbacklogtest"
 	"github.com/velocitykode/velocity/router"
@@ -20,13 +21,13 @@ func runMaintenanceOnce(t *testing.T, mw router.MiddlewareFunc) {
 	}
 }
 
-// WithMaintenanceLogger takes the app's contract.Logger and receives the
+// WithLogger takes the app's contract.Logger and receives the
 // one-time marker-path warning at warn level.
-func TestWithMaintenanceLogger_ReceivesMarkerPathWarning(t *testing.T) {
+func TestWithLogger_ReceivesMarkerPathWarning(t *testing.T) {
 	root := useTempMaintRoot(t)
 	logs := &levelLogger{}
 
-	runMaintenanceOnce(t, PreventRequestsDuringMaintenance(contract.MaintenanceConfig{}, WithMaintenanceLogger(logs)))
+	runMaintenanceOnce(t, Middleware(Config{}, WithLogger(logs)))
 
 	if got := entriesWith(logs, "warn", "maintenance marker path resolved"); got != 1 {
 		t.Fatalf("warn entries = %d, want 1 (%+v)", got, logs.entries)
@@ -36,23 +37,23 @@ func TestWithMaintenanceLogger_ReceivesMarkerPathWarning(t *testing.T) {
 	}
 }
 
-// Without WithMaintenanceLogger (or with a nil one) the warning goes
+// Without WithLogger (or with a nil one) the warning goes
 // through the one framework fallback logger, and nothing through the
 // standard library log package or slog.Default.
-func TestPreventRequestsDuringMaintenance_WithoutLoggerWarnsThroughTheFallback(t *testing.T) {
+func TestMiddleware_WithoutLoggerWarnsThroughTheFallback(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		opts []MaintenanceOption
+		opts []Option
 	}{
 		{"no option", nil},
-		{"nil logger", []MaintenanceOption{WithMaintenanceLogger(nil)}},
+		{"nil logger", []Option{WithLogger(nil)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			useTempMaintRoot(t)
 			fallback := fallbacklogtest.Capture(t)
 			stdlib := fallbacklogtest.CaptureStdlib(t)
 
-			runMaintenanceOnce(t, PreventRequestsDuringMaintenance(contract.MaintenanceConfig{}, tc.opts...))
+			runMaintenanceOnce(t, Middleware(Config{}, tc.opts...))
 
 			if got := fallback.Count("WARN", "maintenance marker path resolved"); got != 1 {
 				t.Errorf("fallback lines = %d, want 1: %q", got, fallback.String())
@@ -77,17 +78,17 @@ func entriesWith(l *levelLogger, level, msg string) int {
 	return n
 }
 
-// Inside an app, the middleware without WithMaintenanceLogger writes the
-// marker-path warning through the request's app logger, not the fallback.
-func TestPreventRequestsDuringMaintenance_InAppWarnsThroughTheAppLogger(t *testing.T) {
+// Without WithLogger, the middleware writes the marker-path warning
+// through the request's app logger (Services.Log), not the fallback.
+func TestMiddleware_WarnsThroughTheRequestAppLogger(t *testing.T) {
 	useTempMaintRoot(t)
 	fallback := fallbacklogtest.Capture(t)
-	a, capture := newLoggerWiringApp(t, nil)
-	a.Router.Use(PreventRequestsDuringMaintenance(contract.MaintenanceConfig{}))
-	a.Router.Get("/", func(c *router.Context) error { return c.String(http.StatusOK, "ok") })
-
-	rec := httptest.NewRecorder()
-	a.Router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	capture := &levelLogger{}
+	c, _ := router.NewTestContext(http.MethodGet, "/")
+	c.SetServices(&app.Services{Log: capture})
+	if err := Middleware(Config{})(func(*router.Context) error { return nil })(c); err != nil {
+		t.Fatalf("middleware: %v", err)
+	}
 
 	if got := entriesWith(capture, "warn", "maintenance marker path resolved"); got != 1 {
 		t.Errorf("app logger warn entries = %d, want 1", got)
@@ -95,4 +96,30 @@ func TestPreventRequestsDuringMaintenance_InAppWarnsThroughTheAppLogger(t *testi
 	if got := fallback.Count("WARN", "maintenance marker path resolved"); got != 0 {
 		t.Errorf("fallback lines = %d, want 0: %q", got, fallback.String())
 	}
+}
+
+// levelLogger records every entry with its level.
+type levelLogger struct {
+	mu      sync.Mutex
+	entries []levelEntry
+}
+
+type levelEntry struct {
+	level string
+	msg   string
+	kvs   []any
+}
+
+func (l *levelLogger) Debug(msg string, kvs ...any) { l.add("debug", msg, kvs) }
+func (l *levelLogger) Info(msg string, kvs ...any)  { l.add("info", msg, kvs) }
+func (l *levelLogger) Warn(msg string, kvs ...any)  { l.add("warn", msg, kvs) }
+func (l *levelLogger) Error(msg string, kvs ...any) { l.add("error", msg, kvs) }
+func (l *levelLogger) Fatal(msg string, kvs ...any) { l.add("fatal", msg, kvs) }
+
+func (l *levelLogger) With(kvs ...any) contract.Logger { return contract.BindFields(l, kvs...) }
+
+func (l *levelLogger) add(level, msg string, kvs []any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = append(l.entries, levelEntry{level: level, msg: msg, kvs: kvs})
 }

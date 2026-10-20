@@ -1,4 +1,4 @@
-package velocity
+package maintenance
 
 import (
 	"bytes"
@@ -55,10 +55,10 @@ func createMarker(t *testing.T, content string) string {
 	return markerPath
 }
 
-func TestPreventRequestsDuringMaintenance_AppIsUp(t *testing.T) {
+func TestMiddleware_AppIsUp(t *testing.T) {
 	useTempMaintRoot(t)
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+	mw := Middleware(Config{})
 	handler := mw(func(c *router.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -73,11 +73,11 @@ func TestPreventRequestsDuringMaintenance_AppIsUp(t *testing.T) {
 	}
 }
 
-func TestPreventRequestsDuringMaintenance_AppIsDown(t *testing.T) {
+func TestMiddleware_AppIsDown(t *testing.T) {
 	useTempMaintRoot(t)
 	createMarker(t, `{"time":"2024-01-01T00:00:00Z"}`)
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+	mw := Middleware(Config{})
 	nextCalled := false
 	handler := mw(func(c *router.Context) error {
 		nextCalled = true
@@ -105,11 +105,11 @@ func TestPreventRequestsDuringMaintenance_AppIsDown(t *testing.T) {
 	}
 }
 
-func TestPreventRequestsDuringMaintenance_RecoversAfterUp(t *testing.T) {
+func TestMiddleware_RecoversAfterUp(t *testing.T) {
 	useTempMaintRoot(t)
 	markerPath := createMarker(t, `{}`)
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+	mw := Middleware(Config{})
 	handler := mw(func(c *router.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -136,11 +136,11 @@ func TestPreventRequestsDuringMaintenance_RecoversAfterUp(t *testing.T) {
 	}
 }
 
-func TestPreventRequestsDuringMaintenance_ContentType(t *testing.T) {
+func TestMiddleware_ContentType(t *testing.T) {
 	useTempMaintRoot(t)
 	createMarker(t, `{}`)
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+	mw := Middleware(Config{})
 	handler := mw(func(c *router.Context) error { return nil })
 
 	c, w := router.NewTestContext("GET", "/")
@@ -154,11 +154,11 @@ func TestPreventRequestsDuringMaintenance_ContentType(t *testing.T) {
 	}
 }
 
-func TestPreventRequestsDuringMaintenance_Concurrent(t *testing.T) {
+func TestMiddleware_Concurrent(t *testing.T) {
 	useTempMaintRoot(t)
 	createMarker(t, `{}`)
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+	mw := Middleware(Config{})
 	handler := mw(func(c *router.Context) error {
 		return c.JSON(http.StatusOK, nil)
 	})
@@ -234,7 +234,7 @@ func TestBypass_SecretPathMinting(t *testing.T) {
 			t.Setenv("APP_ENV", "testing")
 			createMarker(t, tc.markerJSON)
 
-			mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+			mw := Middleware(Config{})
 			nextCalled := false
 			handler := mw(func(c *router.Context) error {
 				nextCalled = true
@@ -294,7 +294,7 @@ func TestBypass_SecretHeaderMinting(t *testing.T) {
 	t.Setenv("APP_ENV", "testing")
 	createMarker(t, `{"secret":"letmein","time":"2026-01-01T00:00:00Z"}`)
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+	mw := Middleware(Config{})
 	nextCalled := false
 	handler := mw(func(c *router.Context) error {
 		nextCalled = true
@@ -344,7 +344,7 @@ func TestBypass_ValidCookieSkipsMaintenance(t *testing.T) {
 
 	cookie := mintMaintenanceBypassCookie("letmein", maintenanceBypassDefaultTTL, "")
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+	mw := Middleware(Config{})
 	nextCalled := false
 	handler := mw(func(c *router.Context) error {
 		nextCalled = true
@@ -386,7 +386,7 @@ func TestBypass_TamperedCookieIgnored(t *testing.T) {
 		{"bad-expiry", base64.RawURLEncoding.EncodeToString([]byte("notanumber:deadbeef"))},
 	}
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+	mw := Middleware(Config{})
 	handler := mw(func(c *router.Context) error {
 		return c.JSON(http.StatusOK, nil)
 	})
@@ -415,7 +415,7 @@ func TestBypass_ExpiredCookieIgnored(t *testing.T) {
 	// Mint with negative TTL so the embedded expiry is already in the past.
 	expired := mintMaintenanceBypassCookie("letmein", -time.Hour, "")
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+	mw := Middleware(Config{})
 	handler := mw(func(c *router.Context) error {
 		return c.JSON(http.StatusOK, nil)
 	})
@@ -437,7 +437,7 @@ func TestBypass_AbsentCookieReturns503(t *testing.T) {
 	t.Setenv("APP_ENV", "testing")
 	createMarker(t, `{"secret":"letmein"}`)
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+	mw := Middleware(Config{})
 	handler := mw(func(c *router.Context) error {
 		return c.JSON(http.StatusOK, nil)
 	})
@@ -463,7 +463,7 @@ func TestBypass_NoSecretInDownFileDisablesBypass(t *testing.T) {
 	// A cookie minted for some other secret should not be honoured.
 	cookie := mintMaintenanceBypassCookie("guess", maintenanceBypassDefaultTTL, "")
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+	mw := Middleware(Config{})
 	handler := mw(func(c *router.Context) error {
 		return c.JSON(http.StatusOK, nil)
 	})
@@ -503,7 +503,7 @@ func TestBypass_WrongSecretCookieIgnored(t *testing.T) {
 
 	cookie := mintMaintenanceBypassCookie("staging-secret", maintenanceBypassDefaultTTL, "")
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+	mw := Middleware(Config{})
 	handler := mw(func(c *router.Context) error {
 		return c.JSON(http.StatusOK, nil)
 	})
@@ -527,7 +527,7 @@ func TestBypass_MalformedDownFileBlocksBypass(t *testing.T) {
 
 	cookie := mintMaintenanceBypassCookie("any", maintenanceBypassDefaultTTL, "")
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+	mw := Middleware(Config{})
 	handler := mw(func(c *router.Context) error {
 		return c.JSON(http.StatusOK, nil)
 	})
@@ -638,7 +638,7 @@ func TestMaintenance_PathSurvivesCWDDrift(t *testing.T) {
 	// would slip through with 200 instead of 503.
 	t.Chdir("/tmp")
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+	mw := Middleware(Config{})
 	handler := mw(func(c *router.Context) error {
 		return c.JSON(http.StatusOK, nil)
 	})
@@ -673,7 +673,7 @@ func TestMaintenance_RejectsInvalidEnvRoot(t *testing.T) {
 			t.Cleanup(maintpath.Reset)
 			maintenancePathLogOnce = fallbacklog.Once{}
 
-			mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{Root: tc.val})
+			mw := Middleware(Config{Root: tc.val})
 			handler := mw(func(c *router.Context) error {
 				return c.JSON(http.StatusOK, nil)
 			})
@@ -697,7 +697,7 @@ func TestMaintenance_DefaultExcludePathsBypass503(t *testing.T) {
 	useTempMaintRoot(t)
 	createMarker(t, `{"time":"2026-01-01T00:00:00Z"}`)
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+	mw := Middleware(Config{})
 	handler := mw(func(c *router.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -722,7 +722,7 @@ func TestMaintenance_NonExcludedPathStill503(t *testing.T) {
 	useTempMaintRoot(t)
 	createMarker(t, `{}`)
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+	mw := Middleware(Config{})
 	handler := mw(func(c *router.Context) error {
 		return c.JSON(http.StatusOK, nil)
 	})
@@ -736,13 +736,13 @@ func TestMaintenance_NonExcludedPathStill503(t *testing.T) {
 	}
 }
 
-// TestMaintenance_WithMaintenanceExcludePathsOption pins the functional
+// TestMaintenance_WithExcludePathsOption pins the functional
 // option: operator-supplied prefixes are honored alongside the defaults.
-func TestMaintenance_WithMaintenanceExcludePathsOption(t *testing.T) {
+func TestMaintenance_WithExcludePathsOption(t *testing.T) {
 	useTempMaintRoot(t)
 	createMarker(t, `{}`)
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{}, WithMaintenanceExcludePaths("/webhooks", "/api/stripe"))
+	mw := Middleware(Config{}, WithExcludePaths("/webhooks", "/api/stripe"))
 	handler := mw(func(c *router.Context) error {
 		return c.JSON(http.StatusOK, nil)
 	})
@@ -770,15 +770,13 @@ func TestMaintenance_WithMaintenanceExcludePathsOption(t *testing.T) {
 	}
 }
 
-// TestMaintenance_ExcludePathsCSVEnv asserts the env var is parsed as a
-// comma-separated list with whitespace trimmed, and that the env entries
-// merge with the built-in defaults rather than replacing them.
-func TestMaintenance_ExcludePathsCSVEnv(t *testing.T) {
+// TestMaintenance_ConfigExcludePaths asserts Config.ExcludePaths entries are
+// trimmed and merge with the built-in defaults rather than replacing them.
+func TestMaintenance_ConfigExcludePaths(t *testing.T) {
 	useTempMaintRoot(t)
 	createMarker(t, `{}`)
-	t.Setenv("VELOCITY_MAINTENANCE_EXCLUDE_PATHS", "/webhooks/stripe, /webhooks/github ,/metrics")
 
-	mw := PreventRequestsDuringMaintenance(ConfigFromEnv().Maintenance)
+	mw := Middleware(Config{ExcludePaths: []string{"/webhooks/stripe", " /webhooks/github ", "/metrics"}})
 	handler := mw(func(c *router.Context) error {
 		return c.JSON(http.StatusOK, nil)
 	})
@@ -848,7 +846,7 @@ func TestMaintenance_ExcludePathSkipsBypassAndCookie(t *testing.T) {
 	t.Setenv("APP_ENV", "testing")
 	createMarker(t, `{"secret":"letmein"}`)
 
-	mw := PreventRequestsDuringMaintenance(contract.MaintenanceConfig{})
+	mw := Middleware(Config{})
 	handler := mw(func(c *router.Context) error {
 		return c.JSON(http.StatusOK, nil)
 	})

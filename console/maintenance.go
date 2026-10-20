@@ -17,7 +17,7 @@ import (
 type DownOptions struct {
 	Secret     string
 	RetryAfter int
-	// Root is the maintenance root (contract.MaintenanceConfig.Root); empty
+	// Root is the maintenance root (maintenance.Config.Root); empty
 	// means the working directory. It must match the root the running app
 	// resolves, or the gate never sees the marker.
 	Root string

@@ -23,6 +23,7 @@ import (
 	"github.com/velocitykode/velocity/internal/fallbacklog"
 	"github.com/velocitykode/velocity/log"
 	"github.com/velocitykode/velocity/mail"
+	"github.com/velocitykode/velocity/maintenance"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/queue"
 	"github.com/velocitykode/velocity/storage"
@@ -39,76 +40,94 @@ var ErrInvalidConfig = errors.New("velocity: invalid configuration")
 // Config holds all configuration for a Velocity application.
 // It replaces the scattered os.Getenv() calls across packages.
 type Config struct {
-	// App
-	Env   string // APP_ENV, empty when unset
-	Debug bool   // APP_DEBUG, default false
-	Port  string // APP_PORT, default "4000"
-	Key   string // APP_KEY (used for crypto)
-	// Timezone is the application's PRESENTATION timezone (APP_TIMEZONE,
-	// default "UTC"): an IANA location name applied at bootstrap to
-	// time.Local and to scheduler cron evaluation. Persistence never
-	// reads it - ORM/queue storage is unconditionally UTC.
-	Timezone string // APP_TIMEZONE, default "UTC"
-
-	// Database. A zero Driver means no database.
-	DB orm.Config
-
-	// Auth
+	// Auth configures authentication: schemes, password hashing, login
+	// throttling and the session (AUTH_*, HASH_*, SESSION_*).
 	Auth auth.Config
 
-	// Cache
-	Cache cache.Config
-
-	// Log
-	Log log.Config
-
-	// Queue
-	Queue queue.Config
-
-	// Storage
-	Storage storage.Config
-
-	// CSRF
+	// CSRF configures CSRF protection (CSRF_*).
 	CSRF csrf.Config
 
-	sessionSameSiteRaw string
+	// Cache configures the cache store (CACHE_*, REDIS_*).
+	Cache cache.Config
 
-	// View configures the view engine. New builds the engine when any of
-	// RootTemplate, ErrorPage (VIEW_ERROR_PAGE) or SSREnabled
-	// (VIEW_SSR_ENABLED) is set; an empty RootTemplate then means the
-	// built-in root template. With none of the three set, New builds no
-	// engine.
-	View view.Config
-
-	// Crypto
+	// Crypto configures the encryptor (CRYPTO_*).
 	Crypto crypto.Config
 
-	// Mail
+	// DB configures the database (DB_*). A zero Driver means no database.
+	DB orm.Config
+
+	// Debug enables debug mode (APP_DEBUG, default false).
+	Debug bool
+
+	// Env is the application environment (APP_ENV, empty when unset).
+	Env string
+
+	// FileRoot is the absolute directory under which Context.File,
+	// Context.Download and Context.SaveFile may operate; the router
+	// enforces containment via symlink resolution on every request
+	// (FILE_ROOT, default the working directory when New runs).
+	FileRoot string
+
+	// GRPC configures grpc.NewServer and grpc.NewGateway (GRPC_*,
+	// GATEWAY_*). New does not build a gRPC server; an app passes this to
+	// them.
+	GRPC contract.GRPCConfig
+
+	// IdleTimeout is the HTTP server idle timeout (SERVER_IDLE_TIMEOUT,
+	// default 120s).
+	IdleTimeout time.Duration
+
+	// Key is the application key used for crypto (APP_KEY).
+	Key string
+
+	// Log configures the application logger (LOG_*).
+	Log log.Config
+
+	// Mail configures the mailer (MAIL_*).
 	Mail mail.Config
 
 	// Maintenance configures the maintenance gate and the down/up
-	// commands. New passes it to App.Middleware as m.Maintenance(), with
-	// AppKey defaulted to Key.
-	Maintenance contract.MaintenanceConfig
+	// commands (VELOCITY_MAINTENANCE_*). New passes it to App.Middleware
+	// as m.Maintenance(), with AppKey defaulted to Key.
+	Maintenance maintenance.Config
 
-	// GRPC is the configuration for grpc.NewServer and grpc.NewGateway.
-	// New does not build a gRPC server; an app passes this to them.
-	GRPC contract.GRPCConfig
+	// Port is the HTTP listen port (APP_PORT, default "4000").
+	Port string
 
-	// Server timeouts
-	ReadTimeout       time.Duration // SERVER_READ_TIMEOUT, default 30s
-	WriteTimeout      time.Duration // SERVER_WRITE_TIMEOUT, default 30s
-	IdleTimeout       time.Duration // SERVER_IDLE_TIMEOUT, default 120s
-	ReadHeaderTimeout time.Duration // SERVER_READ_HEADER_TIMEOUT, default 10s
+	// Queue configures the job queue (QUEUE_*, REDIS_*).
+	Queue queue.Config
 
-	// FileRoot is the absolute directory under which Context.File,
-	// Context.Download, and Context.SaveFile may operate. Sourced from
-	// FILE_ROOT; defaults to the process current working directory at
-	// the time New() runs. The router enforces containment via symlink
-	// resolution against this path on every request.
-	FileRoot string
+	// ReadHeaderTimeout is the HTTP server read-header timeout
+	// (SERVER_READ_HEADER_TIMEOUT, default 10s).
+	ReadHeaderTimeout time.Duration
 
-	// Scheduler (no config needed, created fresh)
+	// ReadTimeout is the HTTP server read timeout (SERVER_READ_TIMEOUT,
+	// default 30s).
+	ReadTimeout time.Duration
+
+	// Storage configures the storage disks (FILESYSTEM_*, STORAGE_*,
+	// AWS_*).
+	Storage storage.Config
+
+	// Timezone is the presentation timezone, an IANA location name
+	// applied at bootstrap to time.Local and to scheduler cron evaluation;
+	// persistence never reads it, ORM and queue storage are always UTC
+	// (APP_TIMEZONE, default "UTC").
+	Timezone string
+
+	// View configures the view engine (VIEW_*). New builds the engine
+	// when any of RootTemplate, ErrorPage or SSREnabled is set; an empty
+	// RootTemplate then means the built-in root template. With none of the
+	// three set, New builds no engine.
+	View view.Config
+
+	// WriteTimeout is the HTTP server write timeout (SERVER_WRITE_TIMEOUT,
+	// default 30s).
+	WriteTimeout time.Duration
+
+	// sessionSameSiteRaw is the raw SESSION_SAME_SITE value, kept so
+	// Validate can reject a value parseSameSite silently mapped to Lax.
+	sessionSameSiteRaw string
 }
 
 // Option is a function that configures the App.
@@ -570,7 +589,7 @@ func ConfigFromEnv() Config {
 
 	// Maintenance. An unset VELOCITY_MAINTENANCE_EXCLUDE_PATHS adds no
 	// paths; entries are trimmed and empty ones skipped by the gate.
-	config.Maintenance = contract.MaintenanceConfig{
+	config.Maintenance = maintenance.Config{
 		Root:   os.Getenv("VELOCITY_MAINTENANCE_ROOT"),
 		AppKey: config.Key,
 	}

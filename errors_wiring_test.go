@@ -1234,3 +1234,16 @@ func TestBindClientErrors_ThroughApp(t *testing.T) {
 		})
 	}
 }
+
+// entriesWith counts l's entries with msg, at level when level is set.
+func entriesWith(l *levelLogger, level, msg string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, e := range l.entries {
+		if e.msg == msg && (level == "" || e.level == level) {
+			n++
+		}
+	}
+	return n
+}

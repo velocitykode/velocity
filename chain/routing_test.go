@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/velocitykode/velocity/app"
-	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/maintenance"
 	"github.com/velocitykode/velocity/problem"
 	"github.com/velocitykode/velocity/router"
 )
@@ -29,7 +29,7 @@ func TestRouting_API_RegistersPrefix(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			h := problem.NewHandler()
 			h.SetAPIPrefixes(tt.existing...)
-			routing := NewRouting(router.New(), NewMiddlewareStack(&app.Services{Errors: h}, contract.MaintenanceConfig{}))
+			routing := NewRouting(router.New(), NewMiddlewareStack(&app.Services{Errors: h}, maintenance.Config{}))
 
 			for _, prefix := range tt.groups {
 				routing.API(prefix, func(router.Router) {})
@@ -52,7 +52,7 @@ func TestRouting_API_NoErrorHandler(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			routing := NewRouting(router.New(), NewMiddlewareStack(tt.services, contract.MaintenanceConfig{}))
+			routing := NewRouting(router.New(), NewMiddlewareStack(tt.services, maintenance.Config{}))
 			called := false
 			routing.API("/api", func(router.Router) { called = true })
 			if !called {

@@ -11,7 +11,7 @@ import (
 	"github.com/velocitykode/velocity/auth"
 	"github.com/velocitykode/velocity/cache"
 	"github.com/velocitykode/velocity/chain"
-	"github.com/velocitykode/velocity/contract"
+	"github.com/velocitykode/velocity/maintenance"
 	"github.com/velocitykode/velocity/orm"
 	"github.com/velocitykode/velocity/storage"
 )
@@ -315,7 +315,7 @@ func TestInitCache_ZeroConfigIsMemoryDefault(t *testing.T) {
 
 // bootstrapMaintenance builds an app from cfg, bootstraps it and returns
 // the maintenance settings the Middleware callback saw.
-func bootstrapMaintenance(t *testing.T, cfg Config) contract.MaintenanceConfig {
+func bootstrapMaintenance(t *testing.T, cfg Config) maintenance.Config {
 	t.Helper()
 	cfg.Debug = false
 	a, err := New(WithConfig(cfg))
@@ -323,7 +323,7 @@ func bootstrapMaintenance(t *testing.T, cfg Config) contract.MaintenanceConfig {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
-	var got contract.MaintenanceConfig
+	var got maintenance.Config
 	called := false
 	a.Middleware(func(m *chain.MiddlewareStack) {
 		called = true
@@ -344,7 +344,7 @@ func TestBootstrap_MaintenanceAppKey(t *testing.T) {
 	t.Run("defaulted to Key", func(t *testing.T) {
 		cfg := testAppConfig()
 		cfg.Key = "app-key"
-		cfg.Maintenance = contract.MaintenanceConfig{Root: "/srv/app", ExcludePaths: []string{"/health"}}
+		cfg.Maintenance = maintenance.Config{Root: "/srv/app", ExcludePaths: []string{"/health"}}
 		got := bootstrapMaintenance(t, cfg)
 		if got.AppKey != "app-key" {
 			t.Errorf("AppKey = %q, want app-key", got.AppKey)
@@ -356,7 +356,7 @@ func TestBootstrap_MaintenanceAppKey(t *testing.T) {
 	t.Run("kept when set", func(t *testing.T) {
 		cfg := testAppConfig()
 		cfg.Key = "app-key"
-		cfg.Maintenance = contract.MaintenanceConfig{Root: "/srv/app", AppKey: "own-key"}
+		cfg.Maintenance = maintenance.Config{Root: "/srv/app", AppKey: "own-key"}
 		if got := bootstrapMaintenance(t, cfg); got.AppKey != "own-key" {
 			t.Errorf("AppKey = %q, want own-key", got.AppKey)
 		}
