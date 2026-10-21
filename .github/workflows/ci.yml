@@ -4,7 +4,8 @@ name: CI
 # On push/PR: go vet, Windows build and vet, staticcheck, -race tests, router
 # benchmarks, govulncheck.
 # On push-to-main: if all correctness gates pass, auto-version/tag/release
-# and propagate to the template and installer repos.
+# and propagate to the template and installer repos. Pre-1.0 every push is a
+# patch release; a minor is a milestone cut by hand (Run workflow, bump=minor).
 # On weekly schedule: govulncheck only (new CVEs in existing deps).
 
 on:
@@ -17,6 +18,13 @@ on:
     branches: [main]
   schedule:
     - cron: "0 0 * * 0" # Weekly on Sunday - govulncheck against current deps
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Release a minor (pre-1.0 milestone); pushes release patches"
+        type: choice
+        options: [minor]
+        default: minor
 
 jobs:
   vet:
@@ -350,9 +358,9 @@ jobs:
 
   release:
     name: auto-release
-    # Release only on direct push to main. PRs and the weekly cron
-    # don't publish anything.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Release on direct push to main (patch) or a manual run on main (minor).
+    # PRs and the weekly cron don't publish anything.
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     needs: [vet, windows-build, staticcheck, race-tests, skip-lint, goroutine-lint, recover-sites-lint, lock-held-lint, events-lint, released-ports-lint, error-inspection-lint, golangci-lint, coverage-floors]
     runs-on: ubuntu-latest
     permissions:
@@ -382,6 +390,14 @@ jobs:
           # no longer a prefix filter to stop the bot's own commit from
           # qualifying. Match on author rather than message so every commit this
           # job creates is covered, now and in future.
+          #
+          # A manual run is a deliberate minor release and always proceeds.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Manual run - releasing a minor and cascading downstream."
+            exit 0
+          fi
+
           LAST_AUTHOR_EMAIL=$(git log -1 --pretty=%ae)
           LAST_MSG=$(git log -1 --pretty=%B)
 
@@ -434,14 +450,22 @@ jobs:
           done <<< "$COMMITS"
 
           # Calculate new version.
-          # While on v0.x, BREAKING bumps the minor, not the major - promotion
-          # to v1.0.0 is a deliberate, manual tag (see RELEASES.md). This guard
-          # prevents a stray `BREAKING:` commit from accidentally publishing v1.
-          if [ "$HAS_BREAKING" = true ] && [ "$MAJOR" != "0" ]; then
+          # While on v0.x, a push is always a patch, whatever its prefix: a
+          # minor is a milestone cut by hand with a manual run (bump=minor),
+          # and promotion to v1.0.0 is a deliberate, manual tag (see
+          # RELEASES.md). Nothing here can publish v1 from v0.
+          if [ "$MAJOR" = "0" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              MINOR=$((MINOR + 1))
+              PATCH=0
+            else
+              PATCH=$((PATCH + 1))
+            fi
+          elif [ "$HAS_BREAKING" = true ]; then
             MAJOR=$((MAJOR + 1))
             MINOR=0
             PATCH=0
-          elif [ "$HAS_BREAKING" = true ] || [ "$HAS_FEAT" = true ]; then
+          elif [ "$HAS_FEAT" = true ]; then
             MINOR=$((MINOR + 1))
             PATCH=0
           else

@@ -6,7 +6,9 @@ This document describes how Velocity is versioned, released, and supported.
 
 Velocity is currently in the `v0.x.y` phase. **Nothing in this document's stability promises applies yet.** During the pre-1.0 phase:
 
-- Breaking changes may occur between any two minor releases (`v0.32 → v0.33`).
+- Every push to `main` releases a **patch** (`v0.96.0 → v0.96.1`), whether the commits are fixes, features or breaking changes.
+- A **minor** (`v0.96.x → v0.97.0`) is a milestone, cut by hand when a redesign group is done. It is never triggered by a commit prefix.
+- Breaking changes may arrive in any release, including a patch. Breaking commits carry `!` (`feat!:`, `refactor!:`), so the release notes show them.
 - The `BuildInfo.Version` default is `"devel"` — a release build requires explicit `-ldflags`.
 - `go get github.com/velocitykode/velocity@latest` resolves to the latest `v0.x.y` tag, skipping the retracted `v1.0.0` accidentally published in December 2025.
 - The v1-forever policy below **activates at `v1.0.0`**, not before.
@@ -87,13 +89,12 @@ Short-lived branches are used for:
 
 Releases are automated by `.github/workflows/ci.yml` on push to `main`:
 
-1. Commits are analyzed for conventional-commit prefixes.
-2. A new version is calculated:
-   - `feat:` or `add` → minor bump
-   - anything else → patch bump
-3. A tag `vX.Y.Z` is created and pushed.
-4. A GitHub Release is published with auto-generated notes.
-5. `velocity-template`, `velocity-template-api`, and `velocity-installer` are updated to the new version.
+1. A new version is calculated:
+   - **Pre-1.0:** every push is a patch bump. A minor bump comes only from a manual run: Actions → CI → Run workflow on `main` with `bump: minor`. The manual run passes the same gates, then tags and cascades like a push.
+   - **From v1.0.0:** commits are analyzed for conventional-commit prefixes; `feat:` or `add` → minor bump, anything else → patch bump.
+2. A tag `vX.Y.Z` is created and pushed.
+3. A GitHub Release is published with auto-generated notes.
+4. `velocity-template`, `velocity-template-api`, and `velocity-installer` are updated to the new version.
 
 **Manual release steps:**
 
